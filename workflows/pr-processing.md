@@ -1,5 +1,15 @@
 # PR Processing Workflow
 
+For new Codex planning, resolve the advisory `astra-pilot-v1` profile from
+[central routing data](../skills/plan-pr-batch/references/model-routing-profiles.json) with the plan skill's
+`bin/model-routing-profile --role <role>`. Its named preferences supersede the
+GPT-5.6 recommendations below for the listed roles; those recommendations and
+planning tables remain the established comparison baseline. Keep explicit user
+routes, verified host support, portable fallback, and independent evidence rules.
+This is an unmeasured pilot, not a measured promotion.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
+
 Use this workflow when an agent is assigned an issue, an existing PR, a PR review-fix pass, or a multi-PR landing plan. The goal is to reduce review turns, CI churn, and follow-up issue noise by doing more local work before asking GitHub to spend reviewer or runner time.
 
 For high-concurrency issue or PR batches, use `.agents/skills/pr-batch/SKILL.md` when skills are available. A memorable invocation is:
@@ -17,9 +27,18 @@ For assistants without skill support, follow the high-concurrency batch launch r
 
 Resolve writing style before authoring human-facing prose. Run
 `agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
-from the installed executable on `PATH`; if it is unavailable there, resolve
-the same executable from the loaded Agent Workflows pack's `bin/` directory or
-an explicit `AGENT_WORKFLOW_WRITING_STYLE_RESOLVER` path. If neither location
+from the installed executable on `PATH`. If it is unavailable there, start from
+the exact loaded `workflows/pr-processing.md` path and resolve
+`../bin/agent-workflow-writing-style` from its containing `workflows/`
+directory. If that candidate is unavailable, then start from the exact loaded
+`skills/<skill>/SKILL.md` path and resolve
+`../../bin/agent-workflow-writing-style` from its containing skill directory.
+These two candidates locate the Agent Workflows pack-root `bin/` in source,
+installed Codex or Claude homes, complete repository-pinned layouts, and
+split-root layouts with a repo-local workflow plus an installed skill. Do not
+use a skill-local `skills/<skill>/bin/` directory for this fallback. If both
+pack-root candidates are unavailable, use an explicit
+`AGENT_WORKFLOW_WRITING_STYLE_RESOLVER` path. If none of these locations
 is usable, follow the fallback below and report upgrade or installation
 guidance; do not duplicate the packaged default in a skill.
 
@@ -65,10 +84,12 @@ For post-merge audits after a concurrent batch or before a release candidate, us
 
 For adversarial pre-merge or post-merge PR review, use `.agents/skills/adversarial-pr-review/SKILL.md` when skills are available. Reusable Codex, Claude, and comparison prompts live in `.agents/workflows/adversarial-pr-review.md`.
 
-For an interactive human-oriented explanation of a PR, use
-`.agents/skills/pr-walkthrough/SKILL.md` when skills are available. It presents
-one conceptual change at a time, explains why it exists, and pauses for
-questions before continuing. Its walkthrough identity must come from the
+For a human-oriented explanation of a PR, use
+`.agents/skills/pr-walkthrough/SKILL.md` when skills are available. Direct chat
+requests use live, read-only interaction. When the user or an authorized workflow
+explicitly selects publication with comment authority, it prepares the complete
+exact-diff explanation, publishes separately replyable GitHub threads, and lets
+the owning task consume questions asynchronously. Its walkthrough identity must come from the
 installed `pr-batch/bin/diff-identity` helper using the base ref, reviewed
 diff-base SHA, and full head SHA; an opaque caller-supplied digest is not an
 identity receipt.
@@ -1148,9 +1169,8 @@ Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;chg=>redo/stop;fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
-
 ```
 
 ### Question And Decision Handling
@@ -1189,7 +1209,7 @@ Canonical rules: [Human-First PR Description Contract](pr-batch-integration-clos
 
 ### Batch Handoff Format
 
-Canonical rules: [Batch Handoff Format](pr-batch-integration-closeout.md#batch-handoff-format). This heading remains as a compatibility route and must not mirror the component.
+Canonical rules: [Batch Handoff Format](pr-batch-integration-closeout.md#batch-handoff-format). This heading remains as a compatibility route and must not mirror the component. The component's compact terminal structure seam for single-repo batches at or below `compact_terminal_structure_max_lanes` applies here too.
 
 ### Unblock Block
 
@@ -1245,6 +1265,16 @@ notification wording.
 - An explicit technical or diagnostic status request may return exact telemetry.
   Expand identifiers on first use, retain exact values, and mark unavailable
   meanings `UNKNOWN` rather than translating them speculatively.
+- Canonical owner-route rules: [Cross-Task Blocker Owner Route](../docs/user-facing-coordination.md#cross-task-blocker-owner-route).
+  When an HST-v1 actionable user-facing blocker depends on another task or
+  runner, include `Owner route:` inside `What changed:`. Missing evidence uses
+  exactly `Owner route: unavailable`; contradictory evidence uses
+  `Owner route: inconsistent`.
+- A route or material-fingerprint change does not make a routine wait
+  actionable. Emit only when the HST-v1 actionability gate passes and the
+  fingerprint of blocker state plus every normalized rendered route field
+  differs from the prior emitted message. Keep raw process and queue telemetry
+  in durable diagnostics.
 - At closeout/archive completion, place the three labeled parts before, not
   instead of, the existing mandatory closeout handoff. Preserve every item of
   required handoff evidence and exact `Conversation status:` line, which remains
@@ -1269,7 +1299,8 @@ notification wording.
   preserve one exact question and manual resume instructions.
 - This boundary changes presentation only. It does not alter machine evidence or
   any security, ownership, retry, scope, continuous integration (CI), review, or
-  merge gates.
+  merge gates. It also does not weaken validator isolation, exact-head evidence,
+  or quality assurance (QA).
 
 ### Coordinator Output Contract
 
@@ -1289,7 +1320,14 @@ below. Any rule that requires an exact user-visible string is exempt from every
 reduction in this section and is never omitted, abbreviated, or paraphrased:
 the `Next:` instruction, the `Action needed:` line, the `coordination:`
 declaration, the exact `Conversation status:` line, an HST-v1 actionable
-notification, a required receipt line, and a Lane Card.
+notification, a required receipt line, and a Lane Card. For single-repo batches
+at or below `compact_terminal_structure_max_lanes`, those required strings may
+be rendered once in one compact terminal structure; larger or multi-repo
+batches keep the existing split closing stack. The `compact_terminal_structure_max_lanes`
+seam is an optional positive integer; when omitted, keep the split closing
+stack. Count the batch's distinct durable lanes, including completed lanes,
+not running worker instances, PRs/targets, or emitted Lane Cards. A lane with
+multiple targets counts once, consistent with `CONTEXT.md`'s Lane definition.
 
 **Typed narration checkpoints.** The coordinator emits user-visible text only at
 one of exactly these five checkpoints:
@@ -1305,6 +1343,10 @@ one of exactly these five checkpoints:
 - `merge-decision`: the merge, ready, or blocked verdict for a target.
 - `final-handoff`: the batch handoff.
 
+The compact structure changes only the final-handoff layout. The separate `pr-open` checkpoint
+still occurs once per PR when it opens; the final structure reports current
+Lane Card facts, not another PR-open event.
+
 Everything between checkpoints is silent. A tool-call preamble is not a
 checkpoint, and "here is what I'll do next" narration is not a checkpoint. An
 HST-v1 actionable notification is not a separate category: it is emitted at the
@@ -1313,14 +1355,13 @@ it reports — closeout and archive completion is a `final-handoff` — and it
 counts in that checkpoint's bucket. Four message kinds are always allowed and
 are not checkpoints: a direct answer to a user question; an explicitly requested
 status report, such as `$status` or `$batch-status`; a turn or step another
-contract requires the coordinator to show, including every orientation and
-one-conceptual-change turn of the
-[ask merge-authority walkthrough](#ask-merge-authority-walkthrough-gate) and the
+contract requires the coordinator to show, including each turn of an explicitly
+requested live [PR walkthrough](#ask-merge-authority-walkthrough-gate) and the
 verified review triage that
 [Review Comment Handling](#review-comment-handling) requires before action `f`;
 and an immediate stop required by a non-negotiable safety rule in
 `.agents/skills/pr-batch/SKILL.md` or by a [Worker Rules](#worker-rules) stop
-condition. `OC-v1` never suppresses a required interactive exchange; those turns
+condition. `OC-v1` never suppresses an explicitly requested interactive exchange; those turns
 count in the marker's `always_allowed` bucket below, not in
 `unclassified_messages`. A single-target batch with no required walkthrough
 therefore produces roughly five coordinator messages, not twenty-five. Reducing
@@ -1450,11 +1491,14 @@ path as shadow-mode `max_reviewed_heads` calibration; graduating it into an
 enforced narration budget requires an explicit separate decision after a real
 dataset exists.
 
-**Deferred: one closing block.** `OC-v1` leaves the required closing stack
-unchanged. The Lane Card, the `Next:` instruction, the `Action needed:` line,
-the required receipt, and the exact `Conversation status:` line keep their
-current separate forms and order. Collapsing them into a single terminal
-structure is deliberately out of scope for `OC-v1` and is tracked in
+**Compact closing block.** `OC-v1` leaves the required closing stack
+unchanged except for the compact terminal structure used by single-repo batches
+at or below `compact_terminal_structure_max_lanes`. The Lane Card, the
+`Next:` instruction, the `Action needed:` line, the required receipt, and the
+exact `Conversation status:` line keep their required forms and order, but the
+same facts may be rendered once in one human-readable terminal structure for
+that seam-bound case. Larger or multi-repo batches keep the existing split
+closing stack. This consolidation is tracked in
 [issue 484](https://github.com/shakacode/agent-workflows/issues/484).
 
 ### Cross-Task Target Membership Gate
@@ -2212,13 +2256,13 @@ Goal completion contract:
 - Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.
 - If CI/reviews are pending, finish runnable in-scope closeout work before each bounded poll. Triage only after the complete review cohort settles; do not wait for unrelated validation CI before that consolidated triage. If either cohort does not settle in the bounded watch/retry window, report NOT COMPLETE as `waiting-on-checks-or-review` with exact evidence and resume command. If a check fails, inspect and fix if in scope.
 - If only a real external blocker remains after a bounded watch/retry window, report NOT COMPLETE with exact blocker, evidence, and resume command; do not call the goal complete.
-- If a prerequisite PR is otherwise ready and only its human review and merge decision remains under `merge_authority: ask`, report `blocked-user-input` without consuming external-blocker retries or starting monitoring. For an owned target, start the exact-diff walkthrough before asking the final merge question. Retain `ready-no-merge-authority` as its target final state and report `blocked-user-input` only for the overall batch while that decision is required. For an external dependency-only reference, instruct the user either to merge it and reply only after it is merged, or to explicitly authorize adding it as a target so target resolution, preflight, and the walkthrough can run; a reply or merge decision alone does not clear the prerequisite or authorize its merge.
+- If a prerequisite PR is otherwise ready and only its human review and merge decision remains under `merge_authority: ask`, report `blocked-user-input` without consuming external-blocker retries or starting monitoring. For an owned target, publish the complete exact-diff walkthrough under the `ask` route below before asking the final merge question. Retain `ready-no-merge-authority` as its target final state and report `blocked-user-input` only for the overall batch while that decision is required. For an external dependency-only reference, instruct the user either to merge it and reply only after it is merged, or to explicitly authorize adding it as a target so target resolution, preflight, and the walkthrough can run; a reply or merge decision alone does not clear the prerequisite or authorize its merge.
 - GMCC-v5 compatibility fallback: When the overall goal is genuinely blocked by a condition that can clear without user input and deterministic state-change watching is unavailable, treat the host's recurring automation/wakeup capability as supported only if it can re-enter this same thread on schedule and be inspected, updated, and stopped; reuse or create one bounded current-thread monitor before handoff and do not create a duplicate. Use at most four 15-minute fast-window polls followed by exponential backoff capped at four hours and finite unchanged-run/model-call/token ceilings. On each wake, refresh live blocker evidence and resume if a blocker clears. Stop the monitor when the goal unblocks or before completion. `blocked-user-input` does not start a monitor; preserve its exact question and manual resume instructions. If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions.
 - State-change extension: prefer one deterministic state-change watcher that runs a minimal authoritative probe without a model continuation; bind its stable identity and persisted state, suppress unchanged fingerprints, and wake once with a compact state delta when the fingerprint changes or for a typed dependency-terminal action with `wake_parent: true`. Rerun full security, origin, coordination, overlap, review, readiness, and exact-head preflights after that transition. Use the compatibility monitor only as a bounded fallback with at most four 15-minute fast-window polls, exponential backoff capped at four hours, and finite unchanged-run/model-call/token ceilings. Terminal, non-resumable, user-input, or budget states stop or pause the watcher and preserve an exact restart-safe manual-resume handoff. `blocked-user-input` does not start a watcher. If neither mode is available, preserve exact manual resume instructions.
 - When that blocker publishes an exact future retry time, schedule the same-thread heartbeat for that time because neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that exact published time; use it as the single scheduled mechanism for that blocker and gate; do not start or retain either watcher mode for the same gate, and create or update its durable record before stopping or replacing any existing watcher so no wake is lost. Follow the Scheduled Retry Heartbeat rule in the Goal Mode Completion Contract for its conditions, durable record, wake-time gate replay, single-instance update, and terminal cleanup.
 - Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
-- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use `$pr-walkthrough` when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
+- With `ask`, after ordinary gates are clean, automatically publish the complete exact-diff PR walkthrough before approval. Prepare every conceptual section up front, then publish the orientation and all sections to GitHub in one pass under `$pr-walkthrough`'s mandatory inline-thread and no-anchor-stop rules, without waiting for repeated chat turns. The owning task consumes PR replies asynchronously; use a live interactive walkthrough only when the maintainer explicitly requests one. After publication or an explicit skip, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then rebuild and republish the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
 
 Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state. It must also carry exactly one coordination declaration: `coordination: registered <batch-id>` when this batch registered with the coordination backend, or `coordination: unavailable — <reason>` with an exact nonempty reason that is not `UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
 ```
@@ -2369,7 +2413,7 @@ Canonical rules: [Integration And PR Publication](pr-batch-integration-closeout.
 
 ### Coordinator Closeout Lane
 
-Canonical rules: [Coordinator Closeout Lane](pr-batch-integration-closeout.md#coordinator-closeout-lane). This heading remains as a compatibility route and must not mirror the component.
+Canonical rules: [Coordinator Closeout Lane](pr-batch-integration-closeout.md#coordinator-closeout-lane). This heading remains as a compatibility route and must not mirror the component. The component's compact terminal structure seam for single-repo batches at or below `compact_terminal_structure_max_lanes` applies here too.
 
 ## Self-Review Gate
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "json"
 require "minitest/autorun"
 require "open3"
@@ -520,7 +522,7 @@ class TargetMembershipGuardTest < Minitest::Test
     ]
 
     required_surfaces.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
       assert_includes text, "target-membership-guard", relative_path
     end
@@ -531,13 +533,13 @@ class TargetMembershipGuardTest < Minitest::Test
     ]
 
     canonical_surfaces.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
       assert_includes text, "foreign-target / evidence-only", relative_path
       assert_includes text, "explicit human-authorized control transfer", relative_path
     end
 
-    planner = File.read(File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+    planner = SkillStageSource.read(File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), encoding: "UTF-8").gsub(/\s+/, " ")
     assert_includes planner,
                     "[Cross-Task Target Membership Gate](../../workflows/pr-processing.md#cross-task-target-membership-gate)"
     assert_includes planner, "Foreign targets remain evidence-only"
@@ -563,7 +565,7 @@ class TargetMembershipGuardTest < Minitest::Test
     ]
 
     required_surfaces.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, "trusted explicit out-of-band human authorization", relative_path
@@ -626,7 +628,7 @@ class TargetMembershipGuardTest < Minitest::Test
 
   def test_canonical_skill_summary_distinguishes_foreign_evidence_from_unknown_identity
     relative_path = "skills/pr-batch/SKILL.md"
-    text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+    text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
     section = text.match(/## Cross-Task Target Membership Gate(.*?)## Continuing From Saved Handoffs/m)&.[](1)
 
     refute_nil section, "#{relative_path} is missing its target-membership summary"
@@ -654,7 +656,7 @@ class TargetMembershipGuardTest < Minitest::Test
     assert_includes workflow, "Never derive the manifest from a cross-task packet"
     assert_includes workflow, "do not pass raw provenance lane target strings to the guard"
 
-    planner = File.read(File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+    planner = SkillStageSource.read(File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), encoding: "UTF-8").gsub(/\s+/, " ")
     assert_includes planner,
                     "[Cross-Task Target Membership Gate](../../workflows/pr-processing.md#cross-task-target-membership-gate)"
     assert_includes planner, "Keep its manifest-derivation details in that canonical workflow"

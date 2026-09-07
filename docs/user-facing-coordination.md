@@ -89,8 +89,13 @@ authority, merge without asking the user to perform the authorized mechanical
 action. Continue to use the repository submission policy and all exact-head
 assurance gates; autonomous authority does not bypass them.
 
-When current exact-diff human approval is genuinely required, first complete
-the one-concept-at-a-time PR walkthrough if human understanding is the blocker.
+When current exact-diff human approval is genuinely required and human
+understanding is the blocker, use `$pr-walkthrough`. Direct chat requests remain
+live and read-only. Publish only when the user or an authorized workflow
+explicitly selects publication with comment authority. In that mode, put
+the orientation and all conceptual sections on GitHub in one pass under
+`$pr-walkthrough`'s mandatory inline-thread and no-anchor-stop rules, and let the owning task consume replies
+asynchronously. A publication-authority blocker is not an explicit skip.
 Then refresh readiness and present the full exact head SHA, the sorted gate set,
 and rollback status before asking one final question that names the exact
 approval needed. Walkthrough participation is not approval, and any head change
@@ -118,6 +123,63 @@ decision, or next action, and its output must not imply that ownership moved.
 For `blocked-user-input`, do not create or retain a heartbeat or monitor;
 preserve one exact question and manual resume instructions.
 
+## Cross-Task Blocker Owner Route
+
+When an HST-v1 actionable user-facing blocker depends on another task or
+runner, put a canonical `Owner route:` in `What changed:` after the blocker
+summary. A route or fingerprint change does not make a routine wait actionable.
+Build the route from the existing claim, heartbeat, batch or lane record, live
+work item and head, and the host's task or workspace lookup. The host lookup is
+a task or workspace listing exposed by the current app. It is not coordination
+evidence. When the host does not expose that lookup, the route is unavailable.
+Do not require a new coordination schema.
+The route must identify:
+
+- the work item and its pull-request or issue URL;
+- the runner or application;
+- the visible task title or workspace name and a stable workspace or log
+  location when the host exposes one;
+- the thread handle and stable task, thread, or session identifier;
+- a deep link when the host supports one, or the visible app route and an
+  explicit statement that no cross-app link exists;
+- the branch and exact head when they affect the blocker; and
+- whether the current task can navigate to or message the owner.
+
+For a Codex owner, include the verified task ID and Codex deep link. If the task
+has no title, use `<work item> <role> — <thread handle>`, such as
+`PR #383 maker — aw-pr383-harbor`. For a Conductor/Claude owner, include the
+Conductor workspace and session identity. When no cross-app deep link exists,
+say that there is no Codex sidebar task to find and name the workspace to open
+in Conductor.
+
+Validate the route before showing it. The active claim and heartbeat must agree
+on the owner, repository-qualified work item, runner or host, branch, thread
+handle, and session. Missing fields needed for the rendered route make it
+unavailable. If both records include an instance, those instances must also
+agree. The resolved task must match the repository, work item, workspace,
+branch, and session.
+A contradictory, stale, or cross-repository binding must fail closed as
+`Owner route: inconsistent`; do not offer its link as the owner. Missing or
+unreachable route evidence renders exactly `Owner route: unavailable`. In both
+cases, say what cannot be navigated or messaged and that the coordinator owns
+bounded follow-up. Ask the user only when a separate decision or action is
+truly required.
+
+Coalesce unchanged blocker messages by a material fingerprint of the blocker
+state and every normalized field in the validated, rendered owner route.
+Changes only to a process identifier (PID), process-group ID (PGID), lease,
+queue position, timestamp, or other raw telemetry do not change that
+fingerprint. Keep those values in durable diagnostics and show them only for an
+explicit technical or diagnostic status request. Emit only when the HST-v1
+actionability gate passes and the fingerprint differs from the prior emitted
+message. The actionable checkpoint can be a terminal result, a real decision,
+exhausted blocker intervention, readiness for review or approval, or release of
+waiting work.
+
+This contract changes presentation only. It does not weaken ownership,
+validator isolation, security, exact-head, quality assurance (QA), review, or
+merge gates.
+
 ## Terminal Next-Step Contract
 
 Every final user-visible workflow handoff must include one unambiguous `Next:`
@@ -136,6 +198,9 @@ handoff may not make the user infer an action from technical status, durable
 references, or a `Conversation status:` blocker union. Preserve any required
 receipt before the closing stack: the Unblock Block when the status is not
 clean, then the final `Conversation status:` line.
+The [Output Contract](#output-contract) permits a compact final layout for
+eligible small single-repo batches; it preserves these required strings and
+their order.
 
 ## Output Contract
 
@@ -145,6 +210,17 @@ in `workflows/pr-processing.md`. This user-facing contract intentionally does
 not duplicate its checkpoint definitions, delta-recap behavior, always-allowed
 classification, or narration-counter schema. Apply the linked contract
 directly so those rules cannot drift between two normative copies.
+
+- **Compact terminal structure:** single-repo batches at or below
+  `compact_terminal_structure_max_lanes` may collapse the Lane Card, `Next:`,
+  `Action needed:`, required receipt, and exact `Conversation status:` into
+  one human-readable terminal structure; larger or multi-repo batches keep the
+  existing split closing stack. That consolidation is tracked in
+  [issue 484](https://github.com/shakacode/agent-workflows/issues/484).
+  The optional threshold is a positive integer; omission keeps the split form.
+  Count distinct durable lanes in the batch, including completed lanes, not
+  worker instances, PRs/targets, or emitted Lane Cards. This affects only the
+  final-handoff layout; the separate `pr-open` checkpoint remains unchanged.
 
 ## Ambiguity Guard
 

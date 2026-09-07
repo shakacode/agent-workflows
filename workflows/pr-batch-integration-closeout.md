@@ -706,6 +706,16 @@ decision is still accurate after review changes.
 > [Production And Release Compatibility Route](pr-processing.md#production-and-release-compatibility-route);
 > ordinary PR closeout neither locates nor mutates release trackers.
 
+For single-repo batches at or below `compact_terminal_structure_max_lanes`,
+closing facts may appear once as one compact terminal structure instead of the
+split handoff below. The compact structure still carries Lane Card facts, one
+`Next:`, explicit `Action needed:`, required receipts, and final `Conversation
+status:`. Larger or multi-repo batches keep the split form.
+Resolve the threshold and durable-lane count using the
+[Coordinator Output Contract](pr-processing.md#coordinator-output-contract);
+omitting the threshold keeps the split form. This changes only terminal
+presentation, not the separate `pr-open` checkpoint.
+
 Split batch handoffs into two sections:
 
 - **Immediate maintainer attention**: true blockers and questions only, such as
@@ -1057,7 +1067,7 @@ The closeout lane is:
     or environment content into the handoff. Usage evidence remains
     informational and does not block or satisfy CI, review, QA, merge, audit, or
     archive-readiness gates.
-14. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. Use `Conversation status: Ready for archiving.` iff archive-ready and the union is empty; otherwise put an `Unblock:` block with every normalized blocker immediately before the final `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. Before emitting that final message, validate its Batch Coordination Declaration mechanically rather than by self-report: resolve `PR_BATCH_SKILL_DIR` with the env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/coordination-declaration" --handoff <drafted-handoff-path-or->` against the drafted handoff. It exits 0 only when the handoff carries exactly one acceptable `coordination:` line. A nonzero exit is a hard blocker: report NOT COMPLETE and fix the declaration instead of emitting a clean handoff.
+14. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. When the compact terminal structure seam applies to single-repo batches at or below `compact_terminal_structure_max_lanes`, use the compact form above and keep the required receipt and final `Conversation status:` line in order. Use `Conversation status: Ready for archiving.` iff archive-ready and the union is empty; otherwise put an `Unblock:` block with every normalized blocker immediately before the final `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. Before emitting that final message, validate its Batch Coordination Declaration mechanically rather than by self-report: resolve `PR_BATCH_SKILL_DIR` with the env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/coordination-declaration" --handoff <drafted-handoff-path-or->` against the drafted handoff. It exits 0 only when the handoff carries exactly one acceptable `coordination:` line. A nonzero exit is a hard blocker: report NOT COMPLETE and fix the declaration instead of emitting a clean handoff.
 
 ## Self-Review Gate
 
@@ -1588,23 +1598,29 @@ Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow
 ### Ask Merge Authority Walkthrough Gate
 
 When `merge_authority` is `ask` and every ordinary gate is clean,
-automatically start the exact-diff PR walkthrough before asking for merge
-approval. Use `$pr-walkthrough` when available; otherwise apply its read-only
-contract inline: inspect the complete diff first, group it into conceptual
-changes, explain the reason, behavior, tradeoffs, risks, and proof for exactly
-one change at a time, then wait for explicit readiness before continuing.
+automatically publish the complete exact-diff PR walkthrough before asking for
+merge approval. Use `$pr-walkthrough` when available; otherwise apply its
+contract inline: inspect the complete diff and build the full coverage map.
+Prepare every conceptual section up front. Publish one PR-level orientation and
+all sections to GitHub in one pass under `$pr-walkthrough`'s mandatory
+inline-thread and no-anchor-stop rules: use one `COMMENT` review, with a separately
+replyable inline thread per concept on an honest changed line. If any concept
+has no honest anchor, explain the limitation and stop; do not claim complete
+threaded coverage. Publish without waiting for repeated chat turns. The owning task consumes
+PR replies asynchronously. Use a live
+interactive walkthrough only when the maintainer explicitly requests one.
 
-Use full interactive mode for large or complex PRs and concise interactive mode
-for smaller cohesive PRs. Treat a PR as large when it exceeds any trusted-base
+Use full mode for large or complex PRs and concise mode for smaller cohesive
+PRs. Treat a PR as large when it exceeds any trusted-base
 `autonomous_merge.thresholds` maximum for changed files, changed lines, or
 commits. Complexity, cross-cutting behavior, security, migrations,
 architecture, or difficult rollback may require full mode below those limits.
 Do not repeat a walkthrough already completed for the same diff identity, and
 honor an explicit request to skip or stop it.
 
-After it completes or is skipped, refresh the diff identity and ordinary
+After publication or an explicit skip, refresh the diff identity and ordinary
 readiness. If the diff identity changed, invalidate the walkthrough and
-readiness evidence, then restart the walkthrough or stop. If an ordinary gate
+readiness evidence, then rebuild and republish the walkthrough or stop. If an ordinary gate
 newly fails, stop. Ask one final merge decision only when the refreshed diff
 identity matches the recorded identity, ordinary readiness remains clean, and
 merge is allowed; a completed walkthrough must have explained that same diff
@@ -2138,6 +2154,8 @@ terminal coordination contract it leaves completed-batch publication blocked as
 `UNKNOWN`.
 
 When `coordination_backend: n/a`, `coordination_status` must instead be a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks. An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks.
+
+Closed-unmerged verification PRs follow the authenticated [supporting-artifact contract](post-merge-audit.md#coordination-rules); the issue stays primary and bare/prose-only `pr_url` blocks.
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
