@@ -121,9 +121,14 @@ class IntegrationCloseoutContractTest < Minitest::Test
     # Temporary headroom: main sat within 32 bytes of the combined cap and within
     # 500 bytes of the skill cap, so every PR that added a sentence failed here
     # (#772). Shrink these again once the #392 extraction work lands.
+    combined_ceiling = 450_000
+    combined_size = @component.bytesize + @workflow.bytesize + @skill.bytesize
+
     assert_operator @workflow.bytesize, :<, 210_000
     assert_operator @skill.bytesize, :<, 70_000
-    assert_operator @component.bytesize + @workflow.bytesize + @skill.bytesize, :<, 450_000
+    assert_operator combined_size, :<, combined_ceiling
+    assert_operator combined_ceiling - combined_size, :>=, 3_000,
+                    "closeout interface must retain combined structural headroom"
     assert_includes @component, "worker-execution-handoff v1"
     assert_includes @component, "one replayable target ledger and human-first handoff"
     assert_includes @component, "current-head closeout gates"
