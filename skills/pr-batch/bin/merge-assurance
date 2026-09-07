@@ -236,7 +236,7 @@ module MergeAssurance
   )
     safe_context = context.is_a?(Hash) ? context : {}
     validate_context(context, failures)
-    validate_ci(ci_result, safe_context, trusted_ci_policy, now, failures)
+    validate_ci(ci_result, safe_context, trusted_ci_policy, now, failures, autonomous_result:)
     if selected_hosted_ci_receipts
       validate_selected_hosted_ci(
         selected_hosted_ci_receipts, safe_context, now, failures
@@ -387,7 +387,7 @@ module MergeAssurance
     end
   end
 
-  def validate_ci(ci_result, context, trusted_ci_policy, now, failures)
+  def validate_ci(ci_result, context, trusted_ci_policy, now, failures, autonomous_result:)
     unless ci_result.is_a?(Hash)
       failures << "ci_result must be an object"
       return
@@ -398,7 +398,8 @@ module MergeAssurance
     failures << "ci_result host binding mismatch" unless ci_result.dig("context", "host") == context["host"]
     failures << "ci_result repo binding mismatch" unless ci_result["repo"] == context["repo"]
     failures << "ci_result PR binding mismatch" unless ci_result["pr"] == context["pr"]
-    failures << "ci_result base binding mismatch" unless ci_result["base"] == context["base"]
+    failures << "ci_result base binding mismatch" unless
+      ci_base_matches_current_integration?(ci_result["base"], context, autonomous_result)
     failures << "ci_result diff-base binding mismatch" unless
       ci_result["diff_base_sha"] == context["diff_base_sha"]
     failures << "ci_result diff-identity binding mismatch" unless
@@ -605,6 +606,20 @@ module MergeAssurance
     else
       "READY"
     end
+  end
+
+  def ci_base_matches_current_integration?(ci_base, context, autonomous_result)
+    return true if ci_base == context["base"]
+    return false unless autonomous_result.is_a?(Hash) && valid_current_integration_context?(context)
+
+    integration = autonomous_result["current_integration"]
+    integration_failures = []
+    validate_current_integration(integration, context, integration_failures)
+    return false unless integration_failures.empty? && integration.dig("reuse", "decision") == "reuse-exact-head"
+
+    # CI keeps the provider's recorded PR base. Only validated exact-head reuse
+    # bridges that base to the current candidate; policy authentication is unchanged.
+    ci_base == { "ref" => context.dig("base", "ref"), "sha" => integration["recorded_base_sha"] }
   end
 
   def authenticate_ci_policy(ci_policy, trusted_ci_policy, context, failures)

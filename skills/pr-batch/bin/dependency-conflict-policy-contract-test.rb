@@ -1,13 +1,15 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
 
 class DependencyConflictPolicyContractTest < Minitest::Test
   def read(path)
-    File.read(File.join(ROOT, path), encoding: "UTF-8")
+    SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
   end
 
   def test_canonical_policy_preserves_semantic_ordering_and_advisory_overlap
