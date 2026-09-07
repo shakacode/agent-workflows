@@ -169,8 +169,11 @@ running, blocked, or awaiting a decision.
 ### [`$pr-walkthrough`](../skills/pr-walkthrough/SKILL.md)
 
 Use `$pr-walkthrough` when a human wants to understand a PR before deciding on
-it. The agent explains one conceptual change at a time—problem, rationale,
-design, risks, and validation—and pauses for questions between sections.
+it. A direct chat request uses live, read-only, one-concept-at-a-time exploration.
+The agent prepares the complete exact-diff map first. When a recorded `ask`
+workflow selects publication, or the user explicitly requests published-review
+mode with comment authority, it publishes separately replyable GitHub threads
+for asynchronous discussion under the skill's publication contract.
 
 ### [`$close-batch`](../skills/close-batch/SKILL.md)
 

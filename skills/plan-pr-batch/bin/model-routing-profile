@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+
+module ModelRoutingProfile
+  PATH = File.expand_path("../references/model-routing-profiles.json", __dir__)
+
+  module_function
+
+  def resolve(role, profile = nil)
+    data = JSON.parse(File.read(PATH))
+    profile ||= data.fetch("default_codex_profile")
+    selected = data.fetch("profiles").fetch(profile)
+    preference = selected.fetch("routes").fetch(role)
+    {
+      "schema" => "model-routing-preference-v1", "profile" => profile,
+      "status" => selected.fetch("status"), "advisory" => true, "role" => role,
+      "preference" => preference,
+      "observed" => { "host" => "UNKNOWN", "model" => "UNKNOWN", "effort" => "UNKNOWN" },
+      "fallback" => "Use the closest host-supported route or runtime default; record it honestly. Route availability alone never blocks work.",
+      "qualification" => "Independent role, current-head scope and evidence quality remain mandatory."
+    }
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  begin
+    options = {}
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: model-routing-profile --role ROLE [--profile astra-pilot-v1]"
+      opts.on("--role ROLE") { |value| options[:role] = value }
+      opts.on("--profile PROFILE") { |value| options[:profile] = value }
+    end
+    parser.parse!
+    raise ArgumentError, parser.to_s unless ARGV.empty? && options[:role]
+
+    puts JSON.pretty_generate(ModelRoutingProfile.resolve(options[:role], options[:profile]))
+  rescue KeyError, ArgumentError, OptionParser::ParseError => e
+    warn e.message
+    exit 1
+  end
+end
