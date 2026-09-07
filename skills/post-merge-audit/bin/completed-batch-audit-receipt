@@ -1576,7 +1576,8 @@ module CompletedBatchAuditReceipt
     port = match[:port] && Integer(match[:port], 10)
     raise ArgumentError, "target host port is invalid" if port && !(1..65_535).cover?(port)
 
-    port && port != 443 ? "#{name}:#{port}" : name
+    authority = port && port != 443 ? "#{name}:#{port}" : name
+    CloseoutEvidenceReplay.normalize_github_host(authority) || raise(ArgumentError, "target host is invalid")
   end
 
   def marker_fields(marker)

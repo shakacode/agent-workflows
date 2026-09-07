@@ -363,11 +363,11 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     }
   end
 
-  def qa_v2_evidence(head_sha:, user_visible_ui_change:)
+  def qa_v2_evidence(head_sha:, user_visible_ui_change:, github_host: "github.com")
     ui_change = user_visible_ui_change == "yes"
     destination = ui_change ? "github_pr" : "not_applicable"
     visual_evidence = if ui_change
-                        "durable: before and after https://github.com/shakacode/hichee/pull/10049#visual"
+                        "durable: before and after https://#{github_host}/shakacode/hichee/pull/10049#visual"
                       else
                         "not applicable: no user-visible UI change"
                       end
@@ -1940,6 +1940,58 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal baseline.fetch("snapshot_digest"), replay.fetch("snapshot_digest")
   end
 
+  def test_validated_target_rejects_hosts_that_evidence_replay_cannot_normalize
+    target = {
+      "host" => "github.example.test",
+      "repo" => "shakacode/hichee",
+      "type" => "pull_request",
+      "number" => 10_049
+    }
+
+    assert_nil CompletedBatchPublicationPreflight.validated_target(target.merge("host" => "-github.example.test"))
+    assert_nil CompletedBatchPublicationPreflight.validated_target(
+      target.merge("host" => "#{'a' * 64}.example.test")
+    )
+    assert_equal(
+      target.merge("host" => "github.example.test:8443"),
+      CompletedBatchPublicationPreflight.validated_target(target.merge("host" => "GITHUB.EXAMPLE.TEST:8443"))
+    )
+  end
+
+  def test_validated_target_canonicalizes_www_github_alias_before_api_snapshot_verification
+    target = {
+      "host" => "www.github.com",
+      "repo" => "shakacode/hichee",
+      "type" => "pull_request",
+      "number" => 10_049
+    }
+    normalized = CompletedBatchPublicationPreflight.validated_target(target)
+    payload = {
+      "number" => 10_049,
+      "html_url" => "https://github.com/shakacode/hichee/pull/10049",
+      "state" => "closed",
+      "merged_at" => "2026-08-24T00:41:33Z",
+      "head" => { "sha" => "a" * 40 }
+    }
+
+    assert_equal "github.com", normalized.fetch("host")
+    assert CompletedBatchPublicationPreflight.verified_target_api_snapshot(payload, normalized)
+  end
+
+  def test_waiver_reference_accepts_www_alias_for_canonical_public_target
+    target = CompletedBatchPublicationPreflight.validated_target(
+      "host" => "www.github.com",
+      "repo" => "shakacode/hichee",
+      "type" => "pull_request",
+      "number" => 10_049
+    )
+    url = "https://www.github.com/shakacode/hichee/pull/10049#issuecomment-5000000000"
+
+    reference = CompletedBatchPublicationPreflight.waiver_comment_reference(url, target)
+
+    assert_equal({ "url" => url, "comment_id" => 5_000_000_000 }, reference)
+  end
+
   def test_receipt_binds_the_exact_raw_source_input
     input = fixture("completed-batch-publication-hichee-terminal.json")
     result = assess_input(input)
@@ -2170,6 +2222,33 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute result.fetch("eligible")
     assert_includes result.fetch("blockers"),
                     "shakacode/hichee#pull_request:10049 QA UI classification contradicts trusted input"
+  end
+
+  def test_enterprise_server_visual_evidence_uses_the_trusted_target_host
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    target_number = 10_049
+    github_host = "github.example.test"
+    input.fetch("expected_targets").find { |row| row.fetch("number") == target_number }["host"] = github_host
+    input.fetch("target_snapshots").find do |row|
+      row.dig("target", "number") == target_number
+    end.fetch("target")["host"] = github_host
+    qa = input.fetch("qa_evidence").find { |row| row.dig("target", "number") == target_number }
+    qa.fetch("target")["host"] = github_host
+    qa["user_visible_ui_change"] = "yes"
+    head_sha = input.fetch("target_snapshots").find do |row|
+      row.dig("target", "number") == target_number
+    end.fetch("head_sha")
+    qa["evidence"] = qa_v2_evidence(head_sha:, user_visible_ui_change: "yes", github_host:)
+    lane = input.dig("coordination_status", "batches", 0, "lanes").find do |row|
+      row.fetch("targets") == [target_number.to_s]
+    end
+    lane["pr_url"] = lane.fetch("pr_url").sub("github.com", github_host)
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    snapshot = result.dig("snapshot", "qa").find { |row| row.dig("target", "number") == target_number }
+    assert_equal "SATISFIED", snapshot.fetch("verdict")
   end
 
   def test_non_ui_v1_remains_eligible_and_v2_must_not_self_classify_as_ui
@@ -2654,6 +2733,21 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute result.fetch("eligible")
     assert_includes result.fetch("blockers"),
                     "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable"
+  end
+
+  def test_authenticated_waiver_accepts_www_evidence_url_with_canonical_api_url
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    row = input.fetch("qa_evidence").find { |candidate| candidate.key?("maintainer_waiver") }
+    canonical_url = row.dig("maintainer_waiver", "url")
+    evidence_url = canonical_url.sub("https://github.com", "https://www.github.com")
+    row["evidence"] = row.fetch("evidence").sub(canonical_url, evidence_url)
+    row.fetch("maintainer_waiver")["url"] = evidence_url
+    comment = valid_waiver_comment(row, input)
+    comment["html_url"] = canonical_url
+
+    result = assess_input(input, waiver_verifier: ->(**_keywords) { comment })
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
   end
 
   def test_forged_nonexistent_maintainer_waiver_comment_blocks

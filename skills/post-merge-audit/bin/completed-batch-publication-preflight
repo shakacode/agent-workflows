@@ -1167,7 +1167,8 @@ module CompletedBatchPublicationPreflight
       replay = CloseoutEvidenceReplay.replay(
         evidence,
         expected_head_sha: head_sha,
-        require_visual_evidence_v2: user_visible_ui_change == "yes"
+        require_visual_evidence_v2: user_visible_ui_change == "yes",
+        github_host: target.fetch("host")
       )
       qa = replay.fetch("qa_evidence")
       verdict = qa.fetch("verdict")
@@ -1274,7 +1275,8 @@ module CompletedBatchPublicationPreflight
     uri = URI.parse(value.to_s)
     return unless uri.is_a?(URI::HTTPS) && uri.host && uri.query.nil? && uri.userinfo.nil?
 
-    host = uri.port == 443 ? uri.host.downcase : "#{uri.host.downcase}:#{uri.port}"
+    authority = uri.port == 443 ? uri.host : "#{uri.host}:#{uri.port}"
+    host = CloseoutEvidenceReplay.normalize_github_host(authority)
     return unless host == target.fetch("host")
 
     path = uri.path.match(%r{\A/([^/\s]+)/([^/\s]+)/(pull|issues)/(\d+)\z})
@@ -1302,7 +1304,9 @@ module CompletedBatchPublicationPreflight
   )
     return unless comment.is_a?(Hash)
     return unless Integer(comment["id"], exception: false) == reference.fetch("comment_id")
-    return unless comment["html_url"] == reference.fetch("url")
+
+    api_reference = waiver_comment_reference(comment["html_url"], target)
+    return unless api_reference && api_reference.fetch("comment_id") == reference.fetch("comment_id")
     return unless issue_api_url_matches_target?(comment["issue_url"], target)
     return unless valid_timestamp?(comment["created_at"]) && valid_timestamp?(comment["updated_at"])
 
@@ -1395,11 +1399,11 @@ module CompletedBatchPublicationPreflight
     return unless value.is_a?(Hash)
     return unless value.keys.map(&:to_s).sort == %w[host number repo type]
 
-    host = value["host"].to_s.downcase
+    host = CloseoutEvidenceReplay.normalize_github_host(value["host"].to_s)
     repo = value["repo"].to_s
     type = value["type"].to_s
     number = Integer(value["number"], exception: false)
-    return unless host.match?(/\A[A-Za-z0-9.-]+(?::\d+)?\z/)
+    return unless host
     return unless repo.match?(%r{\A[^/\s]+/[^/\s]+\z})
     return unless %w[pull_request issue].include?(type) && number&.positive?
 
