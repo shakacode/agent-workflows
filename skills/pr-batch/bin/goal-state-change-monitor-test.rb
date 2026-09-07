@@ -119,6 +119,9 @@ class GoalStateChangeMonitorTest < Minitest::Test
     assert_includes normalized_contract, "A moved head invalidates every SHA-bound code or review artifact"
     assert_includes normalized_contract, "Never fabricate missing historical identity"
     assert_includes normalized_contract, "externally owned worktrees"
+    assert_includes normalized_contract, "The goal monitor does not classify external review or coordination artifacts"
+    assert_includes normalized_contract, "The goal monitor cannot prove a clean task review"
+    assert_includes normalized_contract, "It never deletes persistent monitor state"
     assert_includes normalized_contract, "Codex and Claude apply this same identity and retention contract"
   end
 
@@ -199,15 +202,22 @@ class GoalStateChangeMonitorTest < Minitest::Test
     assert_equal 0, receipt.fetch("missed_transitions")
   end
 
-  def test_moved_head_invalidates_code_state_without_invalidating_plan_bound_monitor_evidence
+  def test_monitor_rejects_external_artifact_summaries_without_authoritative_readers
     Dir.mktmpdir do |directory|
       state_path = File.join(directory, "monitor.json")
+      review_path = File.join(directory, "review-package.json")
+      coordination_path = File.join(directory, "coordination-receipt.json")
       head_a = "a" * 40
       head_b = "b" * 40
+      File.write(review_path, JSON.generate("head_sha" => head_a, "plan_identity" => "foreign-plan"))
+      File.write(
+        coordination_path,
+        JSON.generate("repository_target" => "foreign/repository:issue:1", "batch_id" => "foreign-batch")
+      )
       artifact_boundary = {
         "contract" => "task-local-artifact-boundary",
         "version" => 1,
-        "current_head_sha" => head_a,
+        "current_head_sha" => head_b,
         "coordination_identity" => {
           "repository_target" => "shakacode/agent-workflows:issue:391",
           "batch_id" => "aw-c-391-plan-bound-state",
@@ -216,13 +226,15 @@ class GoalStateChangeMonitorTest < Minitest::Test
         "sha_bound_artifacts" => [
           {
             "artifact_id" => "review-package-round-0",
+            "artifact_path" => review_path,
             "plan_identity" => "plan-a",
-            "head_sha" => head_a
+            "head_sha" => head_b
           }
         ],
         "coordination_receipts" => [
           {
             "artifact_id" => "claim-receipt",
+            "artifact_path" => coordination_path,
             "repository_target" => "shakacode/agent-workflows:issue:391",
             "batch_id" => "aw-c-391-plan-bound-state",
             "lane_id" => "aw391-implementation",
@@ -234,150 +246,56 @@ class GoalStateChangeMonitorTest < Minitest::Test
           }
         ]
       }
-      initial = observation("artifact_boundary" => artifact_boundary)
-      baseline, baseline_stderr, baseline_status = run_helper(state_path, initial)
-      assert baseline_status.success?, baseline_stderr
-      assert_equal false, baseline.fetch("wake_parent")
-      assert_equal "plan-a", baseline.fetch("plan_identity")
-      assert_equal(
-        {
-          "current_head_sha" => head_a,
-          "sha_bound_artifacts" => [
-            { "artifact_id" => "review-package-round-0", "status" => "reusable", "reason" => "head-match" }
-          ],
-          "coordination_receipts" => [
-            { "artifact_id" => "claim-receipt", "status" => "reusable" }
-          ]
-        },
-        baseline.fetch("artifact_boundary")
-      )
-
-      changed_state = { "head" => head_b, "pending" => [] }
       decision, stderr, status = run_helper(
         state_path,
         observation(
-          "blocker_state" => changed_state,
-          "artifact_boundary" => artifact_boundary.merge("current_head_sha" => head_b),
-          "probe_sequence" => 1,
-          "observed_at" => "2026-08-09T00:15:00Z"
+          "blocker_state" => { "head" => head_b, "pending" => [] },
+          "artifact_boundary" => artifact_boundary
         )
       )
 
-      assert status.success?, stderr
-      assert_equal "wake-state-change", decision.fetch("action")
-      assert decision.fetch("wake_parent")
-      assert_equal "plan-a", decision.fetch("plan_identity")
-      assert_equal(
-        [
-          { "artifact_id" => "review-package-round-0", "status" => "invalidated", "reason" => "head-moved" }
-        ],
-        decision.dig("artifact_boundary", "sha_bound_artifacts")
-      )
-      assert_equal(
-        [{ "artifact_id" => "claim-receipt", "status" => "reusable" }],
-        decision.dig("artifact_boundary", "coordination_receipts")
-      )
-      assert_equal(
-        {
-          "changes" => [
-            { "path" => "/head", "previous" => head_a, "current" => head_b },
-            { "path" => "/pending", "previous" => ["validate"], "current" => [] }
-          ]
-        },
-        decision.fetch("state_delta")
-      )
-      persisted = JSON.parse(File.read(state_path))
-      assert_equal "plan-a", persisted.fetch("plan_identity")
-      assert_equal "thread-393:checks", persisted.fetch("monitor_id")
-      assert_equal({ "model_calls" => 0, "tokens" => 0 }, persisted.fetch("usage"))
+      assert_nil decision
+      refute status.success?
+      assert_includes stderr, '"reason":"external-artifact-authority-required"'
+      refute_path_exists state_path
     end
   end
 
-  def test_clean_review_cleanup_removes_only_owned_settled_monitor_scratch
+  def test_cleanup_refuses_copied_tracked_state_without_authoritative_closeout
     Dir.mktmpdir do |directory|
-      scratch_directory = File.join(directory, "scratch")
-      state_path = File.join(scratch_directory, "monitor.json")
-      durable_receipt = File.join(directory, "durable", "claim-receipt.json")
-      repository = File.join(directory, "repository")
-      external_worktree = File.join(directory, "external-worktree")
-      FileUtils.mkdir_p(File.dirname(durable_receipt))
-      FileUtils.mkdir_p(external_worktree)
-      File.write(durable_receipt, JSON.generate("contract" => "claim-receipt-v1"))
-      File.write(File.join(external_worktree, "owned-by-another-run"), "preserve\n")
-      system("git", "init", "--quiet", repository) || raise("git init failed")
-      File.write(File.join(repository, "tracked.txt"), "durable history\n")
-      system("git", "-C", repository, "add", "tracked.txt") || raise("git add failed")
-      system(
-        "git", "-C", repository, "-c", "user.name=Test", "-c", "user.email=test@example.com",
-        "commit", "--quiet", "-m", "durable receipt"
-      ) || raise("git commit failed")
-      git_head, git_head_status = Open3.capture2("git", "-C", repository, "rev-parse", "HEAD")
-      assert git_head_status.success?
-      git_head = git_head.strip
-
+      owned_state_path = File.join(directory, "owned", "monitor.json")
       _terminal, terminal_stderr, terminal_status = run_helper(
-        state_path,
+        owned_state_path,
         observation("task_status" => "terminal")
       )
       assert terminal_status.success?, terminal_stderr
+      owned_state = File.binread(owned_state_path)
 
-      cleanup, cleanup_stderr, cleanup_status = run_cleanup(state_path, "plan-a")
+      external_repository = File.join(directory, "external-repository")
+      copied_state_path = File.join(external_repository, "monitor.json")
+      system("git", "init", "--quiet", external_repository) || raise("git init failed")
+      File.binwrite(copied_state_path, owned_state)
+      system("git", "-C", external_repository, "add", "monitor.json") || raise("git add failed")
+      system(
+        "git", "-C", external_repository, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "--quiet", "-m", "track copied state"
+      ) || raise("git commit failed")
 
-      assert cleanup_status.success?, cleanup_stderr
-      assert_equal "removed-owned-monitor-scratch", cleanup.fetch("action")
-      assert_equal ["#{File.realpath(scratch_directory)}/monitor.json"], cleanup.fetch("removed_paths")
-      refute_path_exists state_path
-      assert_path_exists durable_receipt
-      current_git_head, current_git_status = Open3.capture2("git", "-C", repository, "rev-parse", "HEAD")
-      assert current_git_status.success?
-      assert_equal git_head, current_git_head.strip
-      assert_path_exists File.join(external_worktree, "owned-by-another-run")
+      cleanup, cleanup_stderr, cleanup_status = run_cleanup(copied_state_path, "plan-a")
 
-      foreign_state_path = File.join(scratch_directory, "foreign.json")
-      _foreign, foreign_stderr, foreign_status = run_helper(
-        foreign_state_path,
-        observation("task_status" => "terminal")
-      )
-      assert foreign_status.success?, foreign_stderr
-      foreign_before = File.read(foreign_state_path)
-      foreign_cleanup, foreign_cleanup_stderr, foreign_cleanup_status = run_cleanup(foreign_state_path, "plan-b")
-      assert_nil foreign_cleanup
-      refute foreign_cleanup_status.success?
-      assert_includes foreign_cleanup_stderr, '"reason":"plan-identity-collision"'
-      assert_equal foreign_before, File.read(foreign_state_path)
-
-      pending_state_path = File.join(scratch_directory, "pending.json")
-      _baseline, baseline_stderr, baseline_status = run_helper(pending_state_path, observation)
-      assert baseline_status.success?, baseline_stderr
-      _wake, wake_stderr, wake_status = run_helper(
-        pending_state_path,
-        observation(
-          "blocker_state" => { "head" => "b" * 40, "pending" => [] },
-          "probe_sequence" => 1,
-          "observed_at" => "2026-08-09T00:15:00Z"
-        )
-      )
-      assert wake_status.success?, wake_stderr
-      pending_before = File.read(pending_state_path)
-      pending_cleanup, pending_cleanup_stderr, pending_cleanup_status = run_cleanup(pending_state_path, "plan-a")
-      assert_nil pending_cleanup
-      refute pending_cleanup_status.success?
-      assert_includes pending_cleanup_stderr, '"reason":"cleanup-unsettled-wake"'
-      assert_equal pending_before, File.read(pending_state_path)
-
-      active_state_path = File.join(scratch_directory, "active.json")
-      _active, active_stderr, active_status = run_helper(active_state_path, observation)
-      assert active_status.success?, active_stderr
-      active_before = File.read(active_state_path)
-      active_cleanup, active_cleanup_stderr, active_cleanup_status = run_cleanup(active_state_path, "plan-a")
-      assert_nil active_cleanup
-      refute active_cleanup_status.success?
-      assert_includes active_cleanup_stderr, '"reason":"cleanup-monitor-not-stopped"'
-      assert_equal active_before, File.read(active_state_path)
+      assert_nil cleanup
+      refute cleanup_status.success?
+      assert_includes cleanup_stderr, '"reason":"cleanup-authority-required"'
+      assert_equal owned_state, File.binread(owned_state_path)
+      assert_equal owned_state, File.binread(copied_state_path)
+      refute_path_exists "#{copied_state_path}.lock"
+      git_status, git_status_result = Open3.capture2("git", "-C", external_repository, "status", "--porcelain")
+      assert git_status_result.success?
+      assert_empty git_status
     end
   end
 
-  def test_malformed_artifact_boundary_fails_before_monitor_state_mutation
+  def test_malformed_external_artifact_boundary_also_requires_authoritative_reader
     Dir.mktmpdir do |directory|
       state_path = File.join(directory, "monitor.json")
 
@@ -388,7 +306,7 @@ class GoalStateChangeMonitorTest < Minitest::Test
 
       assert_nil decision
       refute status.success?
-      assert_includes stderr, '"reason":"artifact-boundary-object-required"'
+      assert_includes stderr, '"reason":"external-artifact-authority-required"'
       refute_path_exists state_path
     end
   end

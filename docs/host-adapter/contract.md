@@ -151,7 +151,7 @@ weaken the existing batch, lane, coordination, or task-review schemas.
 | Task briefs and worker reports | Durable evidence | `task-review-loop` v1 binds batch, lane, plan id/digest, and task id; the brief and report digests bind their exact contents, while reports also bind base/head SHAs and commits. A changed brief or head invalidates the dependent report/package, not the coordination history. |
 | Exact-diff review packages, finding artifacts, and round checkpoints | Durable evidence | Bind the full task-review identity, brief/report/package digests, exact base/head SHAs, actors, round chain, artifact byte digests, schema/version, and coverage. Recapture the exact diff and validate the current head before every review or reuse. |
 | Pause and continue handoffs | Durable restart hints, never authority | Batch/lane, repository-qualified target, actor/thread, worktree, branch, head, claim generation, and live-state references are sufficient because resume treats the handoff as stale evidence and revalidates authoritative artifacts before work. Non-batch handoffs likewise require live repository and process checks. |
-| Goal monitor state, decisions, wake IDs, acknowledgements, and handoffs | Disposable scratch until terminal enqueue/acknowledgement is settled | Bind the adapter's exact plan identity and stable repository/task-scoped monitor id. The reducer binds wake IDs and every emitted reusable artifact to that plan; `blocker_state` fingerprints code/review facts such as head SHA. |
+| Goal monitor state, decisions, wake IDs, acknowledgements, and handoffs | Disposable scratch until terminal enqueue/acknowledgement is settled | Bind the adapter's exact plan identity and stable repository/task-scoped monitor id. The reducer binds wake IDs and every emitted monitor artifact to that plan; `blocker_state` fingerprints code/review facts such as head SHA. |
 | Generated prompts and scratch evidence | Disposable scratch unless admitted to a versioned artifact above | Filenames and task numbers confer no identity. Recreate prompt-only context from the accepted brief; a diff, finding file, or other evidence becomes reusable only through its owning schema, exact digest, and identity checks. |
 
 Validate the applicable identity before resume, dispatch, edit, review,
@@ -167,17 +167,18 @@ evidence whose repository, batch/lane, ownership generation, schema, and
 timestamps still validate; plan-bound monitor state instead reports the head
 change through its blocker-state delta and reruns the current-head gates.
 
-For a deterministic executable check, an observation may carry a
-`task-local-artifact-boundary` v1 object. Its `current_head_sha` must equal the
-full SHA in `blocker_state.head`. Each SHA-bound artifact supplies an artifact
-id, exact plan identity, and captured head; the reducer reports it as
-`reusable/head-match` only at that head and as `invalidated/head-moved`
-otherwise. The boundary separately supplies the expected repository target,
-batch, and lane for coordination receipts; each receipt must also retain its
-holder, positive generation, instance id, schema, and observation time. A valid
-coordination receipt remains `reusable` across a code-head move because its
-ownership identity does not depend on that SHA. Invalid or foreign identity
-fails before monitor-state mutation.
+The goal monitor does not classify external review or coordination artifacts
+from caller-supplied summaries. It rejects an `artifact_boundary` observation
+with `external-artifact-authority-required` before monitor-state mutation.
+Review reuse belongs to the `task-review-loop` controller and reducer: the
+controller captures repository `HEAD`, while the reducer opens the referenced
+exact diff and findings, verifies byte counts and digests, and binds the full
+task identity and expected current head. A moved head therefore makes the
+review package stale and requires recapture. Coordination reuse remains an
+independent live-backend check of the repository-qualified target, batch/lane,
+holder, generation, instance, schema, and timestamps; a code-head move alone
+does not invalidate that ownership history. Neither authority may be replaced
+with a monitor summary.
 
 Cleanup is allowlisted, not directory-wide. Only after a clean final task review
 or closeout may the adapter remove disposable scratch whose exact path and plan
@@ -186,15 +187,17 @@ history, retained review rounds, unresolved wake delivery, and externally owned
 worktrees. An identity failure preserves the artifact for reconciliation rather
 than deleting it.
 
-The monitor exposes the narrow executable cleanup operation
-`--cleanup-after-clean-review PLAN_IDENTITY` for its own state path. The option
-is the adapter's explicit clean-terminal-review signal; the reducer then binds
-the regular file, validates the complete persisted state and exact plan
-identity under the monitor lock, and removes only that file. It refuses foreign
-identity, an unsettled `pending_wake`, a monitor not yet stopped, malformed
-state, or a path that changes after binding. It never accepts a directory or a
-caller-supplied deletion list, so durable receipts, Git history, retained review
-rounds, and external worktrees remain outside its deletion surface.
+The goal monitor cannot prove a clean task review, its repository-derived
+current head, or ownership of an arbitrary caller-supplied state path. It never
+deletes persistent monitor state. The compatibility option
+`--cleanup-after-clean-review` fails before filesystem or lock access with
+`cleanup-authority-required`; this preserves copied, tracked, foreign, and
+externally located state without leaving a sibling lock. Cleanup belongs to the
+adapter that created an allowlisted private scratch root. That adapter may
+remove only its own disposable files after the authoritative task-review or
+closeout reducer returns a clean terminal decision for the same full task
+identity and current head; it must retain pending wake delivery, durable
+receipts, Git history, review rounds, and external worktrees.
 
 ## Scheduled Monitoring and Planning-Chat Lifecycle
 
