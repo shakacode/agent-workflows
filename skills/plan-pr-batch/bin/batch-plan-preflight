@@ -172,7 +172,7 @@ module BatchPlanPreflight
     return [nil, :nonregular] unless stat.file?
     return [nil, :oversized] if stat.size > TRUSTED_PLAN_MAX_BYTES
 
-    contents = file.read(TRUSTED_PLAN_MAX_BYTES + 1)
+    contents = file.read(TRUSTED_PLAN_MAX_BYTES + 1) || +""
     return [nil, :oversized] if contents.bytesize > TRUSTED_PLAN_MAX_BYTES
 
     contents.force_encoding(Encoding::UTF_8)

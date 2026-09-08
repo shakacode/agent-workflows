@@ -1207,7 +1207,7 @@ class BatchPlanPreflightTest < Minitest::Test
       '"batch_id":"batch-plan-1"',
       '"batch_id":"batch-plan-1","batch_id":"shadow-batch"'
     )
-    outcomes = ["{", duplicate_key_json].map do |artifact_json|
+    outcomes = ["", "{", duplicate_key_json].map do |artifact_json|
       input = input_for
       enable_token_budget(input, candidate)
       File.write(input.dig("plan", "token_budget_anchor", "trusted_plan_path"), artifact_json)
@@ -1217,7 +1217,7 @@ class BatchPlanPreflightTest < Minitest::Test
     end
 
     assert_equal(
-      Array.new(2) { [false, ["token-budget-trusted-plan-malformed"]] },
+      Array.new(3) { [false, ["token-budget-trusted-plan-malformed"]] },
       outcomes
     )
   end

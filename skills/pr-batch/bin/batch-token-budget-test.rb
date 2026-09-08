@@ -6808,6 +6808,68 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_rejected_reconciliation_after_override_expiry_preserves_state_and_allows_recovery
+    with_state do |state_path|
+      initialize_budget(state_path)
+      override = budget_override(
+        state_path,
+        id: "gap-expiry",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 800,
+        expires_at: "2026-08-12T12:05:00Z"
+      )
+      override_result, override_stderr, override_status = run_helper(
+        state_path,
+        command("override", "override" => override)
+      )
+      assert override_status.success?, override_stderr
+      assert_equal "overridden", override_result.fetch("status")
+
+      receipt, receipt_ref, receipt_digest = real_descendants_usage_receipt(state_path)
+      gap_receipt = usage_window(
+        receipt,
+        from: "2026-08-12T11:00:05Z",
+        to: "2026-08-12T12:06:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      gap_receipt, gap_ref, gap_digest = receipt_artifact(state_path, gap_receipt, "gap-after-expiry")
+      state_before = File.binread(state_path)
+
+      blocked, blocked_stderr, blocked_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T12:06:00Z",
+          "usage_receipt" => gap_receipt,
+          "usage_receipt_ref" => gap_ref,
+          "usage_receipt_digest" => gap_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert blocked_status.success?, blocked_stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-window-gap", blocked.fetch("reason")
+      assert_equal 800, blocked.dig("totals", "lanes", "lane-a", "limit_tokens")
+      assert_equal state_before, File.binread(state_path)
+
+      recovered, recovered_stderr, recovered_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+      assert recovered_status.success?, recovered_stderr
+      assert_equal "reconciled", recovered.fetch("status")
+    end
+  end
+
   def test_invalid_reservation_after_override_expiry_reports_the_unchanged_persisted_state
     with_state do |state_path|
       initialize_budget(state_path)
