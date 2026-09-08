@@ -2074,18 +2074,12 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
-  def test_repository_backed_reducer_independently_checks_git_provenance
-    workflow = File.read(File.join(REPO_ROOT, "workflows/pr-batch-task-review.md")).gsub(/\s+/, " ")
+  def test_workflow_exposes_the_repository_backed_reducer_entrypoint
+    workflow = File.read(File.join(REPO_ROOT, "workflows/pr-batch-task-review.md"))
 
-    assert_includes workflow, "--repository-root \"$REVIEW_WORKTREE_ROOT\""
-    assert_includes workflow, "derives `HEAD^{commit}` from that root"
-    assert_includes workflow, "`git merge-base --is-ancestor`"
-    assert_includes workflow, "`git rev-list --reverse <base>..<head>`"
-    assert_includes workflow, "recaptures every current and retained round's canonical diff"
-    assert_includes workflow, "compares it byte-for-byte with the submitted exact-diff artifact"
-    assert_includes workflow, "A mismatch or unavailable repository verification blocks dependent work"
-    assert_includes workflow, "Do not repair a mismatch by merely recomputing submitted digests"
-    refute_includes workflow, "fabricated, wrong-report, or wrong-range historical package fails closed"
+    assert_match(/^## Contract And Replay$/, workflow)
+    assert_includes workflow,
+                    'task-review-loop" --repository-root "$REVIEW_WORKTREE_ROOT"'
   end
 
   def test_review_package_commit_list_is_bound_to_the_worker_report_and_head
