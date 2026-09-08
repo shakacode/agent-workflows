@@ -2190,6 +2190,18 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_target_host_validation_canonicalizes_public_www_alias_on_default_port
+    targets = CompletedBatchAuditReceipt.deterministic_targets(
+      [
+        { "host" => "WWW.GITHUB.COM:443", "repo" => "acme/widgets", "type" => "issue", "number" => 184 },
+        { "host" => "www.github.com:444", "repo" => "acme/widgets", "type" => "issue", "number" => 185 }
+      ]
+    )
+
+    assert_equal "github.com", targets.first.fetch("host")
+    assert_equal "www.github.com:444", targets.last.fetch("host")
+  end
+
   def test_readback_mutation_state_requires_positive_comment_id
     [nil, 0, -1, "not-an-id"].each do |comment_id|
       assert_raises(ArgumentError) do
