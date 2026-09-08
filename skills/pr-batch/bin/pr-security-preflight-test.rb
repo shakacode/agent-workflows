@@ -4069,6 +4069,106 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_checkout_binding_hashes_exceptional_tracked_paths_individually
+    tracked_contents = {
+      "line\nfeed.txt" => "trusted line feed\n",
+      "carriage\rreturn.txt" => "trusted carriage return\n",
+      '"leading-quote.txt' => "trusted leading quote\n"
+    }
+
+    Dir.mktmpdir("trusted-base-exceptional-paths") do |repo_root|
+      git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
+      tracked_contents.each do |path, content|
+        File.binwrite(File.join(repo_root.b, path.b), content)
+      end
+      git! "-C", repo_root, "add", "--", *tracked_contents.keys
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "trusted"
+      base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+
+      previous_executable = TrustedGitState.executable
+      previous_local_env_vars = TrustedGitState.local_env_vars
+      TrustedGitState.executable = REAL_GIT
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+        REAL_GIT,
+        unsetenv_others: true
+      )
+      operations = TrustedBaseHighRiskOperations.new
+
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      assert matches, error
+
+      tracked_contents.each do |path, content|
+        File.binwrite(File.join(repo_root.b, path.b), "dirty\n")
+        matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+        refute matches, path.inspect
+        assert_equal "trusted checkout has tracked working-tree changes", error, path.inspect
+        File.binwrite(File.join(repo_root.b, path.b), content)
+      end
+    ensure
+      TrustedGitState.executable = previous_executable if defined?(previous_executable)
+      TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    end
+  end
+
+  def test_checkout_binding_fails_closed_on_exceptional_path_hash_probe_faults
+    exceptional_path = "line\nfeed.txt"
+
+    Dir.mktmpdir("trusted-base-exceptional-path-probe") do |repo_root|
+      git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
+      File.binwrite(File.join(repo_root.b, exceptional_path.b), "trusted\n")
+      git! "-C", repo_root, "add", "--", exceptional_path
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "trusted"
+      base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+
+      previous_executable = TrustedGitState.executable
+      previous_local_env_vars = TrustedGitState.local_env_vars
+      TrustedGitState.executable = REAL_GIT
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+        REAL_GIT,
+        unsetenv_others: true
+      )
+      operations = TrustedBaseHighRiskOperations.new
+      expected_args = TRUSTED_CHECKOUT_CONFIG_ARGS + [
+        "-C", repo_root, "hash-object", "--no-filters", "--", exceptional_path
+      ]
+      test_cases = {
+        "fatal probe" => {
+          response: ["", "fatal: simulated exceptional path failure", TestCommandStatus.new(128)],
+          error: "trusted checkout working-tree state could not be verified: fatal: simulated exceptional path failure"
+        },
+        "malformed object id" => {
+          response: ["not-an-object-id\n", "", TestCommandStatus.new(0)],
+          error: "trusted checkout raw content probe returned malformed output"
+        },
+        "multiple object ids" => {
+          response: ["#{'a' * 40}\n#{'b' * 40}\n", "", TestCommandStatus.new(0)],
+          error: "trusted checkout raw content probe returned malformed output"
+        }
+      }
+
+      test_cases.each do |label, test_case|
+        calls = 0
+        matcher = lambda do |args|
+          next false unless args == expected_args
+
+          calls += 1
+          true
+        end
+        with_trusted_git_probe_fault(matcher, test_case.fetch(:response)) do
+          matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+          refute matches, label
+          assert_equal test_case.fetch(:error), error, label
+        end
+        assert_equal 1, calls, "#{label}: expected exact separate argv including --no-filters"
+      end
+    ensure
+      TrustedGitState.executable = previous_executable if defined?(previous_executable)
+      TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    end
+  end
+
   def test_checkout_binding_accepts_clean_initialized_gitlink_at_recorded_head
     with_clean_gitlink_checkout do |repo_root, submodule_root, base_sha, _submodule_sha, operations, marker|
       invocation_root, invocation_error = Dir.chdir(submodule_root) { operations.invocation_repository_root }

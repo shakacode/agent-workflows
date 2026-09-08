@@ -2296,16 +2296,27 @@ class TrustedBaseHighRiskOperations
       end
     end
 
-    paths = regular_entries.map { |entry| entry.fetch(:path) }
-    if paths.any? { |path| path.match?(/[\n\r]/) || path.start_with?('"') }
-      return [false, "trusted checkout has tracked paths the raw content probe cannot address"]
+    ordinary_entries, exceptional_entries = regular_entries.partition do |entry|
+      path = entry.fetch(:path)
+      !path.match?(/[\n\r]/) && !path.start_with?('"')
     end
 
-    oids, oids_error = raw_blob_oids(
-      root, "--stdin-paths", stdin_data: paths.map { |path| "#{path}\n" }.join, expected_count: paths.size
-    )
-    return [false, oids_error] if oids_error
-    return [false, TRACKED_WORKTREE_CHANGES] unless oids == regular_entries.map { |entry| entry.fetch(:oid) }
+    if ordinary_entries.any?
+      paths = ordinary_entries.map { |entry| entry.fetch(:path) }
+      oids, oids_error = raw_blob_oids(
+        root, "--stdin-paths", stdin_data: paths.map { |path| "#{path}\n" }.join, expected_count: paths.size
+      )
+      return [false, oids_error] if oids_error
+      return [false, TRACKED_WORKTREE_CHANGES] unless oids == ordinary_entries.map { |entry| entry.fetch(:oid) }
+    end
+
+    exceptional_entries.each do |entry|
+      oids, oids_error = raw_blob_oids(
+        root, "--", entry.fetch(:path), stdin_data: "", expected_count: 1
+      )
+      return [false, oids_error] if oids_error
+      return [false, TRACKED_WORKTREE_CHANGES] unless oids == [entry.fetch(:oid)]
+    end
 
     [true, nil]
   end
