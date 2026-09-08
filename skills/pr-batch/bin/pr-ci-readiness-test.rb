@@ -257,6 +257,62 @@ class PrCiReadinessTest < Minitest::Test
     assert_equal "UNKNOWN", out["verdict"]
   end
 
+  def test_draft_head_failure_does_not_block_integration_success
+    out = PrCiReadiness.assess(pr_number: 1, required_used: false, rows: [
+                                 { "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "fail" },
+                                 { "name" => "validate", "bucket" => "pass" }
+                               ])
+    assert_equal "READY", out["verdict"]
+  end
+
+  def test_only_draft_head_rows_is_unknown
+    out = PrCiReadiness.assess(pr_number: 1, required_used: false,
+                               rows: [{ "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "pass" }])
+    assert_equal "UNKNOWN", out["verdict"]
+  end
+
+  def test_invalid_draft_head_row_still_fails_closed
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
+                                 { "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "future-state" },
+                                 { "workflow" => "Validate", "name" => "validate", "bucket" => "pass" }
+                               ])
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ['validate (draft head) (bucket: "future-state")'], out["invalid"]
+  end
+
+  def test_evidence_scopes_preserve_draft_named_rows
+    scope = PrCiReadiness.evidence_scope(
+      source: "github.actions.exact_head", head_sha: "a" * 40, complete: true,
+      rows: [
+        { "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "fail" },
+        { "workflow" => "Validate", "name" => "validate (draft head)" },
+        { "workflow" => "Security", "name" => "validate (draft head)", "bucket" => "fail" },
+        { "workflow" => "Validate", "name" => "validate (draft head extra)", "bucket" => "fail" }
+      ],
+      checked_at: "2026-09-02T00:00:00Z"
+    )
+    identities = scope["rows"].map { |row| [row["workflow"], row["name"]] }
+    assert_equal "UNKNOWN", scope["state"]
+    assert_equal [
+      ["Validate", "validate (draft head)"],
+      ["Validate", "validate (draft head)"],
+      ["Security", "validate (draft head)"],
+      ["Validate", "validate (draft head extra)"]
+    ], identities
+  end
+
+  def test_draft_head_actions_filter_removes_the_validate_run_and_job
+    base = "https://github.com/owner/repo/actions/runs"
+    rows = [
+      { "kind" => "run", "id" => 10, "name" => "Validate", "url" => "#{base}/10" },
+      { "kind" => "job", "id" => 11, "name" => "validate (draft head)", "url" => "#{base}/10/job/11" },
+      { "kind" => "run", "id" => 20, "name" => "Security", "url" => "#{base}/20" },
+      { "kind" => "job", "id" => 21, "name" => "validate (draft head)", "url" => "#{base}/20/job/21" }
+    ]
+    ids = PrCiReadiness.non_draft_head_actions_rows(rows).map { |row| row["id"] }
+    assert_equal [20, 21], ids
+  end
+
   def test_same_context_current_pass_supersedes_cancelled_history
     out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
                                  { "workflow" => "CI", "name" => "rspec", "bucket" => "pass" },
@@ -1664,7 +1720,7 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  def test_exact_head_actions_keep_only_current_run_per_workflow_and_event
+  def test_exact_head_actions_keep_latest_run_per_workflow_and_event
     head = "a" * 40
     action_runs = [
       {
@@ -1683,14 +1739,14 @@ class PrCiReadinessCliTest < Minitest::Test
       },
       {
         "id" => 102, "workflow_id" => 10, "event" => "pull_request",
-        "run_number" => 8, "run_attempt" => 2, "name" => "CI", "head_sha" => head,
+        "run_number" => 9, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
         "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
         "pull_requests" => [],
         "status" => "completed", "conclusion" => "cancelled"
       },
       {
         "id" => 103, "workflow_id" => 10, "event" => "pull_request",
-        "run_number" => 8, "run_attempt" => 2, "name" => "CI", "head_sha" => head,
+        "run_number" => 9, "run_attempt" => 2, "name" => "CI", "head_sha" => head,
         "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
         "pull_requests" => [],
         "status" => "completed", "conclusion" => "success"
@@ -1751,6 +1807,209 @@ class PrCiReadinessCliTest < Minitest::Test
       Array.new(2) { ["READY", "READY", [103, 1030, 104, 1040, 105, 1050]] },
       results
     )
+  end
+
+  def test_exact_head_actions_keep_cancelled_integration_run_over_older_draft_run
+    head = "a" * 40
+    draft_run = {
+      "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 7, "run_attempt" => 1, "name" => "Validate", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [], "html_url" => "https://github.com/owner/repo/actions/runs/100",
+      "status" => "completed", "conclusion" => "success"
+    }
+    cancelled_run = draft_run.merge(
+      "id" => 101, "run_number" => 8,
+      "html_url" => "https://github.com/owner/repo/actions/runs/101",
+      "conclusion" => "cancelled"
+    )
+
+    with_fake_gh(
+      required_json: '[{"workflow":"Validate","name":"validate","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [draft_run, cancelled_run],
+      runs: {
+        "100" => {
+          run: draft_run,
+          jobs: [{
+            "id" => 1000, "name" => "validate (draft head)", "status" => "completed",
+            "conclusion" => "success", "html_url" => "https://github.com/owner/repo/actions/runs/100/job/1000"
+          }]
+        },
+        "101" => {
+          run: cancelled_run,
+          jobs: [{
+            "id" => 1010, "name" => "validate", "status" => "completed",
+            "conclusion" => "cancelled", "html_url" => "https://github.com/owner/repo/actions/runs/101/job/1010"
+          }]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "NOT_READY", data.fetch("verdict")
+      assert_equal "NOT_READY", data.dig("scopes", "github_actions", "state")
+      row_ids = data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+      assert_equal [101, 1010], row_ids
+    end
+  end
+
+  def test_new_draft_does_not_hide_prior_failed_integration
+    head = "a" * 40
+    draft_run = {
+      "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 9, "run_attempt" => 1, "name" => "Validate", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [], "html_url" => "https://github.com/owner/repo/actions/runs/100",
+      "status" => "completed", "conclusion" => "success"
+    }
+    cancelled_run = draft_run.merge(
+      "id" => 101, "run_number" => 8,
+      "html_url" => "https://github.com/owner/repo/actions/runs/101",
+      "conclusion" => "failure"
+    )
+
+    with_fake_gh(
+      required_json: '[{"workflow":"Validate","name":"validate","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [draft_run, cancelled_run],
+      runs: {
+        "100" => {
+          run: draft_run,
+          jobs: [{
+            "id" => 1000, "name" => "validate (draft head)", "status" => "completed",
+            "conclusion" => "success", "html_url" => "https://github.com/owner/repo/actions/runs/100/job/1000"
+          }]
+        },
+        "101" => {
+          run: cancelled_run,
+          jobs: [{
+            "id" => 1010, "name" => "validate", "status" => "completed",
+            "conclusion" => "failure", "html_url" => "https://github.com/owner/repo/actions/runs/101/job/1010"
+          }]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "NOT_READY", data.fetch("verdict")
+      assert_equal "NOT_READY", data.dig("scopes", "github_actions", "state")
+      row_ids = data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+      assert_equal [101, 1010], row_ids
+    end
+  end
+
+  def test_exact_head_actions_keep_latest_cancelled_run_when_group_has_no_successor
+    head = "a" * 40
+    cancelled_run = {
+      "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [],
+      "status" => "completed", "conclusion" => "cancelled"
+    }
+
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [cancelled_run],
+      runs: { "100" => { run: cancelled_run, jobs: [] } }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "NOT_READY", data.fetch("verdict")
+      assert_equal "NOT_READY", data.dig("scopes", "github_actions", "state")
+      row_ids = data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+      assert_equal [100], row_ids
+    end
+  end
+
+  def test_newer_cancelled_run_preserves_failed_job_in_checks_api
+    head = "a" * 40
+    old_run = {
+      "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [], "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/100"
+    }
+    new_run = old_run.merge(
+      "id" => 101, "run_number" => 8, "conclusion" => "cancelled",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101"
+    )
+    old_job = {
+      "id" => 1000, "name" => "security", "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/100/job/1000"
+    }
+    new_job = old_job.merge(
+      "id" => 1010, "conclusion" => "failure",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101/job/1010"
+    )
+    with_fake_gh(
+      required_json: '[{"workflow":"Lint","name":"lint","bucket":"pass"}]',
+      full_json: '[{"workflow":"CI","name":"security","bucket":"fail"}]',
+      pr_head: head, exact_actions: [old_run, new_run],
+      runs: { "100" => { run: old_run, jobs: [old_job] }, "101" => { run: new_run, jobs: [new_job] } },
+      exact_check_runs: [new_job.merge("head_sha" => head, "app" => { "slug" => "github-actions" })]
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data.fetch("verdict")
+      assert_equal([101, 1010], data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") })
+    end
+  end
+
+  def test_required_draft_named_checks_are_never_filtered
+    %w[fail pending cancel].each do |bucket|
+      required = [{ "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => bucket }]
+      required << { "workflow" => "Lint", "name" => "lint", "bucket" => "pass" } unless bucket == "cancel"
+      with_fake_gh(
+        required_json: JSON.generate(required),
+        full_json: '[{"workflow":"Lint","name":"lint","bucket":"pass"}]'
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        assert_equal "NOT_READY", data.fetch("verdict"), bucket
+        assert_includes data.dig("scopes", "required_status_check_rollup", "rows"), required.first
+      end
+    end
+  end
+
+  def test_passing_draft_only_run_cannot_prove_integration_readiness
+    head = "a" * 40
+    run = {
+      "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 7, "run_attempt" => 1, "name" => "Validate", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [], "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/100"
+    }
+    job = {
+      "id" => 1000, "name" => "validate (draft head)", "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/100/job/1000"
+    }
+    with_fake_gh(
+      required_json: '[{"workflow":"Lint","name":"lint","bucket":"pass"}]',
+      full_json: "[]", pr_head: head, exact_actions: [run], runs: { "100" => { run:, jobs: [job] } }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal "UNKNOWN", data.dig("scopes", "github_actions", "state")
+      assert_match(/draft-head.*integration/, data.dig("scopes", "github_actions", "error"))
+    end
   end
 
   # Regression: exact_head_inventory must not re-append a superseded GitHub

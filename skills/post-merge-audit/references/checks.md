@@ -30,8 +30,9 @@ For each included PR:
   repository performance-seam evidence for rendered-page/asset/bundle impact,
   named with `source=<stable command/report/ref>`.
   Local/file paths and “captured locally” are not durable evidence; a
-  GitHub-only handoff stays blocked until an authenticated UI upload or human
-  attachment puts the resulting durable GitHub URL in the receipt. Distinguish
+  GitHub-only handoff stays blocked until GitHub CLI 2.99.0+ `--attach`, an
+  authenticated browser upload, or a human attachment puts the resulting
+  durable GitHub URL in the receipt. Distinguish
   `bundle_hygiene` from a genuinely
   `measured_metric` claim; non-byte hygiene values name a bundle/asset shape
   metric, while the latter must name its runtime/user metric with
@@ -50,7 +51,11 @@ For each included PR:
   UI change, run the combined current-head gate
   `--expected-head-sha <full-merged-head-SHA>
   --require-visual-evidence-v2`; the strict v2 flag is invalid without the
-  expected head. Under that strict forward gate, explicit v2 presence
+  expected head. For GitHub Enterprise (Cloud or Server) evidence, also pass
+  `--github-host <repository GitHub host>`, resolving the
+  exact host from trusted repository context rather than ambient input. The
+  completed-batch publication preflight supplies each trusted target's host
+  automatically. Under that strict forward gate, explicit v2 presence
   supersedes v1 history, so stale or malformed v2 cannot be rescued by a
   current v1;
   historical `qa-evidence v1` remains replayable when that forward gate is not
@@ -116,7 +121,7 @@ Classify each PR:
 - **OK**: no credible release risk found.
 - **Needs maintainer question**: a decision cannot be made safely from evidence.
 - **Needs changelog update**: user-visible change is missing from the repo's changelog; recommend `/update-changelog`.
-- **Needs follow-up issue**: non-blocking work remains valuable and is actionable after release.
+- **Needs follow-up issue**: non-blocking work remains valuable and is actionable after release. It must fix an observed failure or a verified defect with a known affected user, and the fix must be smaller than the problem. Style nits, hypothetical future mistakes, speculative hardening, and unreproduced bot suggestions are `OK`, not follow-ups.
 - **Needs fix PR**: a real defect, missing test, missing compatibility note, or bad interaction should be fixed before release.
 - **Needs revert consideration**: the merge appears risky enough that reverting may be safer than patching. The downstream procedure is [Unwinding A Bad Agent Merge](https://github.com/shakacode/agent-workflows/blob/main/docs/revert-runbook.md), which covers revert scope, order, bookkeeping, and the operator-authority rule. Reference it in the child issue; it is a runbook for the operator, not a gate on this audit, and it never blocks or alters audit completion.
 
