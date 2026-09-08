@@ -5561,6 +5561,69 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_aggregate_approval_does_not_cross_block_sibling_mixed_reconciliation_stops
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "mixed-lane-a", lane_id: "lane-a", tokens: 100)
+      reserve(state_path, id: "mixed-lane-b", lane_id: "lane-b", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 480, "lane-b" => 400 }
+      )
+      reconciled, reconcile_stderr, reconcile_status = reconcile_receipt(
+        state_path,
+        receipt,
+        "sibling-mixed-stops",
+        completed_reservation_ids: %w[mixed-lane-a mixed-lane-b]
+      )
+      assert reconcile_status.success?, reconcile_stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+
+      unresolved = JSON.parse(File.read(state_path)).fetch("admission_decisions").values.select do |decision|
+        decision["resolved_by_reservation_id"].nil?
+      end
+      assert_equal(
+        {
+          "mixed-lane-a" => %w[aggregate lane-a],
+          "mixed-lane-b" => %w[aggregate lane-b]
+        },
+        unresolved.to_h { |decision| [decision.fetch("reservation_id"), decision.fetch("blocking_scope_ids").sort] }
+      )
+
+      %w[lane-a lane-b].each do |lane_id|
+        approval_id = "resolve-#{lane_id}-mixed-stop"
+        approved, approval_stderr, approval_status = run_helper(
+          state_path,
+          command("approve", "approval" => approval(state_path, id: approval_id, scope_id: "aggregate"))
+        )
+        assert approval_status.success?, approval_stderr
+        assert_equal "approved", approved.fetch("status")
+
+        reservation_id = "resume-#{lane_id}-mixed-stop"
+        resumed, resumed_stderr, resumed_status = reserve(
+          state_path,
+          id: reservation_id,
+          lane_id: lane_id,
+          tokens: 1,
+          overrides: { "approval_id" => approval_id }
+        )
+        assert resumed_status.success?, resumed_stderr
+        assert_equal "admitted-with-warning", resumed.fetch("status")
+
+        saved = JSON.parse(File.read(state_path))
+        decision = saved.fetch("admission_decisions").values.find do |candidate|
+          candidate["reservation_id"] == "mixed-#{lane_id}"
+        end
+        assert_equal reservation_id, decision.fetch("resolved_by_reservation_id")
+        assert_equal reservation_id, saved.dig("approvals", approval_id, "consumed_by")
+      end
+    end
+  end
+
   def test_aggregate_headroom_resolves_every_compatible_hard_stop_before_coalescing
     with_state do |state_path|
       initialize_budget(state_path)

@@ -1287,7 +1287,7 @@ module BatchTokenBudget
 
   def decision_applies_to_reservation?(decision, reservation)
     blocking_scope_ids = decision.fetch("blocking_scope_ids")
-    blocking_scope_ids.include?("aggregate") || blocking_scope_ids.include?(reservation.fetch("scope_id"))
+    blocking_scope_ids == ["aggregate"] || blocking_scope_ids.include?(reservation.fetch("scope_id"))
   end
 
   def decision_target_compatible?(decision, reservation)
