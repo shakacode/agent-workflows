@@ -2871,6 +2871,25 @@ class PrSecurityPreflightTest < Minitest::Test
     assert_empty graph_node_identity_coverage_findings(bot_and_account_identity_target("Organization"))
   end
 
+  def test_graphql_enterprise_user_account_participant_has_complete_identity
+    target = {
+      "participants" => {
+        "totalCount" => 1,
+        "nodes" => [
+          {
+            "id" => "enterprise-actor-1",
+            "login" => "managed-user",
+            "url" => "https://github.com/managed-user",
+            "__typename" => "EnterpriseUserAccount"
+          }
+        ]
+      },
+      "timelineItems" => { "totalCount" => 0, "nodes" => [] }
+    }
+
+    assert_empty graph_node_identity_coverage_findings(target)
+  end
+
   def test_graphql_same_namespace_login_bound_to_distinct_node_ids_fails_closed
     cases = {
       "two bots" => %w[Bot Bot],

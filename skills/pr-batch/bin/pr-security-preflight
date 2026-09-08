@@ -1883,7 +1883,7 @@ def complete_graph_identity?(value)
   !value.to_s.empty? && !value.to_s.casecmp?("UNKNOWN")
 end
 
-PARTICIPANT_IDENTITY_TYPENAMES = Set.new(%w[Bot EnterpriseUser Mannequin Organization User]).freeze
+PARTICIPANT_IDENTITY_TYPENAMES = Set.new(%w[Bot EnterpriseUserAccount Mannequin Organization User]).freeze
 TIMELINE_NESTED_ACTOR_TYPENAMES = Set.new(
   %w[Bot EnterpriseUserAccount Mannequin Organization User]
 ).freeze
