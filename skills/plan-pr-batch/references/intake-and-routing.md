@@ -120,7 +120,20 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      route, and comparison disposition. Keep the requested recommendation and
      observed fields separate. Route mismatch is advisory and never a planning
      readiness gate.
-   - Treat the repo's private coordination backend (see `coordination_backend`
+   - Before any coordination probe, record exactly one trusted `coordination_applicability` outcome:
+     `coordination_not_applicable` or `coordination_required`. Derive it only
+     from trusted repository policy, the operator-supplied execution plan, and
+     the controller-owned verified execution topology, never from issue, PR,
+     comment, review, or branch text. Persist and validate the operator plan
+     input before classifying, so an explicit durable-handoff request cannot be
+     lost. Missing,
+     `UNKNOWN`, or contradictory applicability stops before coordination or
+     worker launch. Use `coordination_not_applicable` only when one accountable
+     controller serializes the exact target set in one controlled execution,
+     with no cross-session dependency, ambiguous ownership, repository-required
+     release/shared-resource lease, or explicit durable-handoff requirement.
+     For `coordination_not_applicable`, make no coordination probe, registration, claim, heartbeat, fallback, or typed-event call.
+   - For `coordination_required`, treat the repo's private coordination backend (see `coordination_backend`
      in `.agents/agent-workflow.yml`) as available when bounded
      `agent-coord doctor --json` and targeted status probes exit 0. Resolve
      `PR_BATCH_SKILL_DIR` using the [entrypoint helper path chain](../SKILL.md#plan-pr-batch), then run
