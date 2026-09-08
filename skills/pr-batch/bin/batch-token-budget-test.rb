@@ -301,10 +301,19 @@ class BatchTokenBudgetTest < Minitest::Test
     }.merge(overrides)
   end
 
-  def reserve(state_path, **options)
+  def reserve(state_path, evaluated_at: nil, **options)
+    evaluated_at ||= begin
+      JSON.parse(File.read(state_path)).fetch("last_evaluated_at")
+    rescue JSON::ParserError, KeyError
+      command("reserve").fetch("evaluated_at")
+    end
+    request = reservation(**options)
+    if request.dig("telemetry", "observed_at") == "2026-08-12T11:55:00Z"
+      request.fetch("telemetry")["observed_at"] = evaluated_at
+    end
     run_helper(
       state_path,
-      command("reserve", "reservation" => reservation(**options))
+      command("reserve", "evaluated_at" => evaluated_at, "reservation" => request)
     )
   end
 
@@ -3656,11 +3665,18 @@ class BatchTokenBudgetTest < Minitest::Test
         state_path,
         command(
           "reserve",
+          "evaluated_at" => "2026-08-12T11:00:00Z",
           "reservation" => reservation(
             id: "window-delegation",
             tokens: 100,
             kind: "cross-task-delegation",
-            overrides: { "source" => source, "target" => target }
+            overrides: {
+              "source" => source,
+              "target" => target,
+              "telemetry" => reservation(id: "ignored").fetch("telemetry").merge(
+                "observed_at" => "2026-08-12T11:00:00Z"
+              )
+            }
           )
         )
       )
@@ -4266,6 +4282,170 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_reconciliation_blocks_a_usage_window_that_straddles_reservation_admission
+    with_state do |state_path|
+      initialize_budget(state_path)
+      admitted, admitted_stderr, admitted_status = run_helper(
+        state_path,
+        command(
+          "reserve",
+          "evaluated_at" => "2026-08-12T11:59:30Z",
+          "reservation" => reservation(id: "mid-window-admission", tokens: 100)
+        )
+      )
+      assert admitted_status.success?, admitted_stderr
+      assert_equal "admitted", admitted.fetch("status")
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 90, "lane-b" => 0 }
+      )
+      state_before = File.binread(state_path)
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "mid-window-admission")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-window-straddles-reservation-admission", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      assert_empty JSON.parse(File.read(state_path)).fetch("usage_receipts")
+    end
+  end
+
+  def test_reconciliation_attributes_only_windows_starting_at_or_after_reservation_admission
+    with_state do |state_path|
+      initialize_budget(state_path)
+      admitted, admitted_stderr, admitted_status = run_helper(
+        state_path,
+        command(
+          "reserve",
+          "evaluated_at" => "2026-08-12T11:59:30Z",
+          "reservation" => reservation(id: "boundary-admission", tokens: 100)
+        )
+      )
+      assert admitted_status.success?, admitted_stderr
+      assert_equal "admitted", admitted.fetch("status")
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      before_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T11:59:30Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 90, "lane-b" => 0 }
+      )
+
+      before, before_stderr, before_status = reconcile_receipt(
+        state_path,
+        before_receipt,
+        "before-boundary-admission"
+      )
+
+      assert before_status.success?, before_stderr
+      assert_equal "reconciled", before.fetch("status")
+      assert_equal 90, before.dig("totals", "lanes", "lane-a", "consumed_tokens")
+      assert_equal 90, before.dig("totals", "lanes", "lane-a", "unattributed_tokens")
+      saved_before = JSON.parse(File.read(state_path))
+      assert_equal "active", saved_before.dig("reservations", "boundary-admission", "status")
+      refute saved_before.dig("reservations", "boundary-admission").key?("observed_tokens")
+      assert_equal 100, saved_before.dig("reservations", "boundary-admission", "reserved_tokens")
+
+      after_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:59:30Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      after, after_stderr, after_status = reconcile_receipt(
+        state_path,
+        after_receipt,
+        "at-boundary-admission",
+        completed_reservation_ids: ["boundary-admission"]
+      )
+
+      assert after_status.success?, after_stderr
+      assert_equal "reconciled", after.fetch("status")
+      saved_after = JSON.parse(File.read(state_path))
+      assert_equal "reconciled", saved_after.dig("reservations", "boundary-admission", "status")
+      assert_equal 0, saved_after.dig("reservations", "boundary-admission", "observed_tokens")
+      assert_equal 100, saved_after.dig("reservations", "boundary-admission", "released_tokens")
+    end
+  end
+
+  def test_reconciliation_rejects_completion_or_charge_back_before_reservation_admission
+    [false, true].each do |with_charge_back|
+      with_state do |state_path|
+        initialize_budget(state_path)
+        source = task_identity(task_id: "boundary-source")
+        source["batch_id"] = "source-batch"
+        target = task_identity(task_id: "task-lane-a")
+        admitted, admitted_stderr, admitted_status = run_helper(
+          state_path,
+          command(
+            "reserve",
+            "evaluated_at" => "2026-08-12T11:59:30Z",
+            "reservation" => reservation(
+              id: "pre-boundary-completion",
+              tokens: 100,
+              kind: "cross-task-delegation",
+              overrides: { "source" => source, "target" => target }
+            )
+          )
+        )
+        assert admitted_status.success?, admitted_stderr
+        assert_equal "admitted", admitted.fetch("status")
+        base_receipt, = real_descendants_usage_receipt(state_path)
+        receipt = usage_window(
+          base_receipt,
+          from: "2026-08-12T11:00:00Z",
+          to: "2026-08-12T11:59:30Z",
+          coordinator_tokens: 0,
+          lane_tokens: { "lane-a" => 90, "lane-b" => 0 }
+        )
+        receipt, receipt_ref, receipt_digest = receipt_artifact(
+          state_path,
+          receipt,
+          with_charge_back ? "pre-boundary-charge-back" : "pre-boundary-completion"
+        )
+        command_input = command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => ["pre-boundary-completion"]
+        )
+        if with_charge_back
+          command_input["charge_backs"] = [{
+            "reservation_id" => "pre-boundary-completion",
+            "charge_back" => {
+              "type" => "batch-token-charge-back",
+              "version" => 1,
+              "id" => "pre-boundary-charge-back",
+              "source" => source,
+              "target" => target
+            }
+          }]
+        end
+        state_before = File.binread(state_path)
+
+        blocked, stderr, status = run_helper(state_path, command_input)
+
+        assert status.success?, stderr
+        assert_equal "blocked", blocked.fetch("status")
+        assert_equal "completed-reservation-outside-usage-window", blocked.fetch("reason")
+        assert_equal state_before, File.binread(state_path)
+        saved = JSON.parse(File.read(state_path))
+        assert_empty saved.fetch("usage_receipts")
+        assert_empty saved.fetch("charge_backs")
+        assert_nil saved["usage_cursor"]
+        assert_equal "active", saved.dig("reservations", "pre-boundary-completion", "status")
+      end
+    end
+  end
+
   def test_approval_and_scoped_budget_increase_are_durable_and_do_not_grant_other_authority
     with_state do |state_path|
       initialize_budget(state_path)
@@ -4838,6 +5018,7 @@ class BatchTokenBudgetTest < Minitest::Test
 
       stale, = reserve(
         state_path,
+        evaluated_at: "2026-08-12T12:00:00Z",
         id: "stale",
         overrides: {
           "telemetry" => reservation(id: "ignored").fetch("telemetry").merge("observed_at" => "2026-08-12T11:00:00Z")
@@ -4957,6 +5138,7 @@ class BatchTokenBudgetTest < Minitest::Test
           "source" => source,
           "target" => target,
           "telemetry" => reservation(id: "ignored", tokens: 260).fetch("telemetry").merge(
+            "observed_at" => "2026-08-12T11:00:00Z",
             "self_estimate_tokens" => 100,
             "descendant_estimate_tokens" => 160,
             "descendant_target_ids" => %w[retained-child retained-grandchild]
@@ -4965,7 +5147,7 @@ class BatchTokenBudgetTest < Minitest::Test
       )
       blocked, stderr, status = run_helper(
         state_path,
-        command("reserve", "reservation" => cross_task)
+        command("reserve", "evaluated_at" => "2026-08-12T11:00:00Z", "reservation" => cross_task)
       )
 
       assert status.success?, stderr
@@ -4973,14 +5155,22 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "projected-delegation-threshold", blocked.fetch("reason")
       assert_equal 0, blocked.dig("totals", "aggregate", "reserved_tokens")
 
-      approval = approval(state_path, id: "cross-approval", reason: "Allow one bounded cross-task wake.")
-      run_helper(state_path, command("approve", "approval" => approval))
+      approval = approval(
+        state_path,
+        id: "cross-approval",
+        reason: "Allow one bounded cross-task wake.",
+        issued_at: "2026-08-12T11:00:00Z"
+      )
+      run_helper(
+        state_path,
+        command("approve", "evaluated_at" => "2026-08-12T11:00:00Z", "approval" => approval)
+      )
       cross_task["id"] = "cross-task-1-authorized"
       cross_task["message_fingerprint"] = "message-cross-task-1-authorized"
       cross_task["approval_id"] = "cross-approval"
       admitted, admitted_stderr, admitted_status = run_helper(
         state_path,
-        command("reserve", "reservation" => cross_task)
+        command("reserve", "evaluated_at" => "2026-08-12T11:00:00Z", "reservation" => cross_task)
       )
       assert admitted_status.success?, admitted_stderr
       assert_equal "admitted", admitted.fetch("status")
@@ -5491,7 +5681,16 @@ class BatchTokenBudgetTest < Minitest::Test
       setup_approval_id = "setup-aggregate-stop-lane-b"
       run_helper(
         state_path,
-        command("approve", "approval" => approval(state_path, id: setup_approval_id, scope_id: "aggregate"))
+        command(
+          "approve",
+          "evaluated_at" => "2026-08-12T11:00:00Z",
+          "approval" => approval(
+            state_path,
+            id: setup_approval_id,
+            scope_id: "aggregate",
+            issued_at: "2026-08-12T11:00:00Z"
+          )
+        )
       )
       reserve(
         state_path,
@@ -5631,7 +5830,16 @@ class BatchTokenBudgetTest < Minitest::Test
       setup_approval_id = "setup-aggregate-hard-lane-b"
       run_helper(
         state_path,
-        command("approve", "approval" => approval(state_path, id: setup_approval_id, scope_id: "aggregate"))
+        command(
+          "approve",
+          "evaluated_at" => "2026-08-12T11:00:00Z",
+          "approval" => approval(
+            state_path,
+            id: setup_approval_id,
+            scope_id: "aggregate",
+            issued_at: "2026-08-12T11:00:00Z"
+          )
+        )
       )
       reserve(
         state_path,
@@ -5886,9 +6094,14 @@ class BatchTokenBudgetTest < Minitest::Test
     with_state do |state_path|
       initialize_budget(state_path)
       approval_id = "long-lived-threshold-approval"
+      threshold_approval = approval(
+        state_path,
+        id: approval_id,
+        issued_at: "2026-08-12T11:00:00Z"
+      )
       approved, approval_stderr, approval_status = run_helper(
         state_path,
-        command("approve", "approval" => approval(state_path, id: approval_id))
+        command("approve", "evaluated_at" => "2026-08-12T11:00:00Z", "approval" => threshold_approval)
       )
       assert approval_status.success?, approval_stderr
       assert_equal "approved", approved.fetch("status")
@@ -8088,9 +8301,18 @@ class BatchTokenBudgetTest < Minitest::Test
         id: "charge-reservation",
         tokens: 100,
         kind: "cross-task-delegation",
-        overrides: { "source" => source, "target" => target }
+        overrides: {
+          "source" => source,
+          "target" => target,
+          "telemetry" => reservation(id: "ignored").fetch("telemetry").merge(
+            "observed_at" => "2026-08-12T11:00:00Z"
+          )
+        }
       )
-      run_helper(state_path, command("reserve", "reservation" => cross_task))
+      run_helper(
+        state_path,
+        command("reserve", "evaluated_at" => "2026-08-12T11:00:00Z", "reservation" => cross_task)
+      )
       base_receipt, = real_descendants_usage_receipt(state_path)
       usage = usage_window(
         base_receipt,

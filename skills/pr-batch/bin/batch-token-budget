@@ -2934,7 +2934,26 @@ module BatchTokenBudget
     active_reservations = original_state.fetch("reservations").values.select do |reservation|
       reservation["status"] == "active"
     end
-    active_by_scope = active_reservations.group_by { |reservation| reservation.dig("request", "scope_id") }
+    admission_times = active_reservations.to_h do |reservation|
+      reservation_id = reservation.dig("request", "id")
+      admitted_outcome = original_state.dig("reservation_decisions", reservation_id, "outcomes").find do |outcome|
+        %w[admitted admitted-with-warning].include?(outcome["status"])
+      end
+      [reservation_id, DateTime.iso8601(admitted_outcome.dig("receipt", "evaluated_at"))]
+    end
+    straddled_admission = active_reservations.any? do |reservation|
+      reservation_id = reservation.dig("request", "id")
+      admitted_at = admission_times.fetch(reservation_id)
+      from_inclusive < admitted_at && admitted_at < to_exclusive
+    end
+    if straddled_admission
+      return blocked_usage_result(original_state, "usage-window-straddles-reservation-admission")
+    end
+
+    applicable_reservations = active_reservations.select do |reservation|
+      admission_times.fetch(reservation.dig("request", "id")) <= from_inclusive
+    end
+    active_by_scope = applicable_reservations.group_by { |reservation| reservation.dig("request", "scope_id") }
     if active_by_scope.values.any? { |reservations| reservations.length > 1 }
       return blocked_usage_result(original_state, "ambiguous-active-reservations")
     end
@@ -2943,6 +2962,10 @@ module BatchTokenBudget
       reservation = original_state.dig("reservations", reservation_id)
       raise InvalidInput, "unknown-reservation" unless reservation
       raise InvalidInput, "reservation-already-terminal" unless reservation["status"] == "active"
+    end
+    applicable_reservation_ids = applicable_reservations.map { |reservation| reservation.dig("request", "id") }
+    unless (completed_ids - applicable_reservation_ids).empty?
+      return blocked_usage_result(original_state, "completed-reservation-outside-usage-window")
     end
 
     unsupported_overshoot = projection.fetch("scope_tokens").any? do |scope_id, interval_tokens|
