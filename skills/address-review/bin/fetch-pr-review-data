@@ -202,7 +202,19 @@ module FetchPrReviewData
         "is_resolved" => meta ? meta["is_resolved"] : false
       }
     end
-    [kept, excluded]
+    [mark_orphaned_replies(kept, excluded), excluded]
+  end
+
+  # Triage reads replies only as context for a top-level item, so a trusted
+  # reply whose root was excluded would never be looked at. Flag it instead, so
+  # it can be triaged on its own without resurrecting the untrusted root.
+  def mark_orphaned_replies(kept, excluded)
+    excluded_ids = excluded.map { |row| row["id"] }.compact.to_set
+    kept.each do |comment|
+      parent = comment["in_reply_to_id"]
+      comment["root_excluded"] = true if parent && excluded_ids.include?(parent)
+    end
+    kept
   end
 
   def build_issue_comments(raw_issue, trust)

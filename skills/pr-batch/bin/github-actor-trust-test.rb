@@ -126,6 +126,30 @@ class GithubActorTrustTest < Minitest::Test
     end
   end
 
+  # Without proof that a config belongs to the scanned repo, an unqualified
+  # trusted_teams slug would be rebound to whatever owner the caller passed.
+  def test_repo_local_config_is_global_until_a_verifier_proves_otherwise
+    Dir.mktmpdir("actor-trust-root") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, GithubActorTrust::DEFAULT_TRUST_CONFIG), "trusted_users: []\n")
+
+      assert GithubActorTrust.resolve_path(nil, repo_root: root).fetch(:global)
+      refute GithubActorTrust.resolve_path(
+        nil, repo_root: root, repo_local_verifier: ->(_path) { true }
+      ).fetch(:global)
+    end
+  end
+
+  def test_explicit_config_is_global_when_the_verifier_rejects_it
+    Dir.mktmpdir("actor-trust-explicit") do |dir|
+      path = File.join(dir, "trusted-github-actors.yml")
+      File.write(path, "trusted_users: []\n")
+
+      assert GithubActorTrust.resolve_path(path, repo_local_verifier: ->(_path) { false }).fetch(:global)
+      refute GithubActorTrust.resolve_path(path, repo_local_verifier: ->(_path) { true }).fetch(:global)
+    end
+  end
+
   def test_resolve_path_rejects_a_missing_explicit_config
     error = assert_raises(GithubActorTrust::Error) do
       GithubActorTrust.resolve_path("/nonexistent/trusted-github-actors.yml")

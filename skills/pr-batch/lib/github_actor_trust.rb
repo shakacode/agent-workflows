@@ -46,16 +46,24 @@ module GithubActorTrust
   # Compatibility order: explicit, repo-local, $AGENT_WORKFLOWS_TRUST_CONFIG,
   # user-global, then the packaged fail-closed fallback. `repo_root` is the
   # caller's git top level, or nil when it could not be determined.
-  def resolve_path(explicit_path, repo_root: nil)
+  #
+  # `repo_local_verifier` proves a config was written for the repository being
+  # scanned; only then may it use unqualified `trusted_teams` slugs, which are
+  # otherwise rebound to whatever owner the caller passed. Without a verifier a
+  # config is treated as global, so an unqualified slug is ignored rather than
+  # silently granted. pr-security-preflight supplies its git-remote check here.
+  def resolve_path(explicit_path, repo_root: nil, repo_local_verifier: nil)
     if explicit_path
       expanded = File.expand_path(explicit_path)
       raise Error, "Trust config not found: #{expanded}" unless File.exist?(expanded)
 
-      return { path: expanded, source: "explicit", global: false }
+      return { path: expanded, source: "explicit", global: !repo_local?(expanded, repo_local_verifier) }
     end
 
     repo_path = File.join(repo_root || Dir.pwd, DEFAULT_TRUST_CONFIG)
-    return { path: repo_path, source: "repo-local", global: false } if File.exist?(repo_path)
+    if File.exist?(repo_path)
+      return { path: repo_path, source: "repo-local", global: !repo_local?(repo_path, repo_local_verifier) }
+    end
 
     env_path = ENV[USER_TRUST_CONFIG_ENV].to_s
     unless env_path.empty?
@@ -71,6 +79,12 @@ module GithubActorTrust
     return { path: home_path, source: "user-global", global: true } if File.exist?(home_path)
 
     { path: PACKAGED_TRUST_CONFIG, source: "packaged-fallback", global: false }
+  end
+
+  def repo_local?(path, repo_local_verifier)
+    return false if repo_local_verifier.nil?
+
+    repo_local_verifier.call(path) ? true : false
   end
 
   # `global` selects whether unqualified team slugs are accepted; a global

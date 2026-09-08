@@ -169,6 +169,33 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     end
   end
 
+  # Triage uses replies only as context for a top-level item, so a trusted
+  # reply under an excluded root needs a marker or it is never looked at.
+  def test_trusted_reply_under_an_excluded_root_is_flagged
+    with_trust_config do |path|
+      inline = <<~JSON
+        [[
+          {"id":30,"node_id":"RC_30","path":"a.rb","body":#{INJECTION.to_json},"user":{"login":"drive-by"},
+           "created_at":"2026-01-01T00:00:00Z","html_url":"https://gh/rc/30"},
+          {"id":31,"node_id":"RC_31","path":"a.rb","body":"this is wrong, here is why","user":{"login":"justin808"},
+           "in_reply_to_id":30,"created_at":"2026-01-02T00:00:00Z","html_url":"https://gh/rc/31"},
+          {"id":32,"node_id":"RC_32","path":"b.rb","body":"unrelated trusted note","user":{"login":"justin808"},
+           "created_at":"2026-01-03T00:00:00Z","html_url":"https://gh/rc/32"}
+        ]]
+      JSON
+      trust = FetchPrReviewData::TrustBoundary.for(repo: "owner/repo", trust_config_path: path)
+      out = FetchPrReviewData.assemble(
+        repo: "owner/repo", pr_number: 1, issue_raw: "[]", reviews_raw: "[]",
+        inline_raw: inline, threads_raw: nil, trust:
+      )
+      by_id = out["inline_comments"].to_h { |row| [row["id"], row] }
+
+      assert_equal([30], out["excluded_interactions"].map { |row| row["id"] })
+      assert_equal true, by_id[31]["root_excluded"], "an orphaned trusted reply must be flagged"
+      refute by_id[32].key?("root_excluded"), "a top-level trusted comment is not orphaned"
+    end
+  end
+
   def test_packet_binds_the_trust_config_and_its_digest
     with_trust_config do |path|
       trust = assembled(path)["trust"]
