@@ -167,6 +167,14 @@ class TaskScratchLifecycleTest < Minitest::Test
     end
   end
 
+  def test_cleanup_blocks_without_deleting_when_adjacent_review_helper_is_missing
+    assert_cleanup_blocks_when_review_helper_cannot_launch(:missing)
+  end
+
+  def test_cleanup_blocks_without_deleting_when_adjacent_review_helper_is_not_executable
+    assert_cleanup_blocks_when_review_helper_cannot_launch(:not_executable)
+  end
+
   def test_cleanup_rejects_noncanonical_create_wrappers_before_touching_scratch
     Dir.mktmpdir("task-scratch-lifecycle") do |directory|
       repository, base_sha, head_sha = build_repository(directory)
@@ -2113,6 +2121,75 @@ class TaskScratchLifecycleTest < Minitest::Test
   end
 
   private
+
+  def assert_cleanup_blocks_when_review_helper_cannot_launch(mode)
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, base_sha, head_sha = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      durable_root = File.join(directory, "durable")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(durable_root)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      review_helper = File.join(helper_root, "task-review-loop")
+      FileUtils.cp(HELPER, lifecycle_helper)
+      File.chmod(0o755, lifecycle_helper)
+      if mode == :not_executable
+        write_clean_review_helper(review_helper)
+        File.chmod(0o644, review_helper)
+      end
+
+      created, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        helper: lifecycle_helper
+      )
+      assert create_status.success?, create_stderr
+      receipt = created.fetch("receipt")
+      scratch_root = receipt.fetch("scratch_root")
+      evidence_path = File.join(scratch_root, "evidence.json")
+      File.write(evidence_path, "owned evidence\n")
+      receipt_path = File.join(durable_root, "scratch-receipt.json")
+      File.write(receipt_path, JSON.generate(receipt))
+      review_input_path, review_artifacts = write_clean_review_input(
+        durable_root,
+        repository,
+        base_sha,
+        head_sha
+      )
+      root_stat = File.stat(scratch_root)
+      root_children = Dir.children(scratch_root).sort
+      preserved_paths = [
+        receipt_path,
+        evidence_path,
+        File.join(scratch_root, ".task-scratch-owner.json"),
+        review_input_path,
+        *review_artifacts
+      ]
+      preserved_bytes = preserved_paths.to_h { |path| [path, File.binread(path)] }
+
+      blocked, cleanup_stderr, cleanup_status = run_cleanup(
+        receipt_path,
+        review_input_path,
+        helper: lifecycle_helper
+      )
+
+      refute cleanup_status.success?
+      assert_empty cleanup_stderr
+      assert_kind_of Hash, blocked
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "review-validation-unavailable", blocked.fetch("reason")
+      assert_equal [root_stat.dev, root_stat.ino], [File.stat(scratch_root).dev, File.stat(scratch_root).ino]
+      assert_equal root_children, Dir.children(scratch_root).sort
+      preserved_bytes.each { |path, bytes| assert_equal bytes, File.binread(path) }
+      assert_empty Dir.glob(File.join(scratch_parent, ".task-scratch-cleanup-*"))
+    end
+  end
 
   def write_clean_review_helper(path)
     File.write(

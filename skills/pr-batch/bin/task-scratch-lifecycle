@@ -642,13 +642,17 @@ module TaskScratchLifecycle
     review_input = JSON.parse(review_bytes)
     fail!("review-identity-mismatch") unless review_input.is_a?(Hash) &&
                                              review_input["identity"] == receipt.fetch("identity")
-    stdout, stderr, status = Open3.capture3(
-      PrBatchGitProbeEnv.probe_env,
-      TASK_REVIEW_HELPER,
-      "--repository-root",
-      receipt.fetch("worktree_root"),
-      stdin_data: review_bytes
-    )
+    stdout, stderr, status = begin
+      Open3.capture3(
+        PrBatchGitProbeEnv.probe_env,
+        TASK_REVIEW_HELPER,
+        "--repository-root",
+        receipt.fetch("worktree_root"),
+        stdin_data: review_bytes
+      )
+    rescue SystemCallError
+      fail!("review-validation-unavailable")
+    end
     fail!("review-validation-unavailable") unless status.success? && stderr.empty?
 
     decision = JSON.parse(stdout)
