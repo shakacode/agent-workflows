@@ -539,22 +539,34 @@ class CoordinationTelemetryContractTest < Minitest::Test
     inputs = extract_section(text, "## Inputs").gsub(/\s+/, " ")
     prompt = extract_section(text, "## Loop Prompt").gsub(/\s+/, " ")
     [inputs, prompt].each do |section|
-      assert_includes section, "Consume the canonical trusted applicability outcome before any coordination probe"
-      assert_includes section, "For `coordination_not_applicable`, make no coordination calls"
-      assert_includes section, "exact controller-supplied scope, git/GitHub, and local evidence"
-      assert_includes section, "intentionally absent coordination fields are `not applicable`, not `UNKNOWN`, stale, or dead"
-      assert_includes section, "Missing or contradictory applicability remains `UNKNOWN`"
-      assert_includes section, "For `coordination_required`, preserve bounded coordination probes and degradation"
+      # Source-contract coverage: keep the gate/branches, not their sentences.
+      gate = section.index("Coordination Applicability Gate")
+      na_branch = section.index("`coordination_not_applicable`")
+      assert gate && na_branch, "each entrypoint needs the gate and N/A branch"
+      assert_operator gate, :<, na_branch
+      na_rules = section[na_branch...section.index("`coordination_required`")]
+      assert_match(/\bno coordination calls\b/, na_rules)
+      %w[scope git/GitHub evidence].each { |token| assert_includes na_rules, token }
+      assert_match(/absent.*`not applicable`.*`UNKNOWN`/, na_rules)
+      assert_match(/(?:Missing|contradictory).*`UNKNOWN`/, na_rules)
+      assert_match(/`coordination_required`[^.]*bounded coordination probes/, section)
     end
     assert_operator inputs.index("trusted applicability"), :<, inputs.index('agent-coord-bounded" --timeout 20 doctor')
-    assert_includes text, "Use a checker instance distinct from every maker"
-    assert_includes prompt, "always use a checker independent from every maker"
-    assert_includes inputs, "durable scheduler or dependency state that survives the controller/session boundary remains `coordination_required`"
-    assert_includes inputs, "Only `coordination_required` may call a private-backend merge-ledger helper"
+    assert_match(/checker[^.]*distinct from every maker/, text)
+    assert_match(/checker[^.]*independent from every maker/, prompt)
+    assert_match(%r{(?:scheduler|dependency)[^.]*controller/session[^.]*`coordination_required`}, inputs)
+    assert_match(/Only `coordination_required`[^.]*private-backend merge-ledger/, inputs)
   end
 
   def test_evaluation_inputs_and_reusable_prompt_gate_coordination_without_losing_checker_independence
     assert_evaluation_applicability_contract(read_repo_file(File.join(ROOT, "workflows/continuous-evaluation-loop.md")))
+  end
+
+  def test_evaluation_contract_allows_equivalent_gate_wording
+    text = read_repo_file(File.join(ROOT, "workflows/continuous-evaluation-loop.md"))
+    text = text.gsub("Consume the canonical trusted applicability outcome before any coordination probe",
+                     "Before any coordination probe, consume the canonical trusted applicability outcome")
+    assert_evaluation_applicability_contract(text)
   end
 
   def test_status_and_evaluation_contracts_reject_missing_partial_and_late_guards
@@ -816,7 +828,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
       "that digest.",
       "an actor that writes the artifact and computes its own digest at publication time satisfies every " \
       "check here.",
-      "The digest must be recorded at classification time, before the work it authorizes begins, in a store " \
+      "The original digest must be recorded at classification time, before the work it authorizes begins, in a store " \
       "the publishing actor does not write",
       "The actor that runs `publish` or `replay` must not be the actor that produced the digest it passes.",
       "A run that cannot meet both is not `coordination_not_applicable` with an authenticated proof."

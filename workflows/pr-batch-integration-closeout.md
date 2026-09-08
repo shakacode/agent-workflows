@@ -2167,6 +2167,12 @@ Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper
 
 The `completed-batch-publication-preflight-input` v1 fields are `batch_id`, `coordination_applicability`, `expected_targets`, raw `coordination_status`, `target_snapshots`, and `qa_evidence`.
 
+For an issue-first proof, follow the [bounded publication-proof projection](../docs/coordination-backend.md#issue-first-publication-proof)
+before preflight. Preserve the original before-effects proof and custody history;
+independently verify the exact unchanged-scope issue-to-result-PR mapping and
+retain a separate, correctly timestamped publication proof/digest. No backdating,
+self-sealing, target-set expansion or helper-guard relaxation is permitted.
+
 Each `qa_evidence` row must carry a coordinator-owned
 `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's
 canonical target and publication snapshot; `yes` requires strict visual-evidence

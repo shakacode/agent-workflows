@@ -101,7 +101,7 @@ publication time satisfies every check here.
 that weak case is the common one. Two requirements follow, and neither is
 optional:
 
-- The digest must be recorded at classification time, before the work it
+- The original digest must be recorded at classification time, before the work it
   authorizes begins, in a store the publishing actor does not write: a committed
   repository value, an operator-held record, or a second accountable agent.
 - The actor that runs `publish` or `replay` must not be the actor that produced
@@ -111,6 +111,45 @@ optional:
 A run that cannot meet both is not `coordination_not_applicable` with an
 authenticated proof. Reclassify it as `coordination_required`, or publish it
 with the digest recorded by the operator rather than by the agent.
+
+### Issue-first publication proof
+
+An issue-first lane cannot know its resulting PR identity at launch. Preserve
+the original before-effects applicability artifact, its independently retained
+digest and custody record unchanged. The following bounded projection permits
+a separate publication artifact; it does not retrospectively authorize work:
+
+1. An accountable verifier independent of the publisher verifies the exact
+   same-repository issue-to-result-PR relationship from authenticated GitHub
+   evidence. Use the existing symmetric closing relationship, closed issue,
+   merged PR, exact result head and ordered terminal timestamps required by
+   [publication preflight](../workflows/post-merge-audit.md#completed-batch-handoff-prompt).
+   A PR body claim or a publisher-authored mapping is insufficient.
+2. Compare the complete original target set with the publication manifest.
+   Replace only each verified source issue with its one resulting PR; retain
+   every other target exactly. Reject missing, additional, ambiguous, foreign
+   or many-to-one mappings. Do not union source issues and result PRs, change
+   the batch or applicability decision, or expand the authorized work scope.
+3. Retain a durable attestation linking the original artifact/digest, exact
+   mapping evidence, final manifest and the independent verifier's identity.
+   Create a new artifact using the existing v1 schema: project `expected_targets`,
+   use that attestation as `topology_source`, explain the projection in
+   `rationale`, and set `verified_at` to its actual verification time. Preserve
+   all other fields. Never backdate or overwrite either proof or its history.
+4. Independently retain the new canonical digest before publication preflight,
+   `publish` or `replay`. The digest producer and publisher must remain distinct;
+   the publisher cannot supply its own replacement digest. For a sole agent,
+   the operator verifies the mapping and supplies the independently held digest.
+   If evidence, unchanged scope or independent custody cannot be established,
+   stop; a freshly self-sealed artifact is not a substitute.
+
+Only the new exact-manifest artifact/digest goes to publication helpers; the
+original remains the evidence authorizing the earlier work. Runtime proof
+equality and proof-before-effects checks are unchanged. For
+`coordination_not_applicable`, verification uses authenticated GitHub evidence
+without any coordination call; the N/A helper does not itself execute the
+issue-projection verifier. This is a controller/operator checklist with replay,
+not runtime authentication of the attestation or of historical proof custody.
 
 `coordination_required` covers concurrent same-machine work by independently
 running sessions, concurrent multi-machine or multi-operator work,
