@@ -422,6 +422,108 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_repository_backed_mode_rechecks_head_after_stable_and_moving_probes
+    Dir.mktmpdir("task-review-loop-repository") do |directory|
+      repository = File.join(directory, "repository")
+      fake_bin = File.join(directory, "bin")
+      FileUtils.mkdir_p(File.join(repository, "lib"))
+      Dir.mkdir(fake_bin)
+      system("git", "init", "--quiet", repository) || raise("git init failed")
+      system("git", "-C", repository, "config", "user.name", "Test") || raise("git config failed")
+      system("git", "-C", repository, "config", "user.email", "test@example.com") || raise("git config failed")
+      source_path = File.join(repository, "lib/task-review.rb")
+      File.write(source_path, "base\n")
+      system("git", "-C", repository, "add", "lib/task-review.rb") || raise("git add failed")
+      system("git", "-C", repository, "commit", "--quiet", "-m", "base") || raise("git commit failed")
+      base_sha = git_output(repository, "rev-parse", "HEAD")
+      File.write(source_path, "reviewed\n")
+      system("git", "-C", repository, "commit", "--quiet", "-am", "reviewed") || raise("git commit failed")
+      reviewed_head = git_output(repository, "rev-parse", "HEAD")
+      exact_diff = canonical_git_diff(repository, base_sha, reviewed_head)
+      File.write(source_path, "moved\n")
+      system("git", "-C", repository, "commit", "--quiet", "-am", "moved") || raise("git commit failed")
+      moved_head = git_output(repository, "rev-parse", "HEAD")
+      system("git", "-C", repository, "reset", "--quiet", "--hard", reviewed_head) || raise("git reset failed")
+      input = clean_review_input(
+        directory,
+        base_sha: base_sha,
+        head_sha: reviewed_head,
+        exact_diff: exact_diff
+      )
+      fake_git = File.join(fake_bin, "git")
+      File.write(
+        fake_git,
+        <<~'SH'
+          #!/bin/sh
+          if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ] && [ "$3" = "HEAD^{commit}" ] &&
+             [ -n "$FINAL_HEAD_SEEN" ]; then
+            if [ -e "$FINAL_HEAD_SEEN" ]; then
+              case "$FINAL_HEAD_ACTION" in
+                unavailable) exit 1 ;;
+                timeout) sleep 3 ;;
+              esac
+            else
+              : > "$FINAL_HEAD_SEEN"
+            fi
+          fi
+          if [ "$1" = "diff" ] && [ -n "$MOVE_HEAD_TO" ]; then
+            "$REAL_GIT" "$@"
+            probe_status=$?
+            "$REAL_GIT" update-ref HEAD "$MOVE_HEAD_TO" || exit 125
+            printf 'moved\n' > "$MOVE_HEAD_SIGNAL"
+            exit "$probe_status"
+          fi
+          exec "$REAL_GIT" "$@"
+        SH
+      )
+      File.chmod(0o755, fake_git)
+      probe_env = {
+        "PATH" => "#{fake_bin}:#{ENV.fetch('PATH')}",
+        "REAL_GIT" => executable_on_path("git")
+      }
+
+      stable, stable_stderr, stable_status = evaluate_repository(input, repository, env: probe_env)
+
+      assert stable_status.success?, stable_stderr
+      assert_empty stable_stderr
+      assert_equal "task_complete", stable.fetch("status")
+      assert_equal ["review-clean"], stable.fetch("reasons")
+      assert_equal reviewed_head, git_output(repository, "rev-parse", "HEAD")
+
+      %w[unavailable timeout].each do |action|
+        final_head_seen = File.join(directory, "final-head-#{action}.seen")
+        unavailable, unavailable_stderr, unavailable_status = evaluate_repository(
+          input,
+          repository,
+          env: probe_env.merge(
+            "FINAL_HEAD_ACTION" => action,
+            "FINAL_HEAD_SEEN" => final_head_seen,
+            "PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS" => "1"
+          )
+        )
+
+        assert unavailable_status.success?, "#{action}: #{unavailable_stderr}"
+        assert_empty unavailable_stderr, action
+        assert_equal "blocked", unavailable.fetch("status"), action
+        assert_equal ["repository-head-unavailable"], unavailable.fetch("reasons"), action
+      end
+
+      move_signal = File.join(directory, "head-moved.signal")
+      moved, moved_stderr, moved_status = evaluate_repository(
+        input,
+        repository,
+        env: probe_env.merge("MOVE_HEAD_TO" => moved_head, "MOVE_HEAD_SIGNAL" => move_signal)
+      )
+
+      assert moved_status.success?, moved_stderr
+      assert_empty moved_stderr
+      assert_path_exists move_signal
+      assert_equal moved_head, git_output(repository, "rev-parse", "HEAD")
+      assert_equal "blocked", moved.fetch("status")
+      assert_equal ["repository-head-changed"], moved.fetch("reasons")
+    end
+  end
+
   def test_repository_backed_mode_ignores_inherited_repository_selectors
     Dir.mktmpdir("task-review-loop-repository") do |directory|
       repository = File.join(directory, "repository")
@@ -526,7 +628,7 @@ class TaskReviewLoopTest < Minitest::Test
         repository,
         env: {
           "PATH" => "#{fake_bin}:#{ENV.fetch('PATH')}",
-          "REAL_GIT" => `command -v git`.strip,
+          "REAL_GIT" => executable_on_path("git"),
           "PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS" => "1"
         }
       )
@@ -2640,6 +2742,14 @@ class TaskReviewLoopTest < Minitest::Test
   end
 
   private
+
+  def executable_on_path(name)
+    executable = ENV.fetch("PATH").split(File::PATH_SEPARATOR).filter_map do |path|
+      candidate = File.expand_path(File.join(path, name))
+      candidate if File.file?(candidate) && File.executable?(candidate)
+    end.first
+    executable || raise("#{name} executable not found on PATH")
+  end
 
   def exact_patch(path, text)
     "diff --git a/#{path} b/#{path}\n--- a/#{path}\n+++ b/#{path}\n@@ -0,0 +1 @@\n+#{text}\n"

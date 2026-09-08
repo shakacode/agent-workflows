@@ -980,6 +980,20 @@ module TaskReviewLoop
         errors << "#{label}-canonical-diff-mismatch"
       end
     end
+    final_head, final_head_stderr, final_head_status = begin
+      PrBatchGitProbeEnv.capture3(
+        PrBatchGitProbeEnv.probe_env,
+        "git", "rev-parse", "--verify", "HEAD^{commit}", chdir: canonical_root
+      )
+    rescue PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError
+      errors << "repository-head-unavailable"
+      return errors
+    end
+    unless final_head_status.success? && final_head_stderr.empty?
+      errors << "repository-head-unavailable"
+      return errors
+    end
+    errors << "repository-head-changed" unless final_head.strip == current_head
     errors
   rescue PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError, TypeError
     ["repository-root-invalid"]
