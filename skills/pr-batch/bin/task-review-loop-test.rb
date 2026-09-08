@@ -43,6 +43,10 @@ CAP_AUTHORITY_ENV = {
   "AGENT_WORKFLOW_TASK_REVIEW_COORDINATOR_ID" => "coordinator-a",
   "AGENT_WORKFLOW_TASK_REVIEW_WAIVER_AUTHORITY_REFS" => JSON.generate(["maintainer://justin"])
 }.freeze
+DIRECT_REDUCTION = <<~'RUBY'
+  load ARGV.fetch(0)
+  puts JSON.generate(TaskReviewLoop.reduce(JSON.parse($stdin.read)))
+RUBY
 
 class TaskReviewLoopTest < Minitest::Test
   def test_schema_is_closed_and_accepts_the_clean_contract
@@ -87,6 +91,29 @@ class TaskReviewLoopTest < Minitest::Test
     validation = File.read(VALIDATE, encoding: "UTF-8")
 
     assert_equal 1, validation.scan("ruby skills/pr-batch/bin/task-review-loop-test.rb").length
+  end
+
+  def test_cli_requires_repository_root_before_authorizing_completion
+    Dir.mktmpdir("task-review-loop") do |directory|
+      stdout, stderr, status = Open3.capture3(
+        CAP_AUTHORITY_ENV,
+        HELPER,
+        stdin_data: JSON.generate(clean_review_input(directory))
+      )
+
+      assert status.success?, stderr
+      assert_empty stderr
+      assert_equal(
+        {
+          "contract" => "task-review-loop-decision",
+          "version" => 1,
+          "status" => "blocked",
+          "dependent_task_permitted" => false,
+          "reasons" => ["repository-root-required"]
+        },
+        JSON.parse(stdout)
+      )
+    end
   end
 
   def test_flat_install_ships_the_schema_and_canonical_finding_validator
@@ -610,7 +637,7 @@ class TaskReviewLoopTest < Minitest::Test
       File.mkfifo(path, 0o600)
       input["open_findings"]["path"] = path
 
-      Open3.popen3(HELPER) do |stdin, stdout, stderr, waiter|
+      Open3.popen3(RbConfig.ruby, "-e", DIRECT_REDUCTION, HELPER) do |stdin, stdout, stderr, waiter|
         stdin.write(JSON.generate(input))
         stdin.close
         begin
@@ -655,6 +682,7 @@ class TaskReviewLoopTest < Minitest::Test
           original_open.call(opened_path, *args, &block)
         end
         load ARGV.fetch(0)
+        puts JSON.generate(TaskReviewLoop.reduce(JSON.parse($stdin.read)))
       RUBY
       stdout, stderr, status = Open3.capture3(
         { "TASK_REVIEW_FINDINGS_PATH" => input.dig("open_findings", "path") },
@@ -691,6 +719,7 @@ class TaskReviewLoopTest < Minitest::Test
           end
         end
         load ARGV.fetch(0)
+        puts JSON.generate(TaskReviewLoop.reduce(JSON.parse($stdin.read)))
       RUBY
       stdout, stderr, status = Open3.capture3(
         { "TASK_REVIEW_FINDINGS_PATH" => input.dig("open_findings", "path") },
@@ -759,6 +788,7 @@ class TaskReviewLoopTest < Minitest::Test
           original_open.call(path, *args, &block)
         end
         load ARGV.fetch(0)
+        puts JSON.generate(TaskReviewLoop.reduce(JSON.parse($stdin.read)))
       RUBY
 
       stdout, stderr, status = Open3.capture3(
@@ -3020,7 +3050,14 @@ class TaskReviewLoopTest < Minitest::Test
   end
 
   def evaluate(input, env = {})
-    stdout, stderr, status = Open3.capture3(CAP_AUTHORITY_ENV.merge(env), HELPER, stdin_data: JSON.generate(input))
+    stdout, stderr, status = Open3.capture3(
+      CAP_AUTHORITY_ENV.merge(env),
+      RbConfig.ruby,
+      "-e",
+      DIRECT_REDUCTION,
+      HELPER,
+      stdin_data: JSON.generate(input)
+    )
     assert status.success?, stderr
     [JSON.parse(stdout), stdout]
   end

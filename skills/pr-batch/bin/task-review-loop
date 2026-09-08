@@ -1052,16 +1052,23 @@ module TaskReviewLoop
   end
 end
 
-options = {}
-OptionParser.new do |parser|
-  parser.on("--repository-root PATH", "Validate review evidence against repository-derived HEAD and diffs") do |value|
-    options[:repository_root] = value
-  end
-end.parse!
+if $PROGRAM_NAME == __FILE__
+  options = {}
+  OptionParser.new do |parser|
+    parser.on("--repository-root PATH", "Validate review evidence against repository-derived HEAD and diffs") do |value|
+      options[:repository_root] = value
+    end
+  end.parse!
 
-begin
-  input = JSON.parse($stdin.read)
-  puts JSON.generate(TaskReviewLoop.reduce(input, repository_root: options[:repository_root]))
-rescue JSON::ParserError
-  puts JSON.generate(TaskReviewLoop.decision("blocked", false, ["malformed-json"]))
+  unless options.key?(:repository_root)
+    puts JSON.generate(TaskReviewLoop.decision("blocked", false, ["repository-root-required"]))
+    exit 0
+  end
+
+  begin
+    input = JSON.parse($stdin.read)
+    puts JSON.generate(TaskReviewLoop.reduce(input, repository_root: options[:repository_root]))
+  rescue JSON::ParserError
+    puts JSON.generate(TaskReviewLoop.decision("blocked", false, ["malformed-json"]))
+  end
 end
