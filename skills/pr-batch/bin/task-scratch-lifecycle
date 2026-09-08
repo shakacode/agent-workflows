@@ -233,8 +233,19 @@ module TaskScratchLifecycle
       held_parent_stat = scratch_parent_file.stat
       fail!("scratch-parent-invalid") unless held_parent_stat.directory? &&
                                              same_identity?(held_parent_stat, scratch_parent_stat)
-      root_name = begin
-        create_scratch_directory(scratch_parent_file)
+      root_name = nil
+      begin
+        10.times do
+          candidate = "task-scratch-#{SecureRandom.hex(16)}"
+          result = CleanupSyscalls.mkdirat(scratch_parent_file.fileno, candidate, 0o700)
+          if result.zero?
+            root_name = candidate
+            break
+          end
+          raise SystemCallError.new("mkdirat scratch root", Fiddle.last_error) unless
+            Fiddle.last_error == Errno::EEXIST::Errno
+        end
+        fail!("scratch-parent-invalid") unless root_name
       rescue SystemCallError
         fail!("scratch-parent-invalid")
       end
@@ -286,7 +297,13 @@ module TaskScratchLifecycle
           )
         )
         marker_file.close
-        fail!("scratch-initialization-failure") unless pathname_identity_matches?(scratch_parent, held_parent_stat)
+        parent_path_matches = begin
+          candidate = File.lstat(scratch_parent)
+          candidate.directory? && same_identity?(candidate, held_parent_stat)
+        rescue SystemCallError, ArgumentError
+          false
+        end
+        fail!("scratch-initialization-failure") unless parent_path_matches
         fail!("scratch-initialization-failure") unless entry_matches?(
           scratch_parent_file,
           root_name,
@@ -301,13 +318,18 @@ module TaskScratchLifecycle
       rescue LifecycleError, SystemCallError, ArgumentError
         begin
           marker_file&.close unless marker_file&.closed?
-          remove_created_scratch_root(
-            scratch_parent_file,
-            root_name,
-            root_file,
-            created_root_stat,
-            marker_stat
-          )
+          if scratch_parent_file && root_name && root_file && created_root_stat &&
+             same_identity?(root_file.stat, created_root_stat)
+            if marker_stat && entry_matches?(root_file, OWNER_BASENAME, marker_stat)
+              detach_and_remove(root_file, OWNER_BASENAME, marker_stat)
+            end
+            if directory_children(root_file).empty?
+              bound_name = [root_name, *directory_children(scratch_parent_file)].uniq.find do |name|
+                entry_matches?(scratch_parent_file, name, created_root_stat)
+              end
+              detach_and_remove(scratch_parent_file, bound_name, created_root_stat, directory_entry: true) if bound_name
+            end
+          end
         rescue LifecycleError, SystemCallError, ArgumentError
           nil
         end
@@ -380,40 +402,6 @@ module TaskScratchLifecycle
 
   def same_identity?(left, right)
     left && right && left.dev == right.dev && left.ino == right.ino
-  end
-
-  def pathname_identity_matches?(path, expected_stat)
-    candidate = File.lstat(path)
-    candidate.directory? && same_identity?(candidate, expected_stat)
-  rescue SystemCallError, ArgumentError
-    false
-  end
-
-  def create_scratch_directory(parent)
-    10.times do
-      name = "task-scratch-#{SecureRandom.hex(16)}"
-      result = CleanupSyscalls.mkdirat(parent.fileno, name, 0o700)
-      return name if result.zero?
-      raise SystemCallError.new("mkdirat scratch root", Fiddle.last_error) unless
-        Fiddle.last_error == Errno::EEXIST::Errno
-    end
-    fail!("scratch-parent-invalid")
-  end
-
-  def remove_created_scratch_root(parent, preferred_name, root, root_stat, marker_stat)
-    return unless parent && preferred_name && root && root_stat && same_identity?(root.stat, root_stat)
-
-    if marker_stat && entry_matches?(root, OWNER_BASENAME, marker_stat)
-      detach_and_remove(root, OWNER_BASENAME, marker_stat)
-    end
-    return unless directory_children(root).empty?
-
-    bound_name = [preferred_name, *directory_children(parent)].uniq.find do |name|
-      entry_matches?(parent, name, root_stat)
-    end
-    detach_and_remove(parent, bound_name, root_stat, directory_entry: true) if bound_name
-  rescue LifecycleError, SystemCallError, ArgumentError
-    nil
   end
 
   def open_at(directory, name)

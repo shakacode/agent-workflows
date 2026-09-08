@@ -691,6 +691,69 @@ class TaskScratchLifecycleTest < Minitest::Test
     end
   end
 
+  def test_create_blocks_after_ten_mkdirat_collisions_without_touching_collision_entries
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(helper_root)
+      collision_names = 10.times.map { |index| "task-scratch-#{format('%032x', index)}" }
+      collision_names.each do |name|
+        collision_path = File.join(scratch_parent, name)
+        Dir.mkdir(collision_path)
+        File.write(File.join(collision_path, "sentinel.txt"), "#{name}\n")
+      end
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      instrumented_helper = File.read(HELPER).sub(
+        "module TaskScratchLifecycle\n",
+        <<~RUBY
+          if ENV["TASK_SCRATCH_DETERMINISTIC_COLLISIONS"]
+            module SecureRandom
+              class << self
+                alias task_scratch_original_hex hex
+
+                def hex(length = nil)
+                  return task_scratch_original_hex(length) unless length == 16
+
+                  @task_scratch_collision_index ||= -1
+                  @task_scratch_collision_index += 1
+                  format("%032x", @task_scratch_collision_index)
+                end
+              end
+            end
+          end
+          module TaskScratchLifecycle
+        RUBY
+      )
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      File.chmod(0o755, lifecycle_helper)
+
+      blocked, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        helper: lifecycle_helper,
+        env: { "TASK_SCRATCH_DETERMINISTIC_COLLISIONS" => "1" }
+      )
+
+      refute create_status.success?
+      assert_empty create_stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "scratch-parent-invalid", blocked.fetch("reason")
+      assert_equal collision_names, Dir.children(scratch_parent).sort
+      collision_names.each do |name|
+        collision_path = File.join(scratch_parent, name)
+        assert_equal ["sentinel.txt"], Dir.children(collision_path)
+        assert_equal "#{name}\n", File.read(File.join(collision_path, "sentinel.txt"))
+      end
+    end
+  end
+
   def test_create_returns_structured_block_when_scratch_parent_disappears_after_directory_check
     Dir.mktmpdir("task-scratch-lifecycle") do |directory|
       repository, = build_repository(directory)
@@ -702,13 +765,13 @@ class TaskScratchLifecycleTest < Minitest::Test
       Dir.mkdir(helper_root)
       lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
       instrumented_helper = File.read(HELPER).sub(
-        "      root_name = begin\n",
+        "      root_name = nil\n",
         <<~RUBY.gsub(/^/, "      ")
           if ENV["TASK_SCRATCH_AFTER_PARENT_DIRECTORY_CHECK_SIGNAL"]
             File.write(ENV.fetch("TASK_SCRATCH_AFTER_PARENT_DIRECTORY_CHECK_SIGNAL"), "ready")
             sleep 0.01 until File.exist?(ENV.fetch("TASK_SCRATCH_AFTER_PARENT_DIRECTORY_CHECK_RELEASE"))
           end
-          root_name = begin
+          root_name = nil
         RUBY
       )
       refute_equal File.read(HELPER), instrumented_helper
@@ -754,13 +817,13 @@ class TaskScratchLifecycleTest < Minitest::Test
       Dir.mkdir(helper_root)
       lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
       instrumented_helper = File.read(HELPER).sub(
-        "      root_name = begin\n",
+        "      root_name = nil\n",
         <<~RUBY.gsub(/^/, "      ")
           if ENV["TASK_SCRATCH_AFTER_PARENT_OPEN_SIGNAL"]
             File.write(ENV.fetch("TASK_SCRATCH_AFTER_PARENT_OPEN_SIGNAL"), "ready")
             sleep 0.01 until File.exist?(ENV.fetch("TASK_SCRATCH_AFTER_PARENT_OPEN_RELEASE"))
           end
-          root_name = begin
+          root_name = nil
         RUBY
       )
       refute_equal File.read(HELPER), instrumented_helper
