@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 require_relative "../../../bin/agent_doctor/autonomous_merge_policy"
 require_relative "../lib/autonomous_merge_runtime_trust"
@@ -23,9 +25,9 @@ HUMAN_STATE = "`ready-human-review-required` carries the exact current head SHA,
               "rollback status, and the exact durable human decision needed."
 UNKNOWN_STATE = "`autonomous-merge-evidence-unknown` carries the exact current head SHA, evidence failure, " \
                 "trusted-base policy provenance, and repair action."
-GMCC_HUMAN_DECISION_BINDING = "auto=>exact verdict/head/sorted-gates/rollback; merge iff " \
-                              "autonomous-merge-eligible OR human-approved-for-current-head+" \
-                              "durable-decision(proven-human+merge-authority)"
+GMCC_HUMAN_DECISION_BINDING = "auto=>exact verdict/head/sorted-gates/rollback;merge iff " \
+                              "autonomous-merge-eligible|human-approved-for-current-head+" \
+                              "durable-decision(proven+merge-authority)"
 THRESHOLD_DOCUMENTATION_PARITY = "ADR 0003 is the source of truth for these copied portable defaults. " \
                                  "File, line, and commit maxima are enforced; max_reviewed_heads is " \
                                  "shadow-only until a checked calibration artifact explicitly graduates " \
@@ -59,7 +61,7 @@ class AutonomousMergeContractTest < Minitest::Test
 
   def test_all_entry_points_preserve_eligibility_and_distinct_terminal_states
     PARITY_PATHS.each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ")
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ")
 
       assert_includes text, NECESSARY_NOT_SUFFICIENT, path
       assert_includes text, UNKNOWN_IS_NOT_APPROVAL, path
@@ -68,7 +70,7 @@ class AutonomousMergeContractTest < Minitest::Test
     end
 
     ROUTE_PATHS.each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
       assert_includes text, "pr-batch-integration-closeout.md#autonomous-merge-eligibility-gate", path
     end
   end
@@ -97,9 +99,9 @@ class AutonomousMergeContractTest < Minitest::Test
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
     ].each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
 
-      assert_includes text, "GMCC-v4:"
+      assert_includes text, "GMCC-v5:"
       assert_includes text, "ready-human-review-required"
       assert_includes text, "autonomous-merge-evidence-unknown"
       assert_includes text, GMCC_HUMAN_DECISION_BINDING
@@ -278,6 +280,14 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_path}"
   end
 
+  def test_unblock_component_is_an_unconditional_policy_surface
+    source_path = "workflows/pr-batch-unblock.md"
+
+    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_path}"
+  end
+
   def test_current_integration_policy_components_are_portably_self_protecting
     source_pattern = "skills/pr-batch/lib/current_integration_*.rb"
 
@@ -300,12 +310,12 @@ class AutonomousMergeContractTest < Minitest::Test
   private
 
   def normalized_policy_prose(path)
-    File.read(File.join(ROOT, path), encoding: "UTF-8")
-        .lines
-        .map { |line| line.sub(/\A# ?/, "") }
-        .join
-        .delete("`")
-        .gsub(/\s+/, " ")
+    SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
+                    .lines
+                    .map { |line| line.sub(/\A# ?/, "") }
+                    .join
+                    .delete("`")
+                    .gsub(/\s+/, " ")
   end
 
   def match_any?(patterns, path)

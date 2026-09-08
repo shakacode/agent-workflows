@@ -1600,8 +1600,8 @@ class BatchUsageReceiptTest < Minitest::Test
     [workflow, skill].each do |surface|
       assert_includes surface,
                       "pr-batch-integration-closeout.md#completed-batch-audit-receipt-and-archive-replay"
-      assert_match(/contributing-turn\s+counts/, surface)
     end
+    assert_match(/contributing-turn\s+counts/, workflow)
   end
 
   def test_repo_validation_pins_json_schemer_in_the_receipt_test_process

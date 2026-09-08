@@ -1,6 +1,10 @@
 # ShakaCode Agent Workflows
 
-Portable Codex and Claude workflow pack for ShakaCode repositories.
+Portable Codex and Claude workflow pack.
+
+[![ShakaCode Agent Workflows — Run AI coding agents in fleets, safely](https://agents.shakacode.com/og.png)](https://agents.shakacode.com)
+
+**[Documentation →](https://agents.shakacode.com)**
 
 This repository packages reusable agent skills, workflow prompts, and helper
 scripts for PR batches, review triage, merge readiness, CI routing, changelog
@@ -160,7 +164,7 @@ The selected delivery mode is durable install state. Repeated installs,
 explicit `--delivery-mode` changes it.
 
 Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor`,
-`agent-workflows-doctor`, `agent-workflows-status`,
+`agent-workflows-doctor`, `agent-workflows-refresh`, `agent-workflows-status`,
 `agent-workflows-trust-audit`, and `upgrade-agent-workflows` available as normal
 commands.
 
@@ -215,6 +219,22 @@ binaries, workflows, docs, metadata, status, or upgrades. The installer fails
 closed instead of creating native-plus-flat duplicates. Native plugin updates
 remain owned by the host plugin flow, not `upgrade-agent-workflows`.
 
+Request an immediate native-plugin refresh when you need the latest shared
+workflows without waiting for the host's normal update cycle:
+
+```bash
+agent-workflows-refresh --host codex
+agent-workflows-refresh --host claude
+```
+
+This uses the host's native marketplace and plugin update commands, so the
+newest marketplace commit does not need a separate Agent Workflows release.
+Codex already refreshes configured Git marketplaces when it starts. Claude can
+check third-party marketplaces after startup when auto-update is enabled, but
+that setting is off by default and the check may be delayed. After a Claude
+refresh, run `/reload-plugins` to load the update in the current session. Restart
+Codex when an existing session must rediscover changed skills or instructions.
+
 ## Consumer Repo Adoption
 
 From each repository that should use these workflows, initialize and validate a
@@ -267,6 +287,10 @@ Use [docs/source-pack-glossary.md](docs/source-pack-glossary.md) for canonical
 vocabulary around source-pack distribution, install paths, seams, readiness
 states, review findings, and state-machine fixtures.
 
+### Examples and adopters
+
+- [shakacode/shakaperf](https://github.com/shakacode/shakaperf): TypeScript/yarn monorepo with `.agents/agent-workflow.yml` in the `.agents/` seam.
+
 ## Maintainer Sync Reference
 
 Most teams can adopt the source pack with the Quick Start and Consumer Repo
@@ -292,6 +316,9 @@ The docs for this pack are the
 [ShakaCode Agent Workflow Playbook](docs/README.md). Start there when deciding
 which workflow to use, how to install the pack, how to adopt it in a consumer
 repo, or how to validate the agent workflow contract.
+
+To report a suspected vulnerability, follow the
+[Security Policy](SECURITY.md).
 
 ## License
 

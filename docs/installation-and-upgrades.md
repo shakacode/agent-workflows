@@ -73,9 +73,51 @@ host/profile:
 | `plugin-companion` | Native `scw` plugin only | License, workflows, docs, helpers, metadata, status, and upgrades |
 
 `--mode copy|symlink` controls how installer-managed assets are materialized.
-It is separate from `--delivery-mode flat|plugin-companion`. New installs
-default to `flat`; metadata written before delivery modes existed is also read
-as `flat`.
+It is separate from `--delivery-mode flat|plugin-companion`.
+
+### Fresh-Install Delivery Default
+
+**Decision (issue #248): the generic installer keeps `flat` as its fresh-install
+default. This is an explicit product decision, not an inherited side effect of
+the legacy-metadata compatibility rule.**
+
+Rationale:
+
+- Companion mode cannot bootstrap itself. It requires an already enabled native
+  `scw` plugin, and the installer deliberately leaves host plugin installation
+  and updates to the host plugin flow. Defaulting a clean home to
+  `plugin-companion` would make the historical no-flag command fail on every
+  clean host.
+- Detecting an active plugin and silently selecting companion would make the
+  no-flag result depend on ambient machine state and would change what the
+  documented unattended command does on hosts that already have the plugin.
+- `flat` is the only mode that works on a clean home with no host plugin
+  support, no marketplace access, and no network, such as Codex IDE and
+  offline or restricted hosts.
+- The case for native delivery is real but is a documentation and
+  opinionated-setup concern rather than an unattended-default concern. Plugin
+  namespaces avoid collisions with unrelated personal skills, and native
+  delivery gives the host ownership of provider identity and updates. Prefer
+  the native `scw` plugin plus `--delivery-mode plugin-companion` on
+  plugin-capable Codex CLI/Desktop and Claude Code, and choose it explicitly
+  rather than having the installer infer it.
+
+Unchanged by this decision:
+
+- Deliberate `--delivery-mode flat` installation stays supported.
+- Metadata predating `delivery_mode` continues to resolve as `flat`.
+- Exactly one auto-invocable Agent Workflows surface stays enforced: `flat`
+  requires native `scw` to be inactive, `plugin-companion` requires it to be
+  active, and unknown native state fails closed.
+- Unrelated personal skills under `<target>/skills` are preserved in both modes.
+
+Revisit this decision when the installer can bootstrap and prove native `scw`
+from its own host contract, when partial-failure ownership between host plugin
+installation and companion installation is defined, and when
+`agent-workflows-status`, `upgrade-agent-workflows`, and `agent-stack` can
+report and replay an adaptive default consistently. A native-plugin-first
+default belongs to the opinionated ShakaCode `agent-stack` profile and is
+tracked separately from this generic installer default.
 
 ## Native Plugin Paths
 
@@ -94,6 +136,16 @@ Install the Claude Code plugin from the repository marketplace:
 /plugin marketplace add shakacode/agent-workflows
 /plugin install scw@agent-workflows
 ```
+
+The Claude plugin deliberately omits an explicit `version`. Claude therefore
+uses the Git commit SHA as the plugin version, so every commit on the
+marketplace's tracked branch is updateable without maintaining duplicate
+release numbers. Enable auto-update for the `agent-workflows` marketplace in
+Claude's **Plugins → Marketplaces** UI when the installation should follow that
+branch automatically; third-party marketplace auto-update is disabled by
+default. Claude checks after startup and may delay the check by up to ten
+minutes. Run `/reload-plugins` to load an installed update in the current
+session, or start a new session.
 
 For Codex, point the current marketplace or plugin-source flow at this cloned or
 released source pack and select `scw`:
@@ -439,6 +491,7 @@ The installer writes:
 - `<target>/bin/agent_doctor/*` (focused runtime modules shared by the workflow and master doctors)
 - `<target>/bin/agent-workflows-delivery-state`
 - `<target>/bin/agent-workflows-doctor`
+- `<target>/bin/agent-workflows-refresh`
 - `<target>/bin/agent-workflows-status`
 - `<target>/bin/agent-workflows-trust-audit`
 - `<target>/bin/install-agent-workflows`
@@ -453,7 +506,8 @@ consumer-owned docs under `<target>/docs`.
 The metadata file records host, artifact mode, skill delivery mode, source
 clone, pack version, source revision, branch, remote, and install time. Copy
 installs also record `managed_skill_copy_fingerprints`,
-`managed_pack_doc_copy_fingerprints`, and `managed_pack_root_copy_fingerprints`,
+`managed_pack_doc_copy_fingerprints`, `managed_pack_helper_copy_fingerprints`,
+and `managed_pack_root_copy_fingerprints`,
 including every installed `<target>/docs/solutions/*` document and the
 third-party notice. On repeat installation, these fingerprints
 prove that an installed managed copy has not been edited even when the recorded
@@ -501,6 +555,33 @@ evidence, and flat-skill inventory. A collision, ambiguous native state, or an
 invalid companion layout returns `CHECK_FAILED` with cleanup guidance.
 
 ## Upgrade
+
+### Refresh a native plugin
+
+Use the installed refresh helper when you need the newest shared workflow
+behavior immediately rather than waiting for the host's normal update cycle:
+
+```bash
+agent-workflows-refresh --host codex
+agent-workflows-refresh --host claude
+```
+
+For Codex, the helper upgrades the configured `agent-workflows` marketplace.
+For Claude, it updates that marketplace and then updates
+`scw@agent-workflows`. The newest marketplace commit is therefore available
+without creating a separate Agent Workflows release. The helper does not add a
+missing marketplace or install a missing plugin; follow the selected host's
+setup guidance first.
+
+This command is an explicit on-demand refresh; it does not replace native
+automatic updates. Codex refreshes configured Git marketplaces when it starts.
+Claude can check third-party marketplaces after startup when marketplace
+auto-update is enabled, but that setting is off by default and the check may be
+delayed. After refreshing Claude, run `/reload-plugins` to load the update in the
+current session. Restart Codex when an existing session must rediscover changed
+skills or instructions.
+
+### Upgrade an installer-managed pack
 
 Upgrade the source clone, reinstall the pack, and validate a consumer repo seam:
 
@@ -556,6 +637,32 @@ For each active consumer repo:
 cd /path/to/consumer/repo
 agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
 ```
+
+Consumers that intentionally leave named, non-required CircleCI workflows on
+their provider approval hold may opt into the closed trusted-base policy:
+
+```yaml
+ci_readiness:
+  version: 1
+  optional_approval_held_checks:
+    - id: storybook-review-app
+      app_slug: circleci-checks
+      name: storybook-review-app
+```
+
+List only exact hosted workflow names whose approval hold is informational for
+that repository. The seam doctor rejects malformed, unknown, or ambiguous
+rules. Readiness still blocks required or explicitly selected workflows,
+active jobs, incomplete inventories, and stale or unrecognized provider
+evidence. The helper retains the raw check row and authenticates the policy from
+the live base commit; editing the working tree or a receipt cannot create a
+waiver.
+
+After upgrading, update authoritative readiness and assurance callers to pass
+the trusted consumer root and reviewed effective merge-base SHA. Walkthroughs
+and decisions must use `skills/pr-batch/bin/diff-identity` to bind the base ref,
+reviewed diff-base SHA, and full head SHA. Previously accepted caller-supplied
+opaque digests are intentionally rejected.
 
 The autonomous-merge gate takes effect from the installed workflow pack even
 when a consumer has no `autonomous_merge` mapping; omission uses portable

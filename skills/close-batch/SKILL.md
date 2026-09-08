@@ -93,9 +93,15 @@ closeout. When human attention is genuinely required, choose one route.
 
 Start `$pr-walkthrough` for the exact current diff when the maintainer asks to
 understand a PR or when the recorded `ask` authority reaches its walkthrough
-gate. Explain one conceptual change per response and pause for questions or
-explicit readiness. Do not repeat a walkthrough completed for the same diff
-identity. After the last step, refresh readiness after the walkthrough, then
+gate. A direct chat request uses live, read-only interaction; it does not grant
+comment authority. Use published-review mode when the recorded `ask` workflow
+selects it or the user explicitly requests it with comment authority.
+Prepare the complete map, then publish the orientation and every concept
+to GitHub in one pass under `$pr-walkthrough`'s mandatory inline-thread and
+no-anchor-stop rules. The owning task consumes replies asynchronously; after
+publication, use live interaction only when the maintainer explicitly asks.
+Do not repeat a walkthrough completed for the same
+diff identity. After the walkthrough, refresh readiness, then
 ask the merge question separately only if the same diff is still clean and a
 decision is required. Walkthrough participation never grants merge authority.
 
@@ -146,12 +152,17 @@ and user-ownership gate; never replace the canonical `$pr-batch` final handoff.
 Preserve its per-target final states and Batch Handoff Format sections, then
 mechanically validate its `coordination:` declaration through the resolved
 `$pr-batch` helper before emitting the final message. A nonzero result is `NOT
-COMPLETE`. Emit the compact `Completed-batch audit:` line immediately before the
-final `Conversation status:` line only from an existing verified receipt or
-after explicit closeout authority permits publication. During a read-only
-assessment with no verified receipt, list the missing receipt as an exact
-blocker and do not publish or invent one. Except for a lane-worker handoff, end
-with exactly one canonical line:
+COMPLETE`. Emit the compact `Completed-batch audit:` line before the closing
+stack — or, when the compact terminal structure seam applies to single-repo
+batches at or below `compact_terminal_structure_max_lanes`, inside that compact
+terminal structure — then keep the required receipt, the Unblock Block when
+the status is not clean, followed by the final `Conversation status:` line,
+only from an existing verified receipt. If explicit closeout authority permits
+publication, publish and verify the receipt first. During a read-only
+assessment with no verified receipt, emit no receipt line; list the missing
+receipt as an exact blocker and matching Unblock entry, and do not publish or
+invent one. Except for a lane-worker handoff, end with exactly one canonical
+line:
 
 ```text
 Conversation status: Ready for archiving.

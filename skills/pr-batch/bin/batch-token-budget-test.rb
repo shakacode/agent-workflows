@@ -150,6 +150,8 @@ class BatchTokenBudgetTest < Minitest::Test
     stdout_text = nil
     stderr_text = nil
     status = nil
+    stdout_reader = nil
+    stderr_reader = nil
     Open3.popen3(
       env || clock_options.fetch(:env),
       RbConfig.ruby,
@@ -167,15 +169,19 @@ class BatchTokenBudgetTest < Minitest::Test
       before_stdin&.call(wait_thread.pid)
       stdin.write(input)
       stdin.close
+      stdout_reader = Thread.new { stdout.read }
+      stderr_reader = Thread.new { stderr.read }
       unless wait_thread.join(timeout_seconds)
         Process.kill("TERM", wait_thread.pid)
         Process.kill("KILL", wait_thread.pid) unless wait_thread.join(0.2)
         wait_thread.join
+        stdout_reader.join
+        stderr_reader.join
         flunk "helper exceeded #{timeout_seconds}-second watchdog"
       end
 
-      stdout_text = stdout.read
-      stderr_text = stderr.read
+      stdout_text = stdout_reader.value
+      stderr_text = stderr_reader.value
       status = wait_thread.value
     ensure
       stdin.close unless stdin.closed?
@@ -183,6 +189,8 @@ class BatchTokenBudgetTest < Minitest::Test
         Process.kill("KILL", wait_thread.pid)
         wait_thread.join
       end
+      stdout_reader&.join
+      stderr_reader&.join
     end
     [stdout_text.empty? ? nil : JSON.parse(stdout_text), stderr_text, status]
   end
@@ -7967,14 +7975,15 @@ class BatchTokenBudgetTest < Minitest::Test
 
   def test_portable_budget_contract_describes_the_per_target_overshoot_envelope_consistently
     root = File.expand_path("../../..", __dir__)
-    %w[skills/pr-batch/SKILL.md workflows/pr-processing.md].each do |relative_path|
-      contract = File.read(File.join(root, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+    contract = File.read(
+      File.join(root, "workflows/pr-processing.md"),
+      encoding: "UTF-8"
+    ).gsub(/\s+/, " ")
 
-      assert_includes contract,
-                      "one verified already-running turn for each deduplicated admitted target and retained descendant"
-      refute_includes contract, "persisted envelope is exactly one in-flight turn"
-      assert_includes contract, "no greater than the persisted deduplicated target-plus-retained-descendant envelope"
-    end
+    assert_includes contract,
+                    "one verified already-running turn for each deduplicated admitted target and retained descendant"
+    refute_includes contract, "persisted envelope is exactly one in-flight turn"
+    assert_includes contract, "no greater than the persisted deduplicated target-plus-retained-descendant envelope"
   end
 
   def test_invalid_command_timestamps_are_rejected_before_lock_artifact_creation

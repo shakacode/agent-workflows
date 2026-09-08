@@ -74,7 +74,7 @@ event triggers, untrusted checkout and execution, credential persistence,
 shell/data boundaries, and third-party action behavior separately. Review
 workflows as code even when the scanner is clean.
 
-Dependabot proposes Action updates monthly in this source repository so a
+Dependabot proposes Action updates weekly in this source repository so a
 maintainer can inspect the upstream comparison and release notes, update the SHA
 and version comment together, review continued allowlist trust, and run
 `bin/validate`. Consumer repositories make their own explicit Dependabot

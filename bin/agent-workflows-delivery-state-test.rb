@@ -1173,6 +1173,43 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_claude_versionless_manifest_is_active_when_receipt_records_a_commit_sha
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "claude")
+      FileUtils.mkdir_p(File.join(target, "plugins"))
+      File.write(File.join(target, "settings.json"), "#{JSON.generate('enabledPlugins' => { 'scw@agent-workflows' => true })}\n")
+
+      # Claude records the tracked marketplace commit as the receipt version once the manifest omits `version`.
+      %w[3f9a6c2d8e1b4a7f0c5d9e2b6a1f8c3d7e0b4a9f 85cce0381e78].each do |sha|
+        plugin_root = File.join(target, "plugins/cache/agent-workflows/scw", sha)
+        write_manifest(plugin_root, host: "claude")
+        manifest_path = File.join(plugin_root, ".claude-plugin/plugin.json")
+        manifest = JSON.parse(File.read(manifest_path))
+        manifest.delete("version")
+        File.write(manifest_path, "#{JSON.pretty_generate(manifest)}\n")
+        File.write(
+          File.join(target, "plugins/installed_plugins.json"),
+          "#{JSON.generate('version' => 2, 'plugins' => { 'scw@agent-workflows' => [{ 'scope' => 'user', 'installPath' => plugin_root, 'version' => sha }] })}\n"
+        )
+
+        out, err, status = run_state("check", "--host", "claude", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "plugin-companion", "--json")
+        native = JSON.parse(out).fetch("native")
+        assert_equal "active", native["state"], "#{sha}: #{native.inspect}"
+        assert_equal ["example"], native["skill_names"], sha
+        assert status.success?, "#{sha}: #{out}#{err}"
+      end
+
+      # A manifest that still declares a version must keep matching the receipt.
+      plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/85cce0381e78")
+      manifest_path = File.join(plugin_root, ".claude-plugin/plugin.json")
+      manifest = JSON.parse(File.read(manifest_path)).merge("version" => "0.1.0")
+      File.write(manifest_path, "#{JSON.pretty_generate(manifest)}\n")
+      out, _err, status = run_state("check", "--host", "claude", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "plugin-companion", "--json")
+      refute status.success?, out
+      assert_equal "unknown", JSON.parse(out).dig("native", "state")
+    end
+  end
+
   def test_native_state_read_errors_are_structured_unknown
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       injection = File.join(tmp, "binread-error.rb")
@@ -1643,6 +1680,97 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
 
       assert status.success?, "#{out}#{err}"
       assert_equal "absent", JSON.parse(out).dig("flat", "state")
+    end
+  end
+
+  # A tool-manager shim, or a git advice line, writes to stderr while git itself
+  # succeeds. This reproduces that condition deterministically: a `git` wrapper
+  # on PATH warns and then execs the real git.
+  def write_noisy_git(root, fail_for: nil)
+    FileUtils.mkdir_p(root)
+    real_git = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR)
+                  .map { |dir| File.join(dir, "git") }
+                  .find { |path| File.file?(path) && File.executable?(path) }
+    refute_nil real_git, "no git executable on PATH"
+    wrapper = File.join(root, "git")
+    fail_clause =
+      if fail_for
+        "case \" $* \" in *\" #{fail_for} \"*) echo 'fatal: simulated #{fail_for} failure' >&2; exit 128;; esac"
+      else
+        ""
+      end
+    File.write(wrapper, <<~SH)
+      #!/bin/sh
+      echo 'mise WARN  no version is set for shim: git' >&2
+      #{fail_clause}
+      exec #{real_git} "$@"
+    SH
+    FileUtils.chmod(0o755, wrapper)
+    root
+  end
+
+  def with_noisy_git(root, fail_for: nil)
+    # Read PATH before building the wrapper: if that raises, `ensure` must
+    # still restore a real value rather than deleting PATH for the whole run.
+    original = ENV.fetch("PATH", "")
+    bin = write_noisy_git(root, fail_for: fail_for)
+    ENV["PATH"] = "#{bin}#{File::PATH_SEPARATOR}#{original}"
+    yield
+  ensure
+    ENV["PATH"] = original
+  end
+
+  def test_git_snapshot_skill_names_ignore_incidental_git_stderr
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+
+      names, snapshot = with_noisy_git(File.join(tmp, "bin")) do
+        AgentWorkflowsDeliveryState.skill_names(source, { "source" => source, "source_revision" => revision })
+      end
+
+      assert_equal({ type: :git, root: source, revision: revision }, snapshot)
+      assert_equal %w[alpha beta], names
+    end
+  end
+
+  def test_git_snapshot_comparison_ignores_incidental_git_stderr
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      snapshot = { type: :git, root: source, revision: revision }
+      installed = File.join(tmp, "installed/beta")
+      FileUtils.mkdir_p(File.dirname(installed))
+      FileUtils.cp_r(File.join(source, "skills/beta"), installed, preserve: true)
+
+      recorded, edited = with_noisy_git(File.join(tmp, "bin")) do
+        matched = AgentWorkflowsDeliveryState.matches_directory_snapshot?(installed, snapshot, "beta")
+        File.write(File.join(installed, "SKILL.md"), "personal edit\n")
+        [matched, AgentWorkflowsDeliveryState.matches_directory_snapshot?(installed, snapshot, "beta")]
+      end
+
+      assert recorded, "an unmodified copy must still match the recorded git snapshot"
+      refute edited, "a modified copy must not match the recorded git snapshot"
+    end
+  end
+
+  def test_failed_git_snapshot_read_falls_back_and_reports_git_stderr
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      names = nil
+
+      _out, err = capture_io do
+        names, = with_noisy_git(File.join(tmp, "bin"), fail_for: "ls-tree") do
+          AgentWorkflowsDeliveryState.skill_names(source, { "source" => source, "source_revision" => revision })
+        end
+      end
+
+      assert_equal %w[alpha beta], names
+      assert_includes err, "simulated ls-tree failure"
     end
   end
 end

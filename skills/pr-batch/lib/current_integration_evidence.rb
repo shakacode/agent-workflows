@@ -19,10 +19,6 @@ module CurrentIntegrationEvidence
   SYSTEM_TOOL_DIRS = %w[
     /opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin
   ].freeze
-  BUILTIN_HIGH_RISK_PATTERNS = %w[
-    .github/workflows/**
-    .github/actions/**
-  ].freeze
   GRAPHQL = <<~GRAPHQL
     query($owner: String!, $name: String!, $number: Int!, $qualifiedBase: String!) {
       repository(owner: $owner, name: $name) {
@@ -151,7 +147,13 @@ module CurrentIntegrationEvidence
     )
     raise Error, "GitHub current-integration query failed: #{stderr.lines.first.to_s.strip}" unless status.success?
 
-    payload = JSON.parse(stdout)
+    response = stdout.force_encoding(Encoding::UTF_8)
+    raise Error, "GitHub current-integration response is not valid UTF-8" unless response.valid_encoding?
+
+    payload = JSON.parse(response)
+    unless decoded_json_strings_valid?(payload)
+      raise Error, "GitHub current-integration response contains invalid Unicode scalar data"
+    end
     unless Array(payload["errors"]).empty?
       raise Error, "GitHub current-integration query returned errors"
     end
@@ -178,10 +180,25 @@ module CurrentIntegrationEvidence
       "base_sha" => current_ref&.dig("target", "oid"),
       "candidate" => normalized_candidate
     }
-  rescue JSON::ParserError, TypeError => e
+  rescue JSON::ParserError, EncodingError, TypeError => e
     raise Error, "GitHub current-integration evidence is malformed: #{e.message}"
   rescue Errno::ENOENT
     raise Error, "GitHub CLI is unavailable"
+  end
+
+  def decoded_json_strings_valid?(value)
+    case value
+    when String
+      value.valid_encoding?
+    when Array
+      value.all? { |item| decoded_json_strings_valid?(item) }
+    when Hash
+      value.all? do |key, item|
+        decoded_json_strings_valid?(key) && decoded_json_strings_valid?(item)
+      end
+    else
+      true
+    end
   end
 
   def validate_inputs!(repo_root:, repo:, pr_number:, base_ref:, recorded_base_sha:, head_sha:,
@@ -310,12 +327,27 @@ module CurrentIntegrationEvidence
   end
 
   def policy_path?(path, policy)
-    patterns = BUILTIN_HIGH_RISK_PATTERNS +
-               AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS + policy.policy_paths
-    patterns.any? { |pattern| AutonomousMergePolicy.match?(pattern, path) } ||
+    patterns = AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS + policy.policy_paths
+    github_actions_path?(path) ||
+      patterns.any? { |pattern| AutonomousMergePolicy.match?(pattern, path) } ||
       policy.human_review_paths.any? do |rule|
         AutonomousMergePolicy.match?(rule.fetch("pattern"), path)
       end
+  end
+
+  # Generated templates can ship workflows or actions to downstream
+  # repositories. Treat a canonical `.github/workflows/` or `.github/actions/`
+  # directory at any depth as high risk while still requiring a file below it.
+  def github_actions_path?(path)
+    return false unless path.is_a?(String)
+
+    components = path.split("/", -1)
+    return false if components.empty? || path.start_with?("/") || path.include?("\\") || path.include?("\0")
+    return false if components.any? { |component| component.empty? || %w[. ..].include?(component) }
+
+    components.each_cons(3).any? do |first, second, _file|
+      first == ".github" && %w[workflows actions].include?(second)
+    end
   end
 
   def canonical_paths(paths, label)

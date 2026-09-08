@@ -35,7 +35,8 @@ module AgentWorkflowsDeliveryState
     skills_root = File.realpath(File.expand_path(skills, root))
     plugin_root = File.realpath(root)
     return nil unless manifest.fetch("name") == "scw"
-    return nil if expected_version && manifest["version"] != expected_version
+    # Claude records the tracked marketplace commit as the receipt version when the manifest omits `version`.
+    return nil if expected_version && (host == "codex" || manifest.key?("version")) && manifest["version"] != expected_version
     if expected_source && normalized_plugin_source(manifest["repository"]) != normalized_plugin_source(expected_source)
       return nil
     end
@@ -434,6 +435,22 @@ module AgentWorkflowsDeliveryState
     metadata
   end
 
+  # Read the stdout of git as the structured channel. Incidental stderr — a
+  # tool-manager shim warning, a git advice line — is never data: git can
+  # succeed while writing it, and merging the two streams invents skill names
+  # and feeds untabbed rows to the ls-tree parser. Failure diagnostics stay
+  # visible on our own stderr instead of being dropped.
+  def git_capture(root, *args)
+    stdout, stderr, status = Open3.capture3("git", "-C", root, *args)
+    unless status.success?
+      diagnostic = stderr.force_encoding("UTF-8").scrub.strip
+      warn("git #{args.join(' ')} failed in #{root}: #{diagnostic}") unless diagnostic.empty?
+      return nil
+    end
+
+    stdout.force_encoding("UTF-8").scrub
+  end
+
   def git_snapshot_root(source_roots, revision)
     return nil unless revision.to_s.match?(/\A[0-9a-f]{40}\z/i)
 
@@ -446,8 +463,8 @@ module AgentWorkflowsDeliveryState
     revision = metadata&.fetch("source_revision", nil)
     roots = [metadata&.fetch("source", nil), source]
     if (git_root = git_snapshot_root(roots, revision))
-      output, status = Open3.capture2e("git", "-C", git_root, "ls-tree", "--name-only", "#{revision}:skills")
-      return [output.lines.map(&:strip).reject(&:empty?).sort, { type: :git, root: git_root, revision: revision }] if status.success?
+      output = git_capture(git_root, "ls-tree", "--name-only", "#{revision}:skills")
+      return [output.lines.map(&:strip).reject(&:empty?).sort, { type: :git, root: git_root, revision: revision }] if output
     end
 
     source_root = roots.compact.find { |root| File.directory?(File.join(root, "skills")) }
@@ -516,10 +533,8 @@ module AgentWorkflowsDeliveryState
 
     revision = snapshot.fetch(:revision)
     skill_root = "skills/#{skill_name}"
-    output, status = Open3.capture2e(
-      "git", "-C", snapshot.fetch(:root), "ls-tree", "-r", "-t", revision, "--", skill_root
-    )
-    return false unless status.success?
+    output = git_capture(snapshot.fetch(:root), "ls-tree", "-r", "-t", revision, "--", skill_root)
+    return false unless output
 
     expected = output.lines.filter_map do |line|
       metadata, path = line.chomp.split("\t", 2)
