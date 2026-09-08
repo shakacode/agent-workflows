@@ -129,8 +129,10 @@ module GithubActorTrust
   end
 
   def normalized_team_entry(value, require_owner:)
+    # A stray blank list item parses to nil, which splits to [] and leaves
+    # owner_or_slug nil; treat it as absent rather than crashing.
     owner_or_slug, slug = value.to_s.split("/", 2)
-    return if owner_or_slug.empty?
+    return if owner_or_slug.to_s.empty?
 
     if slug
       return if slug.empty?

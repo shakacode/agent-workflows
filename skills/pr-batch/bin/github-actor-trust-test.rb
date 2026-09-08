@@ -60,6 +60,14 @@ class GithubActorTrustTest < Minitest::Test
     assert_match(/listed in both/, error.message)
   end
 
+  # A stray blank list item parses to nil; that must not crash out of the
+  # Error contract both callers rescue on.
+  def test_blank_team_entry_is_ignored_rather_than_crashing
+    loaded = config("trusted_teams:\n  - \n  - owner/reviewers\n")
+
+    assert_equal [{ owner: "owner", slug: "reviewers" }], loaded.fetch(:trusted_teams)
+  end
+
   def test_malformed_yaml_fails_closed
     error = assert_raises(GithubActorTrust::Error) { config("trusted_users: [\n") }
 

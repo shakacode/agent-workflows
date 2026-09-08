@@ -17,13 +17,16 @@
 
 require "json"
 require "open3"
+require "timeout"
 
+require_relative "../../pr-batch/lib/git_probe_env"
 require_relative "../../pr-batch/lib/github_actor_trust"
 
 # Pure data shaping (no I/O) plus the gh-backed runner. The pure methods take the
 # raw `gh --paginate --slurp` output strings so they can be unit-tested directly.
 module FetchPrReviewData
   SUMMARY_MARKER = "<!-- address-review-summary -->"
+  PROBE_TIMEOUT_SECONDS = 10
 
   REVIEW_THREADS_QUERY = <<~GRAPHQL
     query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) {
@@ -43,8 +46,8 @@ module FetchPrReviewData
   # Decides which actors may supply actionable review text, using the same
   # allowlist and resolution order as pr-security-preflight.
   class TrustBoundary
-    def self.for(repo:, trust_config_path: nil, repo_root: nil, team_resolver: nil)
-      resolved = GithubActorTrust.resolve_path(trust_config_path, repo_root:)
+    def self.for(repo:, trust_config_path: nil, repo_root: nil, team_resolver: nil, repo_local_verifier: nil)
+      resolved = GithubActorTrust.resolve_path(trust_config_path, repo_root:, repo_local_verifier:)
       config = GithubActorTrust.load(path: resolved.fetch(:path), global: resolved.fetch(:global))
       new(repo:, config:, source: resolved.fetch(:source), team_resolver:)
     rescue GithubActorTrust::Error => e
@@ -410,17 +413,76 @@ module FetchPrReviewData
     end
 
     def trust_boundary(repo, trust_config_path)
-      TrustBoundary.for(repo:, trust_config_path:, repo_root: git_toplevel, team_resolver: method(:team_member?))
+      TrustBoundary.for(
+        repo:,
+        trust_config_path:,
+        # Only consulted when no explicit config was named, so do not pay for a
+        # git subprocess on the --trust-config path.
+        repo_root: trust_config_path ? nil : git_toplevel,
+        repo_local_verifier: repo_local_verifier(repo),
+        team_resolver: method(:team_member?)
+      )
     end
 
-    def git_toplevel
-      out, status = Open3.capture2("git", "rev-parse", "--show-toplevel")
-      return unless status.success?
+    # A config may use unqualified `trusted_teams` slugs only when it demonstrably
+    # belongs to the repo being read; otherwise the slug would be rebound to
+    # whatever owner --repo names. pr-security-preflight proves this from git
+    # remotes; here the checkout's own `gh` identity is the same fact and is
+    # already how this tool resolves a repo.
+    def repo_local_verifier(repo)
+      lambda do |path|
+        root = git_toplevel(chdir: File.dirname(path))
+        next false unless root && path_inside?(path, root)
+
+        checkout = checkout_repo(root)
+        !checkout.nil? && checkout.casecmp(repo).zero?
+      end
+    end
+
+    def path_inside?(path, root)
+      expanded_root = canonical_path(root)
+      expanded_path = canonical_path(path)
+      expanded_path == expanded_root || expanded_path.start_with?("#{expanded_root}#{File::SEPARATOR}")
+    end
+
+    def canonical_path(path)
+      File.realpath(path)
+    rescue SystemCallError
+      File.expand_path(path)
+    end
+
+    def checkout_repo(root)
+      out, status = capture_probe("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner",
+                                  chdir: root)
+      return unless status&.success?
+
+      name = out.strip
+      name unless name.empty?
+    end
+
+    def git_toplevel(chdir: nil)
+      args = ["git"]
+      args.push("-C", chdir) if chdir
+      args.concat(["rev-parse", "--show-toplevel"])
+      out, status = capture_probe(*args)
+      return unless status&.success?
 
       root = out.force_encoding("UTF-8").strip
       root unless root.empty?
+    end
+
+    # Bounded and environment-sanitized like the preflight's git probe, so a
+    # hung credential helper or a GIT_CONFIG_* override cannot stall this tool.
+    def capture_probe(*cmd, chdir: nil)
+      opts = chdir ? { chdir: } : {}
+      Timeout.timeout(PROBE_TIMEOUT_SECONDS) do
+        Open3.capture2(PrBatchGitProbeEnv.probe_env, *cmd, **opts)
+      end
+    rescue Timeout::Error
+      warn "WARN: #{cmd.first(3).join(' ')} timed out after #{PROBE_TIMEOUT_SECONDS}s"
+      [+"", nil]
     rescue SystemCallError
-      nil
+      [+"", nil]
     end
 
     # Team membership is a GitHub fact, not a local one; an unreachable API

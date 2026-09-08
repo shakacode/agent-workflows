@@ -196,6 +196,27 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     end
   end
 
+  # A verified repo-local config may use an unqualified team slug; without that
+  # proof the slug is dropped rather than rebound to the caller's --repo owner.
+  def test_repo_local_verifier_decides_whether_a_team_slug_is_honoured
+    Dir.mktmpdir("aw794-team") do |dir|
+      path = File.join(dir, "trusted-github-actors.yml")
+      File.write(path, "trusted_teams:\n  - reviewers\n")
+      resolver = ->(owner:, slug:, login:) { [owner, slug, login] == %w[owner reviewers dev] }
+
+      verified = FetchPrReviewData::TrustBoundary.for(
+        repo: "owner/repo", trust_config_path: path, team_resolver: resolver,
+        repo_local_verifier: ->(_path) { true }
+      )
+      unverified = FetchPrReviewData::TrustBoundary.for(
+        repo: "owner/repo", trust_config_path: path, team_resolver: resolver
+      )
+
+      assert verified.actionable?("dev"), "a verified repo-local config honours its team"
+      refute unverified.actionable?("dev"), "an unverified config must not rebind an unqualified slug"
+    end
+  end
+
   def test_packet_binds_the_trust_config_and_its_digest
     with_trust_config do |path|
       trust = assembled(path)["trust"]
