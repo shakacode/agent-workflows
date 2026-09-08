@@ -83,6 +83,8 @@ module TaskScratchLifecycle
 
     normalized = value.unicode_normalize(:nfkc).strip
     value == normalized && !normalized.empty? && normalized.casecmp("UNKNOWN").nonzero?
+  rescue Encoding::CompatibilityError, ArgumentError
+    false
   end
 
   def absolute_path?(value)
@@ -161,14 +163,14 @@ module TaskScratchLifecycle
   end
 
   def git_output(worktree_root, *arguments)
-    stdout, stderr, status = Open3.capture3(
+    stdout, stderr, status = PrBatchGitProbeEnv.capture3(
       PrBatchGitProbeEnv.probe_env,
       "git", *arguments, chdir: worktree_root
     )
     fail!("repository-invalid") unless status.success? && stderr.empty?
 
     stdout.strip
-  rescue SystemCallError, ArgumentError
+  rescue PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError
     fail!("repository-invalid")
   end
 
@@ -216,50 +218,93 @@ module TaskScratchLifecycle
       fail!("scratch-parent-invalid")
     end
     fail!("scratch-parent-invalid") unless File.directory?(scratch_parent)
-    scratch_root = begin
-      Dir.mktmpdir("task-scratch-", scratch_parent)
-    rescue SystemCallError
+    scratch_parent_file = begin
+      File.open(scratch_parent, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    rescue SystemCallError, ArgumentError
       fail!("scratch-parent-invalid")
     end
-    File.chmod(0o700, scratch_root)
-    root_stat = File.stat(scratch_root)
-    run_token = SecureRandom.hex(32)
-    receipt = {
-      "contract" => "task-scratch-lifecycle-receipt",
-      "version" => 1,
-      "identity" => identity,
-      "worktree_root" => worktree_root,
-      "repository_common_dir" => common_dir,
-      "scratch_parent" => scratch_parent,
-      "scratch_root" => scratch_root,
-      "run_token" => run_token,
-      "root_device" => root_stat.dev,
-      "root_inode" => root_stat.ino,
-      "root_owner" => root_stat.uid,
-      "root_mode" => root_stat.mode & 0o777,
-      "allowlist" => allowlist,
-      "created_at" => Time.now.utc.iso8601(6)
-    }
-    receipt["digest"] = record_digest(receipt)
-    File.write(
-      File.join(scratch_root, OWNER_BASENAME),
-      JSON.generate(
-        "contract" => "task-scratch-owner",
-        "version" => 1,
-        "identity" => identity,
-        "scratch_root" => scratch_root,
-        "run_token" => run_token,
-        "receipt_digest" => receipt.fetch("digest")
-      ),
-      mode: "w",
-      perm: 0o600
-    )
-    {
-      "contract" => "task-scratch-lifecycle-decision",
-      "version" => 1,
-      "status" => "created",
-      "receipt" => receipt
-    }
+    fail!("scratch-parent-invalid") unless scratch_parent_file.stat.directory?
+
+    begin
+      scratch_root = begin
+        Dir.mktmpdir("task-scratch-", scratch_parent)
+      rescue SystemCallError
+        fail!("scratch-parent-invalid")
+      end
+      root_name = File.basename(scratch_root)
+
+      begin
+        root_file = open_at(scratch_parent_file, root_name)
+        created_root_stat = root_file.stat
+        fail!("scratch-initialization-failure") unless created_root_stat.directory?
+        root_file.chmod(0o700)
+        root_stat = root_file.stat
+        run_token = SecureRandom.hex(32)
+        receipt = {
+          "contract" => "task-scratch-lifecycle-receipt",
+          "version" => 1,
+          "identity" => identity,
+          "worktree_root" => worktree_root,
+          "repository_common_dir" => common_dir,
+          "scratch_parent" => scratch_parent,
+          "scratch_root" => scratch_root,
+          "run_token" => run_token,
+          "root_device" => root_stat.dev,
+          "root_inode" => root_stat.ino,
+          "root_owner" => root_stat.uid,
+          "root_mode" => root_stat.mode & 0o777,
+          "allowlist" => allowlist,
+          "created_at" => Time.now.utc.iso8601(6)
+        }
+        receipt["digest"] = record_digest(receipt)
+        marker_descriptor = CleanupSyscalls.openat(
+          root_file.fileno,
+          OWNER_BASENAME,
+          File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW,
+          Fiddle::TYPE_INT,
+          0o600
+        )
+        raise SystemCallError.new("openat #{OWNER_BASENAME}", Fiddle.last_error) if marker_descriptor == -1
+
+        marker_file = File.for_fd(marker_descriptor, autoclose: true)
+        marker_stat = marker_file.stat
+        marker_file.write(
+          JSON.generate(
+            "contract" => "task-scratch-owner",
+            "version" => 1,
+            "identity" => identity,
+            "scratch_root" => scratch_root,
+            "run_token" => run_token,
+            "receipt_digest" => receipt.fetch("digest")
+          )
+        )
+        marker_file.close
+        {
+          "contract" => "task-scratch-lifecycle-decision",
+          "version" => 1,
+          "status" => "created",
+          "receipt" => receipt
+        }
+      rescue LifecycleError, SystemCallError, ArgumentError
+        begin
+          marker_file&.close unless marker_file&.closed?
+          if marker_stat && root_file && entry_matches?(root_file, OWNER_BASENAME, marker_stat)
+            unlink_bound_entry(root_file, OWNER_BASENAME, marker_stat, directory_entry: false)
+          end
+          if created_root_stat && empty_entry_matches?(scratch_parent_file, root_name, created_root_stat)
+            unlink_bound_entry(scratch_parent_file, root_name, created_root_stat, directory_entry: true)
+          end
+        rescue LifecycleError, SystemCallError, ArgumentError
+          nil
+        end
+        fail!("scratch-initialization-failure")
+      ensure
+        marker_file&.close unless marker_file&.closed?
+        root_file&.close unless root_file&.closed?
+      end
+    ensure
+      scratch_parent_file.close unless scratch_parent_file.closed?
+    end
   end
 
   def validate_receipt(receipt)
@@ -294,7 +339,7 @@ module TaskScratchLifecycle
     stat = File.stat(scratch_root)
     expected = [receipt["root_device"], receipt["root_inode"], receipt["root_owner"], receipt["root_mode"]]
     actual = [stat.dev, stat.ino, stat.uid, stat.mode & 0o777]
-    fail!("scratch-root-ownership-mismatch") unless actual == expected && stat.uid == Process.uid &&
+    fail!("scratch-root-ownership-mismatch") unless actual == expected && stat.uid == Process.euid &&
                                                     (stat.mode & 0o777) == 0o700
 
     marker = read_json(File.join(scratch_root, OWNER_BASENAME), "owner-marker")
@@ -683,6 +728,17 @@ end
 
 begin
   parser.parse!
+rescue OptionParser::ParseError, ArgumentError
+  puts JSON.generate(
+    "contract" => "task-scratch-lifecycle-decision",
+    "version" => 1,
+    "status" => "blocked",
+    "reason" => "options-invalid"
+  )
+  exit 1
+end
+
+begin
   decision = case mode
              when "create"
                TaskScratchLifecycle.create(options)
@@ -698,14 +754,6 @@ rescue TaskScratchLifecycle::LifecycleError => e
     "version" => 1,
     "status" => "blocked",
     "reason" => e.message
-  )
-  exit 1
-rescue OptionParser::ParseError
-  puts JSON.generate(
-    "contract" => "task-scratch-lifecycle-decision",
-    "version" => 1,
-    "status" => "blocked",
-    "reason" => "options-invalid"
   )
   exit 1
 end

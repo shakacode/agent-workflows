@@ -86,10 +86,15 @@ end
 def identity_failure_reason(value, present: true)
   return "plan-identity-missing" unless present
   return "plan-identity-malformed" unless value.is_a?(String)
-  return "plan-identity-blank" if value.strip.empty?
-  return "plan-identity-ambiguous" unless value == value.strip
 
-  "plan-identity-unknown" if value.casecmp?("UNKNOWN")
+  normalized = value.unicode_normalize(:nfkc).strip
+  return "plan-identity-blank" if normalized.empty?
+  return "plan-identity-unknown" if normalized.downcase(:fold) == "unknown"
+  return "plan-identity-ambiguous" unless value == normalized
+
+  nil
+rescue Encoding::CompatibilityError, ArgumentError
+  "plan-identity-malformed"
 end
 
 def known_identity?(value)

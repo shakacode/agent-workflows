@@ -349,6 +349,111 @@ class TaskScratchLifecycleTest < Minitest::Test
     end
   end
 
+  def test_create_bounds_repository_git_probe_timeouts
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      fake_bin = File.join(directory, "bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(fake_bin)
+      fake_git = File.join(fake_bin, "git")
+      File.write(
+        fake_git,
+        <<~'SH'
+          #!/bin/sh
+          if [ "$1" = "rev-parse" ] && [ "$2" = "--local-env-vars" ]; then
+            exec "$REAL_GIT" "$@"
+          fi
+          sleep 3
+        SH
+      )
+      File.chmod(0o755, fake_git)
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      blocked, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        env: {
+          "PATH" => "#{fake_bin}:#{ENV.fetch('PATH')}",
+          "REAL_GIT" => `command -v git`.strip,
+          "PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS" => "1"
+        }
+      )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      refute create_status.success?
+      assert_empty create_stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "repository-invalid", blocked.fetch("reason")
+      assert_empty Dir.children(scratch_parent)
+      assert_operator elapsed, :<, 2.5
+    end
+  end
+
+  def test_cleanup_validates_ownership_against_the_effective_uid
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      durable_root = File.join(directory, "durable")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(durable_root)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      review_helper = File.join(helper_root, "task-review-loop")
+      instrumented_helper = File.read(HELPER).sub(
+        "module TaskScratchLifecycle\n",
+        <<~'RUBY'
+          module Process
+            class << self
+              def uid
+                ENV["TASK_SCRATCH_INJECT_DISTINCT_REAL_UID"] ? euid + 1 : euid
+              end
+            end
+          end
+          module TaskScratchLifecycle
+        RUBY
+      )
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      File.chmod(0o755, lifecycle_helper)
+      write_clean_review_helper(review_helper)
+      created, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        helper: lifecycle_helper
+      )
+      assert create_status.success?, "#{create_stderr}\n#{created.inspect}"
+      receipt = created.fetch("receipt")
+      scratch_root = receipt.fetch("scratch_root")
+      File.write(File.join(scratch_root, "evidence.json"), "owned evidence\n")
+      receipt_path = File.join(durable_root, "scratch-receipt.json")
+      review_input_path = File.join(durable_root, "task-review-input.json")
+      File.write(receipt_path, JSON.generate(receipt))
+      File.write(review_input_path, JSON.generate("identity" => TASK_IDENTITY))
+
+      cleaned, cleanup_stderr, cleanup_status = run_cleanup(
+        receipt_path,
+        review_input_path,
+        helper: lifecycle_helper,
+        env: { "TASK_SCRATCH_INJECT_DISTINCT_REAL_UID" => "1" }
+      )
+
+      assert cleanup_status.success?, cleanup_stderr
+      assert_empty cleanup_stderr
+      assert_equal "cleaned", cleaned.fetch("status")
+      refute_path_exists scratch_root
+    end
+  end
+
   def test_cleanup_rejects_digest_consistent_malformed_receipt_fields_with_structured_decisions
     malformed_fields = {
       "contract" => %w[other-receipt receipt-invalid],
@@ -443,6 +548,50 @@ class TaskScratchLifecycleTest < Minitest::Test
         assert_equal expected_reason, decision.fetch("reason"), label
         assert_empty Dir.children(scratch_parent), label
       end
+    end
+  end
+
+  def test_create_rejects_invalid_encoding_in_path_options_without_a_backtrace
+    invalid_identity_path = "identity-\xFF.json".b
+    stdout, stderr, status = Open3.capture3(
+      HELPER,
+      "create",
+      "--identity-file", invalid_identity_path,
+      "--repository-root", "/unused",
+      "--scratch-parent", "/unused",
+      "--allow-relative", "evidence.json"
+    )
+
+    refute status.success?
+    assert_empty stderr
+    assert_equal "blocked", JSON.parse(stdout).fetch("status")
+    assert_equal "options-invalid", JSON.parse(stdout).fetch("reason")
+  end
+
+  def test_create_rejects_invalid_encoding_in_identity_without_a_backtrace
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      identity_json = JSON.generate("identity" => TASK_IDENTITY).b.sub(
+        TASK_IDENTITY.fetch("plan_id").b,
+        "plan-\xFF".b
+      )
+      File.binwrite(identity_path, identity_json)
+      scratch_parent = File.join(directory, "scratch-parent")
+      Dir.mkdir(scratch_parent)
+
+      blocked, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"]
+      )
+
+      refute create_status.success?
+      assert_empty create_stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "task-identity-invalid", blocked.fetch("reason")
+      assert_empty Dir.children(scratch_parent)
     end
   end
 
@@ -591,6 +740,135 @@ class TaskScratchLifecycleTest < Minitest::Test
       assert_equal "blocked", blocked.fetch("status")
       assert_equal "scratch-parent-invalid", blocked.fetch("reason")
       refute_path_exists scratch_parent
+    end
+  end
+
+  def test_create_cleans_its_partial_root_after_initialization_faults
+    {
+      "chmod" => "TASK_SCRATCH_INJECT_CHMOD_FAILURE",
+      "owner marker write" => "TASK_SCRATCH_INJECT_OWNER_WRITE_FAILURE"
+    }.each do |label, fault_env|
+      Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+        repository, = build_repository(directory)
+        identity_path = File.join(directory, "task-identity.json")
+        File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+        scratch_parent = File.join(directory, "scratch-parent")
+        helper_root = File.join(directory, "helper-bin")
+        Dir.mkdir(scratch_parent)
+        Dir.mkdir(helper_root)
+        lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+        instrumented_helper = File.read(HELPER).sub(
+          "module TaskScratchLifecycle\n",
+          <<~'RUBY'
+            if ENV["TASK_SCRATCH_INJECT_CHMOD_FAILURE"]
+              module InjectedScratchChmodFailure
+                def chmod(*)
+                  raise Errno::EIO, "injected scratch chmod failure"
+                end
+              end
+              File.singleton_class.prepend(InjectedScratchChmodFailure)
+              File.prepend(InjectedScratchChmodFailure)
+            end
+            if ENV["TASK_SCRATCH_INJECT_OWNER_WRITE_FAILURE"]
+              module InjectedOwnerMarkerWriteFailure
+                def for_fd(...)
+                  file = super
+                  original_write = file.method(:write)
+                  file.define_singleton_method(:write) do |*arguments, **keywords|
+                    result = original_write.call(*arguments, **keywords)
+                    raise Errno::EIO, "injected owner marker storage failure"
+                  end
+                  file
+                end
+              end
+              File.singleton_class.prepend(InjectedOwnerMarkerWriteFailure)
+            end
+            module TaskScratchLifecycle
+          RUBY
+        )
+        refute_equal File.read(HELPER), instrumented_helper
+        File.write(lifecycle_helper, instrumented_helper)
+        File.chmod(0o755, lifecycle_helper)
+
+        blocked, create_stderr, create_status = run_create(
+          repository,
+          scratch_parent,
+          identity_path,
+          ["evidence.json"],
+          helper: lifecycle_helper,
+          env: { fault_env => "1" }
+        )
+
+        refute create_status.success?, label
+        assert_empty create_stderr, label
+        assert_kind_of Hash, blocked, label
+        assert_equal "blocked", blocked.fetch("status"), label
+        assert_equal "scratch-initialization-failure", blocked.fetch("reason"), label
+        assert_empty Dir.children(scratch_parent), label
+      end
+    end
+  end
+
+  def test_create_preserves_rebound_root_when_initialization_fails
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      instrumented_helper = File.read(HELPER).sub(/^        root_stat = .*$/) do |line|
+        <<~RUBY.chomp
+          #{line}
+                  if ENV["TASK_SCRATCH_AFTER_ROOT_IDENTITY_SIGNAL"]
+                    File.write(ENV.fetch("TASK_SCRATCH_AFTER_ROOT_IDENTITY_SIGNAL"), "ready")
+                    sleep 0.01 until File.exist?(ENV.fetch("TASK_SCRATCH_AFTER_ROOT_IDENTITY_RELEASE"))
+                    raise Errno::EIO, "injected post-identity initialization failure"
+                  end
+        RUBY
+      end
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      File.chmod(0o755, lifecycle_helper)
+      signal_path = File.join(directory, "after-root-identity.signal")
+      release_path = File.join(directory, "after-root-identity.release")
+      creation = Thread.new do
+        run_create(
+          repository,
+          scratch_parent,
+          identity_path,
+          ["evidence.json"],
+          helper: lifecycle_helper,
+          env: {
+            "TASK_SCRATCH_AFTER_ROOT_IDENTITY_SIGNAL" => signal_path,
+            "TASK_SCRATCH_AFTER_ROOT_IDENTITY_RELEASE" => release_path
+          }
+        )
+      end
+      sleep 0.01 until File.exist?(signal_path)
+      scratch_root = Dir.glob(File.join(scratch_parent, "task-scratch-*")).fetch(0)
+      parked_root = File.join(directory, "parked-created-root")
+      File.rename(scratch_root, parked_root)
+      Dir.mkdir(scratch_root, 0o755)
+      foreign_path = File.join(scratch_root, "foreign.txt")
+      File.write(foreign_path, "foreign content\n")
+      foreign_stat = File.stat(scratch_root)
+      File.write(release_path, "continue")
+
+      blocked, create_stderr, create_status = creation.value
+
+      refute create_status.success?
+      assert_empty create_stderr
+      assert_kind_of Hash, blocked
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "scratch-initialization-failure", blocked.fetch("reason")
+      assert_path_exists parked_root
+      assert_equal [foreign_stat.dev, foreign_stat.ino], [File.stat(scratch_root).dev, File.stat(scratch_root).ino]
+      assert_equal 0o755, File.stat(scratch_root).mode & 0o777
+      assert_equal "foreign content\n", File.read(foreign_path)
+      refute_path_exists File.join(scratch_root, ".task-scratch-owner.json")
     end
   end
 

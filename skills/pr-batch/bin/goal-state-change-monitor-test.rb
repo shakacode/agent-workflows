@@ -2280,6 +2280,7 @@ class GoalStateChangeMonitorTest < Minitest::Test
       "   " => "plan-identity-blank",
       "UNKNOWN" => "plan-identity-unknown",
       "unknown" => "plan-identity-unknown",
+      "\u00a0ＵＮＫＮＯＷＮ\u2003" => "plan-identity-unknown",
       " plan-a" => "plan-identity-ambiguous",
       "plan-a " => "plan-identity-ambiguous"
     }

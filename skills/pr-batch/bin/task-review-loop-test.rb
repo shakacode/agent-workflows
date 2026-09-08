@@ -116,6 +116,29 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_cli_returns_structured_block_for_invalid_options
+    {
+      "missing value" => ["--repository-root"],
+      "unknown option" => ["--unknown-option"]
+    }.each do |label, arguments|
+      stdout, stderr, status = Open3.capture3(HELPER, *arguments, stdin_data: "{}")
+
+      assert status.success?, "#{label}: #{stderr}"
+      assert_empty stderr, label
+      assert_equal(
+        {
+          "contract" => "task-review-loop-decision",
+          "version" => 1,
+          "status" => "blocked",
+          "dependent_task_permitted" => false,
+          "reasons" => ["options-invalid"]
+        },
+        JSON.parse(stdout),
+        label
+      )
+    end
+  end
+
   def test_flat_install_ships_the_schema_and_canonical_finding_validator
     Dir.mktmpdir("task-review-loop-install") do |directory|
       target = File.join(directory, "agent-home")
@@ -441,6 +464,49 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_repository_backed_mode_bounds_git_probe_timeouts
+    Dir.mktmpdir("task-review-loop-repository") do |directory|
+      repository = File.join(directory, "repository")
+      fake_bin = File.join(directory, "bin")
+      Dir.mkdir(repository)
+      Dir.mkdir(fake_bin)
+      system("git", "init", "--quiet", repository) || raise("git init failed")
+      fake_git = File.join(fake_bin, "git")
+      File.write(
+        fake_git,
+        <<~'SH'
+          #!/bin/sh
+          if [ "$1" = "rev-parse" ] && [ "$2" = "--local-env-vars" ]; then
+            exec "$REAL_GIT" "$@"
+          fi
+          if [ "$1" = "apply" ]; then
+            exec "$REAL_GIT" "$@"
+          fi
+          sleep 3
+        SH
+      )
+      File.chmod(0o755, fake_git)
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      result, stderr, status = evaluate_repository(
+        clean_review_input(directory),
+        repository,
+        env: {
+          "PATH" => "#{fake_bin}:#{ENV.fetch('PATH')}",
+          "REAL_GIT" => `command -v git`.strip,
+          "PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS" => "1"
+        }
+      )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      assert status.success?, stderr
+      assert_empty stderr
+      assert_equal "blocked", result.fetch("status")
+      assert_includes result.fetch("reasons"), "repository-root-invalid"
+      assert_operator elapsed, :<, 2.5
+    end
+  end
+
   def test_repository_backed_mode_rejects_digest_consistent_noncanonical_diff_bytes
     Dir.mktmpdir("task-review-loop-repository") do |directory|
       repository = File.join(directory, "repository")
@@ -708,10 +774,10 @@ class TaskReviewLoopTest < Minitest::Test
       script = <<~'RUBY'
         target = ENV.fetch("TASK_REVIEW_FINDINGS_PATH")
         original_open = File.method(:open)
-        File.define_singleton_method(:open) do |path, *args, &block|
+        File.define_singleton_method(:open) do |path, *args, **keywords, &block|
           # Model replacement at open: the named file is regular, the descriptor is not.
           opened_path = path == target ? File.dirname(path) : path
-          original_open.call(opened_path, *args, &block)
+          original_open.call(opened_path, *args, **keywords, &block)
         end
         load ARGV.fetch(0)
         puts JSON.generate(TaskReviewLoop.reduce(JSON.parse($stdin.read)))
@@ -734,18 +800,18 @@ class TaskReviewLoopTest < Minitest::Test
       script = <<~'RUBY'
         target = ENV.fetch("TASK_REVIEW_FINDINGS_PATH")
         original_open = File.method(:open)
-        File.define_singleton_method(:open) do |path, *args, &block|
-          original_open.call(path, *args) do |file|
-            if path == target
-              old_stat = file.stat
-              original_open.call(path, "ab") { |writer| writer.truncate((16 * 1024 * 1024) + 1) }
-              file.define_singleton_method(:stat) { old_stat }
-              original_read = file.method(:read)
-              file.define_singleton_method(:read) do |length|
-                raise "unbounded artifact read" unless length == (16 * 1024 * 1024) + 1
+        File.define_singleton_method(:open) do |path, *args, **keywords, &block|
+          next original_open.call(path, *args, **keywords, &block) unless path == target
 
-                original_read.call(length)
-              end
+          original_open.call(path, *args, **keywords) do |file|
+            old_stat = file.stat
+            original_open.call(path, "ab") { |writer| writer.truncate((16 * 1024 * 1024) + 1) }
+            file.define_singleton_method(:stat) { old_stat }
+            original_read = file.method(:read)
+            file.define_singleton_method(:read) do |length|
+              raise "unbounded artifact read" unless length == (16 * 1024 * 1024) + 1
+
+              original_read.call(length)
             end
             block.call(file)
           end
@@ -812,12 +878,12 @@ class TaskReviewLoopTest < Minitest::Test
         target = ENV.fetch("TASK_REVIEW_FINDINGS_PATH")
         reads = 0
         original_open = File.method(:open)
-        File.define_singleton_method(:open) do |path, *args, &block|
+        File.define_singleton_method(:open) do |path, *args, **keywords, &block|
           if path == target
             reads += 1
             raise Errno::ENOENT, path if reads > 1
           end
-          original_open.call(path, *args, &block)
+          original_open.call(path, *args, **keywords, &block)
         end
         load ARGV.fetch(0)
         puts JSON.generate(TaskReviewLoop.reduce(JSON.parse($stdin.read)))

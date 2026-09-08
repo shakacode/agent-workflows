@@ -3,7 +3,6 @@
 
 require "digest"
 require "json"
-require "open3"
 require "optparse"
 
 require_relative "../lib/git_probe_env"
@@ -390,20 +389,20 @@ module TaskReviewLoop
     return unless diff.is_a?(String)
 
     # Git parses quoting, renames, deletions, and binary patches without applying them.
-    output, _stderr, status = Open3.capture3(
+    output, _stderr, status = PrBatchGitProbeEnv.capture3(
       PrBatchGitProbeEnv.probe_env,
       "git", "apply", "--numstat", "-z", stdin_data: diff, chdir: "/"
     )
     return unless status.success?
 
-    paths = output.split("\0").map do |record|
+    paths = output.force_encoding(Encoding::UTF_8).split("\0").map do |record|
       added, removed, path = record.split("\t", 3)
       return nil unless [added, removed].all? { |count| count&.match?(/\A(?:\d+|-)\z/) } && non_empty_string?(path)
 
       path
     end
     paths.uniq unless paths.empty?
-  rescue SystemCallError, ArgumentError
+  rescue PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError
     nil
   end
 
@@ -918,14 +917,14 @@ module TaskReviewLoop
     return ["repository-input-invalid"] unless input.is_a?(Hash)
 
     canonical_root = File.realpath(repository_root)
-    top_level, top_level_stderr, top_level_status = Open3.capture3(
+    top_level, top_level_stderr, top_level_status = PrBatchGitProbeEnv.capture3(
       PrBatchGitProbeEnv.probe_env,
       "git", "rev-parse", "--show-toplevel", chdir: canonical_root
     )
     return ["repository-root-invalid"] unless top_level_status.success? && top_level_stderr.empty?
     return ["repository-root-invalid"] unless File.realpath(top_level.strip) == canonical_root
 
-    head, head_stderr, head_status = Open3.capture3(
+    head, head_stderr, head_status = PrBatchGitProbeEnv.capture3(
       PrBatchGitProbeEnv.probe_env,
       "git", "rev-parse", "--verify", "HEAD^{commit}", chdir: canonical_root
     )
@@ -959,7 +958,7 @@ module TaskReviewLoop
     packages.each do |label, package|
       next unless package.is_a?(Hash)
 
-      captured, capture_stderr, capture_status = Open3.capture3(
+      captured, capture_stderr, capture_status = PrBatchGitProbeEnv.capture3(
         PrBatchGitProbeEnv.probe_env,
         "git", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "--binary",
         "--src-prefix=a/", "--dst-prefix=b/", "--ignore-submodules=none", "--submodule=short",
@@ -978,7 +977,7 @@ module TaskReviewLoop
       end
     end
     errors
-  rescue SystemCallError, ArgumentError, TypeError
+  rescue PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError, TypeError
     ["repository-root-invalid"]
   end
 
@@ -988,7 +987,7 @@ module TaskReviewLoop
     errors = []
     endpoints = {}
     { "base" => record["base_sha"], "head" => record["head_sha"] }.each do |name, supplied|
-      resolved, stderr, status = Open3.capture3(
+      resolved, stderr, status = PrBatchGitProbeEnv.capture3(
         PrBatchGitProbeEnv.probe_env,
         "git", "rev-parse", "--verify", "#{supplied}^{commit}", chdir: repository_root
       )
@@ -1000,7 +999,7 @@ module TaskReviewLoop
     end
     return errors unless endpoints.keys.sort == %w[base head]
 
-    _stdout, ancestor_stderr, ancestor_status = Open3.capture3(
+    _stdout, ancestor_stderr, ancestor_status = PrBatchGitProbeEnv.capture3(
       PrBatchGitProbeEnv.probe_env,
       "git", "merge-base", "--is-ancestor", endpoints.fetch("base"), endpoints.fetch("head"),
       chdir: repository_root
@@ -1014,7 +1013,7 @@ module TaskReviewLoop
       return errors
     end
 
-    commits, commits_stderr, commits_status = Open3.capture3(
+    commits, commits_stderr, commits_status = PrBatchGitProbeEnv.capture3(
       PrBatchGitProbeEnv.probe_env,
       "git", "rev-list", "--reverse", "#{endpoints.fetch('base')}..#{endpoints.fetch('head')}",
       chdir: repository_root
@@ -1054,11 +1053,16 @@ end
 
 if $PROGRAM_NAME == __FILE__
   options = {}
-  OptionParser.new do |parser|
-    parser.on("--repository-root PATH", "Validate review evidence against repository-derived HEAD and diffs") do |value|
-      options[:repository_root] = value
-    end
-  end.parse!
+  begin
+    OptionParser.new do |parser|
+      parser.on("--repository-root PATH", "Validate review evidence against repository-derived HEAD and diffs") do |value|
+        options[:repository_root] = value
+      end
+    end.parse!
+  rescue OptionParser::ParseError
+    puts JSON.generate(TaskReviewLoop.decision("blocked", false, ["options-invalid"]))
+    exit 0
+  end
 
   unless options.key?(:repository_root)
     puts JSON.generate(TaskReviewLoop.decision("blocked", false, ["repository-root-required"]))

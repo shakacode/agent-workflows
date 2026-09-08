@@ -9,6 +9,7 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "shellwords"
 require "tmpdir"
 require "yaml"
@@ -18,6 +19,22 @@ require_relative "../lib/git_probe_env"
 SCRIPT = File.expand_path("pr-security-preflight", __dir__)
 
 class PrSecurityPreflightTest < Minitest::Test
+  def test_git_probe_capture3_supports_a_working_directory
+    Dir.mktmpdir("git-probe-chdir") do |directory|
+      stdout, stderr, status = PrBatchGitProbeEnv.capture3(
+        {},
+        RbConfig.ruby,
+        "-e",
+        "print Dir.pwd",
+        chdir: directory
+      )
+
+      assert status.success?, stderr
+      assert_empty stderr
+      assert_equal File.realpath(directory), stdout
+    end
+  end
+
   def test_self_reports_canonical_helper_path_and_digest
     with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
       out, status = run_script(

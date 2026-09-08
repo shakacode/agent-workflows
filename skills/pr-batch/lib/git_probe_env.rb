@@ -55,14 +55,16 @@ module PrBatchGitProbeEnv
     end
   end
 
-  def capture3(env, *command, stdin_data: nil, timeout_seconds: GIT_TIMEOUT_SECONDS)
+  def capture3(env, *command, stdin_data: nil, timeout_seconds: GIT_TIMEOUT_SECONDS, chdir: nil)
     Tempfile.create("git-probe-stdin") do |stdin|
       Tempfile.create("git-probe-stdout") do |stdout|
         Tempfile.create("git-probe-stderr") do |stderr|
           [stdin, stdout, stderr].each(&:binmode)
           stdin.write(stdin_data) if stdin_data
           stdin.rewind
-          pid = Process.spawn(env, *command, in: stdin, out: stdout, err: stderr, pgroup: true)
+          spawn_options = { in: stdin, out: stdout, err: stderr, pgroup: true }
+          spawn_options[:chdir] = chdir if chdir
+          pid = Process.spawn(env, *command, **spawn_options)
           status = wait_for_process(pid, timeout_seconds)
           unless status
             terminate_process_group(pid)
