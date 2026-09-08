@@ -498,6 +498,102 @@ class TaskScratchLifecycleTest < Minitest::Test
     end
   end
 
+  def test_create_returns_structured_block_when_mktmpdir_reports_permission_denied
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      instrumented_helper = File.read(HELPER).sub(
+        "module TaskScratchLifecycle\n",
+        <<~RUBY
+          if ENV["TASK_SCRATCH_INJECT_MKTMPDIR_EACCES"]
+            class << Dir
+              def mktmpdir(*)
+                raise Errno::EACCES, "injected mktmpdir permission failure"
+              end
+            end
+          end
+          module TaskScratchLifecycle
+        RUBY
+      )
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      File.chmod(0o755, lifecycle_helper)
+
+      blocked, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        helper: lifecycle_helper,
+        env: { "TASK_SCRATCH_INJECT_MKTMPDIR_EACCES" => "1" }
+      )
+
+      refute create_status.success?
+      assert_empty create_stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "scratch-parent-invalid", blocked.fetch("reason")
+      assert_empty Dir.children(scratch_parent)
+    end
+  end
+
+  def test_create_returns_structured_block_when_scratch_parent_disappears_after_directory_check
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      instrumented_helper = File.read(HELPER).sub(
+        '    fail!("scratch-parent-invalid") unless File.directory?(scratch_parent)',
+        <<~RUBY.gsub(/^/, "    ").strip
+          fail!("scratch-parent-invalid") unless File.directory?(scratch_parent)
+          if ENV["TASK_SCRATCH_AFTER_PARENT_DIRECTORY_CHECK_SIGNAL"]
+            File.write(ENV.fetch("TASK_SCRATCH_AFTER_PARENT_DIRECTORY_CHECK_SIGNAL"), "ready")
+            sleep 0.01 until File.exist?(ENV.fetch("TASK_SCRATCH_AFTER_PARENT_DIRECTORY_CHECK_RELEASE"))
+          end
+        RUBY
+      )
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      File.chmod(0o755, lifecycle_helper)
+      signal_path = File.join(directory, "after-parent-directory-check.signal")
+      release_path = File.join(directory, "after-parent-directory-check.release")
+      creation = Thread.new do
+        run_create(
+          repository,
+          scratch_parent,
+          identity_path,
+          ["evidence.json"],
+          helper: lifecycle_helper,
+          env: {
+            "TASK_SCRATCH_AFTER_PARENT_DIRECTORY_CHECK_SIGNAL" => signal_path,
+            "TASK_SCRATCH_AFTER_PARENT_DIRECTORY_CHECK_RELEASE" => release_path
+          }
+        )
+      end
+      sleep 0.01 until File.exist?(signal_path)
+      Dir.rmdir(scratch_parent)
+      File.write(release_path, "continue")
+
+      blocked, create_stderr, create_status = creation.value
+
+      refute create_status.success?
+      assert_empty create_stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "scratch-parent-invalid", blocked.fetch("reason")
+      refute_path_exists scratch_parent
+    end
+  end
+
   def test_plan_b_rejects_plan_a_scratch_even_with_the_same_task_numbering
     Dir.mktmpdir("task-scratch-lifecycle") do |directory|
       repository, base_sha, head_sha = build_repository(directory)

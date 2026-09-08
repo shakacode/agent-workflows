@@ -216,7 +216,11 @@ module TaskScratchLifecycle
       fail!("scratch-parent-invalid")
     end
     fail!("scratch-parent-invalid") unless File.directory?(scratch_parent)
-    scratch_root = Dir.mktmpdir("task-scratch-", scratch_parent)
+    scratch_root = begin
+      Dir.mktmpdir("task-scratch-", scratch_parent)
+    rescue SystemCallError
+      fail!("scratch-parent-invalid")
+    end
     File.chmod(0o700, scratch_root)
     root_stat = File.stat(scratch_root)
     run_token = SecureRandom.hex(32)
