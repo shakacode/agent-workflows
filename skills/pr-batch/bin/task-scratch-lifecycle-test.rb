@@ -754,6 +754,92 @@ class TaskScratchLifecycleTest < Minitest::Test
     end
   end
 
+  def test_create_succeeds_on_tenth_mkdirat_attempt_after_nine_collisions
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(helper_root)
+      candidate_names = 10.times.map { |index| "task-scratch-#{format('%032x', index)}" }
+      candidate_names.first(9).each do |name|
+        collision_path = File.join(scratch_parent, name)
+        Dir.mkdir(collision_path)
+        File.write(File.join(collision_path, "sentinel.txt"), "#{name}\n")
+      end
+      attempt_log = File.join(directory, "mkdirat-attempts.txt")
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      instrumented_helper = File.read(HELPER).sub(
+        "module TaskScratchLifecycle\n",
+        <<~RUBY
+          if ENV["TASK_SCRATCH_DETERMINISTIC_COLLISIONS"]
+            module SecureRandom
+              class << self
+                alias task_scratch_original_hex hex
+
+                def hex(length = nil)
+                  return task_scratch_original_hex(length) unless length == 16
+
+                  @task_scratch_collision_index ||= -1
+                  @task_scratch_collision_index += 1
+                  format("%032x", @task_scratch_collision_index)
+                end
+              end
+            end
+          end
+          module TaskScratchLifecycle
+        RUBY
+      ).sub(
+        "  class LifecycleError < StandardError; end\n",
+        <<~RUBY.gsub(/^/, "  ")
+          if ENV["TASK_SCRATCH_MKDIRAT_ATTEMPT_LOG"]
+            module CleanupSyscalls
+              class << self
+                alias task_scratch_original_mkdirat mkdirat
+
+                def mkdirat(*arguments)
+                  File.open(ENV.fetch("TASK_SCRATCH_MKDIRAT_ATTEMPT_LOG"), "a") do |log|
+                    log.puts(arguments.fetch(1))
+                  end
+                  task_scratch_original_mkdirat(*arguments)
+                end
+              end
+            end
+          end
+          class LifecycleError < StandardError; end
+        RUBY
+      )
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      File.chmod(0o755, lifecycle_helper)
+
+      created, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        helper: lifecycle_helper,
+        env: {
+          "TASK_SCRATCH_DETERMINISTIC_COLLISIONS" => "1",
+          "TASK_SCRATCH_MKDIRAT_ATTEMPT_LOG" => attempt_log
+        }
+      )
+
+      assert create_status.success?, create_stderr
+      assert_empty create_stderr
+      assert_equal "created", created.fetch("status")
+      assert_equal candidate_names.fetch(9), File.basename(created.dig("receipt", "scratch_root"))
+      assert_equal candidate_names, File.readlines(attempt_log, chomp: true)
+      candidate_names.first(9).each do |name|
+        collision_path = File.join(scratch_parent, name)
+        assert_equal ["sentinel.txt"], Dir.children(collision_path)
+        assert_equal "#{name}\n", File.read(File.join(collision_path, "sentinel.txt"))
+      end
+    end
+  end
+
   def test_create_returns_structured_block_when_scratch_parent_disappears_after_directory_check
     Dir.mktmpdir("task-scratch-lifecycle") do |directory|
       repository, = build_repository(directory)
