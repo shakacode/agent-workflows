@@ -5,14 +5,17 @@
 When the goal, targets, scope, and lane identity stay stable but a worker needs
 a different model/effort role, use
 [Worker Model Replacement And Escalation](../../../workflows/pr-processing.md#worker-model-replacement-and-escalation)
-instead of cancelling the batch. Stop the old worker, capture or reconstruct its
-`MODEL_REPLACEMENT_HANDOFF`, reconcile the claim holder/generation/instance, and
-start the replacement only after fencing prevents overlap. For already-running
+instead of cancelling the batch. Stop the old worker and capture or reconstruct
+its `MODEL_REPLACEMENT_HANDOFF`. For `coordination_required`, reconcile the
+claim holder/generation/instance, and start the replacement only after fencing
+prevents overlap. For `coordination_not_applicable`, the one controller stops
+the prior worker and starts the replacement with no claim reconciliation, no
+typed event, and no backend call. For already-running
 batches that need the staged route policy, use the canonical
 [Model-Routing Recovery Prompt](../../../workflows/pr-processing.md#model-routing-recovery-prompt).
-After the prior instance is stopped and ownership is reconciled, emit
-`human_intervention` with `kind: supersede` (or `kind: takeover` for abandoned
-ownership) when a private backend is active.
+After the prior instance is stopped and ownership is reconciled, a
+`coordination_required` lane emits `human_intervention` with `kind: supersede`
+(or `kind: takeover` for abandoned ownership) when a private backend is active.
 
 ### Normal Agent-Runner Restart
 
@@ -29,7 +32,12 @@ unless the coordinator explicitly cancels it.
 To stop an in-flight batch — for example to relaunch it with updated skills,
 workflow rules, or targets — follow the canonical
 [Cancelling Or Stopping A Batch](../../../workflows/pr-processing.md#cancelling-or-stopping-a-batch)
-protocol instead of waiting out claim leases. In short: a coordinator or maintainer
+protocol instead of waiting out claim leases. For `coordination_not_applicable`,
+the one controller stops its own workers from controller-local state and records
+the stopped lanes in the durable local batch record, with no cancellation
+publish, `agent-coord status` poll, claim release, typed event, or backend
+reconciliation before relaunch. For `coordination_required`: a coordinator or
+maintainer
 marks the batch or specific lanes cancelled in the selected private backend (see
 [coordination-backend.md](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md)
 → **Cancellation**); workers drain at their next safe checkpoint, finishing an
@@ -40,16 +48,21 @@ from a checkout that already has the updated `.agents/skills/...` and
 `.agents/workflows/...` files — a still-running worker keeps its old skill text.
 When a worker first observes cancellation at its cooperative drain checkpoint,
 that worker emits one lane-scoped typed `human_intervention` event with
-`kind: drain` when the active private coordination backend advertises
-typed-event support. The coordinator/operator must not emit a duplicate for
+`kind: drain` when the lane is `coordination_required` and the active private
+coordination backend advertises typed-event support. The coordinator/operator
+must not emit a duplicate for
 that cooperative path. The cooperative worker path remains worker-owned at
 that checkpoint; the coordinator/operator neither re-emits nor duplicates it.
 Immediately before terminating a worker that cannot
 reach that checkpoint, the coordinator/operator instead emits one lane-scoped
-typed `human_intervention` event with `kind: drain` when the active private
-coordination backend advertises typed-event support. For either drain path,
-backend `n/a` skips the emission; unadvertised or unsupported typed-event
-capability records `typed event transport: unavailable` and remains
+typed `human_intervention` event with `kind: drain` when the lane is
+`coordination_required` and the active private coordination backend advertises
+typed-event support. A `coordination_required` lane never legitimately reaches a
+drain checkpoint under a trusted `coordination_backend: n/a`, because that is a
+pre-launch stop; treat it as a classification violation to report, not an
+emission to skip. For either drain path, an unreachable, degraded, unadvertised,
+or unsupported typed-event capability records
+`typed event transport: unavailable` and remains
 nonblocking. For either drain path with advertised support, resolve the active
 backend's advertised drain-event executable and ordered opaque argv;
 reject a missing, malformed, or unsafe advertisement as an emission failure.

@@ -104,9 +104,10 @@ facts remain fail-closed and stop before mutation.
   [automatic GitHub-native exact-diff walkthrough](../../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)
   before the one final merge decision. Do not silently default it.
 
-The single lane still gets a Lane Card, claim/heartbeat behavior when configured,
-a one-row file-touch map, a Batch QA Lane decision, current-head review and CI
-checks, and the canonical terminal state and handoff evidence.
+The single lane still gets a Lane Card, claim/heartbeat behavior when
+`coordination_required` and configured, a one-row file-touch map, a Batch QA
+Lane decision, current-head review and CI checks, and the canonical terminal
+state and handoff evidence.
 
 Resolve the target repo's `base_branch` from `.agents/agent-workflow.yml` when present, otherwise from the `AGENTS.md`
 **Agent Workflow Configuration** seam. If neither declares it, report

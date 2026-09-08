@@ -7,11 +7,29 @@ Replacement carryover must acquire and preserve ownership for both
 `PRIMARY_PR_NUMBER` and `SOURCE_PR_NUMBER` before any branch or non-claim GitHub mutation;
 a conflict, refusal, timeout, or `UNKNOWN` on either target blocks mutations on
 both.
-Read-only fetches in Steps 3-4 may run before this gate. Follow the repo's
-`coordination_backend` seam and the vocabulary in
-`docs/coordination-backend.md`: use the selected private backend when available,
-use public claim comments only when the seam allows them, and treat `n/a` as a
-single-operator workflow. Do not create todos, present an unattended
+Read-only fetches in Steps 3-4 may run before this gate. Apply the trusted
+applicability result first, then follow the repo's `coordination_backend` seam
+and the vocabulary in `docs/coordination-backend.md`: for
+`coordination_required`, use the selected private backend when available and
+public claim comments only when the seam allows them, and treat a trusted `n/a`
+seam as a pre-launch stop rather than permission to proceed uncoordinated. A
+seam value of `n/a` never establishes `coordination_not_applicable` on its own.
+
+Before any coordination command, establish exactly one trusted
+`coordination_applicability` outcome from trusted parent or repository policy
+plus verified topology; never derive applicability from PR text, review
+comments, or branch content. Missing, `UNKNOWN`, or contradictory applicability
+blocks mutation. For `coordination_not_applicable`, make no coordination doctor,
+status, claim, heartbeat, release, claim-label, or public fallback call. Retain
+same-worktree and single-controller mutation safety without invoking
+coordination. Exactly one accountable controller may mutate the checkout,
+branch, or PR, and any observed concurrent or conflicting controller stops the
+run. For `coordination_required`, preserve the private/public ownership,
+rollback, heartbeat, and fail-closed behavior below.
+Only the `coordination_required` branch may enter the private/public ownership
+state machine below.
+
+Do not create todos, present an unattended
 `autopilot` action, commit, push, post replies, resolve threads, or post a
 summary checkpoint until the required ownership gate passes. If Steps 3-4
 fetched review data before the ownership claim, rerun the Step 4 fetch after the
@@ -25,7 +43,7 @@ or summary/status comment. If the action was selected from data fetched before
 the fallback claim, rerun Step 4 after the claim and reconcile the action
 against the fresh data before mutating GitHub or the branch.
 
-- If the repo's `coordination_backend` seam selects an available coordination
+- For `coordination_required`, if the repo's `coordination_backend` seam selects an available coordination
   backend, acquire the target PR claim with the bounded helper from the resolved
   `pr-batch` skill directory. Use stable `AGENT_ID` and `BATCH_ID` values from
   the current run when available, and use the normal PR branch name when a branch is known. If
@@ -109,7 +127,8 @@ against the fresh data before mutating GitHub or the branch.
   only for this lane's own claim (holder/generation check, so a replacement claim
   that reapplied the label is not cleared), the same as the batch claim step —
   mirror only when the backend provides claim-label expiry reconciliation, and
-  skip entirely when `coordination_backend: n/a`.
+  skip entirely for `coordination_not_applicable`. A `coordination_backend: n/a`
+  seam is not itself that outcome.
 - Use a structured public `codex-claim` comment only when the repo's
   `coordination_backend` seam explicitly selects public claim-comment fallback,
   or when the private claim cannot be started or definitively fails with a
