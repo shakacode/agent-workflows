@@ -4069,6 +4069,145 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_checkout_binding_rejects_tracked_paths_through_an_intermediate_symlink
+    Dir.mktmpdir("trusted-base-intermediate-symlink") do |fixture_root|
+      repo_root = File.join(fixture_root, "repo")
+      tracked_dir = File.join(repo_root, "tracked-dir")
+      external_dir = File.join(fixture_root, "external")
+      FileUtils.mkdir_p(tracked_dir)
+      git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
+      File.write(File.join(tracked_dir, "tracked.txt"), "trusted\n")
+      File.symlink("tracked.txt", File.join(tracked_dir, "final-link"))
+      git! "-C", repo_root, "add", "tracked-dir/tracked.txt", "tracked-dir/final-link"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "trusted"
+      base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+
+      previous_executable = TrustedGitState.executable
+      previous_local_env_vars = TrustedGitState.local_env_vars
+      TrustedGitState.executable = REAL_GIT
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+        REAL_GIT,
+        unsetenv_others: true
+      )
+      operations = TrustedBaseHighRiskOperations.new
+
+      worktree_matches, worktree_error = operations.worktree_matches_index?(repo_root)
+      assert worktree_matches, worktree_error
+      checkout_matches, checkout_error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+      assert checkout_matches, checkout_error
+
+      File.rename(tracked_dir, external_dir)
+      File.symlink(external_dir, tracked_dir)
+      refute_empty git_output!("-C", repo_root, "status", "--porcelain=v1", "--untracked-files=all")
+
+      direct_result = operations.worktree_matches_index?(repo_root)
+      full_result = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      expected = [false, "trusted checkout has tracked working-tree changes"]
+      assert_equal [expected, expected], [direct_result, full_result]
+    ensure
+      TrustedGitState.executable = previous_executable if defined?(previous_executable)
+      TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    end
+  end
+
+  def test_worktree_binding_fails_closed_on_missing_non_directory_or_unverifiable_ancestors
+    Dir.mktmpdir("trusted-base-ancestor-faults") do |fixture_root|
+      repo_root = File.join(fixture_root, "repo")
+      tracked_dir = File.join(repo_root, "tracked-dir")
+      preserved_dir = File.join(fixture_root, "preserved")
+      FileUtils.mkdir_p(tracked_dir)
+      git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
+      File.write(File.join(tracked_dir, "tracked.txt"), "trusted\n")
+      git! "-C", repo_root, "add", "tracked-dir/tracked.txt"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "trusted"
+
+      previous_executable = TrustedGitState.executable
+      previous_local_env_vars = TrustedGitState.local_env_vars
+      TrustedGitState.executable = REAL_GIT
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+        REAL_GIT,
+        unsetenv_others: true
+      )
+      operations = TrustedBaseHighRiskOperations.new
+      expected = [false, "trusted checkout has tracked working-tree changes"]
+
+      File.rename(tracked_dir, preserved_dir)
+      assert_equal expected, operations.worktree_matches_index?(repo_root)
+
+      File.write(tracked_dir, "not a directory\n")
+      assert_equal expected, operations.worktree_matches_index?(repo_root)
+      File.unlink(tracked_dir)
+      File.rename(preserved_dir, tracked_dir)
+
+      original_lstat = File.method(:lstat)
+      faulting_lstat = lambda do |path|
+        raise Errno::EIO, path if path == tracked_dir
+
+        original_lstat.call(path)
+      end
+      File.singleton_class.send(:define_method, :lstat, faulting_lstat)
+      begin
+        assert_equal expected, operations.worktree_matches_index?(repo_root)
+      ensure
+        File.singleton_class.send(:define_method, :lstat, original_lstat)
+      end
+    ensure
+      TrustedGitState.executable = previous_executable if defined?(previous_executable)
+      TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    end
+  end
+
+  def test_worktree_binding_rejects_traversal_and_malformed_ancestor_components
+    Dir.mktmpdir("trusted-base-ancestor-components") do |fixture_root|
+      repo_root = File.join(fixture_root, "repo")
+      FileUtils.mkdir_p(File.join(repo_root, "nested"))
+      git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
+      File.write(File.join(fixture_root, "outside.txt"), "trusted\n")
+      File.write(File.join(repo_root, "tracked.txt"), "trusted\n")
+      File.write(File.join(repo_root, "nested", "tracked.txt"), "trusted\n")
+      oid = git_output!("-C", repo_root, "hash-object", "--no-filters", "--", "../outside.txt")
+
+      previous_executable = TrustedGitState.executable
+      previous_local_env_vars = TrustedGitState.local_env_vars
+      TrustedGitState.executable = REAL_GIT
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+        REAL_GIT,
+        unsetenv_others: true
+      )
+      operations = TrustedBaseHighRiskOperations.new
+      expected_args = TRUSTED_CHECKOUT_CONFIG_ARGS + [
+        "-C", repo_root, "ls-files", "-z", "--stage", "--"
+      ]
+      unsafe_paths = [
+        "../outside.txt",
+        "/absolute.txt",
+        "nested//tracked.txt",
+        "nested/./tracked.txt",
+        "nested/../tracked.txt",
+        "nested/tracked.txt/"
+      ]
+
+      unsafe_paths.each do |unsafe_path|
+        matcher = ->(args) { args == expected_args }
+        response = ["100644 #{oid} 0\t#{unsafe_path}\0", "", TestCommandStatus.new(0)]
+        with_trusted_git_probe_fault(matcher, response) do
+          matches, error = operations.worktree_matches_index?(repo_root)
+          refute matches, unsafe_path.inspect
+          assert_equal "trusted checkout has tracked working-tree changes", error, unsafe_path.inspect
+        end
+      end
+    ensure
+      TrustedGitState.executable = previous_executable if defined?(previous_executable)
+      TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    end
+  end
+
   def test_checkout_binding_hashes_exceptional_tracked_paths_individually
     tracked_contents = {
       "line\nfeed.txt" => "trusted line feed\n",

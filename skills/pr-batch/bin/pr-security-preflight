@@ -2270,8 +2270,13 @@ class TrustedBaseHighRiskOperations
 
     regular_entries = []
     entries.each do |entry|
+      relative_path = entry.fetch(:path)
+      unless tracked_path_ancestors_are_directories?(root, relative_path)
+        return [false, TRACKED_WORKTREE_CHANGES]
+      end
+
       mode = entry.fetch(:mode)
-      path = File.join(root.b, entry.fetch(:path))
+      path = File.join(root.b, relative_path)
       case mode
       when "100644", "100755"
         return [false, TRACKED_WORKTREE_CHANGES] unless regular_file_matches_mode?(path, mode)
@@ -2319,6 +2324,24 @@ class TrustedBaseHighRiskOperations
     end
 
     [true, nil]
+  end
+
+  def tracked_path_ancestors_are_directories?(root, relative_path)
+    components = relative_path.b.split("/".b, -1)
+    unsafe_component = components.any? do |component|
+      component.empty? || component == ".".b || component == "..".b
+    end
+    return false if components.empty? || unsafe_component
+
+    ancestor = root.b
+    components[0...-1].each do |component|
+      ancestor = File.join(ancestor, component)
+      return false unless File.lstat(ancestor).directory?
+    end
+
+    true
+  rescue ArgumentError, SystemCallError, TypeError
+    false
   end
 
   def tracked_index_entries(root)
