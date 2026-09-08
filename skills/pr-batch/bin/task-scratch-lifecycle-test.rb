@@ -171,6 +171,82 @@ class TaskScratchLifecycleTest < Minitest::Test
     assert_cleanup_blocks_when_review_helper_cannot_launch(:missing)
   end
 
+  def test_unavailable_platform_cleanup_rename_does_not_disable_create_and_blocks_cleanup_structurally
+    instrumentations = {
+      "unsupported platform" => lambda do |source|
+        source.sub('    if RUBY_PLATFORM.include?("darwin")', "    if false")
+              .sub('    elsif RUBY_PLATFORM.include?("linux")', "    elsif false")
+      end,
+      "missing Linux symbol" => lambda do |source|
+        source.sub('    if RUBY_PLATFORM.include?("darwin")', "    if false")
+              .sub('    elsif RUBY_PLATFORM.include?("linux")', "    elsif true")
+              .sub(
+                '        extern "int renameat2(int, const char *, int, const char *, unsigned int)"',
+                '        extern "int task_scratch_missing_renameat2(int, const char *, int, const char *, unsigned int)"'
+              )
+              .sub(
+                "        renameat2(source_directory_fd, source, destination_directory_fd, destination, 0x1)",
+                "        task_scratch_missing_renameat2(source_directory_fd, source, destination_directory_fd, destination, 0x1)"
+              )
+      end
+    }
+
+    instrumentations.each do |label, instrument|
+      Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+        repository, = build_repository(directory)
+        identity_path = File.join(directory, "task-identity.json")
+        File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+        scratch_parent = File.join(directory, "scratch-parent")
+        durable_root = File.join(directory, "durable")
+        helper_root = File.join(directory, "helper-bin")
+        Dir.mkdir(scratch_parent)
+        Dir.mkdir(durable_root)
+        Dir.mkdir(helper_root)
+        lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+        review_helper = File.join(helper_root, "task-review-loop")
+        instrumented_helper = instrument.call(File.read(HELPER))
+        refute_equal File.read(HELPER), instrumented_helper, label
+        File.write(lifecycle_helper, instrumented_helper)
+        File.chmod(0o755, lifecycle_helper)
+        write_clean_review_helper(review_helper)
+
+        created, create_stderr, create_status = run_create(
+          repository,
+          scratch_parent,
+          identity_path,
+          ["evidence.json"],
+          helper: lifecycle_helper
+        )
+
+        assert create_status.success?, "#{label}: #{create_stderr}"
+        assert_empty create_stderr, label
+        assert_equal "created", created.fetch("status"), label
+        receipt = created.fetch("receipt")
+        scratch_root = receipt.fetch("scratch_root")
+        evidence_path = File.join(scratch_root, "evidence.json")
+        File.write(evidence_path, "preserve me\n")
+        receipt_path = File.join(durable_root, "scratch-receipt.json")
+        review_input_path = File.join(durable_root, "task-review-input.json")
+        File.write(receipt_path, JSON.generate(receipt))
+        File.write(review_input_path, JSON.generate("identity" => TASK_IDENTITY))
+
+        blocked, cleanup_stderr, cleanup_status = run_cleanup(
+          receipt_path,
+          review_input_path,
+          helper: lifecycle_helper
+        )
+
+        refute cleanup_status.success?, label
+        assert_empty cleanup_stderr, label
+        assert_equal "blocked", blocked.fetch("status"), label
+        assert_equal "cleanup-syscall-unavailable", blocked.fetch("reason"), label
+        assert_path_exists scratch_root, label
+        assert_equal "preserve me\n", File.binread(evidence_path), label
+        assert_equal JSON.generate(receipt), File.binread(receipt_path), label
+      end
+    end
+  end
+
   def test_cleanup_blocks_without_deleting_when_adjacent_review_helper_is_not_executable
     assert_cleanup_blocks_when_review_helper_cannot_launch(:not_executable)
   end

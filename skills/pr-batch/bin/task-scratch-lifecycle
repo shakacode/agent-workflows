@@ -32,21 +32,45 @@ module TaskScratchLifecycle
     extern "int renameat(int, const char *, int, const char *)"
     extern "int unlinkat(int, const char *, int)"
     if RUBY_PLATFORM.include?("darwin")
-      extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+      REMOVE_DIRECTORY = 0x80
+
+      def self.ensure_cleanup_supported!
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)" unless
+          respond_to?(:renameatx_np)
+        true
+      rescue Fiddle::DLError
+        raise LifecycleError, "cleanup-syscall-unavailable"
+      end
 
       def self.rename_no_replace(source_directory_fd, source, destination_directory_fd, destination)
+        ensure_cleanup_supported!
         renameatx_np(source_directory_fd, source, destination_directory_fd, destination, 0x4)
       end
+    elsif RUBY_PLATFORM.include?("linux")
+      REMOVE_DIRECTORY = 0x200
 
-      REMOVE_DIRECTORY = 0x80
-    else
-      extern "int renameat2(int, const char *, int, const char *, unsigned int)"
-
-      def self.rename_no_replace(source_directory_fd, source, destination_directory_fd, destination)
-        renameat2(source_directory_fd, source, destination_directory_fd, destination, 0x1)
+      def self.ensure_cleanup_supported!
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)" unless
+          respond_to?(:renameat2)
+        true
+      rescue Fiddle::DLError
+        raise LifecycleError, "cleanup-syscall-unavailable"
       end
 
-      REMOVE_DIRECTORY = 0x200
+      def self.rename_no_replace(source_directory_fd, source, destination_directory_fd, destination)
+        ensure_cleanup_supported!
+        renameat2(source_directory_fd, source, destination_directory_fd, destination, 0x1)
+      end
+    else
+      REMOVE_DIRECTORY = 0
+
+      def self.ensure_cleanup_supported!
+        raise LifecycleError, "cleanup-syscall-unavailable"
+      end
+
+      def self.rename_no_replace(*)
+        ensure_cleanup_supported!
+      end
     end
   end
 
@@ -668,6 +692,7 @@ module TaskScratchLifecycle
   end
 
   def remove_allowlisted_root(receipt)
+    CleanupSyscalls.ensure_cleanup_supported!
     root = receipt.fetch("scratch_root")
     parent = receipt.fetch("scratch_parent")
     moved_by_invocation = false
