@@ -185,7 +185,9 @@ module FetchPrReviewData
         excluded << excluded_record(
           kind: "review", raw: comment, trust: classification,
           created_at: comment["created_at"],
-          extra: { "path" => comment["path"], "thread_id" => meta && meta["thread_id"] }
+          # No "path": a PR author picks their own filenames, so it is
+          # contributor text. html_url already anchors the audit.
+          extra: { "thread_id" => meta && meta["thread_id"] }
         )
         next
       end
@@ -412,6 +414,12 @@ module FetchPrReviewData
       repo
     end
 
+    # No repo_local_verifier: proving a config is repo-local needs the remote
+    # *and host* comparison pr-security-preflight does, and address-review can
+    # target a different GH_HOST than the checkout. A cheaper probe would accept
+    # a same-named repo on another host. Without that proof the config is
+    # global, so an unqualified `trusted_teams` slug is dropped with the warning
+    # GithubActorTrust already emits rather than rebound to the --repo owner.
     def trust_boundary(repo, trust_config_path)
       TrustBoundary.for(
         repo:,
@@ -419,52 +427,12 @@ module FetchPrReviewData
         # Only consulted when no explicit config was named, so do not pay for a
         # git subprocess on the --trust-config path.
         repo_root: trust_config_path ? nil : git_toplevel,
-        repo_local_verifier: repo_local_verifier(repo),
         team_resolver: method(:team_member?)
       )
     end
 
-    # A config may use unqualified `trusted_teams` slugs only when it demonstrably
-    # belongs to the repo being read; otherwise the slug would be rebound to
-    # whatever owner --repo names. pr-security-preflight proves this from git
-    # remotes; here the checkout's own `gh` identity is the same fact and is
-    # already how this tool resolves a repo.
-    def repo_local_verifier(repo)
-      lambda do |path|
-        root = git_toplevel(chdir: File.dirname(path))
-        next false unless root && path_inside?(path, root)
-
-        checkout = checkout_repo(root)
-        !checkout.nil? && checkout.casecmp(repo).zero?
-      end
-    end
-
-    def path_inside?(path, root)
-      expanded_root = canonical_path(root)
-      expanded_path = canonical_path(path)
-      expanded_path == expanded_root || expanded_path.start_with?("#{expanded_root}#{File::SEPARATOR}")
-    end
-
-    def canonical_path(path)
-      File.realpath(path)
-    rescue SystemCallError
-      File.expand_path(path)
-    end
-
-    def checkout_repo(root)
-      out, status = capture_probe("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner",
-                                  chdir: root)
-      return unless status&.success?
-
-      name = out.strip
-      name unless name.empty?
-    end
-
-    def git_toplevel(chdir: nil)
-      args = ["git"]
-      args.push("-C", chdir) if chdir
-      args.concat(["rev-parse", "--show-toplevel"])
-      out, status = capture_probe(*args)
+    def git_toplevel
+      out, status = capture_probe("git", "rev-parse", "--show-toplevel")
       return unless status&.success?
 
       root = out.force_encoding("UTF-8").strip
@@ -473,10 +441,9 @@ module FetchPrReviewData
 
     # Bounded and environment-sanitized like the preflight's git probe, so a
     # hung credential helper or a GIT_CONFIG_* override cannot stall this tool.
-    def capture_probe(*cmd, chdir: nil)
-      opts = chdir ? { chdir: } : {}
+    def capture_probe(*cmd)
       Timeout.timeout(PROBE_TIMEOUT_SECONDS) do
-        Open3.capture2(PrBatchGitProbeEnv.probe_env, *cmd, **opts)
+        Open3.capture2(PrBatchGitProbeEnv.probe_env, *cmd)
       end
     rescue Timeout::Error
       warn "WARN: #{cmd.first(3).join(' ')} timed out after #{PROBE_TIMEOUT_SECONDS}s"
@@ -488,12 +455,10 @@ module FetchPrReviewData
     # Team membership is a GitHub fact, not a local one; an unreachable API
     # must not silently promote an actor to actionable.
     def team_member?(owner:, slug:, login:)
-      out, status = Open3.capture2(
+      out, status = capture_probe(
         "gh", "api", "orgs/#{owner}/teams/#{slug}/memberships/#{login}", "-q", ".state"
       )
-      status.success? && out.strip == "active"
-    rescue SystemCallError
-      false
+      status&.success? ? out.strip == "active" : false
     end
 
     def fetch(repo, pr_number, trust)

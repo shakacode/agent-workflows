@@ -133,8 +133,9 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       assert_equal "metadata_only", by_id[3]["trust"]
       assert_equal "review_summary", by_id[11]["kind"]
       assert_equal "review", by_id[21]["kind"]
-      assert_equal "b.rb", by_id[21]["path"]
       refute(excluded.any? { |row| row.key?("body") }, "excluded records must not carry bodies")
+      # A PR author names their own files, so a path is contributor text too.
+      refute(excluded.any? { |row| row.key?("path") }, "excluded records must not carry file paths")
     end
   end
 
