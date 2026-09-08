@@ -9,10 +9,16 @@
 # The reviewThreads thread_id/is_resolved metadata is joined onto each inline
 # comment by node_id so consumers do not have to redo that join.
 #
+# Bodies are emitted only for actors the shared trust config marks actionable.
+# Metadata-only and non-allowlisted interactions keep their actor, kind, time,
+# and URL in `excluded_interactions` so a maintainer can still audit them.
+#
 # Requires: gh (GitHub CLI). Ruby stdlib only.
 
 require "json"
 require "open3"
+
+require_relative "../../pr-batch/lib/github_actor_trust"
 
 # Pure data shaping (no I/O) plus the gh-backed runner. The pure methods take the
 # raw `gh --paginate --slurp` output strings so they can be unit-tested directly.
@@ -33,6 +39,47 @@ module FetchPrReviewData
   GRAPHQL
 
   class Error < StandardError; end
+
+  # Decides which actors may supply actionable review text, using the same
+  # allowlist and resolution order as pr-security-preflight.
+  class TrustBoundary
+    def self.for(repo:, trust_config_path: nil, repo_root: nil, team_resolver: nil)
+      resolved = GithubActorTrust.resolve_path(trust_config_path, repo_root:)
+      config = GithubActorTrust.load(path: resolved.fetch(:path), global: resolved.fetch(:global))
+      new(repo:, config:, source: resolved.fetch(:source), team_resolver:)
+    rescue GithubActorTrust::Error => e
+      raise Error, e.message
+    end
+
+    def initialize(repo:, config:, source:, team_resolver: nil)
+      @repo = repo
+      @config = config
+      @source = source
+      @team_resolver = team_resolver
+      @team_cache = {}
+    end
+
+    def classification(login)
+      GithubActorTrust.classify(
+        repo: @repo, login:, config: @config, team_cache: @team_cache, team_resolver: @team_resolver
+      )
+    rescue GithubActorTrust::Error => e
+      raise Error, e.message
+    end
+
+    def actionable?(login)
+      classification(login) == :trusted
+    end
+
+    def provenance
+      {
+        "source" => @source,
+        "config_path" => @config.fetch(:path),
+        "content_digest" => @config.fetch(:content_digest),
+        "actionable_actors" => "trusted-only"
+      }
+    end
+  end
 
   module_function
 
@@ -84,11 +131,35 @@ module FetchPrReviewData
     index
   end
 
-  def build_review_summaries(raw_reviews)
-    raw_reviews.filter_map do |review|
+  # Bounded audit record for an interaction whose body is withheld. Never
+  # carries the body: that is the whole point of the exclusion.
+  def excluded_record(kind:, raw:, trust:, created_at:, extra: {})
+    {
+      "kind" => kind,
+      "id" => raw["id"],
+      "node_id" => raw["node_id"],
+      "user" => raw.dig("user", "login"),
+      "trust" => trust.to_s,
+      "created_at" => created_at,
+      "html_url" => raw["html_url"]
+    }.merge(extra)
+  end
+
+  def build_review_summaries(raw_reviews, trust)
+    kept = []
+    excluded = []
+    raw_reviews.each do |review|
       next if review["body"].to_s == ""
 
-      {
+      classification = trust.classification(review.dig("user", "login"))
+      if classification != :trusted
+        excluded << excluded_record(
+          kind: "review_summary", raw: review, trust: classification,
+          created_at: review["submitted_at"], extra: { "state" => review["state"] }
+        )
+        next
+      end
+      kept << {
         "id" => review["id"],
         "type" => "review_summary",
         "body" => review["body"],
@@ -98,12 +169,24 @@ module FetchPrReviewData
         "html_url" => review["html_url"]
       }
     end
+    [kept, excluded]
   end
 
-  def build_inline_comments(raw_inline, index)
-    raw_inline.map do |comment|
+  def build_inline_comments(raw_inline, index, trust)
+    kept = []
+    excluded = []
+    raw_inline.each do |comment|
       meta = index[comment["node_id"]]
-      {
+      classification = trust.classification(comment.dig("user", "login"))
+      if classification != :trusted
+        excluded << excluded_record(
+          kind: "review", raw: comment, trust: classification,
+          created_at: comment["created_at"],
+          extra: { "path" => comment["path"], "thread_id" => meta && meta["thread_id"] }
+        )
+        next
+      end
+      kept << {
         "id" => comment["id"],
         "node_id" => comment["node_id"],
         "type" => "review",
@@ -119,11 +202,21 @@ module FetchPrReviewData
         "is_resolved" => meta ? meta["is_resolved"] : false
       }
     end
+    [kept, excluded]
   end
 
-  def build_issue_comments(raw_issue)
-    raw_issue.map do |comment|
-      {
+  def build_issue_comments(raw_issue, trust)
+    kept = []
+    excluded = []
+    raw_issue.each do |comment|
+      classification = trust.classification(comment.dig("user", "login"))
+      if classification != :trusted
+        excluded << excluded_record(
+          kind: "issue", raw: comment, trust: classification, created_at: comment["created_at"]
+        )
+        next
+      end
+      kept << {
         "id" => comment["id"],
         "node_id" => comment["node_id"],
         "type" => "issue",
@@ -133,11 +226,15 @@ module FetchPrReviewData
         "html_url" => comment["html_url"]
       }
     end
+    [kept, excluded]
   end
 
-  # Most recent issue comment whose body starts with the summary marker.
-  def compute_cutoff(raw_issue)
-    raw_issue
+  # Most recent trusted issue comment whose body starts with the summary
+  # marker. Only trusted comments count: the cutoff decides which review
+  # comments are treated as already addressed, so honouring a forged marker
+  # would let an untrusted actor hide real review feedback.
+  def compute_cutoff(trusted_issue_comments)
+    trusted_issue_comments
       .select { |comment| comment["body"].to_s.start_with?(SUMMARY_MARKER) }
       .filter_map { |comment| comment["created_at"] }
       .reject(&:empty?)
@@ -146,19 +243,28 @@ module FetchPrReviewData
   end
 
   # Build the normalized result hash from the four raw slurped strings.
-  def assemble(repo:, pr_number:, issue_raw:, reviews_raw:, inline_raw:, threads_raw:)
-    raw_issue = slurped_items(issue_raw)
+  #
+  # `trust` is required: a caller that could omit it would silently select an
+  # unfiltered packet, which is the exposure this boundary exists to close.
+  def assemble(repo:, pr_number:, issue_raw:, reviews_raw:, inline_raw:, threads_raw:, trust: nil)
+    raise ArgumentError, "assemble requires a trust boundary (trust:)" if trust.nil?
+
     review_threads = build_review_threads(thread_nodes(threads_raw))
     index = thread_index(review_threads)
+    summaries, excluded_summaries = build_review_summaries(slurped_items(reviews_raw), trust)
+    inline, excluded_inline = build_inline_comments(slurped_items(inline_raw), index, trust)
+    issue, excluded_issue = build_issue_comments(slurped_items(issue_raw), trust)
 
     {
       "repo" => repo,
       "pr" => pr_number.to_i,
-      "review_cutoff_at" => compute_cutoff(raw_issue),
-      "review_summaries" => build_review_summaries(slurped_items(reviews_raw)),
-      "inline_comments" => build_inline_comments(slurped_items(inline_raw), index),
-      "issue_comments" => build_issue_comments(raw_issue),
-      "review_threads" => review_threads
+      "trust" => trust.provenance,
+      "review_cutoff_at" => compute_cutoff(issue),
+      "review_summaries" => summaries,
+      "inline_comments" => inline,
+      "issue_comments" => issue,
+      "review_threads" => review_threads,
+      "excluded_interactions" => excluded_issue + excluded_summaries + excluded_inline
     }
   end
 
@@ -166,13 +272,18 @@ module FetchPrReviewData
     resolved_inline = result["inline_comments"].count { |comment| comment["is_resolved"] }
     resolved_threads = result["review_threads"].count { |thread| thread["is_resolved"] }
     cutoff = result["review_cutoff_at"].empty? ? "(none)" : result["review_cutoff_at"]
+    excluded = result["excluded_interactions"]
     [
       "PR review data for #{result['repo']}##{result['pr']}",
+      "trust: #{result['trust']['source']} (#{result['trust']['content_digest']})",
       "review_cutoff_at: #{cutoff}",
       "review_summaries: #{result['review_summaries'].length}",
       "inline_comments: #{result['inline_comments'].length} (#{resolved_inline} in resolved threads)",
       "issue_comments: #{result['issue_comments'].length}",
-      "review_threads: #{result['review_threads'].length} (#{resolved_threads} resolved)"
+      "review_threads: #{result['review_threads'].length} (#{resolved_threads} resolved)",
+      "excluded_interactions: #{excluded.length} " \
+      "(#{excluded.count { |row| row['trust'] == 'metadata_only' }} metadata-only, " \
+      "#{excluded.count { |row| row['trust'] == 'untrusted' }} untrusted)"
     ].join("\n")
   end
 
@@ -188,16 +299,30 @@ module FetchPrReviewData
       <pr-number>        PR number to fetch (integer).
 
     Options:
-          --repo REPO    GitHub repo in OWNER/REPO form. Defaults to gh repo view.
-          --json         Print JSON (default).
-          --text         Print a human-readable count summary instead of JSON.
-          --self-check   Run a parser check plus a read-only gh smoke check.
-      -h, --help         Show this help.
+          --repo REPO          GitHub repo in OWNER/REPO form. Defaults to gh repo view.
+          --trust-config PATH  Trusted GitHub actor allowlist. Defaults to the same
+                               compatibility order pr-security-preflight uses:
+                               repo-local #{GithubActorTrust::DEFAULT_TRUST_CONFIG},
+                               $#{GithubActorTrust::USER_TRUST_CONFIG_ENV},
+                               #{GithubActorTrust::HOME_TRUST_CONFIG}, then the packaged
+                               fail-closed fallback.
+          --json               Print JSON (default).
+          --text               Print a human-readable count summary instead of JSON.
+          --self-check         Run a parser check plus a read-only gh smoke check.
+      -h, --help               Show this help.
 
-    review_cutoff_at is the created_at of the most recent issue comment whose body
-    starts with "#{SUMMARY_MARKER}", or "" when none exists. Summary and status
-    marker comments are still included in issue_comments so consumers can filter
-    them; computing the cutoff here does not drop them.
+    Only actors the trust config marks actionable (trusted_users, trusted_bots,
+    trusted_teams) contribute bodies. trusted_metadata_bots and non-allowlisted
+    actors, including any comment with a missing or hidden login, are summarized
+    in excluded_interactions with actor, kind, timestamp, and URL but no body, so
+    contributor text can never reach an agent as instructions. The resolved trust
+    source, path, and sha256 content digest are bound to the packet under "trust".
+
+    review_cutoff_at is the created_at of the most recent trusted issue comment
+    whose body starts with "#{SUMMARY_MARKER}", or "" when none
+    exists. Summary and status marker comments are still included in
+    issue_comments so consumers can filter them; computing the cutoff here does
+    not drop them.
 
     Requires: gh (GitHub CLI)
   USAGE
@@ -215,7 +340,7 @@ module FetchPrReviewData
 
       pr_number = validate_pr!(opts[:pr])
       repo = resolve_repo!(opts[:repo])
-      print_result(fetch(repo, pr_number), opts[:format])
+      print_result(fetch(repo, pr_number, trust_boundary(repo, opts[:trust_config])), opts[:format])
       0
     rescue Error => e
       warn "Error: #{e.message}"
@@ -225,12 +350,13 @@ module FetchPrReviewData
     private
 
     def parse_args(argv)
-      opts = { format: "json", help: false, self_check: false, pr: nil, repo: nil }
+      opts = { format: "json", help: false, self_check: false, pr: nil, repo: nil, trust_config: nil }
       args = argv.dup
       until args.empty?
         arg = args.shift
         case arg
         when "--repo" then opts[:repo] = take_value!(args, "--repo")
+        when "--trust-config" then opts[:trust_config] = take_value!(args, "--trust-config")
         when "--json" then opts[:format] = "json"
         when "--text" then opts[:format] = "text"
         when "--self-check" then opts[:self_check] = true
@@ -271,7 +397,32 @@ module FetchPrReviewData
       repo
     end
 
-    def fetch(repo, pr_number)
+    def trust_boundary(repo, trust_config_path)
+      TrustBoundary.for(repo:, trust_config_path:, repo_root: git_toplevel, team_resolver: method(:team_member?))
+    end
+
+    def git_toplevel
+      out, status = Open3.capture2("git", "rev-parse", "--show-toplevel")
+      return unless status.success?
+
+      root = out.force_encoding("UTF-8").strip
+      root unless root.empty?
+    rescue SystemCallError
+      nil
+    end
+
+    # Team membership is a GitHub fact, not a local one; an unreachable API
+    # must not silently promote an actor to actionable.
+    def team_member?(owner:, slug:, login:)
+      out, status = Open3.capture2(
+        "gh", "api", "orgs/#{owner}/teams/#{slug}/memberships/#{login}", "-q", ".state"
+      )
+      status.success? && out.strip == "active"
+    rescue SystemCallError
+      false
+    end
+
+    def fetch(repo, pr_number, trust)
       owner, name = repo.split("/", 2)
       FetchPrReviewData.assemble(
         repo:,
@@ -283,7 +434,8 @@ module FetchPrReviewData
           "gh", "api", "graphql", "--paginate", "--slurp",
           "-f", "owner=#{owner}", "-f", "name=#{name}", "-F", "pr=#{pr_number}",
           "-f", "query=#{REVIEW_THREADS_QUERY}"
-        )
+        ),
+        trust:
       )
     end
 
@@ -308,7 +460,7 @@ module FetchPrReviewData
     end
 
     def self_check
-      errors = self_check_errors(FetchPrReviewData.assemble(**self_check_fixtures))
+      errors = self_check_errors(FetchPrReviewData.assemble(**self_check_fixtures, trust: self_check_trust))
       unless errors.empty?
         warn "self-check failed: #{errors.join('; ')}"
         return 1
@@ -319,16 +471,32 @@ module FetchPrReviewData
       0
     end
 
+    # Self-check runs against an in-memory allowlist so it stays deterministic
+    # wherever the pack is installed. `ok` is trusted; `stranger` is not.
+    def self_check_trust
+      config = GithubActorTrust.build_config(
+        { "trusted_users" => ["ok"] }, contents: "trusted_users:\n  - ok\n",
+                                       path: "(self-check)", global: false
+      )
+      TrustBoundary.new(repo: "owner/repo", config:, source: "self-check")
+    end
+
     def self_check_fixtures
       {
         repo: "owner/repo",
         pr_number: 1234,
-        issue_raw: '[[{"id":1,"body":"first","created_at":"2026-01-01T00:00:00Z"},' \
-                   '{"id":2,"body":"<!-- address-review-summary -->\nold","created_at":"2026-01-02T00:00:00Z"}],' \
-                   '[{"id":3,"body":"<!-- address-review-summary -->\nnew","created_at":"2026-01-03T00:00:00Z"}]]',
-        reviews_raw: '[[{"id":10,"body":"fix it","state":"COMMENTED","submitted_at":"2026-01-04T00:00:00Z"},' \
-                     '{"id":11,"body":"","state":"APPROVED"}]]',
-        inline_raw: '[[{"id":20,"node_id":"RC_20","path":"a.rb"},{"id":21,"node_id":"RC_21","path":"b.rb"}]]',
+        issue_raw: '[[{"id":1,"body":"first","user":{"login":"ok"},"created_at":"2026-01-01T00:00:00Z"},' \
+                   '{"id":2,"body":"<!-- address-review-summary -->\nold","user":{"login":"ok"},' \
+                   '"created_at":"2026-01-02T00:00:00Z"}],' \
+                   '[{"id":3,"body":"<!-- address-review-summary -->\nnew","user":{"login":"ok"},' \
+                   '"created_at":"2026-01-03T00:00:00Z"},' \
+                   '{"id":4,"body":"<!-- address-review-summary -->\nforged","user":{"login":"stranger"},' \
+                   '"created_at":"2026-01-09T00:00:00Z"}]]',
+        reviews_raw: '[[{"id":10,"body":"fix it","state":"COMMENTED","user":{"login":"ok"},' \
+                     '"submitted_at":"2026-01-04T00:00:00Z"},' \
+                     '{"id":11,"body":"","state":"APPROVED","user":{"login":"ok"}}]]',
+        inline_raw: '[[{"id":20,"node_id":"RC_20","path":"a.rb","user":{"login":"ok"}},' \
+                    '{"id":21,"node_id":"RC_21","path":"b.rb","user":{"login":"ok"}}]]',
         threads_raw: '[{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[' \
                      '{"id":"T_A","isResolved":true,"comments":{"nodes":[{"id":"RC_20","databaseId":20}]}},' \
                      '{"id":"T_B","isResolved":false,"comments":{"nodes":[{"id":"RC_21","databaseId":21}]}}]}}}}}]'
@@ -343,6 +511,9 @@ module FetchPrReviewData
       errors << "issue_comments=#{out['issue_comments'].length}" unless out["issue_comments"].length == 3
       errors << "RC_20 thread" unless by_id[20]["thread_id"] == "T_A" && by_id[20]["is_resolved"] == true
       errors << "RC_21 resolved" unless by_id[21]["is_resolved"] == false
+      excluded = out["excluded_interactions"]
+      errors << "excluded=#{excluded.length}" unless excluded.length == 1
+      errors << "excluded body leaked" if excluded.any? { |row| row.key?("body") }
       errors
     end
 

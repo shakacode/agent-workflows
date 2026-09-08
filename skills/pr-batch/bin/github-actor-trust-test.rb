@@ -1,0 +1,157 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Unit tests for the shared GitHub actor trust module.
+# Run with: ruby .agents/skills/pr-batch/bin/github-actor-trust-test.rb
+
+require "fileutils"
+require "minitest/autorun"
+require "tmpdir"
+
+require_relative "../lib/github_actor_trust"
+
+class GithubActorTrustTest < Minitest::Test
+  def config(yaml, global: false)
+    Dir.mktmpdir("actor-trust") do |dir|
+      path = File.join(dir, "trusted-github-actors.yml")
+      File.write(path, yaml)
+      return GithubActorTrust.load(path:, global:)
+    end
+  end
+
+  def classify(login, yaml: "trusted_users: [justin808]\n", **kwargs)
+    GithubActorTrust.classify(repo: "owner/repo", login:, config: config(yaml), **kwargs)
+  end
+
+  def test_trusted_user_is_actionable
+    assert_equal :trusted, classify("justin808")
+  end
+
+  def test_login_matching_is_case_insensitive_and_ignores_an_at_prefix
+    assert_equal :trusted, classify("JUSTIN808")
+    assert_equal :trusted, classify("@justin808")
+  end
+
+  def test_unknown_actor_is_untrusted
+    assert_equal :untrusted, classify("drive-by")
+  end
+
+  def test_missing_or_hidden_login_is_untrusted
+    assert_equal :untrusted, classify(nil)
+    assert_equal :untrusted, classify("")
+  end
+
+  def test_packaged_metadata_bot_is_metadata_only_even_when_unlisted
+    assert_equal :metadata_only, classify("github-actions[bot]")
+  end
+
+  # A human squatting on a bot's base name must not inherit the bot's trust.
+  def test_bot_trust_requires_the_bot_suffix
+    yaml = "trusted_bots: [coderabbitai]\n"
+    assert_equal :trusted, classify("coderabbitai[bot]", yaml:)
+    assert_equal :untrusted, classify("coderabbitai", yaml:)
+  end
+
+  def test_overlapping_bot_classification_fails_closed
+    error = assert_raises(GithubActorTrust::Error) do
+      config("trusted_bots: [dup]\ntrusted_metadata_bots: [dup]\n")
+    end
+
+    assert_match(/listed in both/, error.message)
+  end
+
+  def test_malformed_yaml_fails_closed
+    error = assert_raises(GithubActorTrust::Error) { config("trusted_users: [\n") }
+
+    assert_match(/malformed YAML/, error.message)
+  end
+
+  def test_non_mapping_config_fails_closed
+    error = assert_raises(GithubActorTrust::Error) { config("- just-a-list\n") }
+
+    assert_match(/expected a YAML mapping/, error.message)
+  end
+
+  def test_digest_is_over_the_bytes_that_were_parsed
+    loaded = config("trusted_users: [justin808]\n")
+    expected = "sha256:#{Digest::SHA256.hexdigest("trusted_users: [justin808]\n")}"
+
+    assert_equal expected, loaded.fetch(:content_digest)
+  end
+
+  # Guessing membership would either invent trust or drop a configured
+  # reviewer, so a config naming teams must be given a resolver.
+  def test_teams_without_a_resolver_fail_closed
+    error = assert_raises(GithubActorTrust::Error) do
+      classify("member", yaml: "trusted_teams: [reviewers]\n")
+    end
+
+    assert_match(/team_resolver/, error.message)
+  end
+
+  def test_team_member_is_trusted_through_the_resolver
+    resolver = ->(owner:, slug:, login:) { [owner, slug, login] == %w[owner reviewers member] }
+
+    assert_equal :trusted, classify("member", yaml: "trusted_teams: [reviewers]\n", team_resolver: resolver)
+    assert_equal :untrusted, classify("stranger", yaml: "trusted_teams: [reviewers]\n", team_resolver: resolver)
+  end
+
+  def test_a_team_owned_by_another_org_is_ignored
+    resolver = ->(**) { true }
+
+    assert_equal :untrusted,
+                 classify("member", yaml: "trusted_teams: [other-org/reviewers]\n", team_resolver: resolver)
+  end
+
+  def test_global_config_ignores_an_unqualified_team_slug
+    loaded = nil
+    _out, err = capture_io do
+      loaded = config("trusted_teams: [reviewers]\n", global: true)
+    end
+
+    assert_empty loaded.fetch(:trusted_teams)
+    assert_match(/unqualified team slug/, err)
+  end
+
+  def test_resolve_path_prefers_a_repo_local_config
+    Dir.mktmpdir("actor-trust-root") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      path = File.join(root, GithubActorTrust::DEFAULT_TRUST_CONFIG)
+      File.write(path, "trusted_users: []\n")
+
+      resolved = GithubActorTrust.resolve_path(nil, repo_root: root)
+
+      assert_equal path, resolved.fetch(:path)
+      assert_equal "repo-local", resolved.fetch(:source)
+    end
+  end
+
+  def test_resolve_path_rejects_a_missing_explicit_config
+    error = assert_raises(GithubActorTrust::Error) do
+      GithubActorTrust.resolve_path("/nonexistent/trusted-github-actors.yml")
+    end
+
+    assert_match(/Trust config not found/, error.message)
+  end
+
+  def test_resolve_path_falls_back_to_the_packaged_allowlist
+    Dir.mktmpdir("actor-trust-empty") do |root|
+      resolved = with_env(GithubActorTrust::USER_TRUST_CONFIG_ENV => nil, "HOME" => root) do
+        GithubActorTrust.resolve_path(nil, repo_root: root)
+      end
+
+      assert_equal "packaged-fallback", resolved.fetch(:source)
+      assert_equal GithubActorTrust::PACKAGED_TRUST_CONFIG, resolved.fetch(:path)
+    end
+  end
+
+  private
+
+  def with_env(overrides)
+    previous = overrides.keys.to_h { |key| [key, ENV.fetch(key, nil)] }
+    overrides.each { |key, value| ENV[key] = value }
+    yield
+  ensure
+    previous.each { |key, value| ENV[key] = value }
+  end
+end

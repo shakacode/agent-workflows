@@ -15,6 +15,7 @@ require "uri"
 require "yaml"
 
 require_relative "../lib/git_probe_env"
+require_relative "../lib/github_actor_trust"
 
 options = {
   acknowledged_risks: Hash.new { |hash, key| hash[key] = Set.new },
@@ -265,22 +266,20 @@ def visible_actor_logins(node, graph_field)
   actors
 end
 
+# Trust vocabulary is shared with fetch-pr-review-data so both ingestion
+# boundaries resolve the same allowlist. See lib/github_actor_trust.rb.
 def normalized_login(login)
-  login.to_s.delete_prefix("@").downcase
+  GithubActorTrust.normalized_login(login)
 end
 
 def normalized_bot_login(login)
-  normalized_login(login).delete_suffix("[bot]")
+  GithubActorTrust.normalized_bot_login(login)
 end
 
-DEFAULT_TRUST_CONFIG = ".agents/trusted-github-actors.yml"
-HOME_TRUST_CONFIG = "~/.agents/trusted-github-actors.yml"
-PACKAGED_TRUST_CONFIG = File.expand_path("../trusted-github-actors.yml", __dir__)
-USER_TRUST_CONFIG_ENV = "AGENT_WORKFLOWS_TRUST_CONFIG"
-PACKAGED_METADATA_BOTS = begin
-  packaged = YAML.safe_load_file(PACKAGED_TRUST_CONFIG, aliases: false) || {}
-  Array(packaged["trusted_metadata_bots"]).to_set { |login| normalized_bot_login(login) }
-end.freeze
+DEFAULT_TRUST_CONFIG = GithubActorTrust::DEFAULT_TRUST_CONFIG
+HOME_TRUST_CONFIG = GithubActorTrust::HOME_TRUST_CONFIG
+PACKAGED_TRUST_CONFIG = GithubActorTrust::PACKAGED_TRUST_CONFIG
+USER_TRUST_CONFIG_ENV = GithubActorTrust::USER_TRUST_CONFIG_ENV
 
 def git_probe_env
   PrBatchGitProbeEnv.probe_env
@@ -499,69 +498,22 @@ rescue SystemCallError
   File.expand_path(path)
 end
 
-def normalized_team_entry(value, require_owner:)
-  owner_or_slug, slug = value.to_s.split("/", 2)
-  return if owner_or_slug.empty?
-
-  if slug
-    return if slug.empty?
-
-    { owner: normalized_login(owner_or_slug), slug: }
-  elsif require_owner
-    warn "WARN: global trust config ignores unqualified team slug #{owner_or_slug.inspect}: " \
-         "use OWNER/team-slug format"
-    nil
-  else
-    { owner: nil, slug: owner_or_slug }
-  end
-end
-
-def normalized_trusted_teams(values, require_owner:)
-  Array(values).filter_map { |value| normalized_team_entry(value, require_owner:) }
-end
-
 def load_trust_config(path:, global:)
-  path = File.expand_path(path)
-  contents = File.exist?(path) ? File.binread(path) : ""
-  parse_contents = contents.dup.force_encoding(Encoding::UTF_8)
-  abort "Invalid trust config #{path}: expected valid UTF-8" unless parse_contents.valid_encoding?
-
-  data = parse_contents.empty? ? {} : YAML.safe_load(parse_contents, aliases: false, filename: path) || {}
-  abort "Invalid trust config #{path}: expected a YAML mapping at the top level" unless data.is_a?(Hash)
-
-  trusted_bots = Array(data["trusted_bots"]).to_set { |login| normalized_bot_login(login) }
-  trusted_metadata_bots = Array(data["trusted_metadata_bots"]).to_set { |login| normalized_bot_login(login) }
-  trusted_metadata_bots.merge(PACKAGED_METADATA_BOTS - trusted_bots)
-  overlapping_bots = trusted_bots & trusted_metadata_bots
-  if overlapping_bots.any?
-    abort "Invalid trust config #{path}: bot(s) listed in both trusted_bots and " \
-          "trusted_metadata_bots: #{overlapping_bots.to_a.sort.join(', ')}"
-  end
-
-  {
-    content_digest: "sha256:#{Digest::SHA256.hexdigest(contents)}",
-    path:,
-    trusted_bots:,
-    trusted_metadata_bots:,
-    trusted_teams: normalized_trusted_teams(data["trusted_teams"], require_owner: global),
-    trusted_users: Array(data["trusted_users"]).to_set { |login| normalized_login(login) }
-  }
-rescue Psych::Exception
-  abort "Invalid trust config #{path}: malformed YAML"
+  GithubActorTrust.load(path:, global:)
+rescue GithubActorTrust::Error => e
+  abort e.message
 end
 
 def bot_login_in_set?(login, trusted_set)
-  normalized = normalized_login(login)
-
-  normalized.end_with?("[bot]") && trusted_set.include?(normalized.delete_suffix("[bot]"))
+  GithubActorTrust.bot_login_in_set?(login, trusted_set)
 end
 
 def trusted_bot?(login, trust_config)
-  bot_login_in_set?(login, trust_config.fetch(:trusted_bots))
+  GithubActorTrust.trusted_bot?(login, trust_config)
 end
 
 def trusted_metadata_bot?(login, trust_config)
-  bot_login_in_set?(login, trust_config.fetch(:trusted_metadata_bots))
+  GithubActorTrust.trusted_metadata_bot?(login, trust_config)
 end
 
 def collaborator_permission(repo, login)
@@ -571,34 +523,20 @@ rescue StandardError => e
   "none"
 end
 
-def trusted_team_member?(repo, login, trust_config, team_cache)
-  repo_owner = repo.split("/", 2).first
-  normalized_repo_owner = normalized_login(repo_owner)
-  trust_config.fetch(:trusted_teams).any? do |team|
-    team_owner = team.fetch(:owner) || repo_owner
-    next false unless normalized_login(team_owner) == normalized_repo_owner
-
-    team_slug = team.fetch(:slug)
-    cache_key = [normalized_repo_owner, team_slug, normalized_login(login)]
-    team_cache[cache_key] ||= begin
-      membership = run_gh_json("api", "orgs/#{team_owner}/teams/#{team_slug}/memberships/#{login}")
-      membership.fetch("state") == "active"
-    rescue StandardError
-      false
-    end
-  end
+TEAM_MEMBERSHIP_RESOLVER = lambda do |owner:, slug:, login:|
+  run_gh_json("api", "orgs/#{owner}/teams/#{slug}/memberships/#{login}").fetch("state") == "active"
+rescue StandardError
+  false
 end
 
 def trusted_actor?(repo, login, trust_config, team_cache)
-  return false if login.to_s.empty?
-  return true if trust_config.fetch(:trusted_users).include?(normalized_login(login))
-  return true if trusted_bot?(login, trust_config)
-
-  trusted_team_member?(repo, login, trust_config, team_cache)
+  GithubActorTrust.trusted_actor?(repo, login, trust_config, team_cache, TEAM_MEMBERSHIP_RESOLVER)
 end
 
 def allowed_metadata_actor?(repo, login, trust_config, team_cache)
-  trusted_actor?(repo, login, trust_config, team_cache) || trusted_metadata_bot?(login, trust_config)
+  GithubActorTrust.classify(
+    repo:, login:, config: trust_config, team_cache:, team_resolver: TEAM_MEMBERSHIP_RESOLVER
+  ) != :untrusted
 end
 
 def trusted_metadata_text?(repo, author, text, trust_config:, team_cache:, pattern:)

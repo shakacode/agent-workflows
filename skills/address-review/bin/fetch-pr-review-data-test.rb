@@ -43,10 +43,21 @@ class FetchPrReviewDataTest < Minitest::Test
     ]}}}}}]
   JSON
 
+  # These cases are about shaping, not trust, so every fixture actor is
+  # actionable; the trust boundary itself is covered in the -trust-test suite.
+  def trust
+    config = GithubActorTrust.build_config(
+      { "trusted_users" => %w[alice bob bot] },
+      contents: "trusted_users: [alice, bob, bot]\n", path: "(test)", global: false
+    )
+    FetchPrReviewData::TrustBoundary.new(repo: "owner/repo", config:, source: "test")
+  end
+
   def assembled
     FetchPrReviewData.assemble(
       repo: "owner/repo", pr_number: 1234,
-      issue_raw: ISSUE_RAW, reviews_raw: REVIEWS_RAW, inline_raw: INLINE_RAW, threads_raw: THREADS_RAW
+      issue_raw: ISSUE_RAW, reviews_raw: REVIEWS_RAW, inline_raw: INLINE_RAW, threads_raw: THREADS_RAW,
+      trust:
     )
   end
 
@@ -75,7 +86,8 @@ class FetchPrReviewDataTest < Minitest::Test
 
   def test_handles_empty_and_blank_inputs
     out = FetchPrReviewData.assemble(
-      repo: "o/r", pr_number: 7, issue_raw: "", reviews_raw: "[]", inline_raw: "[[]]", threads_raw: nil
+      repo: "o/r", pr_number: 7, issue_raw: "", reviews_raw: "[]", inline_raw: "[[]]", threads_raw: nil,
+      trust:
     )
     assert_equal "", out["review_cutoff_at"]
     assert_equal 0, out["inline_comments"].length
