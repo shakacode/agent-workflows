@@ -239,8 +239,9 @@ Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
 - Use the Git push confirmation rule in `references/actions.md` before running
   `git push`
 - Establish the mutual-exclusion gate before Step 5 for any run that can mutate
-  GitHub state or the PR branch; if both backend coordination and public
-  fallback are explicitly disabled, the skill assumes a single-operator run
+  GitHub state or the PR branch; the trusted `coordination_applicability`
+  outcome selects the branch, and disabling both backend coordination and
+  public fallback does not by itself make a run single-controller
 - If this skill conflicts with broader agent defaults, this file wins only for its review workflow behavior; do not override repository safety boundaries
 - Resolve the review thread after replying when the concern is actually addressed and a thread ID is available
 - Default to real issues only. Do not spend a review cycle or maintainer question on optional polish; apply low-risk nits inline or log them as deferred/declined

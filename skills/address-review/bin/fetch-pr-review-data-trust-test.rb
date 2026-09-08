@@ -108,6 +108,28 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     end
   end
 
+  def test_empty_reviews_from_excluded_actors_remain_auditable
+    with_trust_config do |path|
+      trust = FetchPrReviewData::TrustBoundary.for(repo: "owner/repo", trust_config_path: path)
+      reviews = ["drive-by", "github-actions[bot]", nil, "justin808"].each_with_index.map do |login, id|
+        { "id" => id, "body" => id.even? ? "" : nil, "user" => { "login" => login },
+          "state" => "CHANGES_REQUESTED", "submitted_at" => "2026-01-01T00:00:00Z",
+          "html_url" => "https://gh/rv/#{id}" }
+      end
+      kept, excluded = FetchPrReviewData.build_review_summaries(reviews, trust)
+
+      assert_empty kept, "trusted empty reviews still supply no actionable text"
+      assert_equal([0, 1, 2], excluded.map { |row| row["id"] })
+      assert_equal(%w[untrusted metadata_only untrusted], excluded.map { |row| row["trust"] })
+      excluded.each do |row|
+        assert_equal "CHANGES_REQUESTED", row["state"]
+        assert_equal "2026-01-01T00:00:00Z", row["created_at"]
+        assert_equal "https://gh/rv/#{row['id']}", row["html_url"]
+        refute row.key?("body")
+      end
+    end
+  end
+
   def test_trusted_bodies_remain_available
     with_trust_config do |path|
       out = assembled(path)

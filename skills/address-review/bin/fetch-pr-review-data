@@ -152,8 +152,6 @@ module FetchPrReviewData
     kept = []
     excluded = []
     raw_reviews.each do |review|
-      next if review["body"].to_s == ""
-
       classification = trust.classification(review.dig("user", "login"))
       if classification != :trusted
         excluded << excluded_record(
@@ -162,6 +160,8 @@ module FetchPrReviewData
         )
         next
       end
+      next if review["body"].to_s == ""
+
       kept << {
         "id" => review["id"],
         "type" => "review_summary",

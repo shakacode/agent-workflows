@@ -276,11 +276,6 @@ def normalized_bot_login(login)
   GithubActorTrust.normalized_bot_login(login)
 end
 
-DEFAULT_TRUST_CONFIG = GithubActorTrust::DEFAULT_TRUST_CONFIG
-HOME_TRUST_CONFIG = GithubActorTrust::HOME_TRUST_CONFIG
-PACKAGED_TRUST_CONFIG = GithubActorTrust::PACKAGED_TRUST_CONFIG
-USER_TRUST_CONFIG_ENV = GithubActorTrust::USER_TRUST_CONFIG_ENV
-
 def git_probe_env
   PrBatchGitProbeEnv.probe_env
 end

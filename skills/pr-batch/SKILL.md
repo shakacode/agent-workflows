@@ -115,6 +115,15 @@ the sole owner of canonical target v1, durable override provenance, trust
 handoff, short-invocation expansion, duplicate handling, and the verified
 intake facts consumed below. Do not restate or reinterpret that contract here.
 
+### Coordination Applicability
+
+Before any coordination operation, apply the canonical
+[Coordination Applicability Gate](../../workflows/pr-processing.md#coordination-applicability-gate)
+and persist its outcome. Ordinary one-agent, one-target serialized work is
+`coordination_not_applicable`; do not contact a backend or warn about
+coordination merely because this skill calls it a batch of one. This relaxes no
+target-identity or foreign-target control-transfer guard.
+
 <!-- stage-reference: references/launch.md -->
 ### Single-Target Launch
 
