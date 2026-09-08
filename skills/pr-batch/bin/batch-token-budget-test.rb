@@ -6710,6 +6710,57 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_invalid_receipt_bindings_with_later_time_do_not_advance_durable_state
+    variants = {
+      "invalid-reference" => {
+        reason: "usage-receipt-reference-invalid",
+        mutate: proc { |value| value["usage_receipt_ref"] = "self-attested://worker/usage" }
+      },
+      "digest-mismatch" => {
+        reason: "usage-receipt-digest-mismatch",
+        mutate: proc { |value| value["usage_receipt_digest"] = "sha256:#{'0' * 64}" }
+      }
+    }
+    variants.each do |name, variant|
+      with_state do |state_path|
+        initialize_budget(state_path)
+        reserve(state_path, id: "#{name}-reservation", tokens: 100)
+        receipt, receipt_ref, receipt_digest = real_descendants_usage_receipt(state_path)
+        reconcile_command = command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T12:01:00Z",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+        variant.fetch(:mutate).call(reconcile_command)
+        state_before = File.binread(state_path)
+
+        blocked, stderr, status = run_helper(state_path, reconcile_command)
+
+        assert status.success?, "#{name}: #{stderr}"
+        assert_equal "blocked", blocked.fetch("status"), name
+        assert_equal variant.fetch(:reason), blocked.fetch("reason"), name
+        assert_equal state_before, File.binread(state_path), name
+
+        recovered, recovered_stderr, recovered_status = run_helper(
+          state_path,
+          command(
+            "reserve",
+            "evaluated_at" => "2026-08-12T12:00:30Z",
+            "reservation" => reservation(
+              id: "#{name}-recovery",
+              target_id: "#{name}-recovery-target"
+            )
+          )
+        )
+        assert recovered_status.success?, "#{name}: #{recovered_stderr}"
+        assert_includes %w[admitted admitted-with-warning coalesced], recovered.fetch("status"), name
+      end
+    end
+  end
+
   def test_invalid_receipt_artifact_after_override_expiry_reports_the_unchanged_persisted_state
     with_state do |state_path|
       initialize_budget(state_path)

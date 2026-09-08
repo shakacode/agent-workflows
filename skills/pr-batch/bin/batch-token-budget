@@ -20,7 +20,9 @@ module BatchTokenBudget
   ].freeze
   CONTROL_ACTIONS = %w[initialize reserve approve override reconcile release checkpoint closeout].freeze
   NON_DURABLE_RESERVATION_REASONS = %w[invalid-reservation telemetry-stale telemetry-unknown].freeze
-  NON_DURABLE_RECONCILIATION_REASONS = %w[usage-receipt-artifact-mismatch].freeze
+  NON_DURABLE_RECONCILIATION_REASONS = %w[
+    usage-receipt-reference-invalid usage-receipt-digest-mismatch usage-receipt-artifact-mismatch
+  ].freeze
   RECEIPT_TYPES = %w[
     batch-token-budget-initialization-receipt batch-token-budget-threshold-receipt
     batch-token-budget-reservation-decision-receipt batch-token-budget-reservation-receipt
