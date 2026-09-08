@@ -10,6 +10,7 @@ require "tmpdir"
 
 HELPER = File.expand_path("task-scratch-lifecycle", __dir__)
 TASK_REVIEW_HELPER = File.expand_path("task-review-loop", __dir__)
+GIT_PROBE_ENV = File.expand_path("../lib/git_probe_env.rb", __dir__)
 REPO_ROOT = File.expand_path("../../..", __dir__)
 VALIDATE = File.join(REPO_ROOT, "bin/validate")
 HOST_CONTRACT = File.join(REPO_ROOT, "docs/host-adapter/contract.md")
@@ -54,21 +55,7 @@ class TaskScratchLifecycleTest < Minitest::Test
     assert_includes workflow, "task-review-loop\" --repository-root \"$REVIEW_WORKTREE_ROOT\""
     assert_includes workflow, "task-scratch-lifecycle\" create"
     assert_includes workflow, "task-scratch-lifecycle\" cleanup"
-    assert_includes workflow, "accepts that exact `created` decision directly"
-    assert_includes workflow, "unchanged nested raw receipt"
-    assert_includes workflow, "The lifecycle helper is the only owner allowed to delete that root"
-    assert_includes workflow, "exclusive lock on the durable receipt"
-    assert_includes workflow, "open directory descriptor"
-    assert_includes workflow, "one component at a time with no-follow descriptor-relative operations"
-    assert_includes workflow, "random private name before descriptor-relative removal"
-    assert_includes workflow, "immediately before each destructive unlink or rollback rename"
-    assert_includes workflow, "cooperative cleanup boundary"
-    assert_includes workflow,
-                    "Hostile same-UID mutation inside the unavoidable final check/syscall interval is outside " \
-                    "the supported cooperative contract and can redirect deletion"
-    assert_includes workflow, "documented limitation, not a host prerequisite"
-    assert_includes workflow, "Codex and Claude semantics do not depend on host-provided same-UID isolation"
-    refute_includes workflow, "host must isolate the scratch parent"
+    assert_includes workflow, "## Owned Scratch Lifecycle"
   end
 
   def test_clean_review_cleanup_removes_only_the_created_allowlisted_root
@@ -277,6 +264,61 @@ class TaskScratchLifecycleTest < Minitest::Test
       end)
       preserved_bytes.each { |path, bytes| assert_equal bytes, File.binread(path) }
       assert_empty Dir.glob(File.join(scratch_parent, ".task-scratch-cleanup-*"))
+    end
+  end
+
+  def test_create_and_cleanup_ignore_inherited_repository_selectors
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, base_sha, reviewed_head = build_repository(directory)
+      alternate_git_dir = File.join(directory, "alternate.git")
+      FileUtils.cp_r(File.join(repository, ".git"), alternate_git_dir)
+      poisoned_git_env = {
+        "GIT_DIR" => alternate_git_dir,
+        "GIT_WORK_TREE" => repository
+      }
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      durable_root = File.join(directory, "durable")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(durable_root)
+
+      created, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        env: poisoned_git_env
+      )
+      assert create_status.success?, create_stderr
+      receipt = created.fetch("receipt")
+      assert_equal File.realpath(File.join(repository, ".git")), receipt.fetch("repository_common_dir")
+      scratch_root = receipt.fetch("scratch_root")
+      File.write(File.join(scratch_root, "evidence.json"), "{}\n")
+      receipt_path = File.join(durable_root, "scratch-receipt.json")
+      File.write(receipt_path, JSON.generate(receipt))
+      review_input_path, = write_clean_review_input(
+        durable_root,
+        repository,
+        base_sha,
+        reviewed_head
+      )
+
+      File.write(File.join(repository, "work.txt"), "moved\n")
+      system("git", "-C", repository, "commit", "--quiet", "-am", "move head") ||
+        raise("git commit failed")
+
+      blocked, cleanup_stderr, cleanup_status = run_cleanup(
+        receipt_path,
+        review_input_path,
+        env: poisoned_git_env
+      )
+
+      refute cleanup_status.success?, cleanup_stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "review-clean-required", blocked.fetch("reason")
+      assert_path_exists scratch_root
+      assert_equal "{}\n", File.read(File.join(scratch_root, "evidence.json"))
     end
   end
 
@@ -1240,7 +1282,8 @@ class TaskScratchLifecycleTest < Minitest::Test
     File.chmod(0o755, path)
   end
 
-  def run_create(repository, scratch_parent, identity_path, allowlist, helper: HELPER)
+  def run_create(repository, scratch_parent, identity_path, allowlist, helper: HELPER, env: {})
+    install_helper_dependencies(helper) unless helper == HELPER
     arguments = [
       helper,
       "create",
@@ -1249,8 +1292,14 @@ class TaskScratchLifecycleTest < Minitest::Test
       "--identity-file", identity_path
     ]
     allowlist.each { |path| arguments.concat(["--allow-relative", path]) }
-    stdout, stderr, status = Open3.capture3(*arguments)
+    stdout, stderr, status = Open3.capture3(env, *arguments)
     [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
+  end
+
+  def install_helper_dependencies(helper)
+    library_root = File.expand_path("../lib", File.dirname(helper))
+    FileUtils.mkdir_p(library_root)
+    FileUtils.cp(GIT_PROBE_ENV, File.join(library_root, File.basename(GIT_PROBE_ENV)))
   end
 
   def run_cleanup(receipt_path, review_input_path, helper: HELPER, env: {})

@@ -11,6 +11,8 @@ require "securerandom"
 require "time"
 require "tmpdir"
 
+require_relative "../lib/git_probe_env"
+
 module TaskScratchLifecycle
   MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
   IDENTITY_KEYS = %w[batch_id lane_id plan_digest plan_id task_id].freeze
@@ -159,7 +161,10 @@ module TaskScratchLifecycle
   end
 
   def git_output(worktree_root, *arguments)
-    stdout, stderr, status = Open3.capture3("git", *arguments, chdir: worktree_root)
+    stdout, stderr, status = Open3.capture3(
+      PrBatchGitProbeEnv.probe_env,
+      "git", *arguments, chdir: worktree_root
+    )
     fail!("repository-invalid") unless status.success? && stderr.empty?
 
     stdout.strip
@@ -532,6 +537,7 @@ module TaskScratchLifecycle
     fail!("review-identity-mismatch") unless review_input.is_a?(Hash) &&
                                              review_input["identity"] == receipt.fetch("identity")
     stdout, stderr, status = Open3.capture3(
+      PrBatchGitProbeEnv.probe_env,
       TASK_REVIEW_HELPER,
       "--repository-root",
       receipt.fetch("worktree_root"),

@@ -6,6 +6,8 @@ require "json"
 require "open3"
 require "optparse"
 
+require_relative "../lib/git_probe_env"
+
 finding_validator = File.expand_path("../../../bin/validate-review-findings", __dir__)
 unless File.file?(finding_validator)
   puts JSON.generate(
@@ -389,6 +391,7 @@ module TaskReviewLoop
 
     # Git parses quoting, renames, deletions, and binary patches without applying them.
     output, _stderr, status = Open3.capture3(
+      PrBatchGitProbeEnv.probe_env,
       "git", "apply", "--numstat", "-z", stdin_data: diff, chdir: "/"
     )
     return unless status.success?
@@ -916,12 +919,14 @@ module TaskReviewLoop
 
     canonical_root = File.realpath(repository_root)
     top_level, top_level_stderr, top_level_status = Open3.capture3(
+      PrBatchGitProbeEnv.probe_env,
       "git", "rev-parse", "--show-toplevel", chdir: canonical_root
     )
     return ["repository-root-invalid"] unless top_level_status.success? && top_level_stderr.empty?
     return ["repository-root-invalid"] unless File.realpath(top_level.strip) == canonical_root
 
     head, head_stderr, head_status = Open3.capture3(
+      PrBatchGitProbeEnv.probe_env,
       "git", "rev-parse", "--verify", "HEAD^{commit}", chdir: canonical_root
     )
     return ["repository-head-unavailable"] unless head_status.success? && head_stderr.empty?
@@ -955,6 +960,7 @@ module TaskReviewLoop
       next unless package.is_a?(Hash)
 
       captured, capture_stderr, capture_status = Open3.capture3(
+        PrBatchGitProbeEnv.probe_env,
         "git", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "--binary",
         "--src-prefix=a/", "--dst-prefix=b/", "--ignore-submodules=none", "--submodule=short",
         package["base_sha"].to_s, package["head_sha"].to_s, "--", chdir: canonical_root
@@ -983,6 +989,7 @@ module TaskReviewLoop
     endpoints = {}
     { "base" => record["base_sha"], "head" => record["head_sha"] }.each do |name, supplied|
       resolved, stderr, status = Open3.capture3(
+        PrBatchGitProbeEnv.probe_env,
         "git", "rev-parse", "--verify", "#{supplied}^{commit}", chdir: repository_root
       )
       if status.success? && stderr.empty?
@@ -994,6 +1001,7 @@ module TaskReviewLoop
     return errors unless endpoints.keys.sort == %w[base head]
 
     _stdout, ancestor_stderr, ancestor_status = Open3.capture3(
+      PrBatchGitProbeEnv.probe_env,
       "git", "merge-base", "--is-ancestor", endpoints.fetch("base"), endpoints.fetch("head"),
       chdir: repository_root
     )
@@ -1007,6 +1015,7 @@ module TaskReviewLoop
     end
 
     commits, commits_stderr, commits_status = Open3.capture3(
+      PrBatchGitProbeEnv.probe_env,
       "git", "rev-list", "--reverse", "#{endpoints.fetch('base')}..#{endpoints.fetch('head')}",
       chdir: repository_root
     )

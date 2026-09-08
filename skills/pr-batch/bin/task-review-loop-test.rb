@@ -13,6 +13,7 @@ require "rbconfig"
 require "tmpdir"
 
 HELPER = File.expand_path("task-review-loop", __dir__)
+GIT_PROBE_ENV = File.expand_path("../lib/git_probe_env.rb", __dir__)
 FIXTURES = File.expand_path("../fixtures/task-review-loop-replays.json", __dir__)
 SCHEMA = File.expand_path("../../../docs/schemas/task-review-loop-v1.schema.json", __dir__)
 NOTICES = File.expand_path("../../../THIRD_PARTY-NOTICES.md", __dir__)
@@ -201,8 +202,11 @@ class TaskReviewLoopTest < Minitest::Test
   def test_missing_canonical_finding_validator_fails_closed_without_a_load_error
     Dir.mktmpdir("task-review-loop-pinned") do |directory|
       helper = File.join(directory, ".agents/skills/pr-batch/bin/task-review-loop")
+      git_probe_env = File.join(directory, ".agents/skills/pr-batch/lib/git_probe_env.rb")
       FileUtils.mkdir_p(File.dirname(helper))
+      FileUtils.mkdir_p(File.dirname(git_probe_env))
       FileUtils.cp(HELPER, helper)
+      FileUtils.cp(GIT_PROBE_ENV, git_probe_env)
 
       stdout, stderr, status = Open3.capture3(helper, stdin_data: "{}")
 
@@ -332,6 +336,49 @@ class TaskReviewLoopTest < Minitest::Test
       assert_includes stale.fetch("reasons"), "repository-head-mismatch"
       assert_equal coordination_before, File.binread(coordination_path)
       review_artifacts_before.each { |path, bytes| assert_equal bytes, File.binread(path) }
+    end
+  end
+
+  def test_repository_backed_mode_ignores_inherited_repository_selectors
+    Dir.mktmpdir("task-review-loop-repository") do |directory|
+      repository = File.join(directory, "repository")
+      Dir.mkdir(repository)
+      system("git", "init", "--quiet", repository) || raise("git init failed")
+      system("git", "-C", repository, "config", "user.name", "Test") || raise("git config failed")
+      system("git", "-C", repository, "config", "user.email", "test@example.com") || raise("git config failed")
+      source_path = File.join(repository, "work.txt")
+      File.write(source_path, "base\n")
+      system("git", "-C", repository, "add", "work.txt") || raise("git add failed")
+      system("git", "-C", repository, "commit", "--quiet", "-m", "base") || raise("git commit failed")
+      base_sha = git_output(repository, "rev-parse", "HEAD")
+      File.write(source_path, "reviewed\n")
+      system("git", "-C", repository, "commit", "--quiet", "-am", "reviewed") || raise("git commit failed")
+      reviewed_head = git_output(repository, "rev-parse", "HEAD")
+      input = clean_review_input(
+        directory,
+        changed_paths: ["work.txt"],
+        base_sha: base_sha,
+        head_sha: reviewed_head,
+        exact_diff: canonical_git_diff(repository, base_sha, reviewed_head)
+      )
+      alternate_git_dir = File.join(directory, "alternate.git")
+      FileUtils.cp_r(File.join(repository, ".git"), alternate_git_dir)
+      File.write(source_path, "moved\n")
+      system("git", "-C", repository, "commit", "--quiet", "-am", "move head") ||
+        raise("git commit failed")
+
+      result, stderr, status = evaluate_repository(
+        input,
+        repository,
+        env: {
+          "GIT_DIR" => alternate_git_dir,
+          "GIT_WORK_TREE" => repository
+        }
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", result.fetch("status")
+      assert_includes result.fetch("reasons"), "repository-head-mismatch"
     end
   end
 
@@ -2984,9 +3031,9 @@ class TaskReviewLoopTest < Minitest::Test
     [JSON.parse(stdout), stdout]
   end
 
-  def evaluate_repository(input, repository)
+  def evaluate_repository(input, repository, env: {})
     stdout, stderr, status = Open3.capture3(
-      CAP_AUTHORITY_ENV,
+      CAP_AUTHORITY_ENV.merge(env),
       HELPER,
       "--repository-root",
       repository,
