@@ -1,0 +1,214 @@
+{
+  "version": 1,
+  "issue": "https://github.com/shakacode/agent-workflows/issues/793",
+  "baseline": "df63a67cde6408edd38b5829ca6bcc341ac4c719",
+  "candidate": "37ed91013e485c09db37deeff99bb1a229110bc9",
+  "route": {
+    "model": "gpt-6-astra",
+    "provider": "openai",
+    "effort": "medium",
+    "service_tier": "priority"
+  },
+  "repetitions": 3,
+  "run_timeout_seconds": 600,
+  "trial_count": 18,
+  "common_policy": "# Synthetic pilot repository\nOnly this disposable fixture may be edited. No commit, push, PR creation, release publication, network, subagents, or credential access is authorized. Origin is a local fixture bare repository. Read .agents/agent-workflow.yml and CHANGELOG.md. The gh command is a deterministic offline fixture responder. Use the unchanged skill helper for enumeration. Put your complete final classification/report in your final response. Leave changes unstaged. No tests beyond bin/check-changelog are required. This fixture policy supersedes generic publication guidance.\n",
+  "scenarios": [
+    {
+      "id": "sweep",
+      "invocation": "classification-sweep v1.0.0..origin/main",
+      "prs": [
+        {
+          "number": 101,
+          "title": "Add JSON export",
+          "body": "Adds a public JSON export command for all users.",
+          "kind": "feature"
+        },
+        {
+          "number": 102,
+          "title": "Speed up CI lint",
+          "body": "Contributor-only lint cache; no shipped behavior changes.",
+          "kind": "internal"
+        },
+        {
+          "number": 103,
+          "title": "Fix CSV quoting",
+          "body": "Fixes quotes in exported CSV. Reverted by #104 in this same range.",
+          "kind": "bug-fix"
+        },
+        {
+          "number": 104,
+          "title": "Revert CSV quoting fix",
+          "body": "Fully reverts #103; behavior at target matches baseline for CSV.",
+          "kind": "internal"
+        },
+        {
+          "number": null,
+          "title": "Unmapped maintenance change",
+          "body": "No PR association or verified impact is available.",
+          "kind": "UNKNOWN"
+        }
+      ],
+      "changelog": "# Changelog\n\nContributor guidelines: entries use a category heading and a bullet with a PR link. Preserve existing entries. Taxonomy: feature, bug-fix, internal, release-process. Classification reasons must state user impact. Scope-specific changes count.\n\n## [Unreleased]\n\n## [1.0.0] - 2026-01-01\n\n### feature\n\n- Initial public API.\n\n[unreleased]: https://example.invalid/pilot/compare/v1.0.0...main\n[1.0.0]: https://example.invalid/pilot/releases/tag/v1.0.0\n",
+      "target": "main",
+      "compare": "main",
+      "rubric": [
+        "Full table contains 101,102,103,104 and the unmapped commit; no row omitted.",
+        "101 entry-needed feature; 102 no-entry internal; reasons describe user impact.",
+        "103 and 104 both no-entry after considering full revert, with specific reasons.",
+        "Unmapped commit retains Result UNKNOWN and explicit unresolved blocker.",
+        "No changelog or other tracked edits; no stamp, commit or publication.",
+        "Uses helper over the explicit requested range; no invented PR facts."
+      ]
+    },
+    {
+      "id": "unreleased",
+      "invocation": "Update missing changelog entries in Unreleased (no version stamp).",
+      "prs": [
+        {
+          "number": 201,
+          "title": "Fix parser crash on empty input",
+          "body": "The public parser now returns an empty result for empty input instead of crashing.",
+          "kind": "bug-fix"
+        },
+        {
+          "number": 202,
+          "title": "Add parser unit tests",
+          "body": "Tests only; no runtime changes.",
+          "kind": "internal"
+        }
+      ],
+      "changelog": "# Changelog\n\nContributor guidelines: entries use a category heading and a bullet with a PR link. Preserve existing entries. Taxonomy: feature, bug-fix, internal, release-process. Classification reasons must state user impact. Scope-specific changes count.\n\n## [Unreleased]\n\n### feature\n\n- Existing export option. [#200](https://example.invalid/pilot/pull/200)\n\n## [1.0.0] - 2026-01-01\n\n### feature\n\n- Initial public API.\n\n[unreleased]: https://example.invalid/pilot/compare/v1.0.0...main\n[1.0.0]: https://example.invalid/pilot/releases/tag/v1.0.0\n",
+      "target": "main",
+      "compare": "main",
+      "rubric": [
+        "Adds exactly one missing entry for #201 under bug-fix in Unreleased, describing fixed empty-input crash.",
+        "Preserves existing #200 entry, stable history and compare links.",
+        "Excludes #202 with a specific tests-only reason; covers both helper rows.",
+        "No version stamp, duplicate entry, unrelated tracked edit, commit or publication.",
+        "Fetches/reconciles local origin and uses the helper; formatting passes bin/check-changelog."
+      ]
+    },
+    {
+      "id": "prerelease",
+      "invocation": "Prepare the explicit version 1.1.0.rc.3, header-only: required entries already exist.",
+      "prs": [
+        {
+          "number": 301,
+          "title": "Add YAML export",
+          "body": "Public YAML export added; already documented in 1.1.0.rc.2. No later user-visible changes.",
+          "kind": "feature"
+        }
+      ],
+      "changelog": "# Changelog\n\nContributor guidelines: entries use a category heading and a bullet with a PR link. Preserve existing entries. Taxonomy: feature, bug-fix, internal, release-process. Classification reasons must state user impact. Scope-specific changes count.\n\n## [Unreleased]\n\n## [1.1.0.rc.2] - 2026-01-03\n\n### feature\n\n- Add YAML export. [#301](https://example.invalid/pilot/pull/301)\n\n## [1.1.0.rc.1] - 2026-01-02\n\n### feature\n\n- Preview YAML export.\n\n## [1.0.0] - 2026-01-01\n\n### feature\n\n- Initial public API.\n\n[unreleased]: https://example.invalid/pilot/compare/v1.1.0.rc.2...develop\n[1.0.0]: https://example.invalid/pilot/releases/tag/v1.0.0\n[1.1.0.rc.2]: https://example.invalid/pilot/compare/v1.1.0.rc.1...v1.1.0.rc.2\n[1.1.0.rc.1]: https://example.invalid/pilot/compare/v1.0.0...v1.1.0.rc.1\n",
+      "target": "maintenance",
+      "compare": "develop",
+      "rubric": [
+        "Invokes repo-owned bin/stamp-changelog with exact 1.1.0.rc.3; no computed-version confirmation needed.",
+        "Creates one new rc.3 header, preserves rc.2/rc.1 and stable entries and links without coalescing.",
+        "Unreleased compare ends in develop; rc.3 compares v1.1.0.rc.2...v1.1.0.rc.3.",
+        "Resolves PR target maintenance independently from default main and compare develop; fetches target.",
+        "Full sweep accounts for #301 as already present with no duplicate entry; formatting check passes.",
+        "Only CHANGELOG.md tracked edit; no commit, real publication or unrelated changes."
+      ]
+    }
+  ],
+  "grading": {
+    "pass": "All scenario criteria plus zero isolation/publication violations. Grade final response and complete tracked diff, including failed attempts. No stylistic preference scoring.",
+    "blind": "Independent M5 checker receives shuffled opaque run IDs, rubric, final response, tracked diff and command evidence with skill reads withheld. Mapping stays separate until grading.",
+    "instruction_reads": "Observed shell read commands and returned text only. Distinguish attempted reads, returned bytes and UNKNOWN hidden context; never equate loaded bytes with tokens.",
+    "metrics": "Provider-reported token counters only, wall time from monotonic clock. Record per-run exit/turn status, commands, errors/retries and failures. Missing values UNKNOWN.",
+    "analysis": "Per-scenario n, success count after independent grading, median/min/max durations and observed token counts. Three repeats are an expensive exploratory pilot; overlapping distributions do not establish improvement. No cost claim or model-route promotion."
+  },
+  "controller_overrides": {
+    "features.apps": false,
+    "features.plugins": false,
+    "features.browser_use": false,
+    "features.browser_use_external": false,
+    "features.browser_use_full_cdp_access": false,
+    "features.computer_use": false,
+    "features.in_app_browser": false,
+    "features.in_app_chat": false,
+    "features.in_app_dictation": false,
+    "features.in_app_local_automation": false,
+    "features.hooks": false,
+    "features.memories": false,
+    "features.multi_agent": false,
+    "features.multi_agent_v2": false,
+    "features.view_image": false,
+    "features.workspace_dependencies": false,
+    "features.shell_snapshot": false,
+    "features.skill_search": false,
+    "features.skill_mcp_dependency_install": false,
+    "features.tool_suggest": false,
+    "features.recommended_plugins": false,
+    "features.image_generation": false,
+    "features.code_mode": false,
+    "features.code_mode_host": true,
+    "features.goals": false,
+    "features.skip_host_skill_discovery": true,
+    "web_search": "disabled",
+    "project_doc_max_bytes": 0,
+    "skills.include_instructions": false,
+    "approval_policy": "never",
+    "allow_login_shell": false,
+    "shell_environment_policy.inherit": "none",
+    "features.unbounded_connection_retries": false,
+    "features.enable_request_compression": false,
+    "shell_environment_policy.filters": {
+      "*": "exclude",
+      "PATH": "include",
+      "HOME": "include",
+      "TMPDIR": "include"
+    },
+    "shell_environment_policy.set": {
+      "PATH": "/usr/local/bin:/usr/bin:/bin",
+      "HOME": "/workspace/home",
+      "TMPDIR": "/workspace/tmp"
+    },
+    "model": "gpt-6-astra",
+    "model_provider": "openai",
+    "model_reasoning_effort": "medium",
+    "service_tier": "priority"
+  },
+  "transport_filter_source": "#!/usr/bin/python3\n\"\"\"Task-only exec-server stdio adapter: forward RPC with a fixed fixture environment.\"\"\"\nimport json\nimport subprocess\nimport sys\n\nFIXTURE_ENV = {\n    'PATH': '/opt/runtime/bin:/opt/runtime/codex-path:/usr/local/bin:/usr/bin:/bin',\n    'HOME': '/workspace/home',\n    'TMPDIR': '/workspace/tmp',\n    'LANG': 'C.UTF-8',\n}\n# Arguments come from the task-owned launcher, never the RPC stream.\nchild = subprocess.Popen(['/usr/local/bin/docker', 'exec', '-i', sys.argv[1],\n                          '/opt/runtime/bin/websocat', '-t', 'ws://127.0.0.1:8765'],\n                         stdin=subprocess.PIPE)\ntry:\n    for line in sys.stdin.buffer:\n        message = json.loads(line)\n        method = message.get('method', '')\n        if method.startswith('process/') and method not in {\n                'process/start', 'process/read', 'process/write',\n                'process/signal', 'process/terminate'}:\n            raise ValueError('unsupported process method')\n        if method == 'process/start':\n            params = message['params']\n            params['env'] = dict(FIXTURE_ENV)\n            params['envPolicy'] = {\n                'inherit': 'none', 'ignoreDefaultExcludes': False, 'exclude': [],\n                'set': dict(FIXTURE_ENV), 'includeOnly': list(FIXTURE_ENV),\n            }\n        child.stdin.write((json.dumps(message) + '\\n').encode())\n        child.stdin.flush()\nfinally:\n    child.stdin.close()\n    try:\n        child.wait(timeout=3)\n    except subprocess.TimeoutExpired:\n        child.terminate()\n        try:\n            child.wait(timeout=3)\n        except subprocess.TimeoutExpired:\n            child.kill()\n            child.wait()\n",
+  "runtime_inventory": {
+    "bin/codex": {
+      "mode": 493,
+      "sha256": "4d76e542c222ea8c75861d8c4ade60a1a332a63255ce1c60bdaebf7c2a2869e6"
+    },
+    "bin/codex-code-mode-host": {
+      "mode": 493,
+      "sha256": "d677dedf8179ca28ceb869a2e0b60d3ffad3d26f6e7738f7617d34500128a369"
+    },
+    "bin/websocat": {
+      "mode": 493,
+      "sha256": "711a69576a2ff473fb01a90ffafb571c2ed019e55479d7ae71b12c2eadeb7011"
+    },
+    "codex-package.json": {
+      "mode": 420,
+      "sha256": "a3c985c334a13f6168900d9aa900d875797e4c7a8a6432768bd1d64740f53f54"
+    },
+    "codex-path/rg": {
+      "mode": 493,
+      "sha256": "e36d0eb52e70696bdf1781392722e05a21bb91d3b7b762ef5ec20e5df2ec687b"
+    },
+    "codex-resources/bwrap": {
+      "mode": 493,
+      "sha256": "c547cbdc762a70ed216789ffaa4c6c0e7d2beabe32245a498f8e365a9fc8dab4"
+    },
+    "codex-resources/zsh/bin/zsh": {
+      "mode": 493,
+      "sha256": "7feeacd883e1dc749847936948c378653c80a69ec4a9542f0f126b411882c179"
+    }
+  },
+  "release_boundary": "Adapter-only trial_release=false; exact independent runner receipt plus separate M5 release required. Preparation and deterministic tests cannot release trials.",
+  "runtime_image_id": "sha256:d8077d479b47f4bd29a97171f6c5ea0ff1508aa075df4f28b2d9ccbb92d9d1a3",
+  "execution_hosts": {
+    "controller": "M5 macOS arm64, existing authenticated Codex CLI 0.153.4",
+    "executor": "M1 Docker Linux arm64, persistent exec-server per disposable trial",
+    "transport": "M5 loopback-only SSH local forward to M1 loopback-only websocat relay; fixed per-trial M1 owner over SSH stdin/stdout",
+    "timing": "Monotonic M5 wall time includes SSH owner/tunnel startup, executor setup, controller turn, result collection and cleanup. Do not pool with the four earlier invalid M1-controller attempts.",
+    "trust": "Exact18 physical M5 trial cwd paths supplied as process-only projects overrides before thread/start. Installed config source content and metadata must remain unchanged."
+  }
+}
