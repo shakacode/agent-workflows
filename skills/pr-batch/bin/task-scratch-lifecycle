@@ -210,7 +210,11 @@ module TaskScratchLifecycle
     fail!("task-identity-invalid") unless identity?(identity)
 
     worktree_root, common_dir = repository_identity(options[:repository_root])
-    scratch_parent = File.realpath(options[:scratch_parent])
+    scratch_parent = begin
+      File.realpath(options[:scratch_parent])
+    rescue SystemCallError, ArgumentError
+      fail!("scratch-parent-invalid")
+    end
     fail!("scratch-parent-invalid") unless File.directory?(scratch_parent)
     scratch_root = Dir.mktmpdir("task-scratch-", scratch_parent)
     File.chmod(0o700, scratch_root)
@@ -570,6 +574,8 @@ module TaskScratchLifecycle
     fail!("cleanup-holder-invalid") unless holder_stat.directory? && holder_stat.uid == Process.euid &&
                                            (holder_stat.mode & 0o077).zero?
     root_name = File.basename(root)
+    current_root = open_at(parent_file, root_name)
+    fail!("scratch-root-rebound") unless root_identity_matches?(current_root.stat, receipt)
     result = CleanupSyscalls.renameat(parent_file.fileno, root_name, holder.fileno, "payload")
     raise SystemCallError.new("renameat scratch root", Fiddle.last_error) unless result.zero?
 
@@ -612,6 +618,7 @@ module TaskScratchLifecycle
       record[:io]&.close unless record[:io]&.closed? || record[:io].equal?(owned_root)
     end
     owned_root&.close unless owned_root&.closed?
+    current_root&.close unless current_root&.closed?
     holder&.close unless holder&.closed?
     remove_empty_matching_entry(parent_file, holder_name, holder_stat) if holder_name && holder_stat && parent_file
     parent_file&.close unless parent_file&.closed?

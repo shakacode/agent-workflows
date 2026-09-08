@@ -446,6 +446,58 @@ class TaskScratchLifecycleTest < Minitest::Test
     end
   end
 
+  def test_create_returns_structured_block_when_scratch_parent_disappears_during_realpath
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      instrumented_helper = File.read(HELPER).sub(
+        "    worktree_root, common_dir = repository_identity(options[:repository_root])\n",
+        <<~RUBY.gsub(/^/, "    ")
+          worktree_root, common_dir = repository_identity(options[:repository_root])
+          if ENV["TASK_SCRATCH_BEFORE_PARENT_REALPATH_SIGNAL"]
+            File.write(ENV.fetch("TASK_SCRATCH_BEFORE_PARENT_REALPATH_SIGNAL"), "ready")
+            sleep 0.01 until File.exist?(ENV.fetch("TASK_SCRATCH_BEFORE_PARENT_REALPATH_RELEASE"))
+          end
+        RUBY
+      )
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      File.chmod(0o755, lifecycle_helper)
+      signal_path = File.join(directory, "before-parent-realpath.signal")
+      release_path = File.join(directory, "before-parent-realpath.release")
+      creation = Thread.new do
+        run_create(
+          repository,
+          scratch_parent,
+          identity_path,
+          ["evidence.json"],
+          helper: lifecycle_helper,
+          env: {
+            "TASK_SCRATCH_BEFORE_PARENT_REALPATH_SIGNAL" => signal_path,
+            "TASK_SCRATCH_BEFORE_PARENT_REALPATH_RELEASE" => release_path
+          }
+        )
+      end
+      sleep 0.01 until File.exist?(signal_path)
+      Dir.rmdir(scratch_parent)
+      File.write(release_path, "continue")
+
+      blocked, create_stderr, create_status = creation.value
+
+      refute create_status.success?
+      assert_empty create_stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "scratch-parent-invalid", blocked.fetch("reason")
+      refute_path_exists scratch_parent
+    end
+  end
+
   def test_plan_b_rejects_plan_a_scratch_even_with_the_same_task_numbering
     Dir.mktmpdir("task-scratch-lifecycle") do |directory|
       repository, base_sha, head_sha = build_repository(directory)
@@ -821,6 +873,81 @@ class TaskScratchLifecycleTest < Minitest::Test
       assert_equal "owned scratch\n", File.read(File.join(parked_root, "evidence.json"))
       assert_path_exists File.join(parked_root, ".task-scratch-owner.json")
       assert_equal "must survive\n", File.read(foreign_path)
+    end
+  end
+
+  def test_scratch_root_replacement_immediately_before_move_is_rejected_without_moving_the_replacement
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      durable_root = File.join(directory, "durable")
+      helper_root = File.join(directory, "helper-bin")
+      [scratch_parent, durable_root, helper_root].each { |path| Dir.mkdir(path) }
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      review_helper = File.join(helper_root, "task-review-loop")
+      instrumented_helper = File.read(HELPER).sub(
+        "    root_name = File.basename(root)\n",
+        <<~RUBY.gsub(/^/, "    ")
+          root_name = File.basename(root)
+          if ENV["TASK_SCRATCH_BEFORE_ROOT_MOVE_SIGNAL"]
+            File.write(ENV.fetch("TASK_SCRATCH_BEFORE_ROOT_MOVE_SIGNAL"), "ready")
+            sleep 0.01 until File.exist?(ENV.fetch("TASK_SCRATCH_BEFORE_ROOT_MOVE_RELEASE"))
+          end
+        RUBY
+      )
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      write_clean_review_helper(review_helper)
+      File.chmod(0o755, lifecycle_helper)
+      created, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        helper: lifecycle_helper
+      )
+      assert create_status.success?, create_stderr
+      receipt = created.fetch("receipt")
+      scratch_root = receipt.fetch("scratch_root")
+      File.write(File.join(scratch_root, "evidence.json"), "owned evidence\n")
+      receipt_path = File.join(durable_root, "scratch-receipt.json")
+      review_input_path = File.join(durable_root, "task-review-input.json")
+      File.write(receipt_path, JSON.generate(receipt))
+      File.write(review_input_path, JSON.generate("identity" => TASK_IDENTITY))
+      signal_path = File.join(directory, "before-root-move.signal")
+      release_path = File.join(directory, "before-root-move.release")
+      cleanup = Thread.new do
+        run_cleanup(
+          receipt_path,
+          review_input_path,
+          helper: lifecycle_helper,
+          env: {
+            "TASK_SCRATCH_BEFORE_ROOT_MOVE_SIGNAL" => signal_path,
+            "TASK_SCRATCH_BEFORE_ROOT_MOVE_RELEASE" => release_path
+          }
+        )
+      end
+      sleep 0.01 until File.exist?(signal_path)
+      parked_owned_root = File.join(directory, "parked-owned-root")
+      File.rename(scratch_root, parked_owned_root)
+      Dir.mkdir(scratch_root, 0o700)
+      replacement_stat = File.stat(scratch_root)
+      foreign_path = File.join(scratch_root, "foreign.txt")
+      File.write(foreign_path, "must remain in place\n")
+      File.write(release_path, "continue")
+
+      blocked, cleanup_stderr, cleanup_status = cleanup.value
+
+      refute cleanup_status.success?, cleanup_stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "scratch-root-rebound", blocked.fetch("reason")
+      assert_equal [replacement_stat.dev, replacement_stat.ino],
+                   [File.stat(scratch_root).dev, File.stat(scratch_root).ino]
+      assert_equal "must remain in place\n", File.read(foreign_path)
+      assert_equal "owned evidence\n", File.read(File.join(parked_owned_root, "evidence.json"))
+      assert_empty Dir.glob(File.join(scratch_parent, ".task-scratch-cleanup-*"))
     end
   end
 
