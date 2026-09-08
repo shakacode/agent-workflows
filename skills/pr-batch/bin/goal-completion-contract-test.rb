@@ -752,6 +752,12 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_contract, "`suppress-acknowledgement-retry`", "canonical completion contract"
     assert_text_includes normalized_contract, "arrays in `blocker_state` as set-valued collections",
                          "canonical completion contract"
+    assert_text_includes normalized_contract,
+                         "each `goal-state-change-observation` to carry a nonempty, known `plan_identity`",
+                         "canonical watcher plan identity"
+    assert_text_includes normalized_contract,
+                         "passes it unchanged to the `goal-state-change-monitor` helper",
+                         "canonical watcher plan identity handoff"
     assert_text_includes normalized_contract, "default fast window is four 15-minute polls", "canonical completion contract"
     assert_text_includes normalized_contract, "interval doubles to a four-hour cap", "canonical completion contract"
     assert_text_includes normalized_contract, "do not create a duplicate", "canonical completion contract"

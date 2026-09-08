@@ -976,6 +976,9 @@ class PrSecurityPreflightTest < Minitest::Test
       assert env.key?(name), "expected #{name} to be explicitly overridden"
       assert_nil env[name]
     end
+    assert_equal "1", env["GIT_NO_REPLACE_OBJECTS"]
+    assert_equal File::NULL, env["GIT_GRAFT_FILE"]
+    assert_equal "'advice.graftFileDeprecated'='false'", env["GIT_CONFIG_PARAMETERS"]
     assert_equal "3", env["GIT_CONFIG_COUNT"]
     assert_equal "safe.directory", env["GIT_CONFIG_KEY_0"]
     assert_equal "*", env["GIT_CONFIG_VALUE_0"]
@@ -1008,7 +1011,7 @@ class PrSecurityPreflightTest < Minitest::Test
       "GIT_CONFIG_PARAMETERS" => parameters
     )
 
-    assert_nil env["GIT_CONFIG_PARAMETERS"]
+    assert_equal "'advice.graftFileDeprecated'='false'", env["GIT_CONFIG_PARAMETERS"]
     assert_equal "3", env["GIT_CONFIG_COUNT"]
     assert_equal "safe.directory", env["GIT_CONFIG_KEY_0"]
     assert_equal "*", env["GIT_CONFIG_VALUE_0"]

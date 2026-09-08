@@ -1197,6 +1197,80 @@ class TaskScratchLifecycleTest < Minitest::Test
     end
   end
 
+  def test_pre_detach_path_replacement_is_restored_after_identity_rejection
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      durable_root = File.join(directory, "durable")
+      helper_root = File.join(directory, "helper-bin")
+      [scratch_parent, durable_root, helper_root].each { |path| Dir.mkdir(path) }
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      review_helper = File.join(helper_root, "task-review-loop")
+      instrumented_helper = File.read(HELPER).sub(
+        "      result = CleanupSyscalls.rename_no_replace(directory.fileno, name, directory.fileno, candidate)",
+        <<~RUBY.gsub(/^/, "      ").strip
+          if name == "evidence.json" && ENV["TASK_SCRATCH_BEFORE_ENTRY_DETACH_SIGNAL"]
+            File.write(ENV.fetch("TASK_SCRATCH_BEFORE_ENTRY_DETACH_SIGNAL"), "ready")
+            sleep 0.01 until File.exist?(ENV.fetch("TASK_SCRATCH_BEFORE_ENTRY_DETACH_RELEASE"))
+          end
+          result = CleanupSyscalls.rename_no_replace(directory.fileno, name, directory.fileno, candidate)
+        RUBY
+      )
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      write_clean_review_helper(review_helper)
+      File.chmod(0o755, lifecycle_helper)
+      created, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        helper: lifecycle_helper
+      )
+      assert create_status.success?, create_stderr
+      receipt = created.fetch("receipt")
+      scratch_root = receipt.fetch("scratch_root")
+      File.write(File.join(scratch_root, "evidence.json"), "owned evidence\n")
+      receipt_path = File.join(durable_root, "scratch-receipt.json")
+      review_input_path = File.join(durable_root, "task-review-input.json")
+      File.write(receipt_path, JSON.generate(receipt))
+      File.write(review_input_path, JSON.generate("identity" => TASK_IDENTITY))
+      signal_path = File.join(directory, "before-entry-detach.signal")
+      release_path = File.join(directory, "before-entry-detach.release")
+      cleanup = Thread.new do
+        run_cleanup(
+          receipt_path,
+          review_input_path,
+          helper: lifecycle_helper,
+          env: {
+            "TASK_SCRATCH_BEFORE_ENTRY_DETACH_SIGNAL" => signal_path,
+            "TASK_SCRATCH_BEFORE_ENTRY_DETACH_RELEASE" => release_path
+          }
+        )
+      end
+      sleep 0.01 until File.exist?(signal_path)
+      holder = Dir.glob(File.join(scratch_parent, ".task-scratch-cleanup-*")).fetch(0)
+      payload = File.join(holder, "payload")
+      evidence_path = File.join(payload, "evidence.json")
+      parked_evidence = File.join(directory, "parked-evidence.json")
+      File.rename(evidence_path, parked_evidence)
+      File.write(evidence_path, "replacement evidence\n")
+      replacement_stat = File.stat(evidence_path)
+      File.write(release_path, "continue")
+
+      blocked, cleanup_stderr, cleanup_status = cleanup.value
+
+      refute cleanup_status.success?, cleanup_stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "scratch-entry-rebound", blocked.fetch("reason")
+      assert_equal "owned evidence\n", File.read(parked_evidence)
+      assert_equal [replacement_stat.dev, replacement_stat.ino], [File.stat(evidence_path).dev, File.stat(evidence_path).ino]
+      assert_empty Dir.glob(File.join(payload, ".task-scratch-delete-*"))
+    end
+  end
+
   def test_final_root_removal_detaches_and_rejects_a_replacement_directory
     Dir.mktmpdir("task-scratch-lifecycle") do |directory|
       repository, = build_repository(directory)
@@ -1265,9 +1339,8 @@ class TaskScratchLifecycleTest < Minitest::Test
       assert_equal "blocked", blocked.fetch("status")
       assert_equal "scratch-entry-rebound", blocked.fetch("reason")
       assert_path_exists parked_owned_root
-      retained_replacement = Dir.glob(File.join(holder, ".task-scratch-delete-*")).fetch(0)
-      assert_equal [replacement_stat.dev, replacement_stat.ino], [File.stat(retained_replacement).dev,
-                                                                  File.stat(retained_replacement).ino]
+      assert_equal [replacement_stat.dev, replacement_stat.ino], [File.stat(payload).dev, File.stat(payload).ino]
+      assert_empty Dir.glob(File.join(holder, ".task-scratch-delete-*"))
     end
   end
 

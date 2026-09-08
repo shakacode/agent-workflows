@@ -112,6 +112,9 @@ module PrBatchGitProbeEnv
       source_env.each_key do |name|
         env[name] = nil if name.match?(/\AGIT_CONFIG_(KEY|VALUE)_\d+\z/)
       end
+      env["GIT_NO_REPLACE_OBJECTS"] = "1"
+      env["GIT_GRAFT_FILE"] = File::NULL
+      env["GIT_CONFIG_PARAMETERS"] = "'advice.graftFileDeprecated'='false'"
       preserve_safe_directory_config(env, source_env)
     end
   end

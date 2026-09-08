@@ -468,6 +468,20 @@ module TaskScratchLifecycle
     raise SystemCallError.new("unlinkat #{name}", Fiddle.last_error) unless result.zero?
   end
 
+  def restore_detached_entry(directory, original_name, private_name, captured)
+    return false unless private_name && captured && entry_missing?(directory, original_name)
+    return false unless entry_matches?(directory, private_name, captured.stat)
+
+    CleanupSyscalls.rename_no_replace(
+      directory.fileno,
+      private_name,
+      directory.fileno,
+      original_name
+    ).zero?
+  rescue SystemCallError, ArgumentError
+    false
+  end
+
   def detach_and_remove(directory, name, expected_stat, directory_entry: false)
     private_name = nil
     10.times do
@@ -481,10 +495,15 @@ module TaskScratchLifecycle
     end
     fail!("scratch-entry-rebound") unless private_name
 
-    captured = open_at(directory, private_name)
-    fail!("scratch-entry-rebound") unless same_identity?(captured.stat, expected_stat)
-    fail!("scratch-entry-rebound") if directory_entry && !directory_children(captured).empty?
-    unlink_bound_entry(directory, private_name, expected_stat, directory_entry: directory_entry)
+    begin
+      captured = open_at(directory, private_name)
+      fail!("scratch-entry-rebound") unless same_identity?(captured.stat, expected_stat)
+      fail!("scratch-entry-rebound") if directory_entry && !directory_children(captured).empty?
+      unlink_bound_entry(directory, private_name, expected_stat, directory_entry: directory_entry)
+    rescue LifecycleError
+      restore_detached_entry(directory, name, private_name, captured)
+      raise
+    end
   ensure
     captured&.close
   end

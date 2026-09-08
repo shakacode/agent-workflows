@@ -409,6 +409,38 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_repository_backed_mode_ignores_local_commit_replacement_refs
+    Dir.mktmpdir("task-review-loop-repository") do |directory|
+      repository = File.join(directory, "repository")
+      Dir.mkdir(repository)
+      system("git", "init", "--quiet", repository) || raise("git init failed")
+      system("git", "-C", repository, "config", "user.name", "Test") || raise("git config failed")
+      system("git", "-C", repository, "config", "user.email", "test@example.com") || raise("git config failed")
+      source_path = File.join(repository, "work.txt")
+      File.write(source_path, "base\n")
+      system("git", "-C", repository, "add", "work.txt") || raise("git add failed")
+      system("git", "-C", repository, "commit", "--quiet", "-m", "base") || raise("git commit failed")
+      base_sha = git_output(repository, "rev-parse", "HEAD")
+      File.write(source_path, "reviewed\n")
+      system("git", "-C", repository, "commit", "--quiet", "-am", "reviewed") || raise("git commit failed")
+      head_sha = git_output(repository, "rev-parse", "HEAD")
+      input = clean_review_input(
+        directory,
+        changed_paths: ["work.txt"],
+        base_sha: base_sha,
+        head_sha: head_sha,
+        exact_diff: canonical_git_diff(repository, base_sha, head_sha)
+      )
+      system("git", "-C", repository, "replace", head_sha, base_sha) || raise("git replace failed")
+
+      result, stderr, status = evaluate_repository(input, repository)
+
+      assert status.success?, stderr
+      assert_equal "task_complete", result.fetch("status"), result.inspect
+      assert_equal ["review-clean"], result.fetch("reasons")
+    end
+  end
+
   def test_repository_backed_mode_rejects_digest_consistent_noncanonical_diff_bytes
     Dir.mktmpdir("task-review-loop-repository") do |directory|
       repository = File.join(directory, "repository")

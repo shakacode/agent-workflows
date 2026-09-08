@@ -819,6 +819,12 @@ qualifying state-change watcher:
 
 - binds one stable `monitor_id` to the task and authoritative blocker, persists
   its state outside task context, and increments `probe_sequence` monotonically;
+- requires each `goal-state-change-observation` to carry a nonempty, known
+  `plan_identity`. Its producer derives one stable opaque value from the
+  accepted repository, batch, lane, immutable plan id or digest, and task
+  identity, then passes it unchanged to the `goal-state-change-monitor` helper
+  in every observation. The helper persists and returns that identity and
+  rejects missing, malformed, unknown, ambiguous, or colliding identities;
 - reduces each sanitized `goal-state-change-observation` through
   the pr-batch `goal-state-change-monitor --state <path>` helper; the probe owns
   live evidence collection, while the helper only fingerprints and decides.
