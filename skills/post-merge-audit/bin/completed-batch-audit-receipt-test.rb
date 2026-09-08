@@ -6,6 +6,7 @@ require "fileutils"
 require "json"
 require "open3"
 require "tmpdir"
+require_relative "../../pr-batch/lib/skill_stage_source"
 
 load File.expand_path("completed-batch-publication-preflight", __dir__)
 load File.expand_path("completed-batch-audit-receipt", __dir__)
@@ -51,6 +52,18 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "type" => "issue",
       "number" => 4731
     }
+  end
+
+  def unknown_marker
+    marker(<<~BODY)
+      batch_id: batch-184
+      audit_status: UNKNOWN
+      verdict: UNKNOWN
+      scope_evidence: UNKNOWN
+      checker_evidence: UNKNOWN
+      findings: UNKNOWN
+      followups_dispositions: none
+    BODY
   end
 
   def process_alive?(pid)
@@ -195,6 +208,83 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_equal "clean", result.dig("fields", "verdict")
   end
 
+  def test_old_publication_snapshot_requires_fresh_bound_publication_despite_refreshed_proof
+    preflight = publication_preflight
+    assert preflight.fetch("eligible")
+    old_snapshot = preflight.fetch("snapshot").reject do |key, _value|
+      %w[coordination_applicability applicability_proof_digest].include?(key)
+    end
+    old_value = CompletedBatchAuditReceipt.encoded_snapshot_value(old_snapshot)
+    old_marker = ready_marker.sub(/^scope_evidence:.*\n/, "\\0publication_snapshot: #{old_value}\n")
+    original = old_marker.dup.freeze
+    replay_options = {
+      expected_batch_id: "batch-184",
+      publication_preflight: preflight,
+      expected_targets: preflight.fetch("source_input").fetch("expected_targets"),
+      coordination_backend: "n/a",
+      **trusted_applicability(preflight)
+    }
+    fresh_marker = CompletedBatchAuditReceipt.bind_publication_snapshot(ready_marker, preflight)
+    target_payload = publication_target_payload
+    authenticated_api = lambda do |host, endpoint, method: "GET", input: nil|
+      unless [host, endpoint, method, input] == ["github.com", "repos/acme/widgets/pulls/184", "GET", nil]
+        raise "unexpected target verification request"
+      end
+
+      target_payload
+    end
+    with_stubbed_gh_api(authenticated_api) do
+      fresh_replay = CompletedBatchAuditReceipt.replay_marker(fresh_marker, **replay_options)
+      assert fresh_replay.fetch("ready"), "matching snapshot must pass the same replay environment"
+      replayed = CompletedBatchAuditReceipt.replay_marker(old_marker, **replay_options)
+
+      assert replayed.fetch("well_formed")
+      refute replayed.fetch("ready")
+      assert_equal ["completed-batch-audit publication snapshot mismatch or stale"], replayed.fetch("blockers")
+    end
+    assert_equal original, old_marker, "replay must not repair the old receipt in place"
+
+    with_fake_gh do |env, directory|
+      targets_path = write_json(directory, "targets.json", preflight.fetch("source_input").fetch("expected_targets"))
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
+      out, err, status = capture_receipt_cli(
+        env, "ruby", SCRIPT, "publish", "--expected-batch-id", "batch-184",
+        "--targets-json", targets_path, "--receipt", receipt_path
+      )
+
+      assert status.success?, err
+      published = JSON.parse(out)
+      assert published.fetch("ready")
+      assert_empty published.fetch("blockers")
+      assert_includes published.fetch("chat_reference"), "#issuecomment-9001"
+      refute_equal old_value, published.fetch("fields").fetch("publication_snapshot")
+      calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
+      assert_equal(1, calls.count { |call| call.include?("--method POST") })
+      refute(calls.any? { |call| call.match?(/--method (?:PATCH|DELETE)/) })
+    end
+  end
+
+  def test_archive_guidance_distinguishes_old_snapshot_migration_from_accepted_deferral
+    root = File.expand_path("../../..", __dir__)
+    %w[
+      skills/post-merge-audit/SKILL.md
+      workflows/post-merge-audit.md
+      workflows/pr-batch-integration-closeout.md
+    ].each do |path|
+      text = SkillStageSource.read(File.join(root, path), encoding: "UTF-8").gsub(/\s+/, " ")
+      assert_includes text,
+                      "An old helper-managed `publication_snapshot` missing `coordination_applicability` or " \
+                      "`applicability_proof_digest` stays non-ready even after replay refresh.", path
+      assert_includes text,
+                      "Preserve the old comment; establish trusted applicability proof and a fresh eligible " \
+                      "preflight, then use ordinary `publish` with a fresh marker to create a newly bound " \
+                      "receipt and reference after all gates pass.", path
+      assert_includes text,
+                      "Ordinary snapshot migration is not the accepted-deferral-only `supersede` operation.", path
+    end
+  end
+
   def test_ror_blocked_receipt_becomes_ready_only_through_authenticated_accepted_deferral
     blocked = File.read(
       File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"),
@@ -218,13 +308,15 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         targets:,
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
       replay = CompletedBatchAuditReceipt.replay_marker(
         terminal,
         expected_batch_id: "ror-d-issue-4731-20260817",
         expected_targets: targets,
         coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight),
         publication_preflight: preflight
       )
 
@@ -257,7 +349,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         preflight,
         expected_batch_id: "ror-d-issue-4731-20260817",
         targets: [target],
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
     end
     assert_equal expected_blockers, preflight.fetch("blockers")
@@ -288,7 +381,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         targets: [target],
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
     end
 
@@ -309,7 +403,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           expected_targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
 
         refute replay.fetch("ready"), label
@@ -343,14 +438,16 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
         replay = CompletedBatchAuditReceipt.replay_marker(
           terminal,
           expected_batch_id: "ror-d-issue-4731-20260817",
           expected_targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
 
         assert replay.fetch("ready"), owner
@@ -377,7 +474,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         targets: [target],
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
     end
     accepted_snapshot = terminal[/^accepted_deferral_snapshot: (.+)$/, 1]
@@ -401,7 +499,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             expected_batch_id: "ror-d-issue-4731-20260817",
             targets: [target],
             publication_preflight: preflight,
-            coordination_backend: REAL_BACKEND
+            coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -417,7 +516,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         preflight,
         expected_batch_id: "ror-d-issue-4731-20260817",
         targets: [target],
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
     end
   end
@@ -443,14 +543,16 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         targets: [target],
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
       replay = CompletedBatchAuditReceipt.replay_marker(
         terminal,
         expected_batch_id: "ror-d-issue-4731-20260817",
         expected_targets: [target],
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
 
       assert replay.fetch("ready")
@@ -482,7 +584,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         ), label
       end
     end
@@ -499,7 +602,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         ), options.inspect
       end
     end
@@ -524,7 +628,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
 
         assert_includes terminal, "ref: agent-workflows-320"
@@ -587,7 +692,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             expected_batch_id: "ror-d-issue-4731-20260817",
             targets: [target],
             publication_preflight: preflight,
-            coordination_backend: REAL_BACKEND
+            coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -620,7 +726,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -647,7 +754,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         targets: [target],
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
 
       assert CompletedBatchAuditReceipt.replay_marker(
@@ -655,6 +763,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         expected_targets: [target],
         coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight),
         publication_preflight: preflight
       ).fetch("ready")
     end
@@ -681,13 +790,15 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         targets:,
         publication_preflight: preflight,
         predecessor_receipt: predecessor,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
       replay = CompletedBatchAuditReceipt.replay_marker(
         terminal,
         expected_batch_id: "ror-d-issue-4731-20260817",
         expected_targets: targets,
         coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight),
         publication_preflight: preflight
       )
       assert replay.fetch("ready")
@@ -700,6 +811,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         expected_targets: targets,
         coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight),
         publication_preflight: preflight
       )
       refute replay.fetch("ready")
@@ -748,7 +860,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           targets: [target],
           publication_preflight: preflight,
           predecessor_receipt: predecessor,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -778,7 +891,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           targets:,
           publication_preflight: preflight,
           predecessor_receipt: predecessor,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -791,7 +905,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         targets:,
         publication_preflight: preflight,
         predecessor_receipt: predecessor,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
     end
 
@@ -801,6 +916,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         expected_batch_id: "ror-d-issue-4731-20260817",
         expected_targets: targets,
         coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight),
         publication_preflight: preflight
       )
 
@@ -829,7 +945,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         reference:,
         accepted_deferral_input: input,
         publication_preflight: preflight,
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
 
       assert result.fetch("ready")
@@ -862,6 +979,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             accepted_deferral_input: input,
             publication_preflight: preflight,
             coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight),
             other_blockers: [blocker]
           )
         end
@@ -901,7 +1019,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             expected_batch_id: "ror-d-issue-4731-20260817",
             targets: [target],
             publication_preflight: preflight,
-            coordination_backend: REAL_BACKEND
+            coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -927,7 +1046,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             expected_batch_id: "ror-d-issue-4731-20260817",
             targets: [target],
             publication_preflight: preflight,
-            coordination_backend: REAL_BACKEND
+            coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -946,7 +1066,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -974,7 +1095,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1007,7 +1129,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           expected_batch_id: "ror-d-issue-4731-20260817",
           targets: [target],
           publication_preflight: preflight,
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1044,7 +1167,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             expected_batch_id: "ror-d-issue-4731-20260817",
             targets: [target],
             publication_preflight: preflight,
-            coordination_backend: REAL_BACKEND
+            coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -1158,7 +1282,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: "n/a"
+          coordination_backend: "n/a",
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1192,7 +1317,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         preflight,
         expected_batch_id: "batch-184",
         targets: [target],
-        coordination_backend: "n/a"
+        coordination_backend: "n/a",
+        **trusted_applicability(preflight)
       )
     end
 
@@ -1203,7 +1329,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: "n/a"
+          coordination_backend: "n/a",
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1230,7 +1357,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: "n/a"
+          coordination_backend: "n/a",
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1254,7 +1382,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "ac-296-verification-20260905",
           targets: [target],
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1269,7 +1398,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             preflight,
             expected_batch_id: "ac-296-verification-20260905",
             targets: [target],
-            coordination_backend: REAL_BACKEND
+            coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -1290,7 +1420,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         preflight,
         expected_batch_id: "ac-296-verification-20260905",
         targets: preflight.fetch("targets"),
-        coordination_backend: REAL_BACKEND
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
       )
     end
   end
@@ -1313,7 +1444,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1339,7 +1471,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: "n/a"
+          coordination_backend: "n/a",
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1374,7 +1507,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1394,12 +1528,13 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       with_stubbed_coordination_status(coordination) do
         CompletedBatchAuditReceipt.validate_publication_preflight!(
           preflight, expected_batch_id: "batch-184", targets: preflight.fetch("targets"),
-                     coordination_backend: REAL_BACKEND
+                     coordination_backend: REAL_BACKEND, **trusted_applicability(preflight)
         )
         marker = CompletedBatchAuditReceipt.bind_publication_snapshot(ready_marker, preflight)
         replay = CompletedBatchAuditReceipt.replay_marker(
           marker, expected_batch_id: "batch-184", expected_targets: preflight.fetch("targets"),
-                  publication_preflight: preflight, coordination_backend: REAL_BACKEND
+                  publication_preflight: preflight, coordination_backend: REAL_BACKEND,
+                  **trusted_applicability(preflight)
         )
         assert replay.fetch("ready"), replay.fetch("blockers").join("\n")
       end
@@ -1434,7 +1569,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-issue-173",
           targets: [target],
-          coordination_backend: REAL_BACKEND
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -1450,7 +1586,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             preflight,
             expected_batch_id: "batch-issue-173",
             targets: [target],
-            coordination_backend: REAL_BACKEND
+            coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -1495,7 +1632,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             preflight,
             expected_batch_id: "batch-184",
             targets: [target],
-            coordination_backend: backend
+            coordination_backend: backend,
+            **trusted_applicability(preflight)
           )
         end
       end
@@ -1530,11 +1668,142 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           preflight,
           expected_batch_id: "batch-184",
           targets: [target],
-          coordination_backend: "n/a"
+          coordination_backend: "n/a",
+          **trusted_applicability(preflight)
         )
       end
     end
     assert_empty coordination_calls
+  end
+
+  def test_complete_publication_accepts_not_applicable_with_real_backend_without_coordination_call
+    preflight = publication_preflight(
+      coordination_backend: REAL_BACKEND,
+      coordination_applicability: "coordination_not_applicable"
+    )
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/widgets",
+      "type" => "pull_request",
+      "number" => 184
+    }
+    coordination_calls = []
+    target_payload = publication_target_payload
+
+    with_stubbed_gh_api(->(_host, _endpoint, **_options) { target_payload }) do
+      with_stubbed_coordination_status(->(**arguments) { coordination_calls << arguments }) do
+        CompletedBatchAuditReceipt.validate_publication_preflight!(
+          preflight,
+          expected_batch_id: "batch-184",
+          targets: [target],
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
+        )
+      end
+    end
+
+    assert_empty coordination_calls
+  end
+
+  def test_noncomplete_publish_rejects_untrusted_applicability_before_any_authenticated_call
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    preflight = publication_preflight
+    proof = preflight.fetch("applicability_proof")
+    digest = preflight.fetch("applicability_proof_digest")
+    tampered = JSON.parse(JSON.generate(proof))
+    tampered["rationale"] = "tampered after the trusted decision"
+    wrong_batch = JSON.parse(JSON.generate(proof))
+    wrong_batch["batch_id"] = "batch-other"
+    contradictory = JSON.parse(JSON.generate(proof))
+    contradictory["rationale"] = "a separately valid trusted topology decision"
+    contradictory_digest = CompletedBatchPublicationPreflight.digest(contradictory)
+    assert CompletedBatchAuditReceipt.validate_trusted_applicability_artifact!(
+      contradictory, contradictory_digest, expected_batch_id: "batch-184", expected_targets: [target]
+    ), "the contradictory proof must be valid independently of the supplied preflight"
+    candidates = {
+      "missing" => [nil, nil],
+      "tampered" => [tampered, digest],
+      "wrong batch" => [wrong_batch, CompletedBatchPublicationPreflight.digest(wrong_batch)],
+      "valid but preflight-contradictory" => [contradictory, contradictory_digest]
+    }
+    receipts = { "blocked" => followup_marker, "UNKNOWN" => unknown_marker }
+    github_calls = []
+    anchor_verifier_calls = []
+    coordination_calls = []
+
+    with_stubbed_anchor_verifier(lambda do |targets|
+      anchor_verifier_calls << targets
+      raise CompletedBatchAuditReceipt::AnchorVerificationError, "unexpected anchor verifier call"
+    end) do
+      with_stubbed_gh_api(lambda do |*arguments, **keywords|
+        github_calls << [arguments, keywords]
+        raise CompletedBatchAuditReceipt::Error, "unexpected authenticated GitHub call"
+      end) do
+        with_stubbed_coordination_status(lambda do |**arguments|
+          coordination_calls << arguments
+          raise "unexpected coordination verifier call"
+        end) do
+          receipts.each do |status, receipt|
+            candidates.each do |label, (candidate, candidate_digest)|
+              assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError, "#{status}: #{label}") do
+                CompletedBatchAuditReceipt.publish(
+                  expected_batch_id: "batch-184",
+                  targets: [target],
+                  receipt:,
+                  publication_preflight: preflight,
+                  coordination_backend: "n/a",
+                  trusted_applicability: candidate,
+                  trusted_applicability_digest: candidate_digest
+                )
+              end
+            end
+          end
+        end
+      end
+    end
+
+    assert_empty github_calls
+    assert_empty anchor_verifier_calls
+    assert_empty coordination_calls
+  end
+
+  def test_noncomplete_publish_preserves_behavior_with_matching_or_absent_preflight
+    { "blocked" => followup_marker, "UNKNOWN" => unknown_marker }.each do |audit_status, receipt|
+      %w[matching absent].each do |preflight_mode|
+        with_fake_gh do |env, directory|
+          env.delete("COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT") if preflight_mode == "absent"
+          targets_path = write_json(
+            directory,
+            "targets.json",
+            [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+          )
+          receipt_path = File.join(directory, "receipt.txt")
+          File.write(receipt_path, receipt)
+
+          out, err, status = capture_receipt_cli(
+            env,
+            "ruby",
+            SCRIPT,
+            "publish",
+            "--expected-batch-id",
+            "batch-184",
+            "--targets-json",
+            targets_path,
+            "--receipt",
+            receipt_path
+          )
+
+          assert status.success?, "#{audit_status}/#{preflight_mode}: #{err}"
+          result = JSON.parse(out)
+          assert result.fetch("well_formed")
+          refute result.fetch("ready")
+          assert_equal audit_status, result.dig("fields", "audit_status")
+          assert_includes result.fetch("chat_reference"), "#issuecomment-9001"
+          calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
+          assert_equal(1, calls.count { |call| call.include?("--method POST") })
+        end
+      end
+    end
   end
 
   def test_publish_binds_snapshot_and_replay_blocks_a_refreshed_snapshot_mismatch
@@ -1897,7 +2166,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "--receipt",
         receipt_path,
         "--reference-file",
-        reference_path
+        reference_path,
+        *cli_applicability_args(directory)
       )
       _out, _err, replay_status = capture_receipt_cli(
         "ruby",
@@ -1910,7 +2180,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "--reference-file",
         reference_path,
         "--receipt",
-        receipt_path
+        receipt_path,
+        *cli_applicability_args(directory)
       )
       _out, _err, invalid_option_precedence_status = capture_receipt_cli(
         "ruby",
@@ -1923,7 +2194,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "--receipt",
         receipt_path,
         "--reference-file",
-        reference_path
+        reference_path,
+        *cli_applicability_args(directory)
       )
 
       assert_equal 64, publish_status.exitstatus
@@ -1942,7 +2214,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           "--reference-file",
           reference_path,
           "--accepted-deferral",
-          path
+          path,
+          *cli_applicability_args(directory)
         )
 
         assert_equal 64, status.exitstatus, path
@@ -1966,6 +2239,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         targets_path,
         "--reference-file",
         missing_reference,
+        *cli_applicability_args(directory),
         "--other-blocker",
         " release owner confirmation ",
         "--other-blocker",
@@ -2009,7 +2283,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       }
 
       cases.each do |label, args|
-        out, _err, status = capture_receipt_cli("ruby", SCRIPT, *args)
+        out, _err, status = capture_receipt_cli(
+          "ruby", SCRIPT, *args, *cli_applicability_args(directory)
+        )
 
         assert_equal 1, status.exitstatus, label
         result = JSON.parse(out)
@@ -2037,7 +2313,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "--targets-json",
         targets_path,
         "--receipt",
-        receipt_path
+        receipt_path,
+        *cli_applicability_args(directory)
       )
 
       assert_equal 1, status.exitstatus
@@ -3616,6 +3893,56 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     refute(calls.any? { |_host, _endpoint, method, _input| method == "POST" })
   end
 
+  def test_replay_rejects_missing_tampered_or_mismatched_applicability_before_comment_readback
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    preflight = publication_preflight
+    proof = preflight.fetch("applicability_proof")
+    digest = preflight.fetch("applicability_proof_digest")
+    tampered = JSON.parse(JSON.generate(proof))
+    tampered["rationale"] = "tampered after the trusted decision"
+    mismatched = JSON.parse(JSON.generate(proof))
+    mismatched["verified_at"] = "2026-08-25T12:01:00Z"
+    body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{ready_marker}"
+    created_at = "2026-07-18T18:00:00Z"
+    reference = CompletedBatchAuditReceipt.compact_reference(
+      "clean",
+      {
+        "url" => "https://github.com/acme/widgets/pull/184#issuecomment-9001",
+        "sha256" => Digest::SHA256.hexdigest(body),
+        "author" => "justin808",
+        "created_at" => created_at,
+        "updated_at" => created_at
+      }
+    )
+    cases = {
+      "missing" => [nil, nil],
+      "tampered" => [tampered, digest],
+      "mismatched" => [mismatched, CompletedBatchPublicationPreflight.digest(mismatched)]
+    }
+    calls = []
+
+    with_stubbed_gh_api(lambda do |*arguments, **keywords|
+      calls << [arguments, keywords]
+      raise "unexpected authenticated call"
+    end) do
+      cases.each do |label, (candidate, candidate_digest)|
+        assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError, label) do
+          CompletedBatchAuditReceipt.replay_reference(
+            expected_batch_id: "batch-184",
+            targets: [target],
+            reference:,
+            publication_preflight: preflight,
+            coordination_backend: "n/a",
+            trusted_applicability: candidate,
+            trusted_applicability_digest: candidate_digest
+          )
+        end
+      end
+    end
+
+    assert_empty calls
+  end
+
   def test_replay_github_api_failure_has_a_distinct_typed_error
     target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
     body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{ready_marker}"
@@ -3637,12 +3964,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
 
     error = nil
+    preflight = publication_preflight
     with_stubbed_gh_api(failing_api) do
       error = assert_raises(CompletedBatchAuditReceipt::Error) do
         CompletedBatchAuditReceipt.replay_reference(
           expected_batch_id: "batch-184",
           targets: [target],
-          reference:
+          reference:,
+          **trusted_applicability(preflight)
         )
       end
     end
@@ -3656,15 +3985,27 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     path
   end
 
+  def cli_applicability_args(directory)
+    proof_path = write_json(directory, "cli-applicability-proof.json", {})
+    ["--applicability-proof", proof_path, "--applicability-proof-sha256", "sha256:#{'0' * 64}"]
+  end
+
   def capture_receipt_cli(*arguments)
     command = arguments.dup
     script_index = command.index(SCRIPT)
-    if script_index &&
-       %w[publish replay supersede].include?(command[script_index + 1]) &&
-       !command.include?("--workflow-config")
-      environment = command.first.is_a?(Hash) ? command.first : {}
+    receipt_command = script_index && %w[publish replay supersede].include?(command[script_index + 1])
+    environment = command.first.is_a?(Hash) ? command.first : {}
+    if receipt_command && !command.include?("--workflow-config")
       workflow_config = environment.fetch("FAKE_WORKFLOW_CONFIG", WORKFLOW_CONFIG)
       command.concat(["--workflow-config", workflow_config])
+    end
+    if receipt_command && environment["FAKE_APPLICABILITY_PROOF"] && !command.include?("--applicability-proof")
+      command.concat(
+        [
+          "--applicability-proof", environment.fetch("FAKE_APPLICABILITY_PROOF"),
+          "--applicability-proof-sha256", environment.fetch("FAKE_APPLICABILITY_PROOF_DIGEST")
+        ]
+      )
     end
     stdout, stderr, status = Open3.capture3(*command)
     # The receipt CLI emits UTF-8 JSON, but Open3 labels captured output with
@@ -3672,8 +4013,20 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     [stdout.force_encoding(Encoding::UTF_8), stderr.force_encoding(Encoding::UTF_8), status]
   end
 
-  def publication_preflight(head_sha: "a" * 40, waived: false, coordination_backend: "n/a", pr_state: "merged")
-    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+  def publication_preflight(
+    head_sha: "a" * 40,
+    waived: false,
+    coordination_backend: "n/a",
+    coordination_applicability: nil,
+    target_type: "pull_request",
+    pr_state: "merged"
+  )
+    coordination_applicability ||= if coordination_backend == "n/a"
+                                     "coordination_not_applicable"
+                                   else
+                                     "coordination_required"
+                                   end
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => target_type, "number" => 184 }
     waiver_url = "https://github.com/acme/widgets/pull/184#issuecomment-9184"
     evidence = <<~MARKER
       <!-- qa-evidence v1
@@ -3691,13 +4044,13 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     MARKER
     qa_row = { "target" => target, "user_visible_ui_change" => "no", "evidence" => evidence }
     qa_row["maintainer_waiver"] = { "url" => waiver_url } if waived
-    coordination_status = if coordination_backend == "n/a"
+    coordination_status = if coordination_applicability == "coordination_not_applicable"
                             {
                               "contract" => "completed-batch-coordination-not-applicable",
                               "version" => 1,
                               "batch_id" => "batch-184",
                               "mode" => "single_operator",
-                              "rationale" => "repository workflow seam declares coordination_backend: n/a",
+                              "rationale" => "trusted controller verified one accountable serialized execution",
                               "source" => "https://github.com/acme/widgets/blob/#{head_sha}/.agents/agent-workflow.yml",
                               "completed_at" => "2026-07-18T17:59:59Z",
                               "targets" => [target]
@@ -3728,6 +4081,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "contract" => "completed-batch-publication-preflight-input",
       "version" => 1,
       "batch_id" => "batch-184",
+      "coordination_applicability" => coordination_applicability,
       "expected_targets" => [target],
       "coordination_status" => coordination_status,
       "target_snapshots" => [{
@@ -3739,9 +4093,12 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "qa_evidence" => [qa_row]
     }
     comment = publication_waiver_comment(head_sha:, url: waiver_url)
+    proof = applicability_proof(input)
     CompletedBatchPublicationPreflight.assess(
       input,
       coordination_backend:,
+      trusted_applicability: proof,
+      trusted_applicability_digest: CompletedBatchPublicationPreflight.digest(proof),
       waiver_verifier: ->(**_keywords) { comment },
       target_verifier: lambda do |target:|
         {
@@ -3756,6 +4113,27 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         coordination_status if backend == coordination_backend && batch_id == "batch-184"
       end
     )
+  end
+
+  def trusted_applicability(preflight)
+    {
+      trusted_applicability: preflight.fetch("applicability_proof"),
+      trusted_applicability_digest: preflight.fetch("applicability_proof_digest")
+    }
+  end
+
+  def applicability_proof(input)
+    {
+      "contract" => "completed-batch-coordination-applicability",
+      "version" => 1,
+      "batch_id" => input.fetch("batch_id"),
+      "coordination_applicability" => input.fetch("coordination_applicability"),
+      "expected_targets" => JSON.parse(JSON.generate(input.fetch("expected_targets"))),
+      "policy_source" => "https://github.com/acme/widgets/blob/#{'a' * 40}/.agents/agent-workflow.yml",
+      "topology_source" => "https://github.com/acme/widgets/blob/#{'a' * 40}/.agents/batch-topology.json",
+      "verified_at" => "2026-08-25T12:00:00Z",
+      "rationale" => "trusted controller verified policy and topology"
+    }
   end
 
   def verification_artifact_publication_preflight
@@ -3793,6 +4171,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "contract" => "completed-batch-publication-preflight-input",
       "version" => 1,
       "batch_id" => "ac-296-verification-20260905",
+      "coordination_applicability" => "coordination_required",
       "expected_targets" => [primary_target],
       "coordination_status" => coordination_status,
       "target_snapshots" => [{
@@ -3827,9 +4206,12 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       }]
     }
     comment = publication_artifact_comment(evidence_url:, artifact_head:)
+    proof = applicability_proof(input)
     CompletedBatchPublicationPreflight.assess(
       input,
       coordination_backend: REAL_BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: CompletedBatchPublicationPreflight.digest(proof),
       waiver_verifier: ->(**_keywords) { comment },
       target_verifier: lambda do |target:|
         {
@@ -3957,6 +4339,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "version" => 1,
       "batch_id" => "batch-issue-173",
       "expected_targets" => [target],
+      "coordination_applicability" => "coordination_required",
       "coordination_status" => coordination_status,
       "target_snapshots" => [{
         "target" => target,
@@ -3980,6 +4363,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     receipt = CompletedBatchPublicationPreflight.assess(
       input,
       coordination_backend: REAL_BACKEND,
+      trusted_applicability: applicability_proof(input),
+      trusted_applicability_digest: CompletedBatchPublicationPreflight.digest(applicability_proof(input)),
       target_verifier: lambda do |target:|
         {
           "target" => target,
@@ -4083,6 +4468,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "contract" => "completed-batch-publication-preflight-input",
       "version" => 1,
       "batch_id" => "ror-d-issue-4731-20260817",
+      "coordination_applicability" => "coordination_required",
       "expected_targets" => [target],
       "coordination_status" => coordination_status,
       "target_snapshots" => [{
@@ -4097,9 +4483,12 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "evidence" => qa_evidence
       }]
     }
+    proof = applicability_proof(source_input)
     result = CompletedBatchPublicationPreflight.assess(
       source_input,
       coordination_backend: REAL_BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: CompletedBatchPublicationPreflight.digest(proof),
       target_verifier: lambda do |target:|
         {
           "target" => target,
@@ -4273,6 +4662,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def with_stubbed_anchor_verifier(callable)
+    original = CompletedBatchAuditReceipt.method(:select_verified_anchor)
+    CompletedBatchAuditReceipt.define_singleton_method(:select_verified_anchor, callable)
+    yield
+  ensure
+    CompletedBatchAuditReceipt.define_singleton_method(:select_verified_anchor, original)
+  end
+
   def with_stubbed_coordination_status(callable)
     original = CompletedBatchAuditReceipt.method(:authenticated_publication_coordination_status)
     CompletedBatchAuditReceipt.define_singleton_method(:authenticated_publication_coordination_status, callable)
@@ -4438,7 +4835,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         puts ENV.fetch("FAKE_COORDINATION_STATUS")
       RUBY
       FileUtils.chmod(0o755, agent_coord)
-      preflight = publication_preflight(coordination_backend:)
+      preflight = publication_preflight(coordination_backend:, target_type:)
+      applicability_proof_path = File.join(directory, "applicability-proof.json")
+      File.write(applicability_proof_path, JSON.generate(preflight.fetch("applicability_proof")))
       workflow_config = File.join(directory, "agent-workflow.yml")
       File.write(workflow_config, "coordination_backend: #{coordination_backend.inspect}\n")
       env = {
@@ -4453,6 +4852,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "FAKE_COORDINATION_LOG" => File.join(directory, "agent-coord.log"),
         "FAKE_COORDINATION_STATUS" => JSON.generate(preflight.dig("source_input", "coordination_status")),
         "FAKE_WORKFLOW_CONFIG" => workflow_config,
+        "FAKE_APPLICABILITY_PROOF" => applicability_proof_path,
+        "FAKE_APPLICABILITY_PROOF_DIGEST" => preflight.fetch("applicability_proof_digest"),
         "COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT" => File.join(directory, "publication-preflight.json"),
         "COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS" => mode == "post-timeout" ? "3" : nil
       }
