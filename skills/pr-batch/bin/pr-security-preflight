@@ -2100,6 +2100,42 @@ class TrustedBaseHighRiskOperations
     fetched_trusted_base_policy(root, base_sha, repo:)
   end
 
+  def fetched_file(root, base_sha, path)
+    metadata_stdout, metadata_stderr, metadata_status = capture_trusted_git_probe(
+      "-C", root, "ls-tree", "--full-tree", "-z", base_sha, "--", path
+    )
+    unless metadata_status&.success? && metadata_stderr.to_s.empty?
+      return [nil, "fetched trusted base file metadata could not be verified: " \
+                   "#{metadata_stderr.to_s.lines.first&.strip}"]
+    end
+    return [nil, "fetched trusted base lacks #{path}"] if metadata_stdout.to_s.empty?
+
+    records = metadata_stdout.to_s.b.split("\0", -1)
+    terminated = records.length > 1 && records.pop.empty?
+    unless terminated && records.one?
+      return [nil, "fetched trusted base file metadata probe returned malformed output"]
+    end
+
+    match = records.fetch(0).match(
+      /\A(?<mode>\d{6}) (?<type>[^ ]+) (?<oid>[0-9a-f]{40}|[0-9a-f]{64})\t(?<path>.+)\z/m
+    )
+    unless match && match[:path] == path
+      return [nil, "fetched trusted base file metadata probe returned malformed output"]
+    end
+    unless match[:type] == "blob" && %w[100644 100755].include?(match[:mode])
+      return [nil, "fetched trusted base #{path} is not a regular file"]
+    end
+
+    stdout, stderr, status = capture_trusted_git_probe(
+      "-C", root, "cat-file", "blob", match[:oid]
+    )
+    unless status&.success? && stderr.to_s.empty?
+      return [nil, "fetched trusted base file contents could not be verified: #{stderr.to_s.lines.first&.strip}"]
+    end
+
+    [{ contents: stdout.b, mode: match[:mode] }, nil]
+  end
+
   def pr_provenance(result, repo:, policy_ref:, trust_config:, team_cache:)
     exact_pr_provenance(result, repo:, policy_ref:, trust_config:, team_cache:)
   end
@@ -2436,7 +2472,7 @@ class TrustedBaseHighRiskOperations
   end
 end
 
-def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:,
+def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, trust_config_resolution:,
                                    operations: TrustedBaseHighRiskOperations.new, post_fetch_rescan: nil)
   return [nil, "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"] unless clean_for_trusted_base_high_risk_acceptance?(result)
 
@@ -2487,6 +2523,36 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:,
     next [nil, fetched_error] unless fetched_policy
     unless fetched_policy == bootstrap_policy
       next [nil, "bootstrap and fetched-base trusted-base policies do not match"]
+    end
+
+    repo_local_trust_config_binding = {}
+    if trust_config_resolution.fetch(:source) == "repo-local"
+      fetched_trust_config, fetched_trust_config_error = operations.fetched_file(
+        fetch_root,
+        base_sha,
+        DEFAULT_TRUST_CONFIG
+      )
+      next [nil, fetched_trust_config_error] unless fetched_trust_config
+
+      begin
+        current_trust_config_digest = "sha256:#{Digest::SHA256.hexdigest(File.binread(trust_config_resolution.fetch(:path)))}"
+      rescue SystemCallError => e
+        next [nil, "repo-local trust config could not be revalidated: #{e.message.lines.first&.strip}"]
+      end
+      unless current_trust_config_digest == trust_config.fetch(:content_digest)
+        next [nil, "repo-local trust config changed during trusted-base verification"]
+      end
+
+      fetched_trust_config_digest = "sha256:#{Digest::SHA256.hexdigest(fetched_trust_config.fetch(:contents))}"
+      unless fetched_trust_config_digest == trust_config.fetch(:content_digest)
+        next [nil, "repo-local trust config does not match fetched trusted base"]
+      end
+
+      repo_local_trust_config_binding = {
+        trust_config_source: "#{base_sha}:#{DEFAULT_TRUST_CONFIG}",
+        trust_config_content_digest: fetched_trust_config_digest,
+        trust_config_file_mode: fetched_trust_config.fetch(:mode)
+      }
     end
 
     checkout_matches, checkout_error = operations.checkout_matches_fetched_base?(
@@ -2541,7 +2607,7 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:,
       policy_ref: bootstrap_policy.fetch("ref"),
       policy_ref_anchor: ref_anchor.fetch(:source),
       high_risk_paths: refreshed_result.fetch(:risky_files).sort.uniq
-    }
+    }.merge(repo_local_trust_config_binding)
     receipt[:policy_ref_anchor_sha] = ref_anchor.fetch(:sha) if ref_anchor[:sha]
     [receipt, nil]
   end
@@ -3845,6 +3911,7 @@ def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.n
         repo:,
         github_host:,
         trust_config:,
+        trust_config_resolution:,
         operations: trusted_base_operations,
         post_fetch_rescan: lambda do |post_fetch_team_cache|
           scan_target(

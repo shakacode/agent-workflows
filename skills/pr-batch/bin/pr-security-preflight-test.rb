@@ -107,6 +107,7 @@ class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
   MISSING_INVOCATION_ROOT = Object.new.freeze
 
   attr_reader :checkout_invocation_roots, :fetch_environments, :fetch_roots, :provenance_results
+  attr_accessor :fetched_files
 
   def initialize(base_sha:, fetched_policy:, expected_merge_sha:, fetch_fail: false, checkout_matches: true,
                  trusted_ref: "refs/heads/main", trusted_ref_sha: nil, during_fetch: nil)
@@ -123,6 +124,7 @@ class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
     @fetch_roots = []
     @checkout_invocation_roots = []
     @provenance_results = []
+    @fetched_files = {}
   end
 
   def with_isolated_base(_remote_url, _ref)
@@ -142,6 +144,18 @@ class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
   def fetched_policy(_root, _base_sha, repo:)
     yaml = @fetched_policy.is_a?(String) ? @fetched_policy : YAML.dump(@fetched_policy)
     trusted_base_policy_from_yaml(yaml, repo:)
+  end
+
+  def fetched_file(_root, _base_sha, path)
+    if @fetched_files.key?(path)
+      value = @fetched_files.fetch(path)
+      return value if value.is_a?(Array)
+
+      record = value.is_a?(Hash) ? value : { contents: value, mode: "100644" }
+      return [record, nil]
+    end
+
+    [nil, "fetched trusted base lacks #{path}"]
   end
 
   def trusted_ref_anchor(_root, _remote_url, operator_ref:)
@@ -2094,6 +2108,94 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_rejects_automatically_selected_untracked_repo_local_trust_config
+    with_trusted_base_preflight do |env, _trust_config_path, repo_root, provenance|
+      repo_config = File.join(repo_root, DEFAULT_TRUST_CONFIG)
+      write_trust_config(repo_config, users: ["justin808"])
+
+      out, status = run_trusted_base_preflight(env, nil, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "fetched trusted base lacks #{DEFAULT_TRUST_CONFIG}"
+      assert_empty provenance.fetch(:operations).fetched_files
+    end
+  end
+
+  def test_trusted_base_accepts_automatically_selected_repo_local_trust_config_identical_to_base
+    with_trusted_base_preflight do |env, _trust_config_path, repo_root, provenance|
+      repo_config = File.join(repo_root, DEFAULT_TRUST_CONFIG)
+      write_trust_config(repo_config, users: ["justin808"])
+      provenance.fetch(:operations).fetched_files[DEFAULT_TRUST_CONFIG] = File.binread(repo_config)
+
+      out, status = run_trusted_base_preflight(env, nil, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "Trust config source: repo-local"
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, %("trust_config_source":"#{provenance.fetch(:base_sha)}:#{DEFAULT_TRUST_CONFIG}")
+      assert_includes out, '"trust_config_file_mode":"100644"'
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_trusted_base_rejects_automatically_selected_repo_local_trust_config_changed_from_base
+    with_trusted_base_preflight do |env, _trust_config_path, repo_root, provenance|
+      repo_config = File.join(repo_root, DEFAULT_TRUST_CONFIG)
+      write_trust_config(repo_config, users: ["justin808"])
+      provenance.fetch(:operations).fetched_files[DEFAULT_TRUST_CONFIG] = <<~YAML
+        trusted_users: []
+        trusted_bots: []
+        trusted_metadata_bots: []
+        trusted_teams: []
+      YAML
+
+      out, status = run_trusted_base_preflight(env, nil, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "repo-local trust config does not match fetched trusted base"
+    end
+  end
+
+  def test_trusted_base_rejects_repo_local_trust_config_mutated_during_fetch
+    repo_config = nil
+    mutation = lambda do
+      write_trust_config(repo_config, users: %w[justin808 late-change])
+    end
+    with_trusted_base_preflight(during_fetch: mutation) do |env, _trust_config_path, repo_root, provenance|
+      repo_config = File.join(repo_root, DEFAULT_TRUST_CONFIG)
+      write_trust_config(repo_config, users: ["justin808"])
+      provenance.fetch(:operations).fetched_files[DEFAULT_TRUST_CONFIG] = File.binread(repo_config)
+
+      out, status = run_trusted_base_preflight(env, nil, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "repo-local trust config changed during trusted-base verification"
+    end
+  end
+
+  def test_fetched_file_rejects_nonregular_and_malformed_or_failed_metadata
+    operations = TrustedBaseHighRiskOperations.new
+    sha = "c" * 40
+    oid = "d" * 40
+    cases = [
+      ["nonregular", ["120000 blob #{oid}\t#{DEFAULT_TRUST_CONFIG}\0", "", TestCommandStatus.new(0)],
+       "is not a regular file"],
+      ["malformed", ["garbage\0", "", TestCommandStatus.new(0)],
+       "metadata probe returned malformed output"],
+      ["failure", ["", "fatal: unavailable", TestCommandStatus.new(128)],
+       "metadata could not be verified"]
+    ]
+
+    cases.each do |label, response, expected_error|
+      with_trusted_git_probe_fault(->(args) { args.include?("ls-tree") }, response) do
+        record, error = operations.fetched_file("/tmp/fetched-base", sha, DEFAULT_TRUST_CONFIG)
+
+        assert_nil record, label
+        assert_includes error, expected_error, label
+      end
+    end
+  end
+
   def test_trusted_base_rejects_feature_branch_that_selects_itself_as_trust_anchor
     policy = trusted_base_policy("ref" => "refs/heads/feature/self-anchor")
     with_trusted_base_preflight(
@@ -3615,7 +3717,9 @@ class PrSecurityPreflightTest < Minitest::Test
     Dir.mktmpdir("trusted-base-real-git") do |repo_root|
       git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
       File.write(File.join(repo_root, "first.txt"), "first\n")
-      git! "-C", repo_root, "add", "first.txt"
+      trust_config_path = File.join(repo_root, DEFAULT_TRUST_CONFIG)
+      write_trust_config(trust_config_path, users: ["justin808"])
+      git! "-C", repo_root, "add", "first.txt", DEFAULT_TRUST_CONFIG
       git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
            "commit", "--quiet", "-m", "first"
       first_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
@@ -3650,6 +3754,21 @@ class PrSecurityPreflightTest < Minitest::Test
         "refs/heads/main"
       )
       assert checkout_matches, checkout_error
+      fetched_config, fetched_config_error = operations.fetched_file(
+        repo_root,
+        base_sha,
+        DEFAULT_TRUST_CONFIG
+      )
+      assert_nil fetched_config_error
+      assert_equal File.binread(trust_config_path), fetched_config.fetch(:contents)
+      assert_equal "100644", fetched_config.fetch(:mode)
+      missing_config, missing_config_error = operations.fetched_file(
+        repo_root,
+        base_sha,
+        ".agents/missing-trust-config.yml"
+      )
+      assert_nil missing_config
+      assert_includes missing_config_error, "fetched trusted base lacks"
       untracked_path = File.join(repo_root, "untracked.txt")
       File.write(untracked_path, "untracked content\n")
       untracked_matches, untracked_error = operations.checkout_matches_fetched_base?(
@@ -7292,16 +7411,11 @@ class PrSecurityPreflightTest < Minitest::Test
     stdout, stderr = with_env(env.merge(clean_git_env)) do
       Dir.chdir(repo_root) do
         capture_io do
+          args = ["--repo", "owner/repo"]
+          args.concat(["--trust-config", trust_config_path]) if trust_config_path
+          args.concat(["--strict-trust", "--fail-on-high-risk-files", "123"])
           status = run_preflight(
-            [
-              "--repo",
-              "owner/repo",
-              "--trust-config",
-              trust_config_path,
-              "--strict-trust",
-              "--fail-on-high-risk-files",
-              "123"
-            ],
+            args,
             trusted_base_operations: @trusted_base_operations.fetch(repo_root)
           )
         end

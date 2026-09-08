@@ -236,8 +236,12 @@ configuration, or test-selection exception. Known local or worktree transport
 overrides are also rejected so the operator can see why provenance would have
 been ambiguous outside the isolated fetch. The helper resolves the fetched commit, then reads
 `.agents/agent-workflow.yml` again from that commit. The fetched mapping must be
-complete and exactly match the bootstrap mapping. Acceptance additionally
-requires a closed merged non-fork PR, matching complete REST and GraphQL
+complete and exactly match the bootstrap mapping. If the preflight
+automatically selected repo-local `.agents/trusted-github-actors.yml`, that file
+must also exist at the same path in the fetched base with byte-identical
+contents. An untracked or locally modified actor policy may still drive an
+ordinary preflight, but it cannot authorize a trusted-base receipt. Acceptance
+additionally requires a closed merged non-fork PR, matching complete REST and GraphQL
 repository/head/merge/merge-actor facts, trusted and fully visible
 actors/interactions (including the actor who merged the PR),
 complete API coverage with unique stable participant, timeline-event, and
@@ -251,7 +255,9 @@ Success emits a separate one-line JSON receipt beginning with
 `TRUSTED_BASE_HIGH_RISK_ACCEPTED`. It binds the repository, PR number, head SHA,
 merge SHA, fetched base SHA, fetched policy source, configured remote/ref, and
 every detected high-risk path, plus the independent ref-anchor source and the
-advertised object ID when remote `HEAD` supplied the anchor. It is not an
+advertised object ID when remote `HEAD` supplied the anchor. When the automatic
+repo-local trust layer is selected, it also binds the fetched trust-config
+source and content digest. It is not an
 `Acknowledged security preflight
 findings` record. A supplied `--acknowledge-risk ...:high-risk-files` remains the
 manual path and does not emit the trusted-base receipt.
