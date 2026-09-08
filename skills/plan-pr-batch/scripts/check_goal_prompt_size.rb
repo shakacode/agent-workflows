@@ -93,7 +93,7 @@ TOKEN_BUDGET_PROMPT_LEGEND_LINE =
   "S/T/I/D=state path/trusted-plan path/id/digest."
 MANIFEST_WHOLE_COORDINATOR_PREFERENCE_UNKNOWN_FRAGMENT =
   "coordinator_preference=<model/effort|UNKNOWN>"
-BATCH_QA_PROMPT_LINE = "Batch QA Lane:<owner/scope+evidence|none+rationale>;apply+evidence"
+BATCH_QA_PROMPT_LINE = "Batch QA Lane:<owner/scope+evidence|none+rationale>"
 FINAL_CLOSEOUT_PROMPT_LINE =
   "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
 CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE =
