@@ -370,6 +370,12 @@ class TaskScratchLifecycleTest < Minitest::Test
         SH
       )
       File.chmod(0o755, fake_git)
+      real_git = ENV.fetch("PATH").split(File::PATH_SEPARATOR).filter_map do |path|
+        candidate = File.expand_path(File.join(path, "git"))
+        candidate if File.file?(candidate) && File.executable?(candidate)
+      end.first
+      raise "git executable not found on PATH" unless real_git
+
       started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
       blocked, create_stderr, create_status = run_create(
@@ -379,7 +385,7 @@ class TaskScratchLifecycleTest < Minitest::Test
         ["evidence.json"],
         env: {
           "PATH" => "#{fake_bin}:#{ENV.fetch('PATH')}",
-          "REAL_GIT" => `command -v git`.strip,
+          "REAL_GIT" => real_git,
           "PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS" => "1"
         }
       )
