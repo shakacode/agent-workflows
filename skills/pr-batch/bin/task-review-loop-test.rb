@@ -119,7 +119,8 @@ class TaskReviewLoopTest < Minitest::Test
   def test_cli_returns_structured_block_for_invalid_options
     {
       "missing value" => ["--repository-root"],
-      "unknown option" => ["--unknown-option"]
+      "unknown option" => ["--unknown-option"],
+      "invalid encoding" => ["--repository-root=repo-\xFF".b]
     }.each do |label, arguments|
       stdout, stderr, status = Open3.capture3(HELPER, *arguments, stdin_data: "{}")
 
@@ -136,6 +137,38 @@ class TaskReviewLoopTest < Minitest::Test
         JSON.parse(stdout),
         label
       )
+    end
+  end
+
+  def test_review_documents_reject_invalid_encoding_in_identity_and_actor_strings
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input_bytes = JSON.generate(clean_review_input(directory)).b
+      {
+        "identity" => [
+          %("plan_id":"#{TASK_IDENTITY.fetch('plan_id')}").b,
+          "\"plan_id\":\"plan-\xFF\"".b
+        ],
+        "actor" => [
+          '"initial_implementer_id":"implementer-a"'.b,
+          "\"initial_implementer_id\":\"implementer-\xFF\"".b
+        ]
+      }.each do |label, (needle, replacement)|
+        mutated_bytes = input_bytes.sub(needle, replacement)
+        refute_equal input_bytes, mutated_bytes, label
+
+        stdout, stderr, status = Open3.capture3(
+          RbConfig.ruby,
+          "-e",
+          DIRECT_REDUCTION,
+          HELPER,
+          stdin_data: mutated_bytes
+        )
+
+        assert status.success?, "#{label}: #{stderr}"
+        assert_empty stderr, label
+        assert_equal "blocked", JSON.parse(stdout).fetch("status"), label
+        assert_equal ["input-schema-invalid"], JSON.parse(stdout).fetch("reasons"), label
+      end
     end
   end
 
