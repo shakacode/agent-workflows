@@ -4722,6 +4722,50 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_scoped_headroom_resolves_a_persisted_approval_stop_without_redundant_approval
+    with_state do |state_path|
+      initialize_budget(state_path)
+      stopped, stopped_stderr, stopped_status = reserve(
+        state_path,
+        id: "approval-stop-before-headroom",
+        lane_id: "lane-a",
+        tokens: 500
+      )
+      assert stopped_status.success?, stopped_stderr
+      assert_equal "approval-required", stopped.fetch("status")
+
+      lane_override = budget_override(
+        state_path,
+        id: "approval-stop-headroom",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 700
+      )
+      overridden, override_stderr, override_status = run_helper(
+        state_path,
+        command("override", "override" => lane_override)
+      )
+      assert override_status.success?, override_stderr
+      assert_equal "overridden", overridden.fetch("status")
+
+      retried, retry_stderr, retry_status = reserve(
+        state_path,
+        id: "approval-stop-after-headroom",
+        lane_id: "lane-a",
+        tokens: 500
+      )
+      assert retry_status.success?, retry_stderr
+      assert_equal "admitted-with-warning", retried.fetch("status")
+      refute retried.key?("approval_id")
+
+      saved = JSON.parse(File.read(state_path))
+      prior_stop = saved.fetch("admission_decisions").values.find do |decision|
+        decision["reservation_id"] == "approval-stop-before-headroom"
+      end
+      assert_equal "approval-stop-after-headroom", prior_stop.fetch("resolved_by_reservation_id")
+    end
+  end
+
   def test_scoped_override_keeps_plan_identity_and_cannot_hide_an_unrelated_hard_stop
     with_state do |state_path|
       initialized, = initialize_budget(state_path)

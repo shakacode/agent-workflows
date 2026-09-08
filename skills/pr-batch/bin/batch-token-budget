@@ -1685,7 +1685,8 @@ module BatchTokenBudget
       next false unless decision_target_compatible?(decision, reservation)
 
       if decision["status"] == "approval-required"
-        valid_approval && approval_covers_decision?(approval, decision)
+        (valid_approval && approval_covers_decision?(approval, decision)) ||
+          decision_headroom_improved?(original_state, decision)
       else
         decision_headroom_improved?(original_state, decision)
       end
