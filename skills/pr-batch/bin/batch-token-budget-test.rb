@@ -3329,6 +3329,33 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_release_rejects_extra_fields_before_mutating_or_ledgering_them
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "strict-release", lane_id: "lane-a", tokens: 100)
+      before = File.binread(state_path)
+      release = command(
+        "release",
+        "release" => {
+          "type" => "batch-token-release",
+          "version" => 1,
+          "id" => "strict-release-command",
+          "reservation_id" => "strict-release",
+          "reason" => "The worker stopped before its model turn.",
+          "transcript" => "TOP-SECRET-SENTINEL"
+        }
+      )
+
+      result, stderr, status = run_helper(state_path, release)
+
+      refute status.success?
+      assert_nil result
+      assert_equal "invalid-release", JSON.parse(stderr).fetch("reason")
+      assert_equal before, File.binread(state_path)
+      refute_includes File.binread(state_path), "TOP-SECRET-SENTINEL"
+    end
+  end
+
   def test_idle_usage_window_advances_without_touching_an_active_reservation
     with_state do |state_path|
       initialize_budget(state_path)

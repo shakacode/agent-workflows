@@ -137,6 +137,9 @@ module BatchPlanPreflight
   end
 
   def parse_json_strict(raw)
+    raw = raw.dup.force_encoding(Encoding::UTF_8)
+    raise JSON::ParserError, "invalid-utf8" unless raw.valid_encoding?
+
     containers = []
     index = 0
     while index < raw.length

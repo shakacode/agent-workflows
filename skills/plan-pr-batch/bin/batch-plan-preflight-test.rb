@@ -2559,6 +2559,38 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal(["malformed-json"], result.fetch("violations").map { |item| item.fetch("code") })
   end
 
+  def test_invalid_utf8_returns_a_structured_rejection_before_scanning_or_canonicalization
+    input = input_for
+    input.fetch("plan")["token_budget"] = token_budget
+    raw = JSON.generate(input).b
+    invalid_inputs = {
+      "inside-inline-budget" => raw.sub("/var/tmp/batch-plan-1-token-budget.json", "/var/tmp/invalid-\xFF.json".b),
+      "beside-object-key" => raw.sub('"type":', "\"type\"\xFF:".b)
+    }
+
+    invalid_inputs.each do |name, invalid_raw|
+      result, stderr, status = evaluate_raw(invalid_raw)
+
+      refute status.success?, name
+      assert_empty stderr, name
+      assert_equal "rejected", result.fetch("status"), name
+      assert_equal ["malformed-json"], result.fetch("violations").map { |item| item.fetch("code") }, name
+    end
+
+    stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby,
+      "-EASCII-8BIT",
+      HELPER,
+      stdin_data: invalid_inputs.fetch("inside-inline-budget")
+    )
+    result = JSON.parse(stdout)
+
+    refute status.success?
+    assert_empty stderr
+    assert_equal "rejected", result.fetch("status")
+    assert_equal(["malformed-json"], result.fetch("violations").map { |item| item.fetch("code") })
+  end
+
   def test_historical_wave_a_replay_is_rejected_before_dispatch
     fixture_json = File.read(REPLAY_FIXTURE, encoding: "UTF-8")
     fixture = JSON.parse(fixture_json)

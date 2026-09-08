@@ -2291,6 +2291,7 @@ module BatchTokenBudget
   def release_command(original_state, command)
     release = command["release"]
     unless release.is_a?(Hash) && release["type"] == "batch-token-release" && release["version"] == 1 &&
+           release.keys.sort == %w[id reason reservation_id type version] &&
            nonempty_string?(release["id"]) && nonempty_string?(release["reservation_id"]) &&
            nonempty_string?(release["reason"])
       raise InvalidInput, "invalid-release"
