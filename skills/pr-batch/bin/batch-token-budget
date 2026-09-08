@@ -2650,6 +2650,14 @@ module BatchTokenBudget
     end
   end
 
+  def v2_usage_receipt_binding_proven?(usage_receipt)
+    lanes = usage_receipt.fetch("lanes")
+    scopes = [usage_receipt.fetch("coordinator"), *lanes, *lanes.flat_map { |lane| lane.fetch("workers") }]
+
+    v2_usage_receipt_topology_consistent?(usage_receipt) &&
+      scopes.all? { |scope| scope_evidence_identity_proven?(scope.fetch("evidence")) }
+  end
+
   def lane_usage_projection(lane)
     return unless lane.is_a?(Hash) && lane.keys.sort == %w[
       evidence id observed_routes reconciliation requested_route root_thread_id scope turns usage workers
@@ -2795,6 +2803,9 @@ module BatchTokenBudget
       end
     end
 
+    binding_proven = batch_tokens.positive? && v2_usage_receipt_binding_proven?(usage_receipt)
+    return if batch_tokens.positive? && !binding_proven
+
     {
       "binding" => {
         "batch_id" => batch.fetch("id"),
@@ -2804,7 +2815,7 @@ module BatchTokenBudget
         },
         "lanes" => lane_projections.to_h { |lane| [lane.fetch("id"), lane.fetch("root_thread_id")] }
       },
-      "binding_proven" => v2_usage_receipt_topology_consistent?(usage_receipt),
+      "binding_proven" => binding_proven,
       "from_inclusive" => window.fetch("from_inclusive"),
       "to_exclusive" => window.fetch("to_exclusive"),
       "scope_tokens" => scope_tokens,

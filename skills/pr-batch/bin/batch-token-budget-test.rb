@@ -7550,6 +7550,117 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_permitted_top_level_unknown_defers_binding_when_a_zero_use_scope_identity_is_unproved
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 10, "lane-b" => 0 }
+      )
+      mark_receipt_route_unknown(receipt)
+      lane_b = receipt.fetch("lanes").find { |lane| lane.fetch("id") == "lane-b" }
+      lane_b.fetch("evidence").delete("first_session_id")
+      state_before = File.binread(state_path)
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "partial-unproved-zero-use-identity")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+
+      proven_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 10, "lane-b" => 0 }
+      )
+      proven_receipt, proven_ref, proven_digest = receipt_artifact(
+        state_path,
+        proven_receipt,
+        "fully-proven-identities-after-partial-unknown"
+      )
+      proven, proven_stderr, proven_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T12:00:00Z",
+          "usage_receipt" => proven_receipt,
+          "usage_receipt_ref" => proven_ref,
+          "usage_receipt_digest" => proven_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert proven_status.success?, proven_stderr
+      assert_equal "reconciled", proven.fetch("status")
+      proven_state = JSON.parse(File.binread(state_path))
+      assert_equal "root", proven_state.dig("usage_binding", "coordinator", "root_thread_id")
+      assert_equal({ "lane-a" => "lane-a", "lane-b" => "lane-b" }, proven_state.dig("usage_binding", "lanes"))
+      assert_equal "2026-08-12T12:00:00Z", proven_state.fetch("usage_cursor")
+      assert_equal 1, proven_state.fetch("usage_receipts").length
+    end
+  end
+
+  def test_fully_proven_zero_use_window_does_not_establish_usage_binding
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      zero_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+
+      reconciled, stderr, status = reconcile_receipt(state_path, zero_receipt, "fully-proven-zero-use-window")
+
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      zero_state = JSON.parse(File.binread(state_path))
+      assert_nil zero_state["usage_binding"]
+      assert_equal "2026-08-12T12:00:00Z", zero_state.fetch("usage_cursor")
+
+      positive_receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T12:00:00Z",
+        to: "2026-08-12T12:01:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 10, "lane-b" => 0 }
+      )
+      positive_receipt, positive_ref, positive_digest = receipt_artifact(
+        state_path,
+        positive_receipt,
+        "positive-window-after-fully-proven-zero-use"
+      )
+      positive, positive_stderr, positive_status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "evaluated_at" => "2026-08-12T12:01:00Z",
+          "usage_receipt" => positive_receipt,
+          "usage_receipt_ref" => positive_ref,
+          "usage_receipt_digest" => positive_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert positive_status.success?, positive_stderr
+      assert_equal "reconciled", positive.fetch("status")
+      positive_state = JSON.parse(File.binread(state_path))
+      assert_equal "root", positive_state.dig("usage_binding", "coordinator", "root_thread_id")
+      assert_equal({ "lane-a" => "lane-a", "lane-b" => "lane-b" }, positive_state.dig("usage_binding", "lanes"))
+      assert_equal "2026-08-12T12:01:00Z", positive_state.fetch("usage_cursor")
+      assert_equal 2, positive_state.fetch("usage_receipts").length
+    end
+  end
+
   def test_batch_usage_receipt_rejects_noncanonical_unknown_reason_metadata_before_any_state_mutation
     invalid_metadata = {
       "nested-sentinel" => { "unexpected_content" => { "nested" => ["secret-payload"] } },
