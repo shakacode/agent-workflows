@@ -48,6 +48,7 @@ and implementation plans are collected in the final reference section.
 | Decide whether an issue or proposed fix is worth doing | [Issue And Fix Evaluation](issue-evaluation.md) |
 | Route coordinators and workers by capability, cost, risk, and escalation evidence | [Cost-aware model routing](agent-workflows-model-routing.md) |
 | Use Compound Engineering inside an Agent Workflows lane | [Using Compound Engineering With Agent Workflows](compound-engineering.md) |
+| Use selected Matt Pocock skills across Claude, Codex, and multiple machines | [Using Matt Pocock Skills With Agent Workflows](matt-pocock-skills.md) |
 | Evaluate one Superpowers technique without creating a peer delivery orchestrator | [Using Superpowers With Agent Workflows](superpowers.md) |
 
 ## Operate safely
