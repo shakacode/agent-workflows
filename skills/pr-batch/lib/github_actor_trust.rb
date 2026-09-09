@@ -155,6 +155,21 @@ module GithubActorTrust
     %w[ssh.github.com ssh.github.com:443].include?(host) ? "github.com" : host
   end
 
+  def ssh_config_hostname(host, ssh_capture:)
+    out, _err, status = ssh_capture.call("ssh", "-G", host)
+    return unless status&.success?
+
+    hostname = out.each_line.filter_map do |line|
+      key, value = line.strip.split(/\s+/, 2)
+      value if key&.casecmp?("hostname")
+    end.first
+    return if hostname.to_s.empty?
+
+    normalized_github_host(hostname)
+  rescue StandardError
+    nil
+  end
+
   def remote_url_host(host, port, scheme:)
     normalized = normalized_github_host(host)
     return if normalized.empty?
@@ -204,7 +219,10 @@ module GithubActorTrust
     resolved_host = ssh_host_resolver.call(ssh_config_host)
     return unless resolved_host
 
-    remote.merge(host: normalized_remote_host(normalized_github_host(resolved_host)))
+    normalized_resolved_host = normalized_github_host(resolved_host)
+    return remote if normalized_resolved_host == normalized_github_host(ssh_config_host)
+
+    remote.merge(host: normalized_remote_host(normalized_resolved_host))
   rescue URI::Error
     nil
   end

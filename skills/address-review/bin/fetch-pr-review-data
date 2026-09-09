@@ -520,12 +520,8 @@ module FetchPrReviewData
     end
 
     def ssh_hostname(host)
-      out, _err, status = capture_probe("ssh", "-G", host)
-      hostname = out.each_line.filter_map do |line|
-        key, value = line.strip.split(/\s+/, 2)
-        value if key&.casecmp?("hostname")
-      end.first
-      return GithubActorTrust.normalized_github_host(hostname) if status&.success? && !hostname.to_s.empty?
+      hostname = GithubActorTrust.ssh_config_hostname(host, ssh_capture: method(:capture_probe))
+      return hostname if hostname
 
       raise Error, "could not resolve SSH host #{host.inspect}; set GH_HOST explicitly"
     end
@@ -547,9 +543,9 @@ module FetchPrReviewData
 
     # Bounded and environment-sanitized like the preflight's git probe, so a
     # hung credential helper or a GIT_CONFIG_* override cannot stall this tool.
-    def capture_probe(*cmd, chdir: nil, timeout_seconds: PrBatchGitProbeEnv::GIT_TIMEOUT_SECONDS)
+    def capture_probe(*cmd, timeout_seconds: PrBatchGitProbeEnv::GIT_TIMEOUT_SECONDS)
       PrBatchGitProbeEnv.capture3(
-        PrBatchGitProbeEnv.probe_env, *cmd, timeout_seconds:, chdir:
+        PrBatchGitProbeEnv.probe_env, *cmd, timeout_seconds:
       )
     rescue PrBatchGitProbeEnv::TimeoutError
       warn "WARN: #{cmd.first(3).join(' ')} timed out after #{timeout_seconds}s"

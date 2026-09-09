@@ -293,7 +293,10 @@ def resolved_trust_config(explicit_path, repo:, github_host:)
     explicit_path,
     repo_root: GithubActorTrust.git_toplevel(git_capture: method(:capture_git_probe)),
     repo_local_verifier: GithubActorTrust.repository_locality_verifier(
-      repo:, github_host:, git_capture: method(:capture_git_probe)
+      repo:, github_host:, git_capture: method(:capture_git_probe),
+      ssh_host_resolver: lambda do |host|
+        GithubActorTrust.ssh_config_hostname(host, ssh_capture: method(:capture_git_probe))
+      end
     )
   )
 rescue GithubActorTrust::Error => e

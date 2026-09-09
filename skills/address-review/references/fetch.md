@@ -141,7 +141,9 @@ marker, reply-context, resolved-thread, and cutoff filters before counting
 retained triage candidates. Count `excluded_interactions` whose `trust` is
 `untrusted` and `body_withheld` is true in the same active scan window; trusted workflow bookkeeping such
 as summary, status, source-reply, and claim comments is never a retained triage
-candidate. Zero retained candidates with one or more current untrusted
+candidate. Always report the current withheld count and each corresponding
+`html_url` before triage, even when trusted candidates remain; do not imply
+those excluded interactions were reviewed. Zero retained candidates with one or more current untrusted
 interactions is not “no review comments”: set review readiness to
 `UNKNOWN`/blocked, audit those URLs, populate the trust config with the intended
 actionable actors, and rerun. Metadata-only interactions remain safe audit
@@ -222,5 +224,6 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 
 - If the API returns 404, the PR/comment doesn't exist - inform the user
 - If the API returns 403, check authentication with `gh auth status`
+- The normal skill intake exports a verified `GH_HOST`. When invoking the helper directly from a checkout whose stored remote uses an unrecognized alias or local mirror path, set the already-authorized `GH_HOST` explicitly.
 - If the response is empty after cutoff filtering, inform the user no new review comments were found since the last summary comment and mention `check all reviews`
 - If no retained triage candidate survives the normal filters and the active scan window has no `untrusted` exclusion with `body_withheld: true`, inform the user no actionable review comments were found and report any metadata-only or bodyless interaction count. If current untrusted text was withheld, readiness is `UNKNOWN`/blocked until the trust config is audited and populated; never let trusted workflow bookkeeping make that packet appear nonempty.

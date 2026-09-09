@@ -243,6 +243,36 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_repo_local_trust_config_resolves_ssh_aliases_like_review_fetch
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer-alias")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      ssh_path = File.join(dir, "ssh")
+      FileUtils.mkdir_p(consumer_root)
+      init_git_remote(consumer_root, "owner/repo", url: "git@github.com-work:owner/repo.git")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+      File.write(ssh_path, <<~SH)
+        #!/usr/bin/env bash
+        if [[ "$1" == "-G" && "$2" == "github.com-work" ]]; then
+          printf 'hostname github.com\n'
+          exit 0
+        fi
+        exit 1
+      SH
+      FileUtils.chmod(0o755, ssh_path)
+
+      out, status = run_script(
+        env.merge("GH_HOST" => "github.com"),
+        "--repo", "owner/repo", "--trust-config", repo_config, "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
   def test_inferred_github_enterprise_host_marks_explicit_trust_config_repo_local
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer")
