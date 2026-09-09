@@ -30,6 +30,35 @@ If you update this skill, keep `.agents/workflows/evaluate-issue.md` aligned for
 
 AI-found gaps are leads, not priorities. Prioritize real customer reports, verified regressions, security/correctness issues, and migration blockers over hypothetical issues found by code analysis.
 
+## Quality Maintenance Admission
+
+Use this checklist for an explicitly requested, occasional behavior-preserving
+quality task. Optional candidates retained under the
+[Follow-Up Tracking Policy](../../workflows/pr-batch-integration-closeout.md#optional-quality-candidates)
+are inputs to evaluation, with no implementation commitment.
+
+- Record explicit admission with a coherent scope, time or effort budget, and
+  stopping point. Apply [canonical launch admission](../../workflows/pr-batch-intake.md#canonical-launch-target-gate)
+  before implementation. A retained note, its age, or generic "fix issues"
+  wording cannot admit or schedule maintenance.
+- Re-evaluate each considered candidate against current code using the rubric
+  below. Discard stale, subjective, already-fixed, and low-value suggestions.
+  Select only a worthwhile subset that fits the admitted scope and budget;
+  selecting nothing is valid. Do not search for replacement work to fill time.
+- Preserve behavior and validate according to the changed surface and risk.
+  Stop at the admitted stopping point or budget. A functional change requires a
+  scope decision through the existing task workflow before implementation.
+- For already-filed follow-ups, use the existing authorized triage workflow.
+  Judge evidence and impact, never a severity label or follow-up prefix alone.
+  Close or park low-value items only with existing authority, a rationale, and
+  useful source links; otherwise recommend the disposition. Resolve labels
+  through repository policy. This checklist does not authorize a closing sweep.
+- Keep demonstrated consequential defects in ordinary defect triage and review
+  with their normal priority. A quality task cannot downgrade or hide them.
+
+Verify changes to this checklist with the
+[deterministic scenario replay](references/quality-maintenance-scenarios.md).
+
 ## Workflow
 
 1. Verify the item
@@ -89,6 +118,10 @@ AI-found gaps are leads, not priorities. Prioritize real customer reports, verif
 
 7. Apply labels only when authorized
    - "Authorized" means the current user prompt, worker goal, or task instructions explicitly allow label changes, or the user granted issue-triage/write permission for the current task. If unsure, report the label recommendation without changing GitHub.
+   - Map the recommendation vocabulary below to labels through repository policy
+     in `AGENTS.md` and `.agents/agent-workflow.yml`. The label names and creation
+     recipe below are defaults only where that policy does not override them;
+     do not create a default label when the repository maps its purpose elsewhere.
    - Use `P0` for merge-this-week blockers, `P1` for target-this-sprint work, `P2` for backlog, and `P3` for parked priority.
    - Keep `discussion` for RFCs and unresolved product decisions.
    - Use `needs-customer-feedback` when the issue is a nice-to-have, AI/code-analysis-only, or otherwise should not be implemented until customer evidence or maintainer approval exists.

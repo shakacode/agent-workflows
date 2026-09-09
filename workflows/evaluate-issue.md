@@ -10,6 +10,11 @@ evidence, risks, mechanism decisions, or `UNKNOWN` facts.
 
 The authoritative rubric lives in `.agents/skills/evaluate-issue/SKILL.md`. Read and follow that file first; this workflow exists for agents that prefer workflow-file entry points over skill invocation syntax.
 
+For an explicitly admitted quality task, apply that skill's
+[Quality Maintenance Admission](../skills/evaluate-issue/SKILL.md#quality-maintenance-admission)
+checklist before selecting work. Retained optional candidates are evaluation
+inputs, not scheduled work; ordinary defect triage keeps its priority.
+
 ## Sequence
 
 1. Exact issues or PRs:
