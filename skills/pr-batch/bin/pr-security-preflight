@@ -1887,6 +1887,7 @@ PARTICIPANT_IDENTITY_TYPENAMES = Set.new(%w[Bot EnterpriseUserAccount Mannequin 
 TIMELINE_NESTED_ACTOR_TYPENAMES = Set.new(
   %w[Bot EnterpriseUserAccount Mannequin Organization User]
 ).freeze
+REST_TIMELINE_NESTED_ACTOR_TYPES = Set.new(%w[Bot Mannequin Organization User]).freeze
 TIMELINE_AUTHOR_IDENTITY_TYPENAMES = Set.new(%w[IssueComment PullRequestReview]).freeze
 TIMELINE_ACTOR_IDENTITY_TYPENAMES = Set.new(
   %w[
@@ -2827,19 +2828,21 @@ end
 def graph_cross_reference_identity(node)
   actor = node["actor"]
   source = node["source"]
+  actor_type = actor&.[]("__typename")
+  return unless TIMELINE_NESTED_ACTOR_TYPENAMES.include?(actor_type)
+
   values = [
     node["id"],
     node["createdAt"],
     actor&.[]("id"),
     actor&.[]("login"),
-    actor&.[]("__typename"),
+    actor_type == "Bot" ? "Bot" : "Account",
     source&.[]("__typename"),
     source&.[]("id"),
     source&.[]("number"),
     source&.[]("url")
   ]
   return unless values.none? { |value| value.nil? || value.to_s.empty? }
-  return unless TIMELINE_NESTED_ACTOR_TYPENAMES.include?(actor["__typename"])
   return unless %w[Issue PullRequest].include?(source["__typename"])
   return unless source["number"].is_a?(Integer) && source["number"].positive?
 
@@ -2863,6 +2866,9 @@ def rest_cross_reference_identity(item)
   source = item["source"]
   return unless source&.[]("type") == "issue"
 
+  actor_type = actor&.[]("type")
+  return unless REST_TIMELINE_NESTED_ACTOR_TYPES.include?(actor_type)
+
   source_issue = source&.[]("issue")
   return unless source_issue.is_a?(Hash)
 
@@ -2880,14 +2886,13 @@ def rest_cross_reference_identity(item)
     item["created_at"],
     actor&.[]("node_id"),
     actor&.[]("login"),
-    actor&.[]("type"),
+    actor_type == "Bot" ? "Bot" : "Account",
     graph_source_type,
     source_issue&.[]("node_id"),
     source_issue&.[]("number"),
     source_issue&.[]("html_url")
   ]
   return unless values.none? { |value| value.nil? || value.to_s.empty? }
-  return unless TIMELINE_NESTED_ACTOR_TYPENAMES.include?(actor["type"])
   return unless source_issue["number"].is_a?(Integer) && source_issue["number"].positive?
 
   values

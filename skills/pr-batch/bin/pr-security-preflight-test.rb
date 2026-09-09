@@ -6190,6 +6190,14 @@ class PrSecurityPreflightTest < Minitest::Test
 
     assert graph_timeline_matches_rest?([graph_node], [rest_item], reported_total_count: 2)
 
+    enterprise_graph_node = JSON.parse(JSON.generate(graph_node))
+    enterprise_graph_node.fetch("actor")["__typename"] = "EnterpriseUserAccount"
+    assert graph_timeline_matches_rest?([enterprise_graph_node], [rest_item], reported_total_count: 2)
+
+    bot_graph_node = JSON.parse(JSON.generate(graph_node))
+    bot_graph_node.fetch("actor")["__typename"] = "Bot"
+    refute graph_timeline_matches_rest?([bot_graph_node], [rest_item], reported_total_count: 2)
+
     mutations = {
       "missing GraphQL event id" => ->(graph, _rest) { graph.delete("id") },
       "missing GraphQL createdAt" => ->(graph, _rest) { graph.delete("createdAt") },
