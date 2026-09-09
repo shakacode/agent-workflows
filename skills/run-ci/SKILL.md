@@ -22,7 +22,8 @@ Before running commands, inspect:
 - `.agents/agent-workflow.yml` for `base_branch` and CI policy notes
 
 Apply the [delivery coverage contract](../verify/references/verification-evidence.md#delivery-coverage).
-Read selection policy from the trusted base. The repository's wrappers define
+Execute selection through the trusted-base wrapper or a protected repository
+entry point. The repository's wrappers define
 integration and complete promotion invocations; omission retains existing
 coverage. Missing or invalid routing evidence cannot select reduced checks.
 

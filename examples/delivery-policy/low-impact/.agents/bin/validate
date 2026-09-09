@@ -31,7 +31,7 @@ reason = "promotion requires complete checks"
 if phase == "integration"
   reason = "unknown or broad change; complete checks required"
   begin
-    raise "missing or invalid base" unless base.match?(/\A[0-9a-f]{40}\z/)
+    raise "missing or invalid base" unless base.b.match?(/\A[0-9a-f]{40}\z/)
 
     git("cat-file", "-e", "#{base}^{commit}")
     raw = git("diff", "--raw", "-z", "--no-abbrev", "--no-renames", base, head, "--")
@@ -40,14 +40,18 @@ if phase == "integration"
                  header.match?(/\A:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M\z/) && path == "docs/overview.md"
                end
     if clean && ordinary
-      # This non-operational overview accepts plain prose only. Code, links,
-      # routing instructions, other files, and ambiguous syntax retain full checks.
+      # Only these reviewed sentences belong to this teaching example's envelope.
+      # This is not a classifier for arbitrary English operational instructions.
+      approved_overviews = [
+        "# Overview\n\nA shared tool helps the team.\n",
+        "# Overview\n\nA shared tool helps our team.\n"
+      ]
       prose = [base, head].all? do |revision|
-        git("show", "#{revision}:docs/overview.md").match?(/\A# Overview\n\n[A-Za-z .,!?'\n-]+\z/)
+        approved_overviews.include?(git("show", "#{revision}:docs/overview.md"))
       end
       if prose
         coverage = "selected"
-        reason = "ordinary overview prose; limited audience and reversible tool changes"
+        reason = "reviewed sample overview text; limited audience and reversible tool changes"
       end
     end
   rescue RuntimeError => e

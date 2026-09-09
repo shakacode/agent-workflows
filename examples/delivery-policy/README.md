@@ -11,12 +11,15 @@ commands supplied by their repository. A missing or failing command fails the ga
 | `critical` | `.agents/bin/validate` | `.agents/bin/validate promotion` | Customer service with durable data; service owner repairs or authorizes rollback. |
 
 Only the low-impact wrapper selects lint and documentation checks for edits
-to its non-operational `docs/overview.md`, with a deliberately small prose
-grammar. Operational instructions belong elsewhere. Code examples, unknown
+to its non-operational `docs/overview.md`, using a reviewed pair of sample
+sentences. Operational instructions belong elsewhere. Code examples, unknown
 files, policy or test changes, missing base evidence, and dirty trees run all
 three checks. The critical wrapper always runs all three. Neither project
 label alone grants a gate exemption. Repositories without these wrappers keep
 their existing validation behavior; no seam setting enables them implicitly.
+The executable example recognizes only its two reviewed overview sentences.
+It does not infer whether arbitrary English is operationally harmless; all
+other content, including plain-English commands, keeps complete coverage.
 
 `EXAMPLE_BASE_SHA` and the `promotion` argument belong only to these examples.
 Shared skills must use each adopting repository's documented invocation.

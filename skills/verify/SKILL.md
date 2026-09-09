@@ -18,7 +18,7 @@ Use `/verify` for local pre-PR checks. Use `/run-ci` when you need `.agents/bin/
 3. Decide the required verification set that covers the changed surface area using the **Scope Guide** below. Always
    include `.agents/bin/lint` when present, and always include `.agents/bin/validate` before
    creating a commit, including documentation-only changes. The repository wrapper owns its required coverage;
-   consume its trusted selection and documented complete invocation under the
+   execute selection through its trusted-base wrapper or protected entry point under the
    [delivery coverage contract](references/verification-evidence.md#delivery-coverage).
    Do not infer reduced coverage from file extensions, project labels, or a candidate's changed policy.
 4. Run each command in order; on failure, pause the command sequence to diagnose and fix it. Record the failing command, relevant error output, and next fix to attempt.

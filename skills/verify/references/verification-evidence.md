@@ -9,7 +9,11 @@ policy. Read `AGENTS.md`, `.agents/bin/README.md`, and existing
 hosted QA. Use the documented complete invocation for promotion; there is no
 portable fast/full flag or effort preset. Omission preserves existing behavior.
 
-Only trusted-base policy may select reduced integration coverage. Policy,
+Only trusted-base policy may select reduced integration coverage. Execute the
+trusted-base selector or an equivalently protected repository entry point;
+reading trusted policy and then executing a candidate-controlled selector is
+insufficient. If no protected selection path exists, use a known, safe complete
+invocation or preserve the blocking input. Policy,
 selector, tests, security, build/release changes, unknown paths, or uncertain
 identity/classification require complete coverage when that command is known
 and safe; otherwise preserve the blocking input. Invalid supplied policy

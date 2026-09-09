@@ -44,7 +44,7 @@ class DeliveryPolicyReplayTest < Minitest::Test
       write("lib/calculator.rb", "module Calculator\n  def self.value = 2 + 2\nend\n")
       checks = {
         "lint" => 'exit(system("git", "diff", "--check") && system("ruby", "-c", "lib/calculator.rb") ? 0 : 1)',
-        "docs" => 'text = File.read("docs/overview.md"); abort "invalid overview or placeholder" unless text.start_with?("# Overview\n") && !text.include?("BROKEN")',
+        "docs" => 'abort "forced docs failure" if ENV["EXAMPLE_FAIL_DOCS"] == "1"; text = File.read("docs/overview.md"); abort "invalid overview or placeholder" unless text.start_with?("# Overview\n") && !text.include?("BROKEN")',
         "test" => 'require_relative "../../lib/calculator"; abort "incorrect arithmetic" unless Calculator.value == 4'
       }
       checks.each do |name, body|
@@ -63,10 +63,10 @@ class DeliveryPolicyReplayTest < Minitest::Test
     end
   end
 
-  def run_gate(phase = nil, base: @base, interpreter: "ruby")
+  def run_gate(phase = nil, base: @base, interpreter: "ruby", extra_env: {})
     FileUtils.rm_f(@log)
     env = { "EXAMPLE_BASE_SHA" => base, "CHECK_LOG" => @log, "BASH_ENV" => nil, "ENV" => nil, "RUBYOPT" => nil }
-    output, status = Open3.capture2e(env, interpreter, @trusted, *Array(phase), chdir: @repo)
+    output, status = Open3.capture2e(env.merge(extra_env), interpreter, @trusted, *Array(phase), chdir: @repo)
     checks = File.exist?(@log) ? File.readlines(@log, chomp: true) : []
     [output, status, checks]
   end
@@ -110,11 +110,13 @@ class DeliveryPolicyReplayTest < Minitest::Test
           assert_equal %w[lint docs test], checks, path
           assert_includes output, "coverage: full"
         end
-        git("reset", "--hard", @base)
-        change_prose("Run `command` now.")
-        output, status, checks = run_gate
-        assert status.success?, output
-        assert_equal %w[lint docs test], checks
+        ["Run `command` now.", "Run the release workflow and deploy now.", "Invalid byte \xff".b].each do |text|
+          git("reset", "--hard", @base)
+          change_prose(text)
+          output, status, checks = run_gate
+          assert status.success?, output
+          assert_equal %w[lint docs test], checks
+        end
       end
     end
   end
@@ -201,10 +203,11 @@ class DeliveryPolicyReplayTest < Minitest::Test
 
   def test_existing_retry_boundary_preserves_failed_required_evidence
     with_repository("low-impact") do
-      head = change_prose("BROKEN placeholder.")
-      # Replay verify's existing three-cycle boundary; no new wrapper counter.
+      head = change_prose
+      failure_env = { "EXAMPLE_FAIL_DOCS" => "1" }
+      # Supply failed real-check evidence at the existing caller/library boundary.
       3.times do
-        output, status, checks = run_gate
+        output, status, checks = run_gate(extra_env: failure_env)
         refute status.success?, output
         assert_equal %w[lint docs], checks
         assert_includes output, "required docs: FAIL"
@@ -218,7 +221,7 @@ class DeliveryPolicyReplayTest < Minitest::Test
       )
       assert_equal "rerun", result.fetch("status")
       assert_equal "no passing local command evidence", result.fetch("reason")
-      output, status, checks = run_gate("promotion")
+      output, status, checks = run_gate("promotion", extra_env: failure_env)
       refute status.success?, output
       assert_equal %w[lint docs test], checks
       assert_includes output, "required docs: FAIL"
