@@ -1238,6 +1238,37 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_ordinary_implicit_trust_config_selection_does_not_require_pinned_git
+    original = Object.instance_method(:resolve_trusted_git_executable)
+    Object.send(:define_method, :resolve_trusted_git_executable) do
+      raise "no pinned system Git executable is available"
+    end
+    Object.send(:private, :resolve_trusted_git_executable)
+    previous_executable = TrustedGitState.executable
+    previous_local_env_vars = TrustedGitState.local_env_vars
+    TrustedGitState.executable = nil
+    TrustedGitState.local_env_vars = nil
+
+    Dir.mktmpdir("ordinary-implicit-trust-config") do |repo_root|
+      init_git_remote(repo_root, "owner/repo")
+      repo_config = File.join(repo_root, DEFAULT_TRUST_CONFIG)
+      write_trust_config(repo_config, users: ["maintainer"])
+
+      resolution = Dir.chdir(repo_root) do
+        resolved_trust_config(nil, repo: "owner/repo", github_host: "github.com")
+      end
+
+      assert_equal File.realpath(repo_config), resolution.fetch(:path)
+      assert_equal "repo-local", resolution.fetch(:source)
+      assert_equal false, resolution.fetch(:global)
+    end
+  ensure
+    TrustedGitState.executable = previous_executable if defined?(previous_executable)
+    TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    Object.send(:define_method, :resolve_trusted_git_executable, original) if original
+    Object.send(:private, :resolve_trusted_git_executable)
+  end
+
   def test_trusted_git_metadata_probe_runs_with_scrubbed_environment
     Dir.mktmpdir("pr-security-preflight-trusted-metadata") do |dir|
       marker = File.join(dir, "metadata-env.log")
@@ -2370,9 +2401,9 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       assert_trusted_base_blocked(out, status)
-      assert_trust_config_evidence(out, path: File.realpath(repo_config), source: "repo-local")
-      assert_includes out, "not in trusted actor allowlist"
-      refute File.exist?(path_git_marker), "implicit trust-config discovery executed inherited-PATH Git"
+      assert_trust_config_evidence(out, path: trust_config_path, source: "env")
+      assert_includes out, "implicit trust config selection changed during trusted-base verification"
+      assert File.exist?(path_git_marker), "ordinary implicit discovery did not use PATH Git"
     end
   end
 
@@ -5990,14 +6021,47 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
-  def test_trusted_base_does_not_execute_git_from_inherited_path
+  def test_trusted_base_uses_path_git_only_for_ordinary_config_selection
     with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
       install_path_git_attacker(env, provenance.fetch(:path_git_marker))
       out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
 
       assert status.success?, out
       assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
-      assert_empty File.readlines(provenance.fetch(:path_git_marker))
+      assert_only_ordinary_path_git_probes(provenance.fetch(:path_git_marker))
+    end
+  end
+
+  def test_trusted_base_rejects_path_git_lie_about_explicit_config_scope
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      path_git = File.join(env.fetch("PATH").split(File::PATH_SEPARATOR).first, "git")
+      fake_root = File.dirname(trust_config_path)
+      File.write(path_git, <<~SH)
+        #!/usr/bin/env bash
+        printf 'executed %s\n' "$*" >> #{Shellwords.shellescape(provenance.fetch(:path_git_marker))}
+        case "$*" in
+          *"rev-parse --show-toplevel"*)
+            printf '%s\n' #{Shellwords.shellescape(fake_root)}
+            exit 0
+            ;;
+          *"config --local --null --get-regexp"*)
+            printf 'remote.origin.url\nhttps://github.com/owner/repo.git\0'
+            exit 0
+            ;;
+        esac
+        exec #{Shellwords.shellescape(REAL_GIT)} "$@"
+      SH
+      FileUtils.chmod(0o755, path_git)
+
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "explicit trust config scope changed during trusted-base verification"
+      ordinary_probes = File.readlines(provenance.fetch(:path_git_marker), chomp: true)
+      refute_empty ordinary_probes
+      assert(ordinary_probes.all? do |line|
+        line.match?(/rev-parse --show-toplevel|config --(?:local|worktree)/)
+      end)
     end
   end
 
@@ -6254,7 +6318,7 @@ class PrSecurityPreflightTest < Minitest::Test
 
       assert status.success?, out
       assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
-      assert_empty File.readlines(marker)
+      assert_only_ordinary_path_git_probes(marker)
     end
   end
 

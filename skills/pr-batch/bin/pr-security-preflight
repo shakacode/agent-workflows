@@ -512,11 +512,17 @@ def resolved_trust_config(explicit_path, repo:, github_host:)
   resolution
 end
 
-def implicit_trust_config_resolution(repo:, github_host:)
-  authoritative_root, root_error = authoritative_trusted_repository_root
-  return [nil, "Implicit trust config root is unsafe: #{root_error}"] if root_error
+def implicit_trust_config_resolution(repo:, github_host:, trusted: false)
+  authoritative_root = nil
+  selection_root = if trusted
+                     authoritative_root, root_error = authoritative_trusted_repository_root
+                     return [nil, "Implicit trust config root is unsafe: #{root_error}"] if root_error
 
-  selection_root = authoritative_root || File.realpath(Dir.pwd)
+                     authoritative_root || File.realpath(Dir.pwd)
+                   else
+                     ordinary_root = git_toplevel
+                     File.realpath(ordinary_root || Dir.pwd)
+                   end
   repo_path = File.join(selection_root, DEFAULT_TRUST_CONFIG)
   repo_path_present, repo_path_error = trust_config_path_present?(repo_path, trusted_root: selection_root)
   return [nil, repo_path_error] if repo_path_error
@@ -524,13 +530,14 @@ def implicit_trust_config_resolution(repo:, github_host:)
   common = {
     implicit: true,
     authoritative_root:,
+    selection_root:,
     repo_trust_config_path: repo_path
   }
   if repo_path_present
     return trust_config_resolution_with_contents(
       common.merge(
         path: repo_path,
-        global: trust_config_global?(repo_path, repo, github_host:),
+        global: trust_config_global?(repo_path, repo, github_host:, trusted:),
         source: "repo-local"
       ),
       allow_symlink: false,
@@ -702,15 +709,19 @@ rescue SystemCallError => e
   [nil, "trust config could not be read safely: #{e.message.lines.first&.strip}"]
 end
 
-def revalidate_implicit_trust_config_selection(trust_config_resolution, trust_config, repo:, github_host:)
+def revalidate_implicit_trust_config_selection(trust_config_resolution, trust_config, repo:, github_host:,
+                                               trusted: false)
   return [nil, nil] unless trust_config_resolution.fetch(:implicit, false)
 
-  refreshed_resolution, resolution_error = implicit_trust_config_resolution(repo:, github_host:)
+  refreshed_resolution, resolution_error = implicit_trust_config_resolution(repo:, github_host:, trusted:)
   if resolution_error
     return [nil, "implicit trust config selection could not be revalidated: #{resolution_error}"]
   end
+  if trusted && !refreshed_resolution.fetch(:authoritative_root)
+    return [nil, "implicit trust config selection has no authoritative repository root"]
+  end
 
-  identity_keys = %i[source path global authoritative_root repo_trust_config_path]
+  identity_keys = %i[source path global selection_root repo_trust_config_path]
   unless identity_keys.all? { |key| refreshed_resolution[key] == trust_config_resolution[key] }
     return [nil, "implicit trust config selection changed during trusted-base verification"]
   end
@@ -724,12 +735,38 @@ def revalidate_implicit_trust_config_selection(trust_config_resolution, trust_co
   [refreshed_resolution, nil]
 end
 
-def repo_trust_config_path
-  root, error = authoritative_trusted_repository_root
-  abort "Implicit trust config root is unsafe: #{error}" if error
-  root ||= File.realpath(Dir.pwd)
+def revalidate_trust_config_for_trusted_base(trust_config_resolution, trust_config, repo:, github_host:)
+  if trust_config_resolution.fetch(:implicit, false)
+    return revalidate_implicit_trust_config_selection(
+      trust_config_resolution,
+      trust_config,
+      repo:,
+      github_host:,
+      trusted: true
+    )
+  end
 
-  File.join(root, DEFAULT_TRUST_CONFIG)
+  path = trust_config_resolution.fetch(:path)
+  refreshed_global = trust_config_global?(path, repo, github_host:, trusted: true)
+  unless refreshed_global == trust_config_resolution.fetch(:global)
+    return [nil, "explicit trust config scope changed during trusted-base verification"]
+  end
+
+  refreshed_contents, contents_error = bounded_trust_config_contents(path, allow_symlink: true)
+  return [nil, contents_error] if contents_error
+
+  refreshed_digest = "sha256:#{Digest::SHA256.hexdigest(refreshed_contents)}"
+  unless refreshed_digest == trust_config.fetch(:content_digest)
+    return [nil, "explicit trust config changed during trusted-base verification"]
+  end
+
+  [trust_config_resolution.merge(contents: refreshed_contents), nil]
+end
+
+def repo_trust_config_path
+  root = git_toplevel || File.realpath(Dir.pwd)
+
+  File.join(File.realpath(root), DEFAULT_TRUST_CONFIG)
 end
 
 def git_toplevel(chdir: nil)
@@ -777,20 +814,25 @@ rescue ArgumentError, SystemCallError => e
   [nil, "pinned Git repository top level could not be resolved: #{e.message.lines.first&.strip}"]
 end
 
-def trust_config_repo_local?(path, repo, github_host:)
-  root, error = authoritative_trusted_repository_root(chdir: File.dirname(path))
-  if error
-    warn "WARN: could not establish trusted repository root for trust config #{path.inspect}: #{error}"
-    return false
-  end
+def trust_config_repo_local?(path, repo, github_host:, trusted: false)
+  root = if trusted
+           trusted_root, error = authoritative_trusted_repository_root(chdir: File.dirname(path))
+           if error
+             warn "WARN: could not establish trusted repository root for trust config #{path.inspect}: #{error}"
+             return false
+           end
+           trusted_root
+         else
+           git_toplevel(chdir: File.dirname(path))
+         end
   return false unless root
   return false unless path_inside_git_root?(path, root:)
 
-  git_root_matches_repo?(root, repo, github_host:, trusted: true)
+  git_root_matches_repo?(root, repo, github_host:, trusted:)
 end
 
-def trust_config_global?(path, repo, github_host:)
-  !trust_config_repo_local?(path, repo, github_host:)
+def trust_config_global?(path, repo, github_host:, trusted: false)
+  !trust_config_repo_local?(path, repo, github_host:, trusted:)
 end
 
 def path_inside_git_root?(path, root:)
@@ -2901,7 +2943,7 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
     end
 
     post_fetch_trust_config_resolution, trust_config_revalidation_error =
-      revalidate_implicit_trust_config_selection(trust_config_resolution, trust_config, repo:, github_host:)
+      revalidate_trust_config_for_trusted_base(trust_config_resolution, trust_config, repo:, github_host:)
     next [nil, trust_config_revalidation_error] if trust_config_revalidation_error
 
     repo_local_trust_config_binding = {}
@@ -2958,7 +3000,7 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
     next [nil, checkout_error] unless checkout_matches
 
     _refreshed_trust_config_resolution, trust_config_revalidation_error =
-      revalidate_implicit_trust_config_selection(trust_config_resolution, trust_config, repo:, github_host:)
+      revalidate_trust_config_for_trusted_base(trust_config_resolution, trust_config, repo:, github_host:)
     next [nil, trust_config_revalidation_error] if trust_config_revalidation_error
 
     unless post_fetch_rescan
@@ -2995,7 +3037,7 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
     next [nil, ancestor_error] unless ancestor
 
     _final_trust_config_resolution, trust_config_revalidation_error =
-      revalidate_implicit_trust_config_selection(trust_config_resolution, trust_config, repo:, github_host:)
+      revalidate_trust_config_for_trusted_base(trust_config_resolution, trust_config, repo:, github_host:)
     next [nil, trust_config_revalidation_error] if trust_config_revalidation_error
 
     receipt = {
