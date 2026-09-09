@@ -5,12 +5,26 @@ require "open3"
 
 # Customer and durable-data impact require every check, even for overview prose.
 # Execute the trusted-base copy; see the delivery-policy example command table.
+def git(*args)
+  output, error, status = Open3.capture3("git", *args)
+  raise(error.empty? ? "git command failed" : error) unless status.success?
+
+  output
+end
+
+def candidate_state
+  untracked = git("ls-files", "--others", "--exclude-standard", "-z").split("\0").map do |path|
+    [path, File.lstat(path).mode, File.symlink?(path) ? File.readlink(path) : File.binread(path)]
+  end
+  [git("rev-parse", "HEAD"), git("status", "--porcelain", "--untracked-files=all"),
+   git("diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "--"),
+   git("diff", "--binary", "--no-ext-diff", "--no-textconv", "--"), untracked]
+end
+
 phase = ARGV.shift || "integration"
 abort "Unsupported example invocation" unless %w[integration promotion].include?(phase) && ARGV.empty?
-head, error, status = Open3.capture3("git", "rev-parse", "HEAD")
-abort error unless status.success?
-dirty, error, status = Open3.capture3("git", "status", "--porcelain")
-abort error unless status.success?
+initial_state = candidate_state
+head, dirty = initial_state
 base = ENV.fetch("EXAMPLE_BASE_SHA", "")
 puts "phase: #{phase}\nhead: #{head.strip}\nbase: #{base.empty? ? 'UNKNOWN' : base}"
 puts "working tree: #{dirty.empty? ? 'clean' : 'dirty'}\ncoverage: full"
@@ -21,9 +35,7 @@ passed = true
   puts "required #{check}: #{success ? 'PASS' : 'FAIL'}"
   passed = false unless success
 end
-current_head, _error, identity_status = Open3.capture3("git", "rev-parse", "HEAD")
-current_dirty, _error, tree_status = Open3.capture3("git", "status", "--porcelain")
-if !identity_status.success? || !tree_status.success? || current_head != head || (dirty.empty? && !current_dirty.empty?)
+if candidate_state != initial_state
   warn "Candidate changed during validation; rerun for the resulting tree"
   passed = false
 end

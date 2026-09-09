@@ -163,6 +163,42 @@ class DeliveryPolicyReplayTest < Minitest::Test
     end
   end
 
+  def test_dirty_content_mutations_cannot_qualify_integration
+    %w[low-impact critical].each do |kind|
+      %w[lib/calculator.rb scratch.txt].each do |path|
+        with_repository(kind) do
+          docs = File.read(File.join(@repo, ".agents/bin/docs"))
+          write(".agents/bin/docs", "#{docs}\nFile.write(#{path.inspect}, \"# generated change\\n\", mode: \"a\")\n", executable: true)
+          commit
+          File.write(File.join(@repo, path), "# initial dirty content\n", mode: "a")
+          output, status, checks = run_gate
+          refute status.success?, output
+          assert_equal %w[lint docs test], checks
+          assert_includes output, "required test: PASS"
+          assert_includes output, "Candidate changed during validation"
+        end
+      end
+    end
+  end
+
+  def test_hidden_untracked_content_blocks_promotion_and_reduced_coverage
+    %w[low-impact critical].each do |kind|
+      with_repository(kind) do
+        change_prose
+        git("config", "status.showUntrackedFiles", "no")
+        write("scratch.txt", "untracked source\n")
+        output, status, checks = run_gate
+        assert status.success?, output
+        assert_equal %w[lint docs test], checks
+        assert_includes output, "working tree: dirty"
+        output, status, checks = run_gate("promotion")
+        refute status.success?, output
+        assert_equal %w[lint docs test], checks
+        assert_includes output, "Promotion blocked"
+      end
+    end
+  end
+
   def test_existing_retry_boundary_preserves_failed_required_evidence
     with_repository("low-impact") do
       head = change_prose("BROKEN placeholder.")

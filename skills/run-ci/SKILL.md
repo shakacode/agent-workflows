@@ -28,8 +28,8 @@ coverage. Missing or invalid routing evidence cannot select reduced checks.
 
 ## Instructions
 
-1. First, run `.agents/bin/ci-detect` to inspect what changed when the user asks for routing details and the script exists; otherwise use `.agents/bin/validate` directly
-2. State the selected required checks, omissions, and the policy or escalation reason. Preserve mandatory lint, review, security, and current-head CI requirements.
+1. First, run `.agents/bin/ci-detect` to inspect what changed when the user asks for routing details and the script exists; otherwise select `.agents/bin/validate` for execution in step 3
+2. Preview required checks, omissions, and the selection reason only when the detector has reported them; otherwise obtain them from the wrapper during step 3. Preserve mandatory lint, review, security, and current-head CI requirements.
 3. Execute the authorized repository invocation. Resolve a choice with the user only when the request and repository policy leave a material decision open. Promotion requires the documented complete suite; do not invent flags.
 4. Report phase, candidate/base identity, selected or full coverage, each required result, and omissions/reason. Selected success does not prove omitted checks passed.
 5. Diagnose failed jobs using `/verify`'s existing retry boundary. A stopping or review budget pauses for disposition with failures still blocking; it does not create a successful gate.
