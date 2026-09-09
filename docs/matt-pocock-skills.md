@@ -113,14 +113,14 @@ git -C "$MATT_SKILLS_CHECKOUT" rev-parse HEAD
 git -C "$MATT_SKILLS_CHECKOUT" status --short
 recorded_origin=$(git -C "$MATT_SKILLS_CHECKOUT" remote get-url origin) &&
 recorded_sha=$(git -C "$MATT_SKILLS_CHECKOUT" rev-parse HEAD) &&
-checkout_status=$(git -C "$MATT_SKILLS_CHECKOUT" status --porcelain) &&
+checkout_status=$(git -C "$MATT_SKILLS_CHECKOUT" status --porcelain --ignored) &&
 test "$recorded_origin" = "$MATT_SKILLS_ORIGIN" &&
 test "$recorded_sha" = "$MATT_SKILLS_SHA" &&
 test -z "$checkout_status"
 ```
 
 The origin, full SHA, and status must match the recorded origin, full SHA, and
-clean state. Stop on any mismatch; only then run:
+clean state, including no ignored files. Stop on any mismatch; only then run:
 
 ```bash
 npx "skills@$SKILLS_CLI_VERSION" add "$MATT_SKILLS_CHECKOUT" --list
