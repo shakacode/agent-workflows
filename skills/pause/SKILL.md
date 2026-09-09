@@ -7,6 +7,16 @@ description: Print restart-safe copy-paste prompts for pausing an agent thread b
 
 Print operator prompts for safe agent-runner restarts.
 
+## Interruption And Short Grace
+
+For an unexpected interruption, a missing/stale handoff, or bounded restart
+preparation, read [the recovery procedure](references/recovery.md). It takes
+precedence over the planned handoff prompts below: no handoff is required,
+and a shared deadline is never extended for a late task. Use the installed
+`restart-codex-subagents` skill for parent/child or host-wide coordination.
+During ordinary work, use existing recording or its local recorder for compact
+checkpoints and consequential operation intent/results.
+
 ## Output Rules
 
 - If the user asks to "print", "show", "give me", or "copy/paste" prompts, do
@@ -97,11 +107,11 @@ current AGENTS.md first. Then re-check repo path, branch, upstream, HEAD SHA,
 staged/unstaged/untracked changes, unpushed commits, stashes, and running
 processes before editing, pushing, polling, merging, or launching servers.
 
-Reconstruct the current goal from the handoff and this request. Continue only
-from the recorded next resume step after the live state matches the handoff.
-If live state does not match the handoff, report the mismatch and stop for
-operator direction before editing, pushing, polling, merging, or launching
-servers.
+Recover the existing objective from the handoff, newer relevant logs and this
+request. Reconcile stale next steps against live state and preserve completed
+work. Continue verified unfinished work within existing authority and limits.
+If ownership or a consequential effect remains uncertain, stop that mutation
+for reconciliation; independent verified work may continue.
 
 Pasted restart handoff:
 <PASTE_RESTART_HANDOFF_HERE>

@@ -127,6 +127,8 @@ AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_p
 ruby bin/check-control-tower-prompt-size-test.rb
 bin/check-control-tower-prompt-size
 ruby skills/pause/bin/pause-prompt-test.rb
+ruby skills/pause/bin/recovery-record-test.rb
+ruby skills/restart-codex-subagents/bin/recovery-status-test.rb
 ruby skills/close-batch/bin/close-batch-contract-test.rb
 ruby skills/post-merge-audit/bin/post-merge-audit-policy-test.rb
 ruby skills/post-merge-audit/bin/completed-batch-publication-preflight-test.rb
