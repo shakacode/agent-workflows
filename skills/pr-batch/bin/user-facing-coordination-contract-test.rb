@@ -218,6 +218,11 @@ class UserFacingCoordinationContractTest < Minitest::Test
 
     assert_includes skill, "coordinator-narration-volume v1"
     assert_includes skill, "FYI / decisions made at closeout"
+    assert_match(/`decision-required`.+user action.+coordinator-clearable.+`merge-decision`/m, skill)
+    assert_match(
+      /`always_allowed_detail`.+`safety-stop`.+`required-turn`.+`requested-status`.+`direct-answer`/m,
+      skill
+    )
     assert_includes closeout, "coordinator-narration-volume v1"
     assert_includes closeout, "FYI / decisions made"
     assert_includes closeout, "informational and never substitutes for a readiness gate"
@@ -230,9 +235,8 @@ class UserFacingCoordinationContractTest < Minitest::Test
       end_heading: /^###\s+/
     )
 
-    assert_includes text,
-                    "most-specific-first order: `safety-stop`, `required-turn`, " \
-                    "`requested-status`, then `direct-answer`"
+    assert_match(/most-specific-first.+`safety-stop`.+`required-turn`.+`requested-status`.+`direct-answer`/m,
+                 text)
   end
 
   def test_oc_v1_preserves_the_scalar_always_allowed_field
@@ -242,9 +246,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
       end_heading: /^###\s+/
     )
 
-    assert_includes text, "always_allowed=<int|UNKNOWN>; always_allowed_detail="
-    assert_includes text, "`always_allowed` remains the v1 aggregate"
-    assert_includes text, "`always_allowed_detail` breaks that aggregate out"
+    assert_match(/always_allowed=<int\|UNKNOWN>; always_allowed_detail=/, text)
+    assert_match(/`always_allowed`.+v1 aggregate/m, text)
+    assert_match(/`always_allowed_detail`.+aggregate.+per kind/m, text)
   end
 
   def test_user_facing_coordination_routes_oc_v1_without_stale_duplicate_rules
@@ -255,13 +259,13 @@ class UserFacingCoordinationContractTest < Minitest::Test
     )
     pointer = normalized_section(DOC, "## Output Contract", end_heading: /^##\s+/)
 
-    assert_includes canonical, "`decision-required`: a blocker that needs user action"
-    assert_includes canonical, "one aggregate line per distinct state"
-    assert_includes pointer, "intentionally does not duplicate"
+    assert_match(/`decision-required`.+user action/m, canonical)
+    assert_match(/aggregate line.+distinct state/m, canonical)
+    assert_match(/does not duplicate.+checkpoint definitions.+delta-recap behavior/m, pointer)
     assert_includes pointer,
                     "[Coordinator Output Contract](../workflows/pr-processing.md#coordinator-output-contract)"
-    refute_includes pointer, "`decision-required`: a blocker"
-    refute_includes pointer, "unchanged targets collapse"
+    refute_match(/`decision-required`/, pointer)
+    refute_match(/unchanged targets/i, pointer)
   end
 
   def test_readiness_separates_four_authority_facts
