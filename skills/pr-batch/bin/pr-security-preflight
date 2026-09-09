@@ -2799,6 +2799,15 @@ PR_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL
   ... on RemovedFromMergeQueueEvent { id actor { ... on Node { id } login __typename } }
   ... on ReviewDismissedEvent { id actor { ... on Node { id } login __typename } review { id } }
   ... on MergedEvent { id createdAt actor { ... on Node { id } login __typename } }
+  ... on PullRequestCommitCommentThread {
+    id
+    commit { oid }
+    comments(first:100) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes { id databaseId commit { oid } }
+    }
+  }
   ... on PullRequestCommit {
     id
     commit {
@@ -2931,10 +2940,74 @@ end
 
 REST_PR_TIMELINE_TYPENAME_EXCEPTIONS = {
   "commented" => "IssueComment",
+  "commit-commented" => "PullRequestCommitCommentThread",
   "committed" => "PullRequestCommit",
   "renamed" => "RenamedTitleEvent",
   "reviewed" => "PullRequestReview"
 }.freeze
+
+def complete_commit_comment_node_id?(value)
+  value.is_a?(String) && complete_graph_identity?(value)
+end
+
+def commit_comment_identity(node_id:, database_id:, comment_commit_oid:, thread_commit_oid:)
+  return unless complete_commit_comment_node_id?(node_id)
+  return unless database_id.is_a?(Integer) && database_id.positive?
+  return unless comment_commit_oid == thread_commit_oid
+
+  [node_id, database_id, comment_commit_oid]
+end
+
+def graph_commit_comment_thread_identity(node)
+  commit_oid = node.dig("commit", "oid")
+  comments = node["comments"]
+  comment_nodes = comments&.[]("nodes")
+  total_count = comments&.[]("totalCount")
+  page_info = comments&.[]("pageInfo")
+  return unless commit_oid.is_a?(String) && commit_oid.match?(GIT_OBJECT_ID_PATTERN)
+  return unless comment_nodes.is_a?(Array) && !comment_nodes.empty?
+  return unless total_count.is_a?(Integer) && total_count == comment_nodes.size
+  return unless page_info.is_a?(Hash) && page_info["hasNextPage"] == false
+
+  comment_records = comment_nodes.map do |comment|
+    next unless comment.is_a?(Hash)
+
+    commit_comment_identity(
+      node_id: comment["id"],
+      database_id: comment["databaseId"],
+      comment_commit_oid: comment.dig("commit", "oid"),
+      thread_commit_oid: commit_oid
+    )
+  end
+  return if comment_records.any?(&:nil?)
+  return unless comment_records.map(&:first).uniq.size == comment_records.size
+  return unless comment_records.map { |record| record.fetch(1) }.uniq.size == comment_records.size
+
+  [commit_oid, comment_records.sort_by(&:first)]
+end
+
+def rest_commit_comment_thread_identity(item)
+  commit_oid = item["commit_id"]
+  comments = item["comments"]
+  return unless commit_oid.is_a?(String) && commit_oid.match?(GIT_OBJECT_ID_PATTERN)
+  return unless comments.is_a?(Array) && !comments.empty?
+
+  comment_records = comments.map do |comment|
+    next unless comment.is_a?(Hash)
+
+    commit_comment_identity(
+      node_id: comment["node_id"],
+      database_id: comment["id"],
+      comment_commit_oid: comment["commit_id"],
+      thread_commit_oid: commit_oid
+    )
+  end
+  return if comment_records.any?(&:nil?)
+  return unless comment_records.map(&:first).uniq.size == comment_records.size
+  return unless comment_records.map { |record| record.fetch(1) }.uniq.size == comment_records.size
+
+  [commit_oid, comment_records.sort_by(&:first)]
+end
 
 def rest_pr_timeline_typename(event)
   return unless event.is_a?(String) && event.match?(/\A[a-z]+(?:[-_][a-z0-9]+)*\z/)
@@ -3037,12 +3110,16 @@ def graph_timeline_matches_rest?(nodes, rest_items, reported_total_count:)
   graph_nodes_by_identity = {}
   graph_cross_references_by_id = {}
   graph_cross_reference_ids_by_facts = {}
+  graph_commit_comment_threads_by_id = {}
+  graph_node_ids = Set.new
+  graph_commit_comment_database_ids = Set.new
   nodes.each do |node|
     return false unless node.is_a?(Hash)
 
     node_id = node["id"]
     typename = node["__typename"]
     return false if node_id.to_s.empty? || typename.to_s.empty?
+    return false unless graph_node_ids.add?(node_id)
 
     if typename == "CrossReferencedEvent"
       facts = graph_cross_reference_identity(node)
@@ -3051,6 +3128,20 @@ def graph_timeline_matches_rest?(nodes, rest_items, reported_total_count:)
 
       graph_cross_references_by_id[node_id] = facts
       graph_cross_reference_ids_by_facts[facts] = node_id
+      next
+    end
+
+    if typename == "PullRequestCommitCommentThread"
+      return false unless complete_commit_comment_node_id?(node_id)
+
+      facts = graph_commit_comment_thread_identity(node)
+      return false unless facts
+      return false if graph_commit_comment_threads_by_id.key?(node_id)
+      return false unless facts.fetch(1).all? do |comment|
+        graph_node_ids.add?(comment.fetch(0)) && graph_commit_comment_database_ids.add?(comment.fetch(1))
+      end
+
+      graph_commit_comment_threads_by_id[node_id] = facts
       next
     end
 
@@ -3085,6 +3176,16 @@ def graph_timeline_matches_rest?(nodes, rest_items, reported_total_count:)
       next
     end
 
+    if typename == "PullRequestCommitCommentThread"
+      return false unless complete_commit_comment_node_id?(item["node_id"])
+
+      facts = rest_commit_comment_thread_identity(item)
+      return false unless facts
+      return false unless graph_commit_comment_threads_by_id.delete(item["node_id"]) == facts
+
+      next
+    end
+
     identity = if typename == "PullRequestCommit"
                  ["commit_sha", item["sha"]]
                else
@@ -3095,7 +3196,7 @@ def graph_timeline_matches_rest?(nodes, rest_items, reported_total_count:)
   end
 
   graph_nodes_by_identity.empty? && graph_cross_references_by_id.empty? &&
-    graph_cross_reference_ids_by_facts.empty?
+    graph_cross_reference_ids_by_facts.empty? && graph_commit_comment_threads_by_id.empty?
 end
 
 def graph_timeline_matches_complete_rest?(nodes, rest_items, reviews:, review_comments:, reported_total_count:)

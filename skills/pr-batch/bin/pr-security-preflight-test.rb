@@ -6381,6 +6381,100 @@ class PrSecurityPreflightTest < Minitest::Test
     refute graph_timeline_matches_rest?(nodes, rest_items, reported_total_count: 4)
   end
 
+  def test_rest_timeline_reconciliation_accepts_commit_comment_threads_by_exact_identity
+    fixture = commit_comment_thread_fixture
+
+    assert graph_timeline_matches_rest?(
+      fixture.fetch(:graph_nodes),
+      fixture.fetch(:rest_items),
+      reported_total_count: 2
+    )
+  end
+
+  def test_rest_timeline_reconciliation_rejects_malformed_commit_comment_threads
+    mutations = {
+      "thread identity mismatch" => lambda do |fixture|
+        fixture.dig(:rest_items, 0)["node_id"] = "different-commit-comment-thread"
+      end,
+      "non-string thread identity" => lambda do |fixture|
+        fixture.dig(:graph_nodes, 0)["id"] = 123
+        fixture.dig(:rest_items, 0)["node_id"] = 123
+      end,
+      "unknown thread identity" => lambda do |fixture|
+        fixture.dig(:graph_nodes, 0)["id"] = "UNKNOWN"
+        fixture.dig(:rest_items, 0)["node_id"] = "UNKNOWN"
+      end,
+      "missing GraphQL commit identity" => lambda do |fixture|
+        fixture.dig(:graph_nodes, 0, "commit").delete("oid")
+      end,
+      "REST commit mismatch" => lambda do |fixture|
+        fixture.dig(:rest_items, 0)["commit_id"] = "b" * 40
+      end,
+      "GraphQL comment commit mismatch" => lambda do |fixture|
+        fixture.dig(:graph_nodes, 0, "comments", "nodes", 0, "commit")["oid"] = "b" * 40
+      end,
+      "missing REST comment identity" => lambda do |fixture|
+        fixture.dig(:rest_items, 0, "comments", 0).delete("node_id")
+      end,
+      "non-string comment identity" => lambda do |fixture|
+        fixture.dig(:graph_nodes, 0, "comments", "nodes", 0)["id"] = 456
+        fixture.dig(:rest_items, 0, "comments", 0)["node_id"] = 456
+      end,
+      "unknown comment identity" => lambda do |fixture|
+        fixture.dig(:graph_nodes, 0, "comments", "nodes", 0)["id"] = "UNKNOWN"
+        fixture.dig(:rest_items, 0, "comments", 0)["node_id"] = "UNKNOWN"
+      end,
+      "GraphQL comment count mismatch" => lambda do |fixture|
+        fixture.dig(:graph_nodes, 0, "comments")["totalCount"] = 3
+      end,
+      "truncated GraphQL comments" => lambda do |fixture|
+        fixture.dig(:graph_nodes, 0, "comments", "pageInfo")["hasNextPage"] = true
+      end,
+      "empty REST comments" => lambda do |fixture|
+        fixture.dig(:rest_items, 0)["comments"] = []
+      end,
+      "duplicate GraphQL comment identity" => lambda do |fixture|
+        comment = Marshal.load(Marshal.dump(fixture.dig(:graph_nodes, 0, "comments", "nodes", 0)))
+        fixture.dig(:graph_nodes, 0, "comments", "nodes") << comment
+        fixture.dig(:graph_nodes, 0, "comments")["totalCount"] = 3
+      end,
+      "duplicate REST comment identity" => lambda do |fixture|
+        comment = Marshal.load(Marshal.dump(fixture.dig(:rest_items, 0, "comments", 0)))
+        fixture.dig(:rest_items, 0, "comments") << comment
+      end,
+      "comment node identity collides with thread" => lambda do |fixture|
+        thread_id = fixture.dig(:graph_nodes, 0, "id")
+        fixture.dig(:graph_nodes, 0, "comments", "nodes", 0)["id"] = thread_id
+        fixture.dig(:rest_items, 0, "comments", 0)["node_id"] = thread_id
+      end,
+      "shared comment node identity across threads" => lambda do |fixture|
+        graph_thread, rest_item = append_distinct_commit_comment_thread(fixture)
+        graph_thread.dig("comments", "nodes", 0)["id"] = "commit-comment-1"
+        rest_item.dig("comments", 0)["node_id"] = "commit-comment-1"
+      end,
+      "shared comment database identity across threads" => lambda do |fixture|
+        graph_thread, rest_item = append_distinct_commit_comment_thread(fixture)
+        graph_thread.dig("comments", "nodes", 0)["databaseId"] = 501
+        rest_item.dig("comments", 0)["id"] = 501
+      end,
+      "duplicate thread identity" => lambda do |fixture|
+        thread = Marshal.load(Marshal.dump(fixture.dig(:graph_nodes, 0)))
+        fixture.fetch(:graph_nodes) << thread
+      end
+    }
+
+    mutations.each do |label, mutate|
+      fixture = commit_comment_thread_fixture
+      mutate.call(fixture)
+
+      refute graph_timeline_matches_rest?(
+        fixture.fetch(:graph_nodes),
+        fixture.fetch(:rest_items),
+        reported_total_count: 2
+      ), label
+    end
+  end
+
   def test_timeline_rest_reconciliation_requires_an_ordinary_event_node_id
     graph_nodes = [{ "id" => "comment-event-1", "__typename" => "IssueComment" }]
     rest_items = [{ "event" => "commented", "node_id" => nil }]
@@ -7541,6 +7635,65 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   private
+
+  def commit_comment_thread_fixture
+    commit_oid = "a" * 40
+    {
+      graph_nodes: [
+        {
+          "id" => "commit-comment-thread-1",
+          "__typename" => "PullRequestCommitCommentThread",
+          "commit" => { "oid" => commit_oid },
+          "comments" => {
+            "totalCount" => 2,
+            "pageInfo" => { "hasNextPage" => false, "endCursor" => "comment-cursor-2" },
+            "nodes" => [
+              {
+                "id" => "commit-comment-1",
+                "databaseId" => 501,
+                "commit" => { "oid" => commit_oid }
+              },
+              {
+                "id" => "commit-comment-2",
+                "databaseId" => 502,
+                "commit" => { "oid" => commit_oid }
+              }
+            ]
+          }
+        }
+      ],
+      rest_items: [
+        {
+          "event" => "commit-commented",
+          "node_id" => "commit-comment-thread-1",
+          "commit_id" => commit_oid,
+          "comments" => [
+            { "id" => 501, "node_id" => "commit-comment-1", "commit_id" => commit_oid },
+            { "id" => 502, "node_id" => "commit-comment-2", "commit_id" => commit_oid }
+          ]
+        }
+      ]
+    }
+  end
+
+  def append_distinct_commit_comment_thread(fixture)
+    graph_thread = Marshal.load(Marshal.dump(fixture.dig(:graph_nodes, 0)))
+    rest_item = Marshal.load(Marshal.dump(fixture.dig(:rest_items, 0)))
+    graph_thread["id"] = "commit-comment-thread-2"
+    rest_item["node_id"] = "commit-comment-thread-2"
+    graph_thread.dig("comments", "nodes").each_with_index do |comment, index|
+      comment["id"] = "commit-comment-#{index + 3}"
+      comment["databaseId"] = index + 503
+    end
+    rest_item.fetch("comments").each_with_index do |comment, index|
+      comment["node_id"] = "commit-comment-#{index + 3}"
+      comment["id"] = index + 503
+    end
+    fixture.fetch(:graph_nodes) << graph_thread
+    fixture.fetch(:rest_items) << rest_item
+
+    [graph_thread, rest_item]
+  end
 
   def with_clean_real_git_checkout(prefix)
     previous_executable = TrustedGitState.executable
