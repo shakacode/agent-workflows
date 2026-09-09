@@ -341,6 +341,23 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     end
   end
 
+  def test_preflight_scope_prevents_same_bytes_from_gaining_repo_local_team_semantics
+    Dir.mktmpdir("aw794-scope-binding") do |dir|
+      path = File.join(dir, "trusted-github-actors.yml")
+      File.write(path, "trusted_teams:\n  - reviewers\n")
+      resolver = ->(owner:, slug:, login:) { [owner, slug, login] == %w[owner reviewers dev] }
+
+      trust = FetchPrReviewData::TrustBoundary.for(
+        repo: "owner/repo", trust_config_path: path, trust_config_scope: "global",
+        team_resolver: resolver,
+        repo_local_verifier: ->(_path) { flunk "bound preflight scope must bypass later locality reclassification" }
+      )
+
+      refute trust.actionable?("dev"),
+             "the reader must preserve preflight's global scope even when it can prove the path is repo-local"
+    end
+  end
+
   def test_runner_does_not_auto_discover_trust_config_from_the_pr_checkout
     Dir.mktmpdir("aw794-repo-local-team") do |root|
       config_path = File.join(root, ".agents", "trusted-github-actors.yml")
@@ -359,7 +376,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       runner.define_singleton_method(:github_host_for) { |**| "github.com" }
       previous_config = ENV[GithubActorTrust::USER_TRUST_CONFIG_ENV]
       ENV[GithubActorTrust::USER_TRUST_CONFIG_ENV] = trusted_path
-      trust = Dir.chdir(root) { runner.send(:trust_boundary, "owner/repo", nil) }
+      trust = Dir.chdir(root) { runner.send(:trust_boundary, "owner/repo", nil, nil) }
 
       refute trust.actionable?("attacker"), "PR checkout policy must not authorize its contributor"
       assert trust.actionable?("operator")
@@ -390,7 +407,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       runner.define_singleton_method(:team_member?) do |owner:, slug:, login:|
         [owner, slug, login] == %w[owner reviewers dev]
       end
-      trust = Dir.chdir(root) { runner.send(:trust_boundary, "owner/repo", config_path) }
+      trust = Dir.chdir(root) { runner.send(:trust_boundary, "owner/repo", config_path, "repository") }
 
       assert trust.actionable?("dev"), "an explicitly selected verified config may use its local team"
     end
@@ -410,6 +427,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     _out, warning = capture_io do
       assert_equal 1, runner.run(
         ["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml",
+         "--trust-config-scope", "repository",
          "--expected-trust-digest", config.fetch(:content_digest)]
       )
     end
@@ -419,7 +437,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     assert_includes warning, "trusted_users"
   end
 
-  def test_cli_requires_preflight_trust_path_and_digest
+  def test_cli_requires_preflight_trust_path_scope_and_digest
     runner = FetchPrReviewData::Runner.new
     runner.define_singleton_method(:github_host_for) { |**| raise "host lookup must not run" }
 
@@ -431,11 +449,28 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     _out, warning = capture_io do
       assert_equal 1, runner.run(["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml"])
     end
+    assert_includes warning, "--trust-config-scope is required"
+
+    _out, warning = capture_io do
+      assert_equal 1, runner.run(
+        ["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml",
+         "--trust-config-scope", "invalid"]
+      )
+    end
+    assert_includes warning, "--trust-config-scope must be global or repository"
+
+    _out, warning = capture_io do
+      assert_equal 1, runner.run(
+        ["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml",
+         "--trust-config-scope", "global"]
+      )
+    end
     assert_includes warning, "--expected-trust-digest is required"
 
     _out, warning = capture_io do
       assert_equal 1, runner.run(
         ["12", "--repo", "owner/repo", "--trust-config", "relative.yml",
+         "--trust-config-scope", "global",
          "--expected-trust-digest", "sha256:#{'0' * 64}"]
       )
     end
@@ -444,6 +479,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     _out, warning = capture_io do
       assert_equal 1, runner.run(
         ["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml",
+         "--trust-config-scope", "global",
          "--expected-trust-digest", "not-a-digest"]
       )
     end
@@ -462,6 +498,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       _out, warning = capture_io do
         assert_equal 1, runner.run(
           ["12", "--repo", "owner/repo", "--trust-config", path,
+           "--trust-config-scope", "repository",
            "--expected-trust-digest", "sha256:#{'0' * 64}"]
         )
       end
@@ -633,6 +670,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
         result = Dir.chdir(root) do
           runner.run(
             ["12", "--repo", "owner/repo", "--trust-config", config_path,
+             "--trust-config-scope", "repository",
              "--expected-trust-digest", digest]
           )
         end
@@ -720,6 +758,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       trust = assembled(path)["trust"]
 
       assert_equal "explicit", trust["source"]
+      assert_equal "global", trust["scope"]
       assert_equal path, trust["config_path"]
       assert_match(/\Asha256:[0-9a-f]{64}\z/, trust["content_digest"])
       assert_equal "trusted-only", trust["actionable_actors"]
@@ -759,6 +798,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     out, status = Open3.capture2e(
       { "GH_HOST" => "github.com" },
       "ruby", SCRIPT, "12", "--repo", "owner/repo", "--trust-config", "/nonexistent/trust.yml",
+      "--trust-config-scope", "global",
       "--expected-trust-digest", "sha256:#{'0' * 64}"
     )
 

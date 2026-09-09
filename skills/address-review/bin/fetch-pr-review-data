@@ -31,6 +31,7 @@ module FetchPrReviewData
   SUMMARY_MARKER = "<!-- address-review-summary -->"
   GH_TIMEOUT_SECONDS = Integer(ENV.fetch("FETCH_PR_REVIEW_DATA_GH_TIMEOUT_SECONDS", "60"))
   TRUST_DIGEST_FORMAT = /\Asha256:[0-9a-f]{64}\z/
+  TRUST_CONFIG_SCOPES = %w[global repository].freeze
 
   REVIEW_THREADS_QUERY = <<~GRAPHQL
     query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) {
@@ -50,20 +51,33 @@ module FetchPrReviewData
   # Decides which actors may supply actionable review text using the shared
   # allowlist, without discovering policy from the checkout being reviewed.
   class TrustBoundary
-    def self.for(repo:, trust_config_path: nil, team_resolver: nil, repo_local_verifier: nil)
+    def self.for(repo:, trust_config_path: nil, trust_config_scope: nil, team_resolver: nil,
+                 repo_local_verifier: nil)
       resolved = GithubActorTrust.resolve_path(
-        trust_config_path, repo_local_verifier:, allow_repo_local: false
+        trust_config_path,
+        repo_local_verifier: trust_config_scope.nil? ? repo_local_verifier : nil,
+        allow_repo_local: false
       )
-      config = GithubActorTrust.load(path: resolved.fetch(:path), global: resolved.fetch(:global))
-      new(repo:, config:, source: resolved.fetch(:source), team_resolver:)
+      global = case trust_config_scope
+               when nil then resolved.fetch(:global)
+               when "global" then true
+               when "repository" then false
+               else raise Error, "trust config scope must be global or repository"
+               end
+      config = GithubActorTrust.load(path: resolved.fetch(:path), global:)
+      new(
+        repo:, config:, source: resolved.fetch(:source),
+        scope: global ? "global" : "repository", team_resolver:
+      )
     rescue GithubActorTrust::Error => e
       raise Error, e.message
     end
 
-    def initialize(repo:, config:, source:, team_resolver: nil)
+    def initialize(repo:, config:, source:, scope: "repository", team_resolver: nil)
       @repo = repo
       @config = config
       @source = source
+      @scope = scope
       @team_resolver = team_resolver
       @team_cache = {}
       @classification_cache = {}
@@ -88,6 +102,7 @@ module FetchPrReviewData
     def provenance
       {
         "source" => @source,
+        "scope" => @scope,
         "config_path" => @config.fetch(:path),
         "content_digest" => @config.fetch(:content_digest),
         "actionable_actors" => "trusted-only"
@@ -339,6 +354,9 @@ module FetchPrReviewData
           --repo REPO          GitHub repo in OWNER/REPO form. Defaults to gh repo view.
           --trust-config PATH  Absolute path to the trusted GitHub actor allowlist
                                selected by trusted-base preflight (required).
+          --trust-config-scope SCOPE
+                               global or repository, exactly as emitted by
+                               trusted-base preflight (required).
           --expected-trust-digest DIGEST
                                sha256 digest emitted by trusted-base preflight for
                                that allowlist (required).
@@ -353,8 +371,8 @@ module FetchPrReviewData
     in excluded_interactions with actor, kind, timestamp, and URL but no body, so
     excluded comment text and paths can never reach an agent as instructions.
     Trusted inline comments retain their repository path as location metadata.
-    The resolved trust source, path, and sha256 content digest are bound to the
-    packet under "trust".
+    The resolved trust source, global-or-repository scope, path, and sha256
+    content digest are bound to the packet under "trust".
     The authenticated `gh api user` actor must also be actionable under that
     resolved config so self-authored checkpoints and replies cannot be trusted
     under a different authority boundary.
@@ -381,10 +399,10 @@ module FetchPrReviewData
 
       pr_number = validate_pr!(opts[:pr])
       repo = resolve_repo!(opts[:repo])
-      validate_trust_binding!(opts[:trust_config], opts[:expected_trust_digest])
+      validate_trust_binding!(opts[:trust_config], opts[:trust_config_scope], opts[:expected_trust_digest])
       github_host = github_host_for(root: git_toplevel, repo:)
       with_github_host(github_host) do
-        trust = trust_boundary(repo, opts[:trust_config])
+        trust = trust_boundary(repo, opts[:trust_config], opts[:trust_config_scope])
         verify_trust_digest!(trust, opts[:expected_trust_digest])
         verify_authenticated_actor!(trust)
         print_result(fetch(repo, pr_number, trust), opts[:format])
@@ -400,7 +418,7 @@ module FetchPrReviewData
     def parse_args(argv)
       opts = {
         format: "json", help: false, self_check: false, pr: nil, repo: nil,
-        trust_config: nil, expected_trust_digest: nil
+        trust_config: nil, trust_config_scope: nil, expected_trust_digest: nil
       }
       args = argv.dup
       until args.empty?
@@ -408,6 +426,7 @@ module FetchPrReviewData
         case arg
         when "--repo" then opts[:repo] = take_value!(args, "--repo")
         when "--trust-config" then opts[:trust_config] = take_value!(args, "--trust-config")
+        when "--trust-config-scope" then opts[:trust_config_scope] = take_value!(args, "--trust-config-scope")
         when "--expected-trust-digest"
           opts[:expected_trust_digest] = take_value!(args, "--expected-trust-digest")
         when "--json" then opts[:format] = "json"
@@ -450,10 +469,16 @@ module FetchPrReviewData
       repo
     end
 
-    def validate_trust_binding!(trust_config_path, expected_digest)
+    def validate_trust_binding!(trust_config_path, trust_config_scope, expected_digest)
       raise Error, "--trust-config is required; use the path resolved by trusted-base preflight" if trust_config_path.nil?
       unless File.absolute_path(trust_config_path) == trust_config_path
         raise Error, "--trust-config must be an absolute path resolved from the trusted base"
+      end
+      if trust_config_scope.nil?
+        raise Error, "--trust-config-scope is required; use the scope emitted by trusted-base preflight"
+      end
+      unless TRUST_CONFIG_SCOPES.include?(trust_config_scope)
+        raise Error, "--trust-config-scope must be global or repository"
       end
       raise Error, "--expected-trust-digest is required; use the digest emitted by trusted-base preflight" if expected_digest.nil?
       return if expected_digest.match?(TRUST_DIGEST_FORMAT)
@@ -468,10 +493,11 @@ module FetchPrReviewData
       raise Error, "trust config digest changed after preflight: expected #{expected_digest}, got #{actual_digest}"
     end
 
-    def trust_boundary(repo, trust_config_path)
+    def trust_boundary(repo, trust_config_path, trust_config_scope)
       TrustBoundary.for(
         repo:,
         trust_config_path:,
+        trust_config_scope:,
         repo_local_verifier: GithubActorTrust.repository_locality_verifier(
           repo:,
           git_capture: method(:capture_probe),

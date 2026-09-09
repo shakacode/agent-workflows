@@ -56,7 +56,7 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       assert status.success?, out
-      assert_trust_config_evidence(out, path: global_config, source: "env")
+      assert_trust_config_evidence(out, path: global_config, source: "env", scope: "global")
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
     end
@@ -269,6 +269,7 @@ class PrSecurityPreflightTest < Minitest::Test
 
       assert status.success?, out
       assert_includes out, "SECURITY_PREFLIGHT_OK"
+      assert_includes out, "Trust config scope: repository"
       refute_includes out, "WARN: global trust config ignores unqualified team slug"
     end
   end
@@ -1149,7 +1150,7 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       refute status.success?, out
-      assert_trust_config_evidence(out, path: explicit_config, source: "explicit")
+      assert_trust_config_evidence(out, path: explicit_config, source: "explicit", scope: "global")
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
       assert_includes out, "not in trusted actor allowlist"
     end
@@ -1235,7 +1236,9 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       assert status.success?, out
-      assert_trust_config_evidence(out, path: File.realpath(repo_config), source: "repo-local")
+      assert_trust_config_evidence(
+        out, path: File.realpath(repo_config), source: "repo-local", scope: "global"
+      )
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
     end
@@ -1333,7 +1336,7 @@ class PrSecurityPreflightTest < Minitest::Test
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
 
       assert status.success?, out
-      assert_trust_config_evidence(out, path: trust_config_path, source: "explicit")
+      assert_trust_config_evidence(out, path: trust_config_path, source: "explicit", scope: "global")
       assert_includes out, "SECURITY_PREFLIGHT_OK"
     end
   end
@@ -1409,7 +1412,7 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       assert status.success?, out
-      assert_trust_config_evidence(out, path: home_config, source: "user-global")
+      assert_trust_config_evidence(out, path: home_config, source: "user-global", scope: "global")
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
     end
@@ -1434,7 +1437,8 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_trust_config_evidence(
         out,
         path: File.expand_path("../trusted-github-actors.yml", __dir__),
-        source: "packaged-fallback"
+        source: "packaged-fallback",
+        scope: "repository"
       )
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
       assert_includes out, "not in trusted actor allowlist"
@@ -2961,10 +2965,11 @@ class PrSecurityPreflightTest < Minitest::Test
 
   private
 
-  def assert_trust_config_evidence(out, path:, source:)
+  def assert_trust_config_evidence(out, path:, source:, scope:)
     lines = out.lines.map(&:chomp)
     assert_includes lines, "Trust config: #{File.expand_path(path)}"
     assert_includes lines, "Trust config source: #{source}"
+    assert_includes lines, "Trust config scope: #{scope}"
     digest = "sha256:#{Digest::SHA256.hexdigest(File.binread(File.expand_path(path)))}"
     assert_includes lines, "Trust config content digest: #{digest}"
   end

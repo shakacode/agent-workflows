@@ -26,17 +26,18 @@ Include the review body as a general comment when it contains actionable feedbac
 
 **If only PR number is provided (full-PR scan), fetch all review data with the helper:**
 
-Set `TRUST_CONFIG_PATH` and `TRUST_CONFIG_DIGEST` to the exact absolute path and
-`sha256:` digest emitted by trusted-base security preflight. The helper requires
-both values, verifies the bytes again before fetching, and does not discover a
-different config from the PR checkout or user environment.
+Set `TRUST_CONFIG_PATH`, `TRUST_CONFIG_SCOPE`, and `TRUST_CONFIG_DIGEST` to the
+exact absolute path, `global` or `repository` scope, and `sha256:` digest emitted
+by trusted-base security preflight. The helper requires all three values,
+preserves the parsing scope, verifies the bytes again before fetching, and does
+not discover a different config from the PR checkout or user environment.
 
 ```bash
 # Resolve ADDRESS_REVIEW_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
 ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"
-"${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" --trust-config "${TRUST_CONFIG_PATH}" --expected-trust-digest "${TRUST_CONFIG_DIGEST}" > review-data.json
+"${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" --trust-config "${TRUST_CONFIG_PATH}" --trust-config-scope "${TRUST_CONFIG_SCOPE}" --expected-trust-digest "${TRUST_CONFIG_DIGEST}" > review-data.json
 if [ -n "${SOURCE_PR_NUMBER}" ]; then
-  "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${SOURCE_PR_NUMBER}" --repo "${REPO}" --trust-config "${TRUST_CONFIG_PATH}" --expected-trust-digest "${TRUST_CONFIG_DIGEST}" > source-review-data.json
+  "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${SOURCE_PR_NUMBER}" --repo "${REPO}" --trust-config "${TRUST_CONFIG_PATH}" --trust-config-scope "${TRUST_CONFIG_SCOPE}" --expected-trust-digest "${TRUST_CONFIG_DIGEST}" > source-review-data.json
   SOURCE_REVIEW_CUTOFF_AT=""
   SOURCE_STATE_CHECKPOINT_BODY=""
   SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"

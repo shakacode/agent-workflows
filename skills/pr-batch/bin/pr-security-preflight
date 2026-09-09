@@ -1728,6 +1728,7 @@ interaction_queue_targets = []
 trust_config_resolution = resolved_trust_config(options.fetch(:trust_config), repo:, github_host:)
 puts "Trust config: #{trust_config_resolution.fetch(:path)}"
 puts "Trust config source: #{trust_config_resolution.fetch(:source)}"
+puts "Trust config scope: #{trust_config_resolution.fetch(:global) ? 'global' : 'repository'}"
 trust_config = load_trust_config(
   path: trust_config_resolution.fetch(:path),
   global: trust_config_resolution.fetch(:global)
