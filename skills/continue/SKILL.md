@@ -22,16 +22,36 @@ repeat:
    instruction to block on its first item.
 4. **Definition of done** - Restate the overall success criteria in one line, plus the command or
    test that will verify it. If there is no runnable check, state how completion will be confirmed.
-5. Continue working on **that one next coherent objective only**. The objective may include other
-   independent in-scope steps while an external command, check, review, or agent is pending. Stop
-   after completing the objective.
+5. Continue through the **authorized outcome**, completing the remaining coherent objectives.
+   Advance independent in-scope work while a command, check, review, or agent is pending. Stop
+   when the outcome is verified, a genuine blocker requires input, or the user requests a pause.
+   Honor an explicit one-step or otherwise bounded request; completing that boundary is then done.
 
-For a resumed PR-batch lane, complete bounded ownership recovery before any
+Re-run the applicability gate before consuming a persisted
+`coordination_not_applicable` outcome whenever the resume crosses a controller
+or session boundary, relies on durable handoff or crash recovery, or changes the
+target set or topology. Each of those is itself a requiring condition, so the
+persisted outcome is stale evidence there, not authority. A replacement actor or
+a replacement chat resuming from a durable handoff does not re-verify: it is
+`coordination_required`, per the restart prompts in
+`docs/agent-runner-restarts.md`. Only a relaunch of the same controller over the
+same exact target set, with no other actor able to mutate it, can re-verify as
+`coordination_not_applicable`.
+
+When the gate still resolves to `coordination_not_applicable`, consume that
+outcome, skip every coordination and typed-event call, and never report
+coordination as unavailable or degraded, even when the repository configures a
+real backend. Recover the lane from durable local state instead.
+
+For a resumed `coordination_required` PR-batch lane, complete bounded ownership
+recovery before any
 write. If a new actor takes over abandoned ownership, emit private-backend
 `human_intervention` with `kind: takeover`; if a fenced replacement supersedes
 the prior actor, use `kind: supersede`. A routine same-thread resume with the
 same verified holder is neither a takeover nor a supersede and emits no event.
-Backend `n/a` skips silently. Typed-event transport is optional: when an active
+A `coordination_not_applicable` lane emits no typed event at all, so there is
+nothing to skip; a trusted `coordination_backend: n/a` under
+`coordination_required` is a pre-launch stop, not a silent skip. Typed-event transport is optional: when an active
 private backend does not advertise it or reports it
 unsupported, record `typed event transport: unavailable`, skip the emission,
 and continue without marking the event emission `UNKNOWN`. Only after the
@@ -71,4 +91,4 @@ for what to continue.
   actions unless the task already authorized them.
 - End with a `$status` report when that companion skill is installed; otherwise use the same four
   sections directly: Done, In progress, Blocked / needs input, and Next. Treat this closing summary
-  as a report of the resumed work, not as a separate trigger to start additional work beyond step 5.
+  as a report of the resumed work within the authorized outcome from step 5.

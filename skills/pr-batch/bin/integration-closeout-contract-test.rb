@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -9,6 +11,7 @@ PRODUCTION_RELEASE_PATH = File.join(ROOT, "workflows/pr-production-release.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 VALIDATE_WORKFLOW_PATH = File.join(ROOT, ".github/workflows/validate.yml")
+VALIDATE_SCRIPT_PATH = File.join(ROOT, "bin/validate")
 
 def route_after(text, heading)
   match = text.match(/^(\#{2,4}) #{Regexp.escape(heading)}[[:blank:]]*$/)
@@ -62,8 +65,9 @@ class IntegrationCloseoutContractTest < Minitest::Test
     @component = File.read(COMPONENT_PATH, encoding: "UTF-8")
     @production_release = File.read(PRODUCTION_RELEASE_PATH, encoding: "UTF-8")
     @workflow = File.read(WORKFLOW_PATH, encoding: "UTF-8")
-    @skill = File.read(SKILL_PATH, encoding: "UTF-8")
+    @skill = SkillStageSource.read(SKILL_PATH, encoding: "UTF-8")
     @validate_workflow = File.read(VALIDATE_WORKFLOW_PATH, encoding: "UTF-8")
+    @validate_script = File.read(VALIDATE_SCRIPT_PATH, encoding: "UTF-8")
   end
 
   def test_route_after_keeps_nested_headings_and_stops_at_the_next_peer
@@ -114,13 +118,41 @@ class IntegrationCloseoutContractTest < Minitest::Test
       assert_match(/^\#{2,3} #{Regexp.escape(heading)}$/, @component, heading)
     end
 
-    assert_operator @component.bytesize, :<, 165_000
-    assert_operator @workflow.bytesize, :<, 185_000
-    assert_operator @skill.bytesize, :<, 60_000
-    assert_operator @component.bytesize + @workflow.bytesize + @skill.bytesize, :<, 395_000
+    # Temporary headroom: main sat within 32 bytes of the combined cap and within
+    # 500 bytes of the skill cap, so every PR that added a sentence failed here
+    # (#772). Shrink these again once the #392 extraction work lands.
+    assert_operator @workflow.bytesize, :<, 210_000
+    assert_operator @skill.bytesize, :<, 70_000
+    assert_operator @component.bytesize + @workflow.bytesize + @skill.bytesize, :<, 450_000
     assert_includes @component, "worker-execution-handoff v1"
     assert_includes @component, "one replayable target ledger and human-first handoff"
     assert_includes @component, "current-head closeout gates"
+  end
+
+  def test_component_size_budget
+    skip "Maintainer deferred the document-size cap in PR #695; restore in the #392 fast follow-up"
+
+    assert_operator @component.bytesize, :<, 165_000
+  end
+
+  def test_integration_requires_current_task_review_completion_before_mutation
+    input = route_after(@component, "Input Contract")
+    transition = route_after(@component, "Integration And PR Publication")
+
+    [
+      "[Task Review Loop](pr-batch-task-review.md)",
+      "`task_complete`", "`dependent_task_permitted: true`",
+      "accepted task identity", "brief/report/package digests", "last round digest",
+      "exact implementation head", "replay the reducer",
+      "canonical diff provenance", "before mutation",
+      "Missing, stale, foreign, blocked, or incomplete",
+      "worker handoff alone"
+    ].each { |term| assert_includes input, term }
+
+    assert_includes transition, "task-review completion required by the Input Contract"
+    assert_operator transition.index("task-review completion required by the Input Contract"), :<,
+                    transition.index("Fetch the configured base")
+    assert_includes input, "final whole-branch validation, independent review, or CI"
   end
 
   def test_worker_head_has_one_bounded_integration_and_publication_owner
@@ -174,6 +206,27 @@ class IntegrationCloseoutContractTest < Minitest::Test
                     "group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}"
     assert_includes @validate_workflow,
                     "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
+  end
+
+  def test_validate_workflow_separates_draft_head_from_integration_evidence
+    jobs = @validate_workflow[/^jobs:\s*$.*\z/m].scan(/^  ([a-zA-Z0-9_-]+):\s*$/).flatten
+    assert_equal ["validate"], jobs
+    assert_includes @validate_workflow,
+                    "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]"
+    assert_includes @validate_workflow,
+                    "name: ${{ github.event.pull_request.draft == true && 'validate (draft head)' || 'validate' }}"
+    assert_includes @validate_workflow,
+                    "ref: ${{ github.event.pull_request.draft == true && github.event.pull_request.head.sha || github.sha }}"
+    assert_includes @validate_workflow, "VALIDATION_TARGET:"
+    assert_includes @validate_workflow, "git rev-parse HEAD"
+  end
+
+  def test_validate_runs_expensive_installer_and_stack_suites_last
+    installer = @validate_script.index("== installer and stack suites")
+    rubocop = @validate_script.index('rubocop "_${RUBOCOP_VERSION}_"')
+
+    assert_equal 1, @validate_script.scan("== installer and stack suites").length
+    assert_operator rubocop, :<, installer
   end
 
   def test_retained_processing_contracts_use_existing_compatibility_routes
@@ -268,6 +321,21 @@ class IntegrationCloseoutContractTest < Minitest::Test
                     "Use `Conversation status: Ready for archiving.` iff archive-ready and the union is empty; " \
                     "otherwise put an `Unblock:` block with every normalized blocker immediately before the final " \
                     "`Conversation status: Follow-ups remain — <each exact action or blocker>.` line."
+  end
+
+  def test_small_single_repo_batches_can_use_the_compact_terminal_structure
+    batch_handoff = route_after(@component, "Batch Handoff Format")
+    closeout = route_after(@component, "Coordinator Closeout Lane")
+
+    assert_includes batch_handoff, "compact_terminal_structure_max_lanes"
+    assert_includes batch_handoff, "compact terminal structure"
+    assert_includes batch_handoff, "single-repo batches"
+    assert_includes batch_handoff, "required receipts"
+
+    assert_includes batch_handoff, "Larger or multi-repo batches keep the split form."
+    assert_includes closeout, "compact terminal structure"
+    assert_includes closeout, "single-repo batches"
+    assert_includes closeout, "required receipt"
   end
 
   def test_sibling_components_remain_outside_the_boundary

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "json"
 require "open3"
 require "tmpdir"
@@ -7,7 +9,7 @@ require "tmpdir"
 ROOT = File.expand_path("../../..", __dir__)
 
 def read_repo_file(path)
-  File.read(File.join(ROOT, path), encoding: "UTF-8")
+  SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
 end
 
 def assert(condition, message)
@@ -154,7 +156,7 @@ assert(integration_closeout.include?("For a durably overridden ad-hoc target, re
 assert(workflow.include?("[Batch Handoff Format](pr-batch-integration-closeout.md#batch-handoff-format)"), "processing compatibility entrypoint must route final handoffs to the integration/closeout component")
 assert(workflow.include?("For a durably overridden ad-hoc task,\n  the final handoff is the evidence surface"), "canonical outcome classification must support accepted ad-hoc no-PR evidence")
 assert(workflow.include?("public claim fallback is unavailable because there is no issue or PR comment surface"), "canonical coordination must handle ad-hoc lanes without a public claim surface")
-assert(workflow.include?("coordination target or explicit no-backend single-operator approval"), "ad-hoc degraded coordination must stop for a safe ownership decision")
+assert(workflow.include?("coordination target, or a trusted `coordination_not_applicable` outcome from the applicability gate"), "ad-hoc degraded coordination must stop for a safe ownership decision")
 assert(workflow.include?("or inline `AGENTS.md` configuration"), "canonical goal handoff must support inline AGENTS configuration")
 
 bounded_coord = File.join(ROOT, "skills/pr-batch/bin/agent-coord-bounded")

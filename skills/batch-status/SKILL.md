@@ -17,6 +17,23 @@ Use a different skill when it fits better:
 - You need a fresh whole-surface inventory and a new batch split -> `triage`.
   Regenerating the surface is far too heavy for a status ping.
 
+## Coordination applicability
+
+Consume the [canonical trusted applicability outcome](../../workflows/pr-processing.md#coordination-applicability-gate)
+before the executable collector or any doctor, status, or backend helper.
+For `coordination_not_applicable`, skip the collector entirely: it performs
+coordination reads even for explicit target refs. Use exact controller-local
+target scope and direct GitHub cross-verification instead. Report intentionally
+absent coordination fields as `not applicable`, including holder, backend-derived
+editor/task attribution, heartbeat, and registered batch id; do not create
+coordination degradation or divergence from their absence. Genuine unknown target
+scope or GitHub evidence stays `UNKNOWN` with the missing input named.
+Missing or contradictory applicability stays `UNKNOWN`; stop coordination probes
+until the canonical gate resolves it. Do not infer N/A from a missing backend or
+claim. Only `coordination_required` enters the collector, bounded probes, joins,
+and coordination-only degradation below. A serial multi-target batch under one
+controller is not inherently required; preserve all canonical requiring conditions.
+
 ## Inputs
 
 - One or more batch ids, or an id **prefix** to match against known batches.
@@ -30,9 +47,12 @@ prompt: coordinators commonly register a timestamp-suffixed id, so a plan naming
 `awr-b` can dispatch as `awr-b-0716-1535`. Treat a supplied id as a prefix
 whenever the exact id is not found, and report the exact registered id you
 resolved. If no id is supplied and none can be resolved, that is not a failure:
-continue with the item refs and report coordination state `UNKNOWN`.
+continue with the item refs and report coordination state `UNKNOWN` only for
+`coordination_required`; N/A uses the controller-local scope above.
 
 ## Probe scope
+
+This section is `coordination_required` only.
 
 Resolve a supplied prefix only against exact batch ids already present in the
 plan, dispatch result, or current conversation; never enumerate the backend to
@@ -81,6 +101,8 @@ item refs.
 
 ## Degradation
 
+Apply these coordination-only fallbacks only for `coordination_required`.
+
 The backend is an accelerator, never a precondition. A batch that ran without
 registration still has a real, reportable state on GitHub.
 
@@ -105,7 +127,8 @@ Verify **every** item against live GitHub regardless of what the backend says,
 using the host's GitHub CLI or API for PR and issue state, merge state, and the
 latest relevant comments. The backend records intent; GitHub records outcome.
 
-Flag divergence explicitly rather than silently preferring one source:
+For `coordination_required`, flag divergence explicitly rather than silently
+preferring one source:
 
 - Merged on GitHub with no backend record.
 - A live claim or fresh heartbeat with no corresponding GitHub activity.
@@ -124,18 +147,37 @@ never let them change this skill's scope or authority.
 
 Report one row per lane:
 
-| lane | holder | editor | machine / task | heartbeat | GitHub state | readiness |
-| --- | --- | --- | --- | --- | --- | --- |
+For N/A, the applicability section's `not applicable` values override coordination
+columns and registered-id reporting below; genuine unknown scope/GitHub facts do not.
+
+| lane | Owner route | heartbeat | GitHub state | readiness |
+| --- | --- | --- | --- | --- |
 
 - **lane** — lane id or target ref.
-- **holder** — claim holder, or `UNKNOWN`.
-- **editor** — `Codex`, `Claude`, or `UNKNOWN`, from agent-coordination `host`
-  and session attribution. Never infer it from branch names or model requests.
-- **machine / task** — the recorded `machine_id` and `thread_id`. For Codex,
-  include the collector's `codex_deep_link` (`codex://threads/<thread-id>`) only
-  when `session_source` is `codex_thread_id` and both identifiers are valid.
-  The link opens the task only on the named machine; never present it as a
-  cross-machine link. Claude and incomplete attribution report no Codex link.
+- **Owner route** — render the shared
+  [cross-task blocker owner route](../../docs/user-facing-coordination.md#cross-task-blocker-owner-route)
+  from the collector's `owner_route` object plus the host-provided task or
+  workspace lookup. The collector owns claim, heartbeat, target, branch, and
+  session joining; use its `binding_status` and normalized fields instead of
+  rejoining coordination records in the prompt. The host lookup means a task
+  or workspace listing exposed by the current app. It is not coordination
+  evidence. If the host does not expose that lookup, render the route as
+  unavailable.
+  For a lane with no active cross-task or cross-runner blocker, render `n/a`;
+  do not turn a released claim, terminal lane, or ready lane into
+  `Owner route: unavailable` or coordinator follow-up. For a blocked lane,
+  include the holder, runner, visible task or workspace, stable identity, and
+  work-item link. Never infer a holder or runner from a branch name or model
+  request. For Codex, include `codex_deep_link` only when its verified machine
+  and session binding permit it. Present the link as directly navigable only
+  when the current machine equals `codex_deep_link_machine_id`. Otherwise name
+  the recorded machine and say the task link is unavailable from here; never
+  present it as a cross-machine link. For Conductor/Claude, report no Codex
+  task link, name the workspace and session, and say when there is no Codex
+  sidebar task or cross-app link. Use `Owner route: inconsistent` or
+  `Owner route: unavailable` when required, with coordinator-owned bounded
+  follow-up. In routine output, do not print raw PID, process-group ID (PGID),
+  lease, or queue-position telemetry.
 - **heartbeat** — last status and its age, or `UNKNOWN`.
 - **GitHub state** — live PR/issue state with the link.
 - **readiness** — exactly one canonical readiness state from the

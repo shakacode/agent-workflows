@@ -1,7 +1,25 @@
 # PR Batch Skills Usage
 
+For Codex route preferences, consult the unmeasured `astra-pilot-v1`
+[central profile](../skills/plan-pr-batch/references/model-routing-profiles.json) through the plan skill's
+`bin/model-routing-profile --role <role>`. It supersedes named GPT-5.6
+recommendations below for listed roles; retain those as comparison baselines.
+Routes remain advisory and never qualify a verdict or replace host evidence.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
+
 Use this guide when deciding between issue triage, planning, single-lane direct
 work, and execution skills for agent batch work.
+
+Whichever skill owns the run, record `coordination_applicability` before any
+coordination probe using trusted repository policy and controller-owned verified
+topology. `coordination_not_applicable` makes no backend or fallback call, even
+when the repository config names a real backend. `coordination_required`
+preserves claims, heartbeats, dependencies, and fencing and fails closed when
+its configured backend is unavailable. Missing, `UNKNOWN`, or contradictory
+applicability stops before worker launch. See
+[Coordination Applicability](coordination-backend.md#coordination-applicability)
+for the complete matrix and completed-batch proof contract.
 
 When one coordinator runs multiple batches across machines, desktop apps, or
 repositories, use the target repo's coordination backend plus
@@ -102,8 +120,8 @@ requested and observed route honestly without blocking on the binding alone.
 | `$spec`              | The user has vague feature or bug intent with no concrete issue, finding, or proposed fix yet.              | A traceable spec plus executable tasks ready for `$plan-pr-batch`.                    |
 | `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A Batch Plan with separate coordinator and staged worker model/effort routes plus a target-specific ready `$pr-batch` prompt. |
 | `$pr-batch`          | One or more exact targets are trusted and ready to run or convert into a `/goal` prompt.                    | A single-target lane, launch plan, worker split, or final `/goal` prompt.              |
-| `$close-batch`       | A stale batch task needs live recovery, any required walkthrough or decision, and archive-safe closeout.   | Resumed closeout, one interactive attention route when needed, or a canonical archive verdict. |
-| `$pr-walkthrough`    | A human wants to understand a PR before deciding, especially when it is large or complex.                   | An exact-diff, one-change-at-a-time explanation with questions between each change.   |
+| `$close-batch`       | A stale batch task needs live recovery, any required walkthrough or decision, and archive-safe closeout.   | Resumed closeout, one asynchronous attention route when needed, or a canonical archive verdict. |
+| `$pr-walkthrough`    | A human wants to understand a PR before deciding, especially when it is large or complex.                   | A live, read-only chat walkthrough, or a complete GitHub review when publication is explicitly or workflow-selected. |
 | `$replicate-ci`      | Local validation is green but hosted CI is red, or runner/toolchain parity is suspected.                   | A CI parity report with reproduction result, environment delta, and next action.      |
 
 The `agents/openai.yaml` file under a skill is optional Codex UI metadata for skill picker display text and the default prompt. Add it only for skills that need Codex picker metadata; it is not required for every skill. Deliberate exclusion: `qa-stress` ships without picker metadata because destructive stress campaigns must be invoked by explicit request, not surfaced through default picker prompting.
@@ -188,9 +206,12 @@ Use `$triage` when the coordinator wants the generated equivalent of a manual
 release or batch snapshot: all open issues and PRs, dependency edges, live
 coordination state, and a capacity-aware split into implementation groups.
 
-`$triage` is not a fixed-lane batch planner. It must read the current
+`$triage` is not a fixed-lane batch planner. For `coordination_required`, it
+must read the current
 `agent-coord` capacity profiles, inbox config, claims, and heartbeats before
-phase 2. The group count is derived by summing registered
+phase 2. For `coordination_not_applicable` it reads none of them and keeps the
+one controlled serial group, so the rest of this paragraph and the unavailable-
+capacity stop below apply only to `coordination_required`. The group count is derived by summing registered
 `max_concurrent_batches`, bounding that total by enabled inboxes, and subtracting
 live, blocked, and reserved lanes. If any of those inputs cannot be verified,
 phase 2 stops instead of inventing a group count. The value is never committed in
@@ -324,12 +345,14 @@ omit the queue summary and note that queue state is unavailable.
    such a condition.
 8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
-   `Use $pr-batch...` for Claude/generic), then render the exact
-   `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block through
+   `Use $pr-batch...` for Claude/generic), then put the editable controls first:
+   `Batch title:`, `Repo:`, `Objective:`, and `merge_authority:`. Use one space
+   after each control-field colon and exactly one blank line after
+   `merge_authority:` before `Thread handle:`. Do not add `Targets:`; retain the
+   single canonical `Items:` target section. Render the
+   `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` value through
    canonical [Verified Batch Title Selection](../workflows/pr-batch-intake.md#verified-batch-title-selection).
-   The prompt template keeps the title and surrounding blank lines stable;
-   prompt intake owns prefix, issue-identifier, trust, time, and spacing
-   selection.
+   Prompt intake owns prefix, issue-identifier, trust, time, and spacing selection.
    Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
    `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
    and a coordinator-chosen session word. Add the compact `Lane Card:` line so
@@ -358,12 +381,22 @@ route, and an explicit `merge_authority` choice before launch. It collapses only
 multi-lane packing and collision mechanics; QA, validation, review, CI,
 readiness, handoff, and closeout remain unchanged.
 
+Editable prompts expose `none`, `ask`, and `auto`. The executor immediately
+normalizes only `auto` to the durable canonical value
+`auto_merge_when_gates_pass`; `none`, `ask`, and an already-canonical long value
+remain compatible. Missing, unresolved-placeholder, or invalid authority fails
+closed before worker launch. Worker prompts, manifests, handoffs, helper inputs,
+and other durable evidence never retain the short `auto` alias.
+
 Choose `ask` when a human should understand the exact-diff PR before deciding:
-after ordinary gates are clean, the coordinator automatically starts
-`$pr-walkthrough`, explains one conceptual change at a time in full mode for
-large or complex PRs (concise mode for smaller cohesive PRs), then refreshes the
-diff identity and readiness. A changed identity invalidates the walkthrough and
-restarts or stops it; a newly failing gate stops it. The coordinator asks the
+after ordinary gates are clean, the coordinator automatically publishes
+`$pr-walkthrough`. It prepares the complete exact-diff map up front, then posts
+the orientation and every conceptual section to GitHub in one pass under the
+skill's mandatory inline-thread and no-anchor-stop rules. The owning task consumes replies
+asynchronously; live interaction is used only when the maintainer explicitly
+asks. Large or complex PRs use full mode and smaller cohesive PRs use concise
+mode. A changed identity invalidates the walkthrough and causes a rebuild and
+republish or stop; a newly failing gate stops it. The coordinator asks the
 one final merge question only when the refreshed identity matches the recorded
 identity and readiness remains clean; a completed walkthrough must have
 explained that same diff. The walkthrough itself is not approval.
@@ -454,18 +487,27 @@ record it and proceed to consolidated triage instead of parking in
 
 <!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
-Batch Coordination Declaration: every final batch handoff must carry exactly one
-`coordination:` line, and no handoff is complete or clean without it. Use
+Batch Coordination Declaration: every `coordination_required` final batch
+handoff must carry exactly one `coordination:` line, and no such handoff is
+complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered
 with the coordination backend, and quote the exact backend batch id. Otherwise
-use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
-a repo seam that sets `coordination_backend: n/a`, an unreachable or degraded
-backend, or a deliberately uncoordinated single-operator run. A missing
+use `coordination: unavailable — <reason>` with an exact nonempty reason for a
+run that was `coordination_required` and could not keep durable coordination,
+such as an unreachable or degraded backend or a refused registration. A trusted
+`coordination_backend: n/a` under `coordination_required` is a pre-launch stop,
+not an unavailable declaration, and a deliberately uncoordinated
+single-controller run is `coordination_not_applicable` and carries no
+declaration at all. A missing
 `coordination:` line, an empty or `UNKNOWN` batch id, an empty or `UNKNOWN`
 reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
 a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
+
+That declaration rule applies only to `coordination_required`. For
+`coordination_not_applicable`, omit the `coordination:` line and do not invoke
+the declaration helper. Do not describe coordination as unavailable or degraded.
 
 <!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Unblock Block`. -->
 

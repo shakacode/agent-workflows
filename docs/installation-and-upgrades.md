@@ -137,6 +137,16 @@ Install the Claude Code plugin from the repository marketplace:
 /plugin install scw@agent-workflows
 ```
 
+The Claude plugin deliberately omits an explicit `version`. Claude therefore
+uses the Git commit SHA as the plugin version, so every commit on the
+marketplace's tracked branch is updateable without maintaining duplicate
+release numbers. Enable auto-update for the `agent-workflows` marketplace in
+Claude's **Plugins → Marketplaces** UI when the installation should follow that
+branch automatically; third-party marketplace auto-update is disabled by
+default. Claude checks after startup and may delay the check by up to ten
+minutes. Run `/reload-plugins` to load an installed update in the current
+session, or start a new session.
+
 For Codex, point the current marketplace or plugin-source flow at this cloned or
 released source pack and select `scw`:
 
@@ -481,6 +491,7 @@ The installer writes:
 - `<target>/bin/agent_doctor/*` (focused runtime modules shared by the workflow and master doctors)
 - `<target>/bin/agent-workflows-delivery-state`
 - `<target>/bin/agent-workflows-doctor`
+- `<target>/bin/agent-workflows-refresh`
 - `<target>/bin/agent-workflows-status`
 - `<target>/bin/agent-workflows-trust-audit`
 - `<target>/bin/install-agent-workflows`
@@ -495,7 +506,8 @@ consumer-owned docs under `<target>/docs`.
 The metadata file records host, artifact mode, skill delivery mode, source
 clone, pack version, source revision, branch, remote, and install time. Copy
 installs also record `managed_skill_copy_fingerprints`,
-`managed_pack_doc_copy_fingerprints`, and `managed_pack_root_copy_fingerprints`,
+`managed_pack_doc_copy_fingerprints`, `managed_pack_helper_copy_fingerprints`,
+and `managed_pack_root_copy_fingerprints`,
 including every installed `<target>/docs/solutions/*` document and the
 third-party notice. On repeat installation, these fingerprints
 prove that an installed managed copy has not been edited even when the recorded
@@ -543,6 +555,33 @@ evidence, and flat-skill inventory. A collision, ambiguous native state, or an
 invalid companion layout returns `CHECK_FAILED` with cleanup guidance.
 
 ## Upgrade
+
+### Refresh a native plugin
+
+Use the installed refresh helper when you need the newest shared workflow
+behavior immediately rather than waiting for the host's normal update cycle:
+
+```bash
+agent-workflows-refresh --host codex
+agent-workflows-refresh --host claude
+```
+
+For Codex, the helper upgrades the configured `agent-workflows` marketplace.
+For Claude, it updates that marketplace and then updates
+`scw@agent-workflows`. The newest marketplace commit is therefore available
+without creating a separate Agent Workflows release. The helper does not add a
+missing marketplace or install a missing plugin; follow the selected host's
+setup guidance first.
+
+This command is an explicit on-demand refresh; it does not replace native
+automatic updates. Codex refreshes configured Git marketplaces when it starts.
+Claude can check third-party marketplaces after startup when marketplace
+auto-update is enabled, but that setting is off by default and the check may be
+delayed. After refreshing Claude, run `/reload-plugins` to load the update in the
+current session. Restart Codex when an existing session must rediscover changed
+skills or instructions.
+
+### Upgrade an installer-managed pack
 
 Upgrade the source clone, reinstall the pack, and validate a consumer repo seam:
 
@@ -598,6 +637,32 @@ For each active consumer repo:
 cd /path/to/consumer/repo
 agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
 ```
+
+Consumers that intentionally leave named, non-required CircleCI workflows on
+their provider approval hold may opt into the closed trusted-base policy:
+
+```yaml
+ci_readiness:
+  version: 1
+  optional_approval_held_checks:
+    - id: storybook-review-app
+      app_slug: circleci-checks
+      name: storybook-review-app
+```
+
+List only exact hosted workflow names whose approval hold is informational for
+that repository. The seam doctor rejects malformed, unknown, or ambiguous
+rules. Readiness still blocks required or explicitly selected workflows,
+active jobs, incomplete inventories, and stale or unrecognized provider
+evidence. The helper retains the raw check row and authenticates the policy from
+the live base commit; editing the working tree or a receipt cannot create a
+waiver.
+
+After upgrading, update authoritative readiness and assurance callers to pass
+the trusted consumer root and reviewed effective merge-base SHA. Walkthroughs
+and decisions must use `skills/pr-batch/bin/diff-identity` to bind the base ref,
+reviewed diff-base SHA, and full head SHA. Previously accepted caller-supplied
+opaque digests are intentionally rejected.
 
 The autonomous-merge gate takes effect from the installed workflow pack even
 when a consumer has no `autonomous_merge` mapping; omission uses portable

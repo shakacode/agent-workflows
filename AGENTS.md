@@ -34,6 +34,21 @@ When integrating current `main` into an ordinary PR, keep the current-base
 - Keep root documentation user-facing. Do not add extra README files inside
   individual skill folders.
 
+## Scope And Simplicity
+
+- Make the smallest change that satisfies the stated Why. Do not add a
+  helper, schema, validator, mode, or flag for a case nobody has named.
+- A new abstraction needs a second caller that exists today, not a future one.
+- Do not add tests that pin exact prose in `skills/*/SKILL.md` or
+  `workflows/*.md`. Assert on headings or behavior so text can shrink.
+- A PR over about 500 changed lines must say in its description what could
+  have been split or deferred.
+- File a follow-up issue only for an observed failure or a verified defect
+  with a known affected user. Do not file one for style nits, hypothetical
+  future mistakes, speculative hardening, or review-bot suggestions without a
+  reproduced miss. Dropping such an item is the default; note it in the PR
+  and move on.
+
 ## Validation
 
 Before committing, run:

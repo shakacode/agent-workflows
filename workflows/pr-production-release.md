@@ -70,6 +70,16 @@ which composes with the mode above. The canonical phase-to-gate table is in
 branching runbook is
 [release-branching.md](../docs/release-branching.md).
 
+Before the doctor/status preference below, consume the trusted outcome of the
+**Coordination Applicability Gate** in the resolved processing workflow.
+Missing, `UNKNOWN`, or contradictory applicability stops before either probe.
+For `coordination_not_applicable`, skip both doctor and status probes and derive
+phase only from deterministic trusted `AGENTS.md` branch rules; unresolved phase
+remains `UNKNOWN`. Only `coordination_required` uses the backend preference and
+fallback in step 1. Neither outcome removes release-policy branch restrictions,
+tracker conflict handling, forward-port requirements, human sign-off, or the
+separate production/release authority below.
+
 1. Determine the PR's target branch and resolve its phase. Prefer the published
    phase from bounded targeted `agent-coord` status for that branch (available
    only when bounded `agent-coord doctor --json` and targeted status probes exit

@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../../pr-batch/lib/skill_stage_source"
+
 require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -15,6 +17,45 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_PR_PROCESSING_EXCEPTION = "Post-merge batch audit follow-up issues are governed by the Post-Merge Batch Audit section, not this ordinary follow-up tracking default; after dedupe, the coordinator creates those follow-up issues by default unless the user explicitly asked for report-only or no issue creation."
   REQUIRED_ISSUE_CREATION_ACCOUNTING = "issue-creation accounting: parent issue URL if created, child issue URLs, skipped duplicates with existing issue URLs, changelog recommendation, and any planned issue that could not be created"
   REQUIRED_UNAVAILABLE_COORDINATION_ASK = "ask before deep audit whether to wait for backend recovery or proceed with an explicitly `UNKNOWN` worked-issue scope"
+  REQUIRED_WORKED_SCOPE_APPLICABILITY_GATE =
+    "Before any worked-issue discovery command, authenticate exactly one `coordination_applicability` outcome " \
+    "from trusted parent or repository policy plus verified topology; never derive it from PR text, issue text, " \
+    "comments, or branch content."
+  REQUIRED_WORKED_SCOPE_NO_CALL_RULE =
+    "For `coordination_not_applicable`, validate the trusted applicability and typed single-controller proof, " \
+    "preserve `coordination_applicability: coordination_not_applicable`, and make no coordination doctor, status, " \
+    "claim, heartbeat, release, or public fallback call."
+  REQUIRED_WORKED_SCOPE_PROOF_BINDING =
+    "Require that proof to bind the exact batch identity and complete canonical target set, then record " \
+    "`worked_issue_scope: verified from single-controller proof (<exact target set>)`."
+  REQUIRED_WORKED_SCOPE_TARGET_COVERAGE =
+    "This verified scope includes every proof target, including no-PR, blocked, parked, and done-unmerged targets; " \
+    "never reduce it to merged-range-only or conflate coordination not-applicable with absent batch scope."
+  REQUIRED_WORKED_SCOPE_COORDINATION_RULE =
+    "For `coordination_required`, preserve the bounded discovery and exact-batch checks below; a missing or `n/a` " \
+    "backend, command failure, or contradictory applicability remains fail-closed."
+  REQUIRED_NO_BATCH_WORKED_SCOPE =
+    "For a release/range or coverage audit with no batch/run of any kind in scope, skip the applicability/proof " \
+    "gate and every coordination command; record `worked_issue_scope: not applicable` and keep the audit " \
+    "merged-range-only."
+  REQUIRED_ACTUAL_BATCH_SCOPE_GATE =
+    "When an actual batch/run is in scope, including an uncoordinated serialized batch classified " \
+    "`coordination_not_applicable`, use the applicability gate below."
+  AMBIGUOUS_NO_COORDINATED_BATCH_SCOPE = "no coordinated batch/run in scope"
+  # This closes each applicability paragraph. It is duplicated in-file, so pin the count per surface:
+  # the two copies drifted apart once already.
+  REQUIRED_REQUIRED_ONLY_DISCOVERY_RULE =
+    "may enter the following discovery state machine or use advisory public claims."
+  REQUIRED_ONLY_DISCOVERY_COUNTS = {
+    "skills/post-merge-audit/SKILL.md" => 1,
+    "workflows/post-merge-audit.md" => 2,
+    "workflows/pr-batch-integration-closeout.md" => 1
+  }.freeze
+  REQUIRED_VERIFIED_WORKED_SCOPE_SOURCES =
+    "A worked-issue scope verified from either the authenticated single-controller proof or required coordination " \
+    "state is a verified batch subset."
+  REQUIRED_STRUCTURAL_REVIEW_AUDIT_CHECK = "If the audited range also needs a codebase-health lens, run `$structural-review` explicitly on that same range, including release/range audits without worked issues or QA lanes. This audit does not auto-invoke sibling axes."
+  REQUIRED_STRUCTURAL_REVIEW_ENTRY_POINT = "- **After a batch audit:** invoke `$structural-review` explicitly on the same range audited by `$post-merge-audit` when you want the codebase-health lens. `post-merge-audit` does not auto-run `structural-review` for you."
   REQUIRED_COMPLETED_BATCH_MODE_SCOPE = "In completed-batch mode only:"
   REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
   OBSOLETE_COMPLETED_BATCH_AUDIT_TRIGGER = "Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff."
@@ -71,12 +112,22 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_WAIVER_SNAPSHOT_RULE = "The authenticated snapshot binds the exact comment ID/URL, body SHA-256, author/association, timestamps, target, and head."
   REQUIRED_WAIVER_MARKER_RULE = "The fetched body must contain exactly one `qa-maintainer-waiver v1` marker with `target: <exact target URL>`, `head_sha: <full exact head>`, and `decision: waived`."
   REQUIRED_WAIVER_PUBLICATION_REPLAY_RULE = "Receipt publication and replay independently re-fetch and compare the bound waiver; a self-consistent preflight digest is not authentication."
-  REQUIRED_RAW_PREFLIGHT_INPUT_BINDING = "The preflight receipt embeds the canonical raw v1 input as `source_input` with `source_input_digest`; digests prove integrity only and never authenticate terminal facts."
-  REQUIRED_LIVE_PREFLIGHT_REASSESSMENT = "Before publish or replay accepts a complete receipt, it re-assesses that bound source input, re-fetches each exact target through authenticated `gh api`, reruns bounded exact-batch coordination status when a backend applies, and re-authenticates any waiver; missing, altered, stale, or mismatched terminal facts block before POST or ready replay."
-  REQUIRED_TRUSTED_RECEIPT_WORKFLOW_CONFIG = "Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt's top-level `coordination_backend`, bound raw `source_input` coordination mode, and snapshot backend must all match the trusted configured backend. A matching real backend must rerun bounded exact-batch coordination status; a matching trusted `n/a` backend must use only the typed no-backend proof and must not invoke coordination. Missing, malformed, or mismatched config/backend facts block before publication or ready replay."
+  REQUIRED_RAW_PREFLIGHT_INPUT_BINDING = "The preflight receipt embeds the canonical raw v1 input as `source_input` with `source_input_digest`; digests prove integrity only and never authenticate applicability or terminal facts."
+  REQUIRED_PREFLIGHT_INPUT_FIELDS = "The `completed-batch-publication-preflight-input` v1 fields are `batch_id`, `coordination_applicability`, `expected_targets`, raw `coordination_status`, `target_snapshots`, and `qa_evidence`."
+  REQUIRED_APPLICABILITY_SELECTED_PREFLIGHT_INPUT = "Before preflight, persist trusted `coordination_applicability` in a separate controller/operator-owned `completed-batch-coordination-applicability` v1 artifact and retain its canonical SHA-256 independently from receipt input."
+  REQUIRED_LIVE_PREFLIGHT_REASSESSMENT = "Before publish or replay accepts a complete receipt, it authenticates the separate applicability artifact against the independently retained digest, re-assesses that bound source input, re-fetches each exact target through authenticated `gh api`, reruns bounded exact-batch coordination status only for `coordination_required`, and re-authenticates any waiver. Missing, altered, stale, tampered, contradictory, or mismatched facts block before any verifier or POST."
+  REQUIRED_TRUSTED_RECEIPT_WORKFLOW_CONFIG = "Completed-batch receipt `publish` and `replay` require explicit trusted workflow config plus the separate applicability artifact/path and independently retained digest. They load `coordination_backend` only from that YAML seam and bind applicability only from the authenticated artifact, never from an environment or receipt/source-input override. `coordination_required` requires a matching real backend and bounded exact-batch status replay, while a missing or `n/a` backend blocks. Authenticated `coordination_not_applicable` accepts the typed single-controller status proof with any configured backend and invokes no coordination command, including during reassessment. Missing, invalid, tampered, contradictory, or mismatched applicability/config facts block before any verifier or POST."
+  REQUIRED_ISSUE_RESULT_PR_PROJECTION = "The issue-to-result-PR projection requires an authenticated same-repository symmetric closing relationship, a closed source issue, a merged result PR, the exact result head, and ordered terminal timestamps; do not union the source issue and result PR as two publication targets, and re-authenticate the projection before ordinary receipt publish or replay."
+  REQUIRED_TYPED_LANE_TARGETS = "When typed for publication-preflight parsing, accepted lane-target forms are exactly `issue:N`, `pr:N`, or `pull_request:N`; malformed, unknown, or type-ambiguous spellings fail closed. These parsing forms are not distinct agent-coordination claim identities. Legacy bare `N`, `#N`, and positive integer lane targets remain compatible."
+  REQUIRED_NARROW_PROJECTION_SCOPE = "This projection is only for issue-to-result-PR publication; it does not authorize auxiliary ad-hoc target mappings or multiple coordination lanes for one publication target."
+  REQUIRED_MIXED_TARGET_RECONCILIATION = "An explicitly URL-less terminal `done` lane that already names mixed issue and pull-request targets reconciles the shared scalar `pr_state` per target only when durable terminal evidence exists, the scalar matches one resolved terminal state, every target state is freshly authenticated, the issue head remains absent, and exact-head QA stays bound to the pull request; this does not derive or union targets from a URL or admit auxiliary lanes."
+  ISSUE_RESULT_PR_PROJECTION_FILES = [
+    "skills/post-merge-audit/SKILL.md",
+    "workflows/post-merge-audit.md"
+  ].freeze
   REQUIRED_TRUSTED_UI_CLASSIFICATION = "Each `qa_evidence` row must carry a coordinator-owned `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's canonical target and publication snapshot; `yes` requires strict visual-evidence v2 replay, `no` preserves historical non-UI v1 replay, and missing, invalid, or v2-contradictory classification blocks."
   REQUIRED_PUBLIC_FALLBACK_PUBLICATION_BLOCK = "Configured `public claim-comment fallback` is advisory ownership state only; it must not invoke private `agent-coord`, and without a separate authenticated terminal coordination contract it leaves completed-batch publication blocked as `UNKNOWN`."
-  REQUIRED_TYPED_NO_BACKEND_EVIDENCE = "When `coordination_backend: n/a`, `coordination_status` must instead be a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks."
+  REQUIRED_TYPED_NO_BACKEND_EVIDENCE = "For `coordination_not_applicable`, `coordination_status` must be a typed single-controller proof: a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks."
   REQUIRED_TYPED_NO_PR_EVIDENCE = "An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks."
   REQUIRED_LEGACY_PUBLICATION_REFRESH = "A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness."
   REQUIRED_ACCEPTED_DEFERRAL_LIFECYCLE = "Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it."
@@ -119,7 +170,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_post_merge_audit_defaults_to_follow_up_issue_creation
     REQUIRED_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
       assert_includes text, REQUIRED_DEFAULT, "#{relative_path} should state the default issue-creation behavior"
       OBSOLETE_APPROVAL_GATES.each do |obsolete|
@@ -132,7 +183,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
     placement_pattern = /When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section[^.]*\./
 
     COMPLETED_BATCH_AUDIT_PLACEMENT_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
       assert_equal [COMPLETED_BATCH_AUDIT_PLACEMENT_RULE], text.scan(placement_pattern),
                    "#{relative_path} should use the canonical completed-batch audit placement rule"
@@ -141,7 +192,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_replacement_preclose_guard_is_mirrored
     REPLACEMENT_PRECLOSE_GUARD_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
 
       assert_includes text, REQUIRED_REPLACEMENT_PRECLOSE_GUARD,
                       "#{relative_path} should use the canonical replacement pre-close guard"
@@ -160,7 +211,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md",
       "workflows/pr-production-release.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_LEDGER_COMMENT_EXCEPTION
@@ -176,7 +227,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_follow_up_issue_creation_treats_audited_content_as_untrusted
     REQUIRED_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_UNTRUSTED_CONTENT_GUARD
@@ -192,7 +243,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   end
 
   def test_skill_closing_gate_uses_affirmative_default
-    text = File.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"), encoding: "UTF-8")
+    text = SkillStageSource.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"), encoding: "UTF-8")
     normalized_text = text.gsub(/\s+/, " ")
 
     assert_includes normalized_text, REQUIRED_SKILL_CLOSING_DEFAULT
@@ -205,12 +256,27 @@ class PostMergeAuditPolicyTest < Minitest::Test
     assert_includes normalized_text, REQUIRED_PR_PROCESSING_EXCEPTION
   end
 
+  def test_post_merge_audit_mentions_structural_review_as_a_separate_axis
+    text = SkillStageSource.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"), encoding: "UTF-8")
+    range_section = text.match(/^### Range-Level Structural Review\n(?<body>.*?)(?=^##? |\z)/m)
+
+    refute_nil range_section, "Structural review must be outside the per-PR and per-issue lists"
+    assert_includes range_section[:body].gsub(/\s+/, " "), REQUIRED_STRUCTURAL_REVIEW_AUDIT_CHECK
+  end
+
+  def test_structural_review_entry_point_remains_explicit
+    text = File.read(File.join(ROOT, "skills/structural-review/SKILL.md"), encoding: "UTF-8")
+    normalized_text = text.gsub(/\s+/, " ")
+
+    assert_includes normalized_text, REQUIRED_STRUCTURAL_REVIEW_ENTRY_POINT
+  end
+
   def test_outputs_include_issue_creation_accounting
     [
       "skills/post-merge-audit/SKILL.md",
       "workflows/pr-batch-integration-closeout.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_ISSUE_CREATION_ACCOUNTING
@@ -219,11 +285,94 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_unavailable_coordination_scope_requires_user_choice_before_deep_audit
     REQUIRED_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_UNAVAILABLE_COORDINATION_ASK
     end
+  end
+
+  def test_worked_issue_scope_authenticates_applicability_before_coordination_discovery
+    no_batch_branch_counts = {
+      "skills/post-merge-audit/SKILL.md" => 1,
+      "workflows/post-merge-audit.md" => 2,
+      "workflows/pr-batch-integration-closeout.md" => 1
+    }
+    section_patterns = {
+      "skills/post-merge-audit/SKILL.md" =>
+        /4\. Worked issue list:(?<body>.*?)\nAfter the scope algorithm/m,
+      "workflows/post-merge-audit.md" =>
+        /First, produce the exact worked-issue scope(?<body>.*?)\nAfter the scope algorithm/m,
+      "workflows/pr-batch-integration-closeout.md" =>
+        /2\. Resolve worked-issue scope(?<body>.*?)\n4\. After the scope algorithm/m
+    }
+
+    section_patterns.each do |relative_path, pattern|
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      scope_section = text.match(pattern)&.[](:body)
+
+      refute_nil scope_section, "#{relative_path} must expose the worked-issue scope state machine"
+
+      normalized_section = scope_section.gsub(/\s+/, " ")
+      assert_includes normalized_section, REQUIRED_WORKED_SCOPE_APPLICABILITY_GATE, relative_path
+      assert_includes normalized_section, REQUIRED_WORKED_SCOPE_NO_CALL_RULE, relative_path
+      assert_includes normalized_section, REQUIRED_WORKED_SCOPE_PROOF_BINDING, relative_path
+      assert_includes normalized_section, REQUIRED_WORKED_SCOPE_TARGET_COVERAGE, relative_path
+      assert_includes normalized_section, REQUIRED_WORKED_SCOPE_COORDINATION_RULE, relative_path
+      assert_includes normalized_section, REQUIRED_VERIFIED_WORKED_SCOPE_SOURCES, relative_path
+      assert_includes normalized_section, REQUIRED_NO_BATCH_WORKED_SCOPE, relative_path
+      assert_includes normalized_section, REQUIRED_ACTUAL_BATCH_SCOPE_GATE, relative_path
+      assert_operator normalized_section.index(REQUIRED_NO_BATCH_WORKED_SCOPE), :<,
+                      normalized_section.index(REQUIRED_WORKED_SCOPE_APPLICABILITY_GATE),
+                      "#{relative_path} must preserve the no-batch branch before batch applicability"
+      assert_operator scope_section.index("coordination_applicability"), :<,
+                      scope_section.index("agent-coord doctor --json"),
+                      "#{relative_path} must authenticate applicability before the first worked-scope command"
+      normalized_text = text.gsub(/\s+/, " ")
+      assert_equal no_batch_branch_counts.fetch(relative_path), normalized_text.scan(REQUIRED_NO_BATCH_WORKED_SCOPE).length,
+                   "#{relative_path} must preserve every no-batch audit entry point"
+      assert_equal no_batch_branch_counts.fetch(relative_path), normalized_text.scan(REQUIRED_ACTUAL_BATCH_SCOPE_GATE).length,
+                   "#{relative_path} must scope every applicability gate to actual batches"
+      refute_includes normalized_text, AMBIGUOUS_NO_COORDINATED_BATCH_SCOPE,
+                      "#{relative_path} must not classify an uncoordinated serialized batch as no-batch"
+    end
+
+    ordering_starts = {
+      "skills/post-merge-audit/SKILL.md" => "## Scope Gate",
+      "workflows/post-merge-audit.md" => "- Before creating any issue, search existing open issues",
+      "workflows/pr-batch-integration-closeout.md" => "## Post-Merge Batch Audit"
+    }
+
+    ordering_starts.each do |relative_path, start_marker|
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      audit_surface = text[text.index(start_marker)..].gsub(/\s+/, " ")
+
+      assert_operator audit_surface.index(REQUIRED_WORKED_SCOPE_APPLICABILITY_GATE), :<,
+                      audit_surface.index("agent-coord doctor --json"),
+                      "#{relative_path} must authenticate applicability before its first audit-scope command"
+    end
+  end
+
+  def test_every_applicability_paragraph_closes_with_the_same_required_only_rule
+    REQUIRED_ONLY_DISCOVERY_COUNTS.each do |relative_path, expected|
+      normalized = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_equal expected, normalized.scan(REQUIRED_REQUIRED_ONLY_DISCOVERY_RULE).length,
+                   "#{relative_path} must close every applicability paragraph with the same rule"
+    end
+  end
+
+  def test_batch_identity_is_defined_independently_of_coordination
+    text = File.read(File.join(ROOT, "workflows/post-merge-audit.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+
+    assert_includes text,
+                    "BATCH_ID = the known batch/run id, whether or not coordination applied to it; " \
+                    "UNKNOWN = batch work is in scope but no exact id or resolvable visible batch hint was " \
+                    "supplied; not applicable = no batch/run of any kind is in scope."
+    refute_includes text, "the known coordination batch run id",
+                    "batch identity must not be defined as a coordination-only id"
+    refute_includes text, "not applicable = no coordinated batch is in scope",
+                    "an uncoordinated serialized batch must not map to the not-applicable branch"
   end
 
   def test_completed_batch_audit_closes_with_an_explicit_conversation_status
@@ -232,7 +381,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "workflows/post-merge-audit.md",
       "workflows/pr-batch-integration-closeout.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP,
@@ -257,7 +406,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md",
       "workflows/post-merge-audit.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
       assert_includes text, REQUIRED_COMPLETED_BATCH_MODE_SCOPE,
                       "#{relative_path} should scope completed-batch ownership to completed-batch mode"
@@ -314,7 +463,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md",
       "workflows/post-merge-audit.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_ARCHIVE_READY_CRITERIA,
@@ -341,7 +490,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md",
       "workflows/post-merge-audit.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
       assert_includes text, REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE,
                       "#{relative_path} should reserve completed-batch handoff outputs for the coordinator's combined handoff"
@@ -363,7 +512,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md",
       "workflows/post-merge-audit.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       terminal_contract = text.index(REQUIRED_TERMINAL_NEXT_STEP)
       completed_batch_only = text.index(REQUIRED_COMPLETED_BATCH_MODE_SCOPE)
 
@@ -381,7 +530,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md",
       "workflows/post-merge-audit.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
       assert_includes text, COMPLETED_BATCH_AUDIT_MARKER_HEADER,
                       "#{relative_path} should require the completed-batch audit marker header"
@@ -422,7 +571,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_complete_publication_requires_terminal_coordination_and_exact_head_qa_snapshot
     REQUIRED_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_PUBLICATION_PREFLIGHT,
@@ -443,6 +592,10 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should re-authenticate the waiver during publication and replay"
       assert_includes normalized_text, REQUIRED_RAW_PREFLIGHT_INPUT_BINDING,
                       "#{relative_path} should bind the exact raw preflight input"
+      assert_includes normalized_text, REQUIRED_PREFLIGHT_INPUT_FIELDS,
+                      "#{relative_path} should bind coordination applicability in the input contract"
+      assert_includes normalized_text, REQUIRED_APPLICABILITY_SELECTED_PREFLIGHT_INPUT,
+                      "#{relative_path} should select preflight input without probing not-applicable coordination"
       assert_includes normalized_text, REQUIRED_LIVE_PREFLIGHT_REASSESSMENT,
                       "#{relative_path} should reacquire terminal facts before publication and replay"
       assert_includes normalized_text, REQUIRED_TRUSTED_RECEIPT_WORKFLOW_CONFIG,
@@ -464,9 +617,20 @@ class PostMergeAuditPolicyTest < Minitest::Test
     end
   end
 
+  def test_issue_targeted_lanes_project_only_to_one_authenticated_result_pr
+    ISSUE_RESULT_PR_PROJECTION_FILES.each do |relative_path|
+      normalized_text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes normalized_text, REQUIRED_ISSUE_RESULT_PR_PROJECTION, relative_path
+      assert_includes normalized_text, REQUIRED_TYPED_LANE_TARGETS, relative_path
+      assert_includes normalized_text, REQUIRED_NARROW_PROJECTION_SCOPE, relative_path
+      assert_includes normalized_text, REQUIRED_MIXED_TARGET_RECONCILIATION, relative_path
+    end
+  end
+
   def test_accepted_deferral_is_append_only_authenticated_and_non_product_only
     REQUIRED_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
 
       assert_includes text, REQUIRED_ACCEPTED_DEFERRAL_LIFECYCLE, relative_path
       assert_includes text, REQUIRED_ACCEPTED_DEFERRAL_GUARD, relative_path
