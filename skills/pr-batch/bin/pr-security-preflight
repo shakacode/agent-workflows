@@ -943,33 +943,6 @@ def warnings_not_already_blocking(suspicious_warnings, suspicious)
   suspicious_warnings.reject { |finding| blocking_locations.include?(finding.fetch(:location)) }
 end
 
-def oversized_pull_request_diff_error?(error)
-  message = error.message
-  message.include?("gh pr diff ") && message.match?(/HTTP 406/i) &&
-    (message.include?("diff exceeded the maximum number of lines") || message.include?("PullRequest.diff too_large"))
-end
-
-def pull_request_diff(repo, number)
-  {
-    content: run_gh("pr", "diff", number.to_s, "--repo", repo),
-    coverage_findings: []
-  }
-rescue RuntimeError => e
-  raise unless oversized_pull_request_diff_error?(e)
-
-  {
-    content: nil,
-    coverage_findings: [
-      {
-        connection: "pull request diff",
-        fetched_count: 0,
-        reason: "HTTP 406; diff exceeds GitHub's 20,000-line limit",
-        total_count: 1
-      }
-    ]
-  }
-end
-
 def suspicious_findings_for_target(repo:, number:, rest:, target:, target_is_pr:, trust_config:, team_cache:)
   suspicious = []
   suspicious_warnings = suspicious_text_findings(
@@ -990,9 +963,23 @@ def suspicious_findings_for_target(repo:, number:, rest:, target:, target_is_pr:
 
   diff_coverage_findings = []
   if target_is_pr
-    diff_result = pull_request_diff(repo, number)
-    diff_coverage_findings = diff_result.fetch(:coverage_findings)
-    diff = diff_result.fetch(:content)
+    begin
+      diff = run_gh("pr", "diff", number.to_s, "--repo", repo)
+    rescue RuntimeError => e
+      message = e.message
+      raise unless message.include?("gh pr diff ") && message.match?(/HTTP 406/i) &&
+                   (message.include?("diff exceeded the maximum number of lines") || message.include?("PullRequest.diff too_large"))
+
+      diff = nil
+      diff_coverage_findings = [
+        {
+          connection: "pull request diff",
+          fetched_count: 0,
+          reason: "HTTP 406; diff exceeds GitHub's 20,000-line limit",
+          total_count: 1
+        }
+      ]
+    end
     blocking_diff_findings = diff ? suspicious_added_lines(diff, pattern: BLOCKING_SUSPICIOUS_PATTERN) : []
     warning_diff_findings = diff ? suspicious_added_lines(diff, pattern: WARNING_SUSPICIOUS_PATTERN) : []
     suspicious.concat(blocking_diff_findings)
