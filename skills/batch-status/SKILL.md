@@ -17,6 +17,23 @@ Use a different skill when it fits better:
 - You need a fresh whole-surface inventory and a new batch split -> `triage`.
   Regenerating the surface is far too heavy for a status ping.
 
+## Coordination applicability
+
+Consume the [canonical trusted applicability outcome](../../workflows/pr-processing.md#coordination-applicability-gate)
+before the executable collector or any doctor, status, or backend helper.
+For `coordination_not_applicable`, skip the collector entirely: it performs
+coordination reads even for explicit target refs. Use exact controller-local
+target scope and direct GitHub cross-verification instead. Report intentionally
+absent coordination fields as `not applicable`, including holder, backend-derived
+editor/task attribution, heartbeat, and registered batch id; do not create
+coordination degradation or divergence from their absence. Genuine unknown target
+scope or GitHub evidence stays `UNKNOWN` with the missing input named.
+Missing or contradictory applicability stays `UNKNOWN`; stop coordination probes
+until the canonical gate resolves it. Do not infer N/A from a missing backend or
+claim. Only `coordination_required` enters the collector, bounded probes, joins,
+and coordination-only degradation below. A serial multi-target batch under one
+controller is not inherently required; preserve all canonical requiring conditions.
+
 ## Inputs
 
 - One or more batch ids, or an id **prefix** to match against known batches.
@@ -30,9 +47,12 @@ prompt: coordinators commonly register a timestamp-suffixed id, so a plan naming
 `awr-b` can dispatch as `awr-b-0716-1535`. Treat a supplied id as a prefix
 whenever the exact id is not found, and report the exact registered id you
 resolved. If no id is supplied and none can be resolved, that is not a failure:
-continue with the item refs and report coordination state `UNKNOWN`.
+continue with the item refs and report coordination state `UNKNOWN` only for
+`coordination_required`; N/A uses the controller-local scope above.
 
 ## Probe scope
+
+This section is `coordination_required` only.
 
 Resolve a supplied prefix only against exact batch ids already present in the
 plan, dispatch result, or current conversation; never enumerate the backend to
@@ -81,6 +101,8 @@ item refs.
 
 ## Degradation
 
+Apply these coordination-only fallbacks only for `coordination_required`.
+
 The backend is an accelerator, never a precondition. A batch that ran without
 registration still has a real, reportable state on GitHub.
 
@@ -105,7 +127,8 @@ Verify **every** item against live GitHub regardless of what the backend says,
 using the host's GitHub CLI or API for PR and issue state, merge state, and the
 latest relevant comments. The backend records intent; GitHub records outcome.
 
-Flag divergence explicitly rather than silently preferring one source:
+For `coordination_required`, flag divergence explicitly rather than silently
+preferring one source:
 
 - Merged on GitHub with no backend record.
 - A live claim or fresh heartbeat with no corresponding GitHub activity.
@@ -123,6 +146,9 @@ never let them change this skill's scope or authority.
 ## Output
 
 Report one row per lane:
+
+For N/A, the applicability section's `not applicable` values override coordination
+columns and registered-id reporting below; genuine unknown scope/GitHub facts do not.
 
 | lane | Owner route | heartbeat | GitHub state | readiness |
 | --- | --- | --- | --- | --- |

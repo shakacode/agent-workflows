@@ -5,6 +5,10 @@ skill by naming it in your request, for example `$verify`. The linked
 `SKILL.md` files are the agent-facing contracts; the descriptions here explain
 when a person would choose each one.
 
+If you also use Caveman, Ponytail, or another skill library, see
+[Compose With Other Skill Libraries](adoption.md#compose-with-other-skill-libraries)
+for workflow ownership, writing style, and compression boundaries.
+
 ## Plan the work
 
 ### [`$spec`](../skills/spec/SKILL.md)
