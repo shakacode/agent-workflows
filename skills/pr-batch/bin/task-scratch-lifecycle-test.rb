@@ -351,6 +351,82 @@ class TaskScratchLifecycleTest < Minitest::Test
     end
   end
 
+  def test_cleanup_rechecks_head_after_clean_review_before_removing_scratch
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, base_sha, reviewed_head = build_repository(directory)
+      source_path = File.join(repository, "work.txt")
+      File.write(source_path, "moved after review\n")
+      system("git", "-C", repository, "commit", "--quiet", "-am", "moved after review") ||
+        raise("git commit failed")
+      moved_head = git_output(repository, "rev-parse", "HEAD")
+      system("git", "-C", repository, "update-ref", "HEAD", reviewed_head) || raise("git update-ref failed")
+
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      durable_root = File.join(directory, "durable")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(durable_root)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      review_helper = File.join(helper_root, "task-review-loop")
+      instrumented_helper = File.read(HELPER).sub(
+        "  def remove_allowlisted_root(receipt, reviewed_head)\n",
+        <<~'RUBY'
+          def remove_allowlisted_root(receipt, reviewed_head)
+            moved = system(
+              ENV.fetch("REAL_GIT"), "-C", receipt.fetch("worktree_root"),
+              "update-ref", "HEAD", ENV.fetch("MOVE_HEAD_TO")
+            )
+            fail!("test-head-move-failed") unless moved
+        RUBY
+      )
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      File.chmod(0o755, lifecycle_helper)
+      write_clean_review_helper(review_helper)
+      created, create_stderr, create_status = run_create(
+        repository, scratch_parent, identity_path, ["evidence.json"], helper: lifecycle_helper
+      )
+      assert create_status.success?, create_stderr
+      receipt = created.fetch("receipt")
+      scratch_root = receipt.fetch("scratch_root")
+      evidence_path = File.join(scratch_root, "evidence.json")
+      File.write(evidence_path, "owned evidence\n")
+      receipt_path = File.join(durable_root, "scratch-receipt.json")
+      File.write(receipt_path, JSON.generate(receipt))
+      review_input_path, review_artifacts = write_clean_review_input(
+        durable_root, repository, base_sha, reviewed_head
+      )
+      root_stat = File.stat(scratch_root)
+      preserved_paths = [
+        receipt_path,
+        evidence_path,
+        File.join(scratch_root, ".task-scratch-owner.json"),
+        review_input_path,
+        *review_artifacts
+      ]
+      preserved_bytes = preserved_paths.to_h { |path| [path, File.binread(path)] }
+
+      blocked, cleanup_stderr, cleanup_status = run_cleanup(
+        receipt_path,
+        review_input_path,
+        helper: lifecycle_helper,
+        env: { "REAL_GIT" => executable_on_path("git"), "MOVE_HEAD_TO" => moved_head }
+      )
+
+      refute cleanup_status.success?, cleanup_stderr
+      assert_empty cleanup_stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "review-head-changed", blocked.fetch("reason")
+      assert_equal moved_head, git_output(repository, "rev-parse", "HEAD")
+      assert_equal [root_stat.dev, root_stat.ino], [File.stat(scratch_root).dev, File.stat(scratch_root).ino]
+      preserved_bytes.each { |path, bytes| assert_equal bytes, File.binread(path) }
+      assert_empty Dir.glob(File.join(scratch_parent, ".task-scratch-cleanup-*"))
+    end
+  end
+
   def test_create_and_cleanup_ignore_inherited_repository_selectors
     Dir.mktmpdir("task-scratch-lifecycle") do |directory|
       repository, base_sha, reviewed_head = build_repository(directory)
@@ -2394,6 +2470,14 @@ class TaskScratchLifecycleTest < Minitest::Test
   end
 
   private
+
+  def executable_on_path(name)
+    executable = ENV.fetch("PATH").split(File::PATH_SEPARATOR).filter_map do |path|
+      candidate = File.expand_path(File.join(path, name))
+      candidate if File.file?(candidate) && File.executable?(candidate)
+    end.first
+    executable || raise("#{name} executable not found on PATH")
+  end
 
   def assert_cleanup_blocks_when_review_helper_cannot_launch(mode)
     Dir.mktmpdir("task-scratch-lifecycle") do |directory|

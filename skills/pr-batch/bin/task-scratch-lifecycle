@@ -720,7 +720,20 @@ module TaskScratchLifecycle
     fail!("review-input-invalid")
   end
 
-  def remove_allowlisted_root(receipt)
+  def current_review_head(receipt)
+    stdout, stderr, status = PrBatchGitProbeEnv.capture3(
+      PrBatchGitProbeEnv.probe_env,
+      "git", "rev-parse", "--verify", "HEAD^{commit}", chdir: receipt.fetch("worktree_root")
+    )
+    fail!("review-head-unavailable") unless status.success? && stderr.empty?
+    head = stdout.strip
+    fail!("review-head-unavailable") unless head.match?(/\A[0-9a-f]{40}\z/)
+    head
+  rescue PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError
+    fail!("review-head-unavailable")
+  end
+
+  def remove_allowlisted_root(receipt, reviewed_head)
     CleanupSyscalls.ensure_cleanup_supported!
     root = receipt.fetch("scratch_root")
     parent = receipt.fetch("scratch_parent")
@@ -731,6 +744,7 @@ module TaskScratchLifecycle
     holder_name, holder, holder_stat = create_cleanup_holder(parent_file)
     fail!("cleanup-holder-invalid") unless holder_stat.directory? && holder_stat.uid == Process.euid &&
                                            (holder_stat.mode & 0o077).zero?
+    fail!("review-head-changed") unless current_review_head(receipt) == reviewed_head
     root_name = File.basename(root)
     current_root = open_at(parent_file, root_name)
     fail!("scratch-root-rebound") unless root_identity_matches?(current_root.stat, receipt)
@@ -791,9 +805,10 @@ module TaskScratchLifecycle
                                                    common_dir == receipt["repository_common_dir"]
       validate_owned_root(receipt)
       validate_allowlisted_contents(receipt.fetch("scratch_root"), receipt.fetch("allowlist"))
+      reviewed_head = current_review_head(receipt)
       fail!("review-clean-required") unless clean_review?(receipt, options[:review_input])
 
-      remove_allowlisted_root(receipt)
+      remove_allowlisted_root(receipt, reviewed_head)
       {
         "contract" => "task-scratch-lifecycle-decision",
         "version" => 1,

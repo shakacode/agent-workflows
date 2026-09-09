@@ -962,12 +962,19 @@ module TaskReviewLoop
     packages.each do |label, package|
       next unless package.is_a?(Hash)
 
-      captured, capture_stderr, capture_status = PrBatchGitProbeEnv.capture3(
-        PrBatchGitProbeEnv.probe_env,
-        "git", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "--binary",
-        "--src-prefix=a/", "--dst-prefix=b/", "--ignore-submodules=none", "--submodule=short",
-        package["base_sha"].to_s, package["head_sha"].to_s, "--", chdir: canonical_root
-      )
+      captured, capture_stderr, capture_status = begin
+        PrBatchGitProbeEnv.capture3(
+          PrBatchGitProbeEnv.probe_env,
+          "git", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "--binary",
+          "--src-prefix=a/", "--dst-prefix=b/", "--ignore-submodules=none", "--submodule=short",
+          package["base_sha"].to_s, package["head_sha"].to_s, "--",
+          chdir: canonical_root,
+          stdout_limit_bytes: MAX_ARTIFACT_BYTES
+        )
+      rescue PrBatchGitProbeEnv::OutputLimitError
+        errors << "#{label}-canonical-diff-too-large"
+        next
+      end
       unless capture_status.success? && capture_stderr.empty?
         errors << "#{label}-canonical-diff-unavailable"
         next

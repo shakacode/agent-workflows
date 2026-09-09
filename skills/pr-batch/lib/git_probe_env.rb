@@ -6,6 +6,7 @@ require "tempfile"
 module PrBatchGitProbeEnv
   GIT_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS", "10"))
   TimeoutError = Class.new(StandardError)
+  OutputLimitError = Class.new(StandardError)
 
   # Keep this fallback in sync with `git rev-parse --local-env-vars` for the
   # oldest supported Git; it is used only when the dynamic query fails.
@@ -55,7 +56,25 @@ module PrBatchGitProbeEnv
     end
   end
 
-  def capture3(env, *command, stdin_data: nil, timeout_seconds: GIT_TIMEOUT_SECONDS, chdir: nil)
+  def capture3(
+    env,
+    *command,
+    stdin_data: nil,
+    timeout_seconds: GIT_TIMEOUT_SECONDS,
+    chdir: nil,
+    stdout_limit_bytes: nil
+  )
+    if stdout_limit_bytes
+      return capture3_with_stdout_limit(
+        env,
+        *command,
+        stdin_data: stdin_data,
+        timeout_seconds: timeout_seconds,
+        chdir: chdir,
+        stdout_limit_bytes: stdout_limit_bytes
+      )
+    end
+
     Tempfile.create("git-probe-stdin") do |stdin|
       Tempfile.create("git-probe-stdout") do |stdout|
         Tempfile.create("git-probe-stderr") do |stderr|
@@ -78,6 +97,78 @@ module PrBatchGitProbeEnv
         ensure
           terminate_process_group(pid) if pid && !status
         end
+      end
+    end
+  end
+
+  def capture3_with_stdout_limit(
+    env,
+    *command,
+    stdout_limit_bytes:,
+    stdin_data: nil,
+    timeout_seconds: GIT_TIMEOUT_SECONDS,
+    chdir: nil
+  )
+    limit = Integer(stdout_limit_bytes, exception: false)
+    raise ArgumentError, "stdout limit must be a nonnegative integer" unless limit && !limit.negative?
+
+    pid = nil
+    status = nil
+    stdout_reader = nil
+    stdout_writer = nil
+    Tempfile.create("git-probe-stdin") do |stdin|
+      Tempfile.create("git-probe-stderr") do |stderr|
+        stdout_reader, stdout_writer = IO.pipe
+        [stdin, stderr, stdout_reader, stdout_writer].each(&:binmode)
+        stdin.write(stdin_data) if stdin_data
+        stdin.rewind
+        spawn_options = { in: stdin, out: stdout_writer, err: stderr, pgroup: true }
+        spawn_options[:chdir] = chdir if chdir
+        pid = Process.spawn(env, *command, **spawn_options)
+        stdout_writer.close
+        stdout_bytes = +"".b
+        stdout_eof = false
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
+
+        loop do
+          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          unless remaining.positive?
+            terminate_process_group(pid)
+            status = :terminated
+            raise TimeoutError, "Git probe timed out after #{timeout_seconds} seconds"
+          end
+
+          if !stdout_eof && IO.select([stdout_reader], nil, nil, [0.01, remaining].min)
+            read_length = [64 * 1024, (limit + 1) - stdout_bytes.bytesize].min
+            chunk = stdout_reader.read_nonblock(read_length, exception: false)
+            case chunk
+            when String
+              stdout_bytes << chunk
+              if stdout_bytes.bytesize > limit
+                terminate_process_group(pid)
+                status = :terminated
+                raise OutputLimitError, "Git probe stdout exceeded #{limit} bytes"
+              end
+            when nil
+              stdout_eof = true
+            end
+          end
+
+          unless status
+            waited = Process.waitpid2(pid, Process::WNOHANG)
+            status = waited[1] if waited
+          end
+          break if status && stdout_eof
+
+          sleep [0.01, remaining].min if stdout_eof && !status
+        end
+
+        stderr.rewind
+        [stdout_bytes, stderr.read, status]
+      ensure
+        stdout_reader&.close unless stdout_reader&.closed?
+        stdout_writer&.close unless stdout_writer&.closed?
+        terminate_process_group(pid) if pid && !status
       end
     end
   end
