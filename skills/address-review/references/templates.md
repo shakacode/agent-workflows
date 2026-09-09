@@ -269,10 +269,10 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
   printf '🤖 **%s · %s**\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
   if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
     printf '## Review follow-up complete\n\n'
-    printf 'I checked review activity %s. Every review item in that window has a recorded outcome, so the next routine check can start after this comment.\n\n' "${SCAN_SCOPE}"
+    printf 'Every review item in the selected scan has a recorded outcome, so the next routine check can start after this comment.\n\n'
   else
     printf '## Review follow-up needs another pass\n\n'
-    printf 'I checked review activity %s. Some earlier feedback still needs an explicit outcome, so this comment does not set a new review checkpoint.\n\n' "${SCAN_SCOPE}"
+    printf 'Some feedback in the selected scan still needs an explicit outcome, so this comment does not set a new review checkpoint.\n\n'
   fi
   printf '<details>\n'
   printf '<summary>Agent details</summary>\n\n'

@@ -59,10 +59,10 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
       "printf '**Deferred-work tracking:** %s\\n\\n' \"${TRACKING_OUTCOME}\"",
       "printf '\\n</details>\\n'"
     )
-    assert_includes primary, "Every review item in that window has a recorded outcome"
-    assert_includes primary, "Some earlier feedback still needs an explicit outcome"
     assert_includes primary, "**Next scan:** Start after this comment. Say `check all reviews` to rescan the full PR."
     assert_includes primary, "**Next scan:** Use `check all reviews`; this comment is not a cutoff."
+    assert_equal 1, primary.scan("\${SCAN_SCOPE}").length
+    assert_operator primary.index("\${SCAN_SCOPE}"), :>, primary.index("printf '<summary>Agent details</summary>")
     refute_includes primary, "<details open>"
   end
 
