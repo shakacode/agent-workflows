@@ -225,11 +225,10 @@ module FetchPrReviewData
       parent = comment["in_reply_to_id"]
       next unless parent && excluded_ids.include?(parent)
 
-      representative = comment["thread_id"] || parent
-      next if represented_roots.include?(representative)
+      next if represented_roots.include?(parent)
 
       comment["root_excluded"] = true
-      represented_roots << representative
+      represented_roots << parent
     end
     kept
   end

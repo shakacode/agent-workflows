@@ -214,14 +214,23 @@ class FetchPrReviewDataTrustTest < Minitest::Test
            "created_at":"2026-01-06T00:00:00Z","html_url":"https://gh/rc/32"}
         ]]
       JSON
+      threads = <<~JSON
+        [{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+          {"id":"T_EXCLUDED","isResolved":false,"comments":{"nodes":[
+            {"id":"RC_30","databaseId":30},{"id":"RC_31","databaseId":31}
+          ]}}
+        ]}}}}}]
+      JSON
       trust = FetchPrReviewData::TrustBoundary.for(repo: "owner/repo", trust_config_path: path)
       out = FetchPrReviewData.assemble(
         repo: "owner/repo", pr_number: 1, issue_raw: "[]", reviews_raw: "[]",
-        inline_raw: inline, threads_raw: nil, trust:
+        inline_raw: inline, threads_raw: threads, trust:
       )
       by_id = out["inline_comments"].to_h { |row| [row["id"], row] }
 
       assert_equal([30, 40], out["excluded_interactions"].map { |row| row["id"] })
+      assert_equal "T_EXCLUDED", by_id[31]["thread_id"]
+      assert_nil by_id[33]["thread_id"], "the later REST-only reply deliberately lacks GraphQL metadata"
       assert_equal true, by_id[31]["root_excluded"], "an orphaned trusted reply must be flagged"
       refute by_id[33].key?("root_excluded"), "later replies must remain context"
       assert_equal true, by_id[41]["root_excluded"], "each excluded root needs one representative"
