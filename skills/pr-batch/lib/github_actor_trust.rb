@@ -369,10 +369,7 @@ module GithubActorTrust
       next false unless normalized_login(team_owner) == normalized_repo_owner
 
       cache_key = [normalized_repo_owner, team.fetch(:slug), normalized_login(login)]
-      unless team_cache.key?(cache_key)
-        team_cache[cache_key] = team_resolver.call(owner: team_owner, slug: team.fetch(:slug), login:)
-      end
-      team_cache[cache_key]
+      team_cache[cache_key] ||= team_resolver.call(owner: team_owner, slug: team.fetch(:slug), login:)
     end
   end
 

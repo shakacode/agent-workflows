@@ -105,6 +105,27 @@ class GithubActorTrustTest < Minitest::Test
     assert_equal :untrusted, classify("stranger", yaml: "trusted_teams: [reviewers]\n", team_resolver: resolver)
   end
 
+  # A transient failed membership lookup must not demote a configured reviewer
+  # for the rest of a long-running preflight invocation.
+  def test_negative_team_membership_result_is_retried
+    cache = {}
+    results = [false, true]
+    resolver = ->(**) { results.shift }
+    loaded = config("trusted_teams: [reviewers]\n")
+
+    assert_equal :untrusted,
+                 GithubActorTrust.classify(
+                   repo: "owner/repo", login: "member", config: loaded,
+                   team_cache: cache, team_resolver: resolver
+                 )
+    assert_equal :trusted,
+                 GithubActorTrust.classify(
+                   repo: "owner/repo", login: "member", config: loaded,
+                   team_cache: cache, team_resolver: resolver
+                 )
+    assert_empty results
+  end
+
   def test_a_team_owned_by_another_org_is_ignored
     resolver = ->(**) { true }
 
@@ -224,7 +245,7 @@ class GithubActorTrustTest < Minitest::Test
     assert_equal ["github.com-work"], resolved_aliases
   end
 
-  def test_ssh_uri_keeps_an_api_port_when_ssh_resolves_to_the_same_host
+  def test_ssh_uri_keeps_its_transport_port_when_ssh_resolves_to_the_same_host
     remote = GithubActorTrust.github_remote_from_remote_url(
       "ssh://git@github.company.example:8443/owner/repo.git",
       ssh_host_resolver: ->(host) { host }

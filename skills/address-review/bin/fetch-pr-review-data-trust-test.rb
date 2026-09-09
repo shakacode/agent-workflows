@@ -80,6 +80,19 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     trusted_teams: []
   YAML
 
+  def setup
+    @github_host_was_set = ENV.key?("GH_HOST")
+    @github_host = ENV.delete("GH_HOST")
+  end
+
+  def teardown
+    if @github_host_was_set
+      ENV["GH_HOST"] = @github_host
+    else
+      ENV.delete("GH_HOST")
+    end
+  end
+
   def with_trust_config
     Dir.mktmpdir("aw794-trust") do |dir|
       path = File.join(dir, "trusted-github-actors.yml")
