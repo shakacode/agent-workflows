@@ -245,6 +245,33 @@ module AgentWorkflowsStatus
       inventory_error = stable_release_inventory_error(materialized, metadata)
       return [nil, inventory_error] if inventory_error
 
+      if metadata.fetch("delivery_mode", "flat") == "flat"
+        released_skills = File.join(materialized, "skills")
+        installed_skills = File.join(target, "skills")
+        unless File.directory?(installed_skills) && !File.symlink?(installed_skills)
+          return [nil, "installed skill directory is missing or is a symlink"]
+        end
+
+        Dir.children(released_skills).each do |name|
+          released = File.join(released_skills, name)
+          next unless File.directory?(released) && !File.symlink?(released)
+
+          installed = File.join(installed_skills, name)
+          unless File.directory?(installed) && !File.symlink?(installed)
+            return [nil, "installed release skill is missing or is a symlink: #{name}"]
+          end
+        end
+      end
+
+      license = File.join(materialized, "LICENSE")
+      return [nil, "release license is not a regular file"] unless File.file?(license) && !File.symlink?(license)
+
+      license_error = stable_managed_surface_error(
+        target, { "release_license" => { "LICENSE" => Digest::SHA256.file(license).hexdigest } },
+        fields: { "release license" => %w[release_license .] }
+      )
+      return [nil, license_error] if license_error
+
       doctor = File.join(materialized, "bin/agent_doctor")
       if File.exist?(doctor) || File.symlink?(doctor)
         unless File.directory?(doctor) && !File.symlink?(doctor)

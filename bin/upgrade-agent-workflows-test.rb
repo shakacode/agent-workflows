@@ -459,7 +459,8 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
                                    "--release", "v0.1.0", "--delivery-mode", "plugin-companion")
       assert status.success?, output
 
-      [[target, "bin/agent_doctor/contract.rb"], [companion, "lib/agent-workflows/secure_github_actions_scanner.rb"]].each do |home, relative|
+      [[target, "bin/agent_doctor/contract.rb"], [companion, "lib/agent-workflows/secure_github_actions_scanner.rb"],
+       [target, "LICENSE"], [companion, "LICENSE"]].each do |home, relative|
         command = [File.join(home, "bin/agent-workflows-status"), "--host", "claude", "--target", home, "--source", source, "--json"]
         output, status = run_command(*command)
         assert_equal 0, status.exitstatus, output
@@ -526,6 +527,48 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
       payload = JSON.parse(output)
       assert_equal "0.1.0", payload.fetch("installed_version")
       assert_equal "0.1.1", payload.fetch("available_version")
+    end
+  end
+
+  def test_stable_status_requires_every_installed_flat_skill
+    with_release_repository do |source, target, _commits|
+      install_stable(source, target, "v0.1.0", host: "claude")
+      command = [File.join(target, "bin/agent-workflows-status"), "--host", "claude", "--target", target, "--source", source, "--json"]
+      output, status = run_command(*command)
+      assert_equal 0, status.exitstatus, output
+
+      skills = File.join(target, "skills")
+      skill = File.join(skills, "status")
+      saved_skill = "#{target}-saved-skill"
+      FileUtils.mv(skill, saved_skill)
+      output, status = run_command(*command)
+      assert_equal 3, status.exitstatus, output
+      assert_includes JSON.parse(output).fetch("reason"), "skill"
+      metadata_path = File.join(target, ".agent-workflows-install.json")
+      original_metadata = File.binread(metadata_path)
+      metadata = JSON.parse(original_metadata)
+      metadata.delete("delivery_mode")
+      File.write(metadata_path, JSON.generate(metadata))
+      output, status = run_command(*command)
+      assert_equal 3, status.exitstatus, output
+      assert_includes JSON.parse(output).fetch("reason"), "skill"
+      File.binwrite(metadata_path, original_metadata)
+      FileUtils.mv(saved_skill, skill)
+
+      saved_skills = "#{target}-saved-skills"
+      FileUtils.mv(skills, saved_skills)
+      FileUtils.mkdir_p(skills)
+      output, status = run_command(*command)
+      assert_equal 3, status.exitstatus, output
+      assert_includes JSON.parse(output).fetch("reason"), "skill"
+      FileUtils.rmdir(skills)
+      output, status = run_command(*command)
+      assert_equal 3, status.exitstatus, output
+      assert_includes JSON.parse(output).fetch("reason"), "skill"
+      FileUtils.mv(saved_skills, skills)
+
+      output, status = run_command(*command)
+      assert_equal 0, status.exitstatus, output
     end
   end
 

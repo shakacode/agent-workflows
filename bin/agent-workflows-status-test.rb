@@ -254,6 +254,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
         File.write(File.join(source, "bin/install-agent-workflows"), "echo incidental-inventory-warning >&2\nprintf '%s\\n' '#{JSON.generate(version: 1, bin_helpers: [], pack_docs: ['café.md'])}'\n")
         File.write(File.join(source, "THIRD_PARTY-NOTICES.md"), "release notices\n")
         FileUtils.cp(File.join(source, "THIRD_PARTY-NOTICES.md"), File.join(target, "THIRD_PARTY-NOTICES.md"))
+        [source, target].each { |root| File.write(File.join(root, "LICENSE"), "release license\n") }
         system("git", "-C", source, "init", "--quiet", exception: true)
         system("git", "-C", source, "config", "user.email", "status-test@example.com", exception: true)
         system("git", "-C", source, "config", "user.name", "Status Test", exception: true)
@@ -375,6 +376,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
         root_file = File.join(target, "THIRD_PARTY-NOTICES.md")
         File.write(File.join(source, "THIRD_PARTY-NOTICES.md"), "release notices\n")
         FileUtils.cp(File.join(source, "THIRD_PARTY-NOTICES.md"), root_file)
+        [source, target].each { |root| File.write(File.join(root, "LICENSE"), "release license\n") }
         File.write(File.join(source, "bin/release-helper"), "#!/usr/bin/env bash\nexit 0\n")
         FileUtils.chmod(0o755, File.join(source, "bin/release-helper"))
         FileUtils.cp(File.join(source, "bin/release-helper"), helper)
