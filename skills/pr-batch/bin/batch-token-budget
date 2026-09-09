@@ -2237,7 +2237,12 @@ module BatchTokenBudget
   end
 
   def valid_checkpoint?(checkpoint, state)
-    return false unless checkpoint.is_a?(Hash) && checkpoint["type"] == "batch-token-budget-checkpoint" &&
+    checkpoint_keys = %w[
+      batch_id branch completion exact_work gates head_sha id receipt_cutoff resume_action
+      resume_conditions scope_id status type version
+    ]
+    return false unless checkpoint.is_a?(Hash) && checkpoint.keys.sort == checkpoint_keys.sort &&
+                        checkpoint["type"] == "batch-token-budget-checkpoint" &&
                         checkpoint["version"] == 1 && nonempty_string?(checkpoint["id"]) &&
                         checkpoint["batch_id"] == state["batch_id"] &&
                         !scope(state, checkpoint["scope_id"]).nil?

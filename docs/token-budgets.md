@@ -252,8 +252,10 @@ misclassify a valid legacy receipt as malformed.
 
 Initialization persists its command `evaluated_at` as the authoritative initial
 usage cutoff in the initialization receipt and control-event root. The first
-accepted window must begin exactly there; it then binds the batch id,
-coordinator identity/root, and every planned lane root. Later windows must
+accepted window must begin exactly there. Accepted zero-token windows advance
+the cursor without establishing identity binding. The first accepted positive-use
+window binds the batch id, coordinator identity/root, and every planned lane root
+only after every included identity is proven. Later windows must
 preserve those identities and begin at the prior exclusive cutoff. Exact replay
 does not recount; a changed receipt
 for the same window, gap, overlap, rollback, identity drift, stale/future

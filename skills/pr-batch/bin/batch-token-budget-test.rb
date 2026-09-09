@@ -6266,6 +6266,21 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "a" * 40, saved.dig("checkpoint", "head_sha")
       assert_equal checkpoint.fetch("gates"), saved.dig("checkpoint", "gates")
 
+      state_before_unknown_field = File.binread(state_path)
+      unknown_field_checkpoint = JSON.parse(JSON.generate(checkpoint)).merge(
+        "id" => "checkpoint-hard-unknown-field",
+        "transcript" => "SENSITIVE SENTINEL"
+      )
+      unknown_field, unknown_field_stderr, unknown_field_status = run_helper(
+        state_path,
+        command("checkpoint", "checkpoint" => unknown_field_checkpoint)
+      )
+      refute unknown_field_status.success?
+      assert_nil unknown_field
+      assert_equal "invalid-checkpoint", JSON.parse(unknown_field_stderr).fetch("reason")
+      assert_equal state_before_unknown_field, File.binread(state_path)
+      refute_includes File.binread(state_path), "SENSITIVE SENTINEL"
+
       fabricated = JSON.parse(JSON.generate(checkpoint)).merge(
         "id" => "checkpoint-hard-fabricated",
         "receipt_cutoff" => "2026-08-12T11:00:01Z"
@@ -8564,6 +8579,17 @@ class BatchTokenBudgetTest < Minitest::Test
                     "one verified already-running turn for each deduplicated admitted target and retained descendant"
     refute_includes contract, "persisted envelope is exactly one in-flight turn"
     assert_includes contract, "no greater than the persisted deduplicated target-plus-retained-descendant envelope"
+  end
+
+  def test_portable_budget_contract_describes_deferred_zero_use_identity_binding
+    root = File.expand_path("../../..", __dir__)
+    contract = File.read(File.join(root, "docs/token-budgets.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+
+    assert_includes contract, "Accepted zero-token windows advance the cursor without establishing identity binding"
+    assert_includes contract, "first accepted positive-use window"
+    assert_includes contract, "every planned lane root only after every included identity is proven"
+    assert_includes contract, "only after every included identity is proven"
+    refute_includes contract, "planned lane and worker root"
   end
 
   def test_invalid_command_timestamps_are_rejected_before_lock_artifact_creation

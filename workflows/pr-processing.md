@@ -1354,7 +1354,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
 Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
-- coordination_not_applicable=>no calls;coordination_required+n/a=>stop;claims/deps: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+- coordination_not_applicable=>no calls;coordination_required+n/a=>stop;coordination_required=>claims/deps:stable ids+heartbeats;register before launch when supported;claim refusal=>stop; push holder/generation check;known deps=>gate permissions;missing/UNKNOWN deps=>stop.
 Batch QA Lane:<owner/scope+evidence|none+rationale>
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
 - ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;chg=>redo/stop;fail=>stop;ask iff same clean

@@ -111,9 +111,9 @@ DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; 
 DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle"
 COORDINATION_DEPENDENCY_PROMPT_LINE =
   "- coordination_not_applicable=>no calls;coordination_required+n/a=>stop;" \
-  "claims/deps: stable ids+heartbeats; " \
-  "register before launch when supported; claim refusal=>stop; push holder/generation check; " \
-  "known deps=>gate permissions; missing/UNKNOWN deps=>stop."
+  "coordination_required=>claims/deps:stable ids+heartbeats;" \
+  "register before launch when supported;claim refusal=>stop; push holder/generation check;" \
+  "known deps=>gate permissions;missing/UNKNOWN deps=>stop."
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
                                "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam"
 STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/exclusions/owners;" \
