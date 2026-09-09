@@ -3279,6 +3279,75 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_rejects_symlinked_workflow_policy_in_bootstrap_fetch_and_checkout
+    with_clean_real_git_checkout("trusted-base-symlinked-workflow-policy") do |_dir, repo_root, _base_sha, operations|
+      policy_yaml =
+        "{pr_security_preflight: {trusted_base_high_risk_acceptance: {enabled: true, " \
+        "repository: owner/repo, remote: origin, ref: refs/heads/main}}}"
+      policy_path = File.join(repo_root, WORKFLOW_CONFIG_PATH)
+      target_path = File.join(File.dirname(policy_path), policy_yaml)
+      FileUtils.mkdir_p(File.dirname(target_path))
+      File.write(target_path, policy_yaml)
+      File.symlink(policy_yaml, policy_path)
+      git! "-C", repo_root, "add", "--", WORKFLOW_CONFIG_PATH
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "track symlinked workflow policy"
+      base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+
+      bootstrap_policy, bootstrap_error = operations.bootstrap_policy(repo_root, repo: "owner/repo")
+      assert_nil bootstrap_policy
+      assert_equal "#{WORKFLOW_CONFIG_PATH} is not a regular file in the current worktree", bootstrap_error
+
+      fetched_policy, fetched_error = operations.fetched_policy(repo_root, base_sha, repo: "owner/repo")
+      assert_nil fetched_policy
+      assert_equal "fetched trusted base #{WORKFLOW_CONFIG_PATH} is not a regular file", fetched_error
+
+      matches, checkout_error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+      refute matches
+      assert_equal "trusted checkout command/instruction seams cannot be symlinks", checkout_error
+    end
+  end
+
+  def test_bootstrap_policy_rejects_fifo_replacement_without_blocking
+    Dir.mktmpdir("trusted-base-workflow-policy-fifo-race") do |repo_root|
+      policy_path = File.join(repo_root, WORKFLOW_CONFIG_PATH)
+      FileUtils.mkdir_p(File.dirname(policy_path))
+      File.write(policy_path, YAML.dump(trusted_base_policy))
+      original_lstat = File.method(:lstat)
+      replace_with_fifo = lambda do |path|
+        stat = original_lstat.call(path)
+        FileUtils.rm_f(path)
+        raise "could not create FIFO fixture" unless system("/usr/bin/mkfifo", path)
+
+        stat
+      end
+      file_singleton = File.singleton_class
+      file_singleton.send(:define_method, :lstat, &replace_with_fifo)
+      result = Queue.new
+      worker = Thread.new do
+        result << bootstrap_trusted_base_policy(repo_root, repo: "owner/repo")
+      end
+
+      unless worker.join(1)
+        worker.kill
+        worker.join
+        flunk "bootstrap policy blocked while opening a raced FIFO"
+      end
+
+      policy, error = result.pop
+      assert_nil policy
+      assert_equal "#{WORKFLOW_CONFIG_PATH} is not a regular file in the current worktree", error
+    ensure
+      file_singleton&.send(:define_method, :lstat, original_lstat) if original_lstat
+      worker&.kill if worker&.alive?
+      worker&.join
+    end
+  end
+
   def test_trusted_base_policy_accepts_branch_refs_validated_by_real_git
     previous_executable = TrustedGitState.executable
     previous_local_env_vars = TrustedGitState.local_env_vars

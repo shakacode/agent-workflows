@@ -1529,9 +1529,25 @@ end
 
 def bootstrap_trusted_base_policy(root, repo:)
   path = File.join(root, WORKFLOW_CONFIG_PATH)
-  return [nil, "#{WORKFLOW_CONFIG_PATH} is missing from the current worktree"] unless File.file?(path)
+  path_stat = File.lstat(path)
+  unless path_stat.file?
+    return [nil, "#{WORKFLOW_CONFIG_PATH} is not a regular file in the current worktree"]
+  end
 
-  trusted_base_policy_from_yaml(File.read(path), repo:)
+  contents = File.open(path, File::RDONLY | File::NOFOLLOW | File::NONBLOCK) do |file|
+    file_stat = file.stat
+    unless file_stat.file? && file_stat.dev == path_stat.dev && file_stat.ino == path_stat.ino
+      return [nil, "#{WORKFLOW_CONFIG_PATH} is not a regular file in the current worktree"]
+    end
+
+    file.read
+  end
+
+  trusted_base_policy_from_yaml(contents, repo:)
+rescue Errno::ENOENT, Errno::ENOTDIR
+  [nil, "#{WORKFLOW_CONFIG_PATH} is missing from the current worktree"]
+rescue Errno::ELOOP
+  [nil, "#{WORKFLOW_CONFIG_PATH} is not a regular file in the current worktree"]
 rescue SystemCallError => e
   [nil, "could not read bootstrap policy: #{e.message}"]
 end
@@ -1739,13 +1755,12 @@ rescue StandardError => e
   [nil, "isolated trusted-base fetch failed: #{e.message.lines.first&.strip}"]
 end
 
-def fetched_trusted_base_policy(root, base_sha, repo:)
-  stdout, stderr, status = capture_trusted_git_probe(
-    "-C", root, "show", "#{base_sha}:#{WORKFLOW_CONFIG_PATH}"
-  )
-  return [nil, "fetched trusted base lacks #{WORKFLOW_CONFIG_PATH}: #{stderr.to_s.lines.first&.strip}"] unless status&.success?
+def fetched_trusted_base_policy(root, base_sha, repo:, operations:)
+  record, error = operations.fetched_file(root, base_sha, WORKFLOW_CONFIG_PATH)
+  return [nil, error] unless record
 
-  trusted_base_policy_from_yaml(stdout.force_encoding("UTF-8").scrub, repo:)
+  contents = record.fetch(:contents).dup.force_encoding("UTF-8").scrub
+  trusted_base_policy_from_yaml(contents, repo:)
 end
 
 def graph_pr_merge_actor_login(target)
@@ -2070,6 +2085,7 @@ class TrustedBaseHighRiskOperations
   TRACKED_WORKTREE_CHANGES = "trusted checkout has tracked working-tree changes"
   COMMAND_SEAM_PATH = ".agents/bin".b.freeze
   COMMAND_SEAM_ANCESTOR_PATH = ".agents".b.freeze
+  WORKFLOW_POLICY_SEAM_PATH = WORKFLOW_CONFIG_PATH.b.freeze
   INSTRUCTION_SEAM_BASENAMES = Set.new(["AGENTS.md".b, "CLAUDE.md".b]).freeze
 
   def git_toplevel
@@ -2101,7 +2117,7 @@ class TrustedBaseHighRiskOperations
   end
 
   def fetched_policy(root, base_sha, repo:)
-    fetched_trusted_base_policy(root, base_sha, repo:)
+    fetched_trusted_base_policy(root, base_sha, repo:, operations: self)
   end
 
   def fetched_file(root, base_sha, path)
@@ -2419,6 +2435,10 @@ class TrustedBaseHighRiskOperations
   def command_or_instruction_seam_path?(root, path)
     return [true, nil] if exact_command_or_instruction_seam_path?(path)
 
+    policy_alias, policy_alias_error = same_checkout_entry?(root, path, WORKFLOW_POLICY_SEAM_PATH)
+    return [nil, policy_alias_error] if policy_alias_error
+    return [true, nil] if policy_alias
+
     components = path.b.split("/".b, -1)
     if components.length == 1
       ancestor_alias, ancestor_alias_error = same_checkout_entry?(root, path, COMMAND_SEAM_ANCESTOR_PATH)
@@ -2446,7 +2466,8 @@ class TrustedBaseHighRiskOperations
   end
 
   def exact_command_or_instruction_seam_path?(path)
-    path == COMMAND_SEAM_PATH || path.start_with?("#{COMMAND_SEAM_PATH}/".b) ||
+    path == WORKFLOW_POLICY_SEAM_PATH ||
+      path == COMMAND_SEAM_PATH || path.start_with?("#{COMMAND_SEAM_PATH}/".b) ||
       (!path.empty? && COMMAND_SEAM_PATH.start_with?("#{path}/".b)) ||
       INSTRUCTION_SEAM_BASENAMES.include?(File.basename(path))
   end
