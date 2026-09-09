@@ -3263,14 +3263,19 @@ copy_children_preserving_unrelated() {
   local source_dir="$1"
   local target_dir="$2"
   local source_path destination
+  local sources=()
   ensure_real_directory "$target_dir"
 
   for source_path in "$source_dir"/*; do
     [[ -e "$source_path" ]] || continue
     destination="$target_dir/$(basename "$source_path")"
     rm -rf "$destination"
-    rsync -a "$source_path" "$target_dir/"
+    sources+=("$source_path")
   done
+  # Copy only the managed children, without starting rsync once per skill.
+  if (( ${#sources[@]} )); then
+    rsync -a "${sources[@]}" "$target_dir/"
+  fi
 }
 
 workflow_doctor_copy_matches_source() {
