@@ -62,6 +62,16 @@ class RecoveryRecordTest < Minitest::Test
     Dir.glob(File.join(@state, "**/*.json")).each { |path| assert_equal 0o600, File.stat(path).mode & 0o777 }
   end
 
+  def test_blank_operation_labels_are_rejected_before_recording_or_execution
+    marker = File.join(@root, "must-not-exist")
+    ["", " \t\n"].each do |label|
+      _, _, status = call("run", "--label", label, "--", RbConfig.ruby, "-e", 'File.write(ARGV[0], "")', marker)
+      assert_equal 2, status.exitstatus
+      refute_path_exists @state
+      refute_path_exists marker
+    end
+  end
+
   def test_effect_can_finish_after_recorder_dies_without_a_result
     marker = File.join(@root, "external-result")
     started = File.join(@root, "started")

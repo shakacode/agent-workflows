@@ -21,11 +21,13 @@ Otherwise `../bin/recovery-record` provides a local fallback (Ruby 2.7+):
 
 ```bash
 ruby /path/to/skills/pause/bin/recovery-record --task TASK_ID checkpoint < checkpoint.json
-ruby /path/to/skills/pause/bin/recovery-record --task TASK_ID run --label 'push branch example' -- git push origin example
+ruby /path/to/skills/pause/bin/recovery-record --task TASK_ID run --label OPERATION_LABEL -- COMMAND ARGUMENTS
 ruby /path/to/skills/pause/bin/recovery-record --task TASK_ID inspect
 ```
 
-Replace the paths and target with actual authorized values. The checkpoint
+Replace the placeholders with actual authorized values. Resolve `COMMAND` and
+its arguments through the consumer repository's `AGENTS.md` command seam.
+Use a nonblank, non-secret operation description for `OPERATION_LABEL`. The checkpoint
 input is a compact JSON object containing non-secret recovery facts; unknown
 fields remain explicitly unknown. The helper defaults to
 `~/.local/state/agent-workflows/recovery`, with owner-only task directories and

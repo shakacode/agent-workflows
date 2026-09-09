@@ -100,6 +100,7 @@ module RecoveryRecord
       options[key] = options[key].dup.force_encoding(Encoding::UTF_8)
       raise EncodingError, "#{key} must be UTF-8" unless options[key].valid_encoding?
     end
+    raise ArgumentError, "--label must describe the operation" if action == "run" && options[:label].strip.empty?
 
     directory = task_directory(File.expand_path(options[:root]), options[:task], create: action != "inspect")
     if action == "inspect"
