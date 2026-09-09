@@ -19,6 +19,7 @@ reviews:
     # The lifecycle workflow applies one of these labels on PR creation and on
     # conversion from draft to ready. This avoids a review for every push.
     enabled: false
+    auto_incremental_review: false
     labels:
       - coderabbit:first-pass
       - coderabbit:ready
