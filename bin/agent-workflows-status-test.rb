@@ -235,6 +235,12 @@ class AgentWorkflowsStatusTest < Minitest::Test
         FileUtils.mkdir_p(File.join(source, ".codex-plugin"))
         FileUtils.mkdir_p(File.join(source, "skills/example"))
         FileUtils.mkdir_p(File.join(target, "skills/example"))
+        FileUtils.mkdir_p(File.join(source, "workflows"))
+        FileUtils.mkdir_p(File.join(target, "workflows"))
+        workflow = File.join(target, "workflows/release.md")
+        File.write(File.join(source, "workflows/release.md"), "stable workflow\n")
+        File.write(workflow, "stable workflow\n")
+        File.write(File.join(target, "workflows/personal.md"), "unrelated workflow\n")
         File.write(File.join(source, "VERSION"), "1.2.3\n")
         File.write(File.join(source, "skills/example/SKILL.md"), "stable skill\n")
         File.write(File.join(target, "skills/example/SKILL.md"), "stable skill\n")
@@ -248,6 +254,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
         commit = `git -C #{Shellwords.escape(source)} rev-parse HEAD`.strip
         system("git", "-C", source, "tag", "-a", "v1.2.3", "-m", "stable release", exception: true)
         tag_object = `git -C #{Shellwords.escape(source)} rev-parse refs/tags/v1.2.3`.strip
+        File.write(File.join(source, "workflows/release.md"), "development workflow\n")
         File.write(File.join(source, "VERSION"), "1.2.4\n")
         File.write(File.join(source, ".claude-plugin/plugin.json"), "{\"version\":\"1.2.4\"}\n")
         File.write(File.join(source, ".codex-plugin/plugin.json"), "{\"version\":\"1.2.4\"}\n")
@@ -290,6 +297,33 @@ class AgentWorkflowsStatusTest < Minitest::Test
         assert_equal "stable", payload.fetch("channel")
         assert_equal commit, payload.fetch("exact_commit")
         assert_equal "active", payload.dig("superpowers", "state")
+
+        identical_workflow = File.join(source, "identical-workflow.md")
+        File.write(identical_workflow, "stable workflow\n")
+        { "changed" => "fingerprint changed", "missing" => "is missing",
+          "symlink" => "not a safely readable regular file" }.each do |mutation, expected_reason|
+          FileUtils.rm_f(workflow)
+          File.write(workflow, "changed workflow\n") if mutation == "changed"
+          File.symlink(identical_workflow, workflow) if mutation == "symlink"
+          out, status = run_status({}, "--target", target, "--host", "claude", "--source", source, "--json")
+          assert_equal 3, status.exitstatus, "#{mutation}: #{out}"
+          assert_includes JSON.parse(out).fetch("reason"), "release.md"
+          assert_includes JSON.parse(out).fetch("reason"), expected_reason
+          FileUtils.rm_f(workflow)
+          File.write(workflow, "stable workflow\n")
+        end
+
+        installed_workflows = File.join(target, "workflows")
+        saved_workflows = File.join(target, "saved-workflows")
+        FileUtils.mv(installed_workflows, saved_workflows)
+        %w[missing symlink].each do |mutation|
+          File.symlink(saved_workflows, installed_workflows) if mutation == "symlink"
+          out, status = run_status({}, "--target", target, "--host", "claude", "--source", source, "--json")
+          assert_equal 3, status.exitstatus, "#{mutation} directory: #{out}"
+          assert_includes JSON.parse(out).fetch("reason"), "installed workflow directory"
+        end
+        FileUtils.rm_f(installed_workflows)
+        FileUtils.mv(saved_workflows, installed_workflows)
 
         system("git", "-C", source, "tag", "-d", "v1.2.3", out: File::NULL, exception: true)
         system("git", "-C", source, "tag", "-a", "v1.2.3", "-m", "moved release", exception: true)

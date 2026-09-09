@@ -234,6 +234,27 @@ module AgentWorkflowsStatus
       raise "release extraction failed: #{output.force_encoding('UTF-8').scrub.strip}" unless status.success?
 
       File.delete(archive)
+      workflows = AgentWorkflowsDeliveryState.filesystem_entries(File.join(materialized, "workflows")) || {}
+      fingerprints = workflows.filter_map do |name, path|
+        next if File.directory?(path) && !File.symlink?(path)
+        unless File.file?(path) && !File.symlink?(path)
+          return [nil, "release workflow is not a regular file: #{name}"]
+        end
+
+        [name, Digest::SHA256.file(path).hexdigest]
+      end.to_h
+      unless fingerprints.empty?
+        installed = File.join(target, "workflows")
+        unless File.directory?(installed) && !File.symlink?(installed)
+          return [nil, "installed workflow directory is missing or is a symlink"]
+        end
+      end
+      workflow_error = stable_managed_surface_error(
+        target, { "release_workflows" => fingerprints },
+        fields: { "managed workflow" => %w[release_workflows workflows] }
+      )
+      return [nil, workflow_error] if workflow_error
+
       delivery_state(host:, target:, source: materialized, delivery_mode:)
     end
   end
@@ -252,8 +273,8 @@ module AgentWorkflowsStatus
     ]
   end
 
-  def stable_managed_surface_error(target, metadata)
-    fields = {
+  def stable_managed_surface_error(target, metadata, fields: nil)
+    fields ||= {
       "managed helper" => %w[managed_bin_helper_copy_fingerprints bin],
       "managed pack document" => %w[managed_pack_doc_copy_fingerprints docs]
     }
