@@ -130,7 +130,9 @@ unprefixed. Claude Code therefore exposes `skills/verify/SKILL.md` as
 as the UI display name without changing the `scw` install or namespace
 identifier.
 
-Install the Claude Code plugin from the repository marketplace:
+For Claude, first complete the [native release verification steps](release-channel.md#native-plugins)
+to bind the release receipt, tag object, and installed commit. Then use the
+repository marketplace pinned to that release:
 
 ```text
 /plugin marketplace add shakacode/agent-workflows@vX.Y.Z

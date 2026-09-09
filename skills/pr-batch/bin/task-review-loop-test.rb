@@ -94,6 +94,7 @@ class TaskReviewLoopTest < Minitest::Test
       Dir.mkdir(target)
       _stdout, stderr, status = Open3.capture3(
         INSTALLER,
+        "--channel", "development",
         "--host", "codex",
         "--target", target,
         "--mode", "copy",
@@ -125,6 +126,7 @@ class TaskReviewLoopTest < Minitest::Test
 
       _stdout, stderr, status = Open3.capture3(
         INSTALLER,
+        "--channel", "development",
         "--host", "codex",
         "--target", target,
         "--mode", "copy",
@@ -147,6 +149,7 @@ class TaskReviewLoopTest < Minitest::Test
 
       _stdout, stderr, status = Open3.capture3(
         INSTALLER,
+        "--channel", "development",
         "--host", "codex",
         "--target", target,
         "--mode", "copy",
@@ -174,6 +177,7 @@ class TaskReviewLoopTest < Minitest::Test
       validator = File.join(source, "bin/validate-review-findings")
       _stdout, stderr, status = Open3.capture3(
         installer,
+        "--channel", "development",
         "--host", "codex",
         "--target", target,
         "--mode", "copy",
@@ -184,6 +188,7 @@ class TaskReviewLoopTest < Minitest::Test
       File.open(validator, "a") { |file| file.write("\n# non-git helper v2\n") }
       _stdout, stderr, status = Open3.capture3(
         installer,
+        "--channel", "development",
         "--host", "codex",
         "--target", target,
         "--mode", "copy",

@@ -61,6 +61,7 @@ target=""
 mode="copy"
 delivery_mode=""
 channel="${AGENT_WORKFLOWS_CHANNEL:-}"
+channel_was_explicit=false
 release_ref="${AGENT_WORKFLOWS_RELEASE_REF:-}"
 release_commit=""
 tag_object=""
@@ -4063,12 +4064,24 @@ finalize_obsolete_stable_copy_files() {
   obsolete_managed_staging=()
 }
 
+refuse_implicit_channel_migration() {
+  [[ "$channel" = "development" && "$channel_was_explicit" = false ]] || return 0
+  read_installed_metadata_value channel
+  if [[ "$installed_metadata_state" = valid && "$installed_metadata_value" = stable ]]; then
+    echo "STABLE_CHANNEL_PRESERVED: use upgrade-agent-workflows --release for stable updates; an explicit reinstall is required to change channels." >&2
+    return 64
+  fi
+}
+
 verify_stable_instruction_surface() {
   [[ "$channel" = "stable" && "$mode" = "copy" ]] || return 0
   [[ "${install_metadata_binding_state:-}" = "present" ]] || return 0
   require_install_metadata_binding
   if ! ruby -rjson -ropen3 -e '
-    metadata_path, source, selected_root, target = ARGV
+    metadata_path, source, selected_root, target, *selected_docs = ARGV
+    separator = selected_docs.index("__AGENT_WORKFLOWS_HELPERS__") or abort
+    selected_helpers = selected_docs.drop(separator + 1)
+    selected_docs = selected_docs.take(separator)
     metadata = JSON.parse(File.binread(metadata_path))
     abort "invalid prior installation metadata" unless metadata.is_a?(Hash)
     prior_mode = metadata["mode"]
@@ -4082,6 +4095,22 @@ verify_stable_instruction_surface() {
       Open3.capture3("git", "-C", root, "cat-file", "-e", "#{revision}^{commit}").last.success?
     end
     abort "prior exact revision cannot be read from a source clone" unless prior_source
+
+    if prior_mode == "symlink"
+      recorded_source = File.expand_path(metadata.fetch("source"))
+      { "docs" => selected_docs, "bin" => selected_helpers + ["agent_doctor"] }.each do |surface, selected_names|
+        surface_root = File.join(target, surface)
+        Dir.glob(File.join(surface_root, "**", "*"), File::FNM_DOTMATCH).each do |path|
+          next unless File.symlink?(path)
+
+          name = path.delete_prefix("#{surface_root}/")
+          next if selected_names.any? { |selected| selected == name || selected.start_with?("#{name}/") }
+          next unless File.expand_path(File.readlink(path), File.dirname(path)) == File.join(recorded_source, surface, name)
+
+          abort "prior managed source symlink remains installed: #{surface}/#{name}"
+        end
+      end
+    end
 
     %w[skills workflows].each do |surface|
       next if surface == "workflows" && prior_mode == "symlink"
@@ -4122,7 +4151,8 @@ verify_stable_instruction_surface() {
         abort "prior release instruction root remains installed: #{surface}/#{name}"
       end
     end
-  ' "$install_metadata_snapshot_path" "$source_root" "$repo_root" "$target"; then
+  ' "$install_metadata_snapshot_path" "$source_root" "$repo_root" "$target" "${pack_docs[@]}" \
+    __AGENT_WORKFLOWS_HELPERS__ "${bin_helpers[@]}"; then
     echo "STABLE_INSTRUCTION_SURFACE_CONFLICT: preserved the prior installation; use a separate clean target for this release." >&2
     return 65
   fi
@@ -4242,6 +4272,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --channel)
       channel="${2:?--channel requires stable or development}"
+      channel_was_explicit=true
       shift 2
       ;;
     --release)
@@ -4305,6 +4336,10 @@ case "$channel" in
       echo "Development channel cannot use --release" >&2
       exit 64
     }
+    if [[ "$(cd "$source_root" && pwd -P)" != "$(cd "$repo_root" && pwd -P)" ]]; then
+      echo "Development --source must match the invoked installer checkout; run the installer from that source." >&2
+      exit 64
+    fi
     ;;
   "")
     echo "Choose --release vX.Y.Z for stable or --channel development for branch-following installation." >&2
@@ -4327,6 +4362,7 @@ if [[ -e "$target" || -L "$target" ]]; then
   fi
   target="$canonical_target"
 fi
+refuse_implicit_channel_migration || exit $?
 delivery_mode_was_explicit=false
 [[ -z "$delivery_mode" ]] || delivery_mode_was_explicit=true
 resolve_delivery_mode
@@ -4544,6 +4580,7 @@ fi
 binding_status=0
 capture_install_metadata_binding || binding_status=$?
 [[ "$binding_status" -eq 0 ]] || exit "$binding_status"
+refuse_implicit_channel_migration || exit $?
 if [[ "$delivery_mode_was_explicit" != "true" &&
       "$delivery_mode" != "$install_metadata_bound_delivery_mode" ]]; then
   report_install_metadata_binding_changed

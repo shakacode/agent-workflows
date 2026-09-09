@@ -17,7 +17,7 @@ Repository administrators must configure both protections before promoting a
 stable release:
 
 1. A repository ruleset targeting `refs/tags/v*` that restricts tag creation to
-   release maintainers and prevents tag updates and deletion. Tags are annotated
+   the protected release workflow and prevents tag updates and deletion. Tags are annotated
    and immutable; cryptographic tag signatures are not required or checked.
 2. A protected GitHub Actions environment named `stable-release` with required
    human maintainers, self-review prevention, and no administrator bypass. The
@@ -29,24 +29,53 @@ must stop.
 
 ## Promotion Contract
 
-The maintainer first confirms that `VERSION`, `.claude-plugin/plugin.json`, and
-`.codex-plugin/plugin.json` all contain the same `X.Y.Z`. Create and push one
-annotated `vX.Y.Z` tag at the exact approved commit. Do not move or recreate it.
+Finalize and merge the release version metadata first: `VERSION` and
+`.codex-plugin/plugin.json` must agree on `X.Y.Z`. Claude's manifest omits
+`version` so its host uses the pinned commit identity. Any declared Claude
+version must agree too. No version edits may follow candidate verification.
 
-Dispatch the `Release` workflow **from that exact tag ref** with the tag, exact
-peeled commit, change author, and annotated-tag object ID. The workflow verifies
-that its own definition came from the approved commit, so selecting `main` or
-another mutable ref fails closed. The protected environment supplies the
-independent exact-head human approval. The workflow rejects a malformed,
-missing, lightweight, moved, non-annotated, wrong-commit, or version-mismatched
-tag. It does not inspect cryptographic signatures.
+Dispatch the `Release` workflow from a branch at that **exact final candidate
+commit**, with `release=vX.Y.Z`, the full `candidate_sha`, and the merged release
+PR's `change_author`. The workflow requires its definition, run head, and checked
+out tree to match that SHA. It then runs the complete `CI=true bin/validate`
+with read-only permissions and no release environment or write credentials.
+Installer, upgrade, rollback, stack, and all other validation suites must run;
+partial coverage or a failing suite blocks promotion. Ordinary selected PR
+checks cannot substitute for this run. Main pushes also retain full validation
+between releases.
+
+Only after this job succeeds does the separate `stable-release` environment
+request human approval. The reviewer inspects the exact candidate SHA and full
+validation evidence, and must be neither the change author nor release
+initiator. After approval is verified, the workflow creates the annotated tag,
+checks its object ID, peeled commit, and version, and publishes the release.
+It never updates or deletes an existing tag. A failed publication after tagging
+requires maintainer investigation and a fresh version; rerunning cannot replace
+an immutable tag. Cryptographic signatures are not required.
 
 Successful promotion publishes `agent-workflows-release-receipt.json`. The
-receipt binds the stable channel, release ref, annotated-tag object, peeled
-commit, protected environment, human reviewer, change author, workflow actor,
-receipt recording time, canonical repository, workflow path, and exact workflow
-run ID, attempt, and URL. Keep the receipt as a GitHub Release asset; the
-workflow run and release asset are the durable release evidence.
+receipt binds full verification before tagging, the exact candidate commit,
+stable channel, release ref, annotated-tag object, peeled commit, protected
+environment, human reviewer, change author, workflow actor, recording time,
+repository, workflow path, and exact workflow run ID, attempt, and URL. Keep the
+receipt as a GitHub Release asset; the successful workflow run and release asset
+are the durable evidence. Protection settings must be verified separately; this
+workflow does not configure them or claim they exist.
+
+## Updating A Fork
+
+For routine fork updates, prefer the latest upstream **verified release tag**
+over moving `main`. Verify the upstream receipt and bind the fetched annotated
+tag object and peeled commit before preparing the update. Open an update PR
+that merges that exact upstream commit into the fork while retaining fork
+changes, then run the fork's required checks against the resulting commit.
+Record the upstream tag, commit, receipt, and fork check results in the PR.
+
+Upstream verification covers upstream content only; it does not attest the
+fork's extra commits or conflict resolutions. Publishing the fork's own stable
+release requires its own full verification of the final candidate after version
+metadata, independent human approval, immutable tag, and receipt. Following
+upstream `main` remains an explicit development choice.
 
 ## Install, Update, And Roll Back
 
@@ -106,11 +135,15 @@ clean target with `--target /path/to/new-agent-home`, verify it, and explicitly
 configure the host to use that home. Preserve the previous home and do not load
 both instruction sets together. An explicit development-symlink to stable-copy
 reinstall remains supported when its managed skills fit the selected release.
-Omitted managed skill links, including links to uncommitted skills in the
-recorded development source, cause the same pre-replacement refusal. Unrelated
-user skill links are preserved; the source checkout is not modified.
+Omitted managed skill, document, or helper links, including links to uncommitted
+paths in the recorded development source, cause the same pre-replacement refusal.
+Unrelated user links are preserved; the source checkout is not modified.
 
-For deliberate branch-following development:
+Stack synchronization refuses to overwrite an installed stable target with its
+development checkout. Use the explicit release upgrader for stable updates.
+
+For deliberate branch-following development, run the selected checkout's own
+installer (`--source` cannot relabel a different development checkout):
 
 ```bash
 bin/install-agent-workflows --host codex --channel development
@@ -120,7 +153,13 @@ upgrade-agent-workflows --host codex --channel development
 ## Native Plugins
 
 Claude's relative-source native plugin can use the immutable marketplace ref.
-Do not first add a branch-backed marketplace and later ask it to switch revisions.
+First verify that release through the copy bootstrap into a separate staging
+home; retain its recorded `release_ref`, `tag_object`, and `source_revision`.
+Before enabling the native plugin, confirm its installed Git revision equals
+that peeled commit. If the host cannot expose and preserve that identity, use
+verified copy mode or report `UNKNOWN`. A tag string by itself is not evidence
+of approval. Do not first add a branch-backed marketplace and later ask it to
+switch revisions.
 
 ```text
 /plugin marketplace add shakacode/agent-workflows@vX.Y.Z

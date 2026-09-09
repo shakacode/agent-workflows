@@ -11,6 +11,128 @@ require "tmpdir"
 ROOT = File.expand_path("..", __dir__)
 
 class UpgradeAgentWorkflowsTest < Minitest::Test
+  def test_stack_install_refuses_to_change_a_resolved_stable_target_to_development
+    with_release_repository do |source, target, _commits|
+      install_stable(source, target, "v0.1.0")
+      metadata_path = File.join(target, ".agent-workflows-install.json")
+      prior_metadata = File.binread(metadata_path)
+      stack_root = File.join(File.dirname(source), "stack")
+      FileUtils.mkdir_p(stack_root)
+      File.symlink(source, File.join(stack_root, "agent-workflows"))
+      %w[explicit default auto].each do |selection|
+        output, status = run_command(
+          "env", "CODEX_HOME=#{target}",
+          "bash", "-c",
+          'source "$1"; source_root="$2"; mode=copy; delivery_mode=flat; ' \
+          'host=codex; target="$3"; [[ "$4" != auto ]] || host=auto; [[ "$4" != default ]] || target=""; ' \
+          "agent_stack_install_workflows",
+          "stack-test", File.join(source, "bin/agent_stack/installers.bash"), stack_root, target, selection
+        )
+        assert_equal 64, status.exitstatus, output
+        assert_includes output, "STABLE_CHANNEL_PRESERVED"
+        assert_equal prior_metadata, File.binread(metadata_path)
+        assert_equal "release one\n", File.read(File.join(target, "docs/release-channel.md"))
+      end
+    end
+  end
+
+  def test_full_stack_sync_preserves_colocated_stable_doctor_before_any_install
+    with_release_repository do |source, target, _commits|
+      install_stable(source, target, "v0.1.0")
+      metadata = File.join(target, ".agent-workflows-install.json")
+      marker = File.join(target, "bin/agent_doctor/.agent-workflows-managed")
+      prior_metadata = File.binread(metadata)
+      prior_marker = File.binread(marker)
+      added = "bin/agent_doctor/development-only.rb"
+      File.write(File.join(source, added), "# development-only doctor code\n")
+      git(source, "branch", "-M", "main")
+      git(source, "add", added)
+      git(source, "commit", "--quiet", "-m", "development doctor fixture")
+      git(source, "remote", "add", "origin", source)
+      base = File.dirname(source)
+      stack = File.join(base, "stack")
+      FileUtils.mkdir_p(stack)
+      File.symlink(source, File.join(stack, "agent-workflows"))
+      %w[agent-coordination agent-coordination-dashboard].each do |name|
+        repo = File.join(stack, name)
+        FileUtils.mkdir_p(File.join(repo, "bin"))
+        File.write(File.join(repo, "README.md"), "# Local fixture\n")
+        if name == "agent-coordination"
+          bootstrap = File.join(repo, "bin/agent-coord")
+          File.write(bootstrap, "#!/usr/bin/env bash\nprintf unexpected > \"$3/coord-bootstrap-ran\"\n")
+          File.chmod(0o755, bootstrap)
+        end
+        git(repo, "init", "--quiet", "--initial-branch=main")
+        git(repo, "config", "user.email", "test@example.invalid")
+        git(repo, "config", "user.name", "Stack Test")
+        git(repo, "add", ".")
+        git(repo, "commit", "--quiet", "-m", "local fixture")
+        git(repo, "remote", "add", "origin", repo)
+      end
+      output, status = run_command(
+        "env", "AGENT_STACK_AGENT_WORKFLOWS_URL=#{source}",
+        "AGENT_STACK_AGENT_COORDINATION_URL=#{stack}/agent-coordination",
+        "AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL=#{stack}/agent-coordination-dashboard",
+        File.join(source, "bin/agent-stack"), "sync", "--no-fetch", "--source-root", stack,
+        "--compat-root", File.join(base, "compat"), "--runtime-root", File.join(base, "runtime"),
+        "--host", "codex", "--target", target, "--mode", "copy",
+        "--agent-coord-install-dir", File.join(target, "bin")
+      )
+      assert_equal 64, status.exitstatus, output
+      assert_includes output, "STABLE_CHANNEL_PRESERVED"
+      assert_equal prior_metadata, File.binread(metadata)
+      assert_equal prior_marker, File.binread(marker)
+      refute File.exist?(File.join(target, added))
+      refute File.exist?(File.join(target, "bin/coord-bootstrap-ran"))
+      refute File.exist?(File.join(target, "bin/agent-stack"))
+    end
+  end
+
+  def test_development_source_override_cannot_mislabel_the_installed_checkout
+    with_release_repository do |source, target, _commits|
+      other_source = File.join(File.dirname(source), "other-source")
+      FileUtils.mkdir_p(other_source)
+      File.write(File.join(other_source, "VERSION"), "9.9.9\n")
+      output, status = run_command(
+        File.join(source, "bin/install-agent-workflows"), "--target", target,
+        "--channel", "development", "--source", other_source
+      )
+      assert_equal 64, status.exitstatus, output
+      assert_includes output, "Development --source must match"
+      refute File.exist?(target), "rejected source override mutated the target"
+    end
+  end
+
+  def test_symlink_conversion_refuses_omitted_managed_docs_and_helpers
+    with_release_repository(add_release_two_assets: true) do |source, target, commits|
+      output, status = run_command(
+        File.join(source, "bin/install-agent-workflows"), "--target", target,
+        "--channel", "development", "--mode", "symlink"
+      )
+      assert status.success?, output
+      metadata_path = File.join(target, ".agent-workflows-install.json")
+      prior_metadata = File.binread(metadata_path)
+      unrelated = File.join(target, "docs/user-notes")
+      File.symlink(File.join(File.dirname(target), "user-notes"), unrelated)
+      %w[docs/release-two-only.md bin/agent-workflows-release-two-only].each do |relative|
+        output, status = run_command(
+          File.join(source, "bin/install-agent-workflows"), "--target", target,
+          "--source", source, "--release", "v0.1.0"
+        )
+        assert_equal 65, status.exitstatus, output
+        assert_includes output, "STABLE_INSTRUCTION_SURFACE_CONFLICT"
+        assert_includes output, relative
+        assert_equal prior_metadata, File.binread(metadata_path)
+        assert File.symlink?(File.join(target, "docs/release-channel.md"))
+        assert File.symlink?(File.join(target, relative))
+        File.unlink(File.join(target, relative))
+      end
+      install_stable(source, target, "v0.1.0")
+      assert File.symlink?(unrelated)
+      assert_install_metadata(target, release_ref: "v0.1.0", revision: commits.fetch("v0.1.0"))
+    end
+  end
+
   def test_stable_install_verifies_recorded_attempt_after_a_later_failed_rerun
     with_release_repository do |source, target, commits|
       install_stable(source, target, "v0.1.0")
@@ -307,14 +429,14 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
     installer = File.join(source, "bin/install-agent-workflows")
     content = File.read(installer)
     unless content.sub!(
-      "  validate-execution-provenance\n)",
-      "  validate-execution-provenance\n  agent-workflows-release-two-only\n)"
+      "bin_helpers=(\n",
+      "bin_helpers=(\n  agent-workflows-release-two-only\n"
     )
       raise "missing helper inventory insertion point"
     end
     unless content.sub!(
-      "  release-channel.md\n)",
-      "  release-channel.md\n  release-two-only.md\n)"
+      "pack_docs=(\n",
+      "pack_docs=(\n  release-two-only.md\n"
     )
       raise "missing pack document inventory insertion point"
     end

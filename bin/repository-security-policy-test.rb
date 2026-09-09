@@ -234,7 +234,7 @@ class RepositorySecurityPolicyTest < Minitest::Test
     assert_includes policy, "protected, immutable, annotated `vX.Y.Z` tags"
     assert_includes policy, "protected `stable-release` environment"
     assert_includes policy, "Cryptographic tag signatures are not required or checked"
-    assert_includes policy, "dispatch the workflow from that exact tag ref"
+    assert_includes policy, "dispatch the workflow from the exact candidate commit"
     assert_includes policy, "--channel development"
   end
 
@@ -242,12 +242,27 @@ class RepositorySecurityPolicyTest < Minitest::Test
     path = File.join(ROOT, ".github/workflows/release.yml")
     workflow = File.read(path)
 
+    jobs = load_yaml_file(path).fetch("jobs")
+    verification = jobs.fetch("verify")
+    release = jobs.fetch("release")
+    assert_equal({ "contents" => "read" }, verification.fetch("permissions"))
+    refute verification.key?("environment")
+    assert_equal "verify", release.fetch("needs")
+    assert_equal "stable-release", release.fetch("environment")
+    full_step = verification.fetch("steps").find { |step| step["run"] == "bin/validate" }
+    refute_nil full_step
+    assert_equal "true", full_step.dig("env", "CI")
+    refute(verification.fetch("steps").any? { |step| step["continue-on-error"] })
+    release_steps = release.fetch("steps")
+    approval_index = release_steps.index { |step| step["id"] == "approval" }
+    tag_index = release_steps.index { |step| step["id"] == "tag" }
+    assert_operator approval_index, :<, tag_index
+    assert_includes release_steps.fetch(approval_index).fetch("run"), "${approval_reviewer,,}"
+    assert_includes release_steps.fetch(tag_index).fetch("run"), '"repos/$REPOSITORY/git/refs"'
     assert_includes workflow, "environment: stable-release"
     assert_includes workflow, "actions/runs/$RUN_ID/approvals"
-    assert_includes workflow, "WORKFLOW_REF: ${{ github.ref }}"
     assert_includes workflow, "WORKFLOW_SHA: ${{ github.workflow_sha }}"
-    assert_includes workflow, 'test "$WORKFLOW_REF" = "refs/tags/$RELEASE_REF"'
-    assert_includes workflow, 'test "$WORKFLOW_SHA" = "$APPROVED_COMMIT"'
+    assert_includes workflow, 'test "$WORKFLOW_SHA" = "$CANDIDATE_SHA"'
     assert_includes workflow, "bin/agent-workflows-release verify-tag"
     assert_includes workflow, "bin/agent-workflows-release record-receipt"
     assert_includes workflow, "--expected-tag-object"

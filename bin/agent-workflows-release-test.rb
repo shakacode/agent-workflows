@@ -26,6 +26,16 @@ class AgentWorkflowsReleaseTest < Minitest::Test
     end
   end
 
+  def test_check_version_accepts_commit_versioned_claude_manifest
+    with_release_root do |root|
+      write_versions(root, "1.2.3")
+      File.write(File.join(root, ".claude-plugin", "plugin.json"), JSON.generate("name" => "scw"))
+      payload, status = run_json("check-version", "--root", root)
+      assert status.success?, payload.inspect
+      assert_nil payload.dig("metadata", "claude")
+    end
+  end
+
   def test_check_version_rejects_mismatch_malformed_and_missing_metadata
     with_release_root do |root|
       write_versions(root, "1.2.3")
@@ -145,6 +155,7 @@ class AgentWorkflowsReleaseTest < Minitest::Test
       receipt = JSON.parse(File.read(receipt_path))
       assert_equal "RECEIPT_WRITTEN", payload.fetch("status")
       assert_equal "stable", receipt.fetch("channel")
+      assert_equal({ "suite" => "full", "exact_commit" => commit, "before_tag" => true }, receipt.fetch("verification"))
       assert_equal "v1.2.3", receipt.fetch("release_ref")
       assert_equal tag_object, receipt.fetch("tag_object")
       assert_equal commit, receipt.fetch("peeled_commit")
@@ -183,6 +194,21 @@ class AgentWorkflowsReleaseTest < Minitest::Test
       payload, status = run_json(*verification_args)
       assert status.success?, payload.inspect
       assert_equal "RECEIPT_VERIFIED", payload.fetch("status")
+
+      original_receipt = File.read(receipt_path)
+      [nil, { "suite" => "selected", "exact_commit" => commit, "before_tag" => true },
+       { "suite" => "full", "exact_commit" => "0" * 40, "before_tag" => true },
+       { "suite" => "full", "exact_commit" => commit, "before_tag" => false }].each do |verification|
+        receipt = JSON.parse(original_receipt)
+        receipt["verification"] = verification
+        File.write(receipt_path, JSON.generate(receipt))
+        write_github_release(release_path, receipt_path)
+        rejected, rejected_status = run_json(*verification_args)
+        assert_equal 2, rejected_status.exitstatus
+        assert_includes rejected.fetch("reason"), "full exact-candidate verification before tagging"
+      end
+      File.write(receipt_path, original_receipt)
+      write_github_release(release_path, receipt_path)
 
       git(root, "tag", "-d", "v1.2.3")
       git(root, "tag", "-a", "v1.2.3", "-m", "moved tag")
@@ -506,7 +532,7 @@ class AgentWorkflowsReleaseTest < Minitest::Test
         "status" => "completed",
         "conclusion" => "success",
         "html_url" => "https://github.com/shakacode/agent-workflows/actions/runs/1234",
-        "head_branch" => "v1.2.3",
+        "head_branch" => "main",
         "head_sha" => head_sha,
         "actor" => { "login" => "release-operator", "type" => "User" },
         "repository" => { "full_name" => "shakacode/agent-workflows", "private" => false }

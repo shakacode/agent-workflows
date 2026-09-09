@@ -16,8 +16,11 @@ installs, updates, and rollbacks; a protected `stable-release` environment; and
 a durable receipt binding independent human approval to the exact peeled
 commit. Cryptographic tag signatures are not required or checked. See
 [Stable Release Channel](release-channel.md).
-Release operators must dispatch the workflow from that exact tag ref; the
-workflow rejects a run whose workflow definition came from another commit.
+Release operators must dispatch the workflow from the exact candidate commit;
+the workflow rejects a definition or checkout from another commit. Full
+validation runs after final version metadata and before protected human approval,
+tag creation, and stable publication. Selected PR checks do not replace this
+release gate; main pushes retain full checks between releases.
 
 This distinction keeps routine development fast. It also gives cautious users a
 clear boundary: use the stable channel, while maintainers who intentionally

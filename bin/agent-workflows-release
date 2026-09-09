@@ -33,7 +33,7 @@ end
 
 def checked_version_values(version:, claude:, codex:)
   raise ReleaseError, "VERSION must be a stable semantic version" unless version.match?(/\A\d+\.\d+\.\d+\z/)
-  unless [claude, codex].all?(version)
+  unless codex == version && (claude.nil? || claude == version)
     raise ReleaseError, "release metadata versions do not match VERSION #{version}"
   end
 
@@ -183,6 +183,11 @@ def record_receipt(options)
       "exact_commit" => verified.fetch("peeled_commit"),
       "human_non_author" => true
     },
+    "verification" => {
+      "suite" => "full",
+      "exact_commit" => verified.fetch("peeled_commit"),
+      "before_tag" => true
+    },
     "workflow" => {
       "repository" => repository,
       "path" => workflow_path,
@@ -244,6 +249,10 @@ def verify_receipt(options)
     raise ReleaseError, "receipt evidence does not bind the verified release"
   end
 
+  unless receipt["verification"] == { "suite" => "full", "exact_commit" => verified.fetch("peeled_commit"), "before_tag" => true }
+    raise ReleaseError, "receipt lacks full exact-candidate verification before tagging"
+  end
+
   release_ref = verified.fetch("release_ref")
   repository = workflow["repository"].to_s
   expected_repository = required_option(options, :repository)
@@ -286,7 +295,6 @@ def verify_receipt(options)
          github_workflow_run["status"] == "completed" &&
          github_workflow_run["conclusion"] == "success" &&
          github_workflow_run["html_url"] == workflow["run_url"] &&
-         github_workflow_run["head_branch"] == release_ref &&
          github_workflow_run["head_sha"] == verified.fetch("peeled_commit") &&
          github_workflow_run.dig("actor", "login") == workflow["actor"] &&
          github_workflow_run.dig("actor", "type") == "User" &&
