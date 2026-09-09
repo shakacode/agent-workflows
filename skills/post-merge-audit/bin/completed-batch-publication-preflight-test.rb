@@ -20,22 +20,71 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
   VERIFICATION_ARTIFACT_HEAD = "fe40abb9ec6d45aa25fccad2982bbec57ab5fb22"
 
   def fixture(name)
-    JSON.parse(File.read(File.join(FIXTURES, name), encoding: "UTF-8"))
+    JSON.parse(File.read(File.join(FIXTURES, name), encoding: "UTF-8")).tap do |input|
+      input["coordination_applicability"] = "coordination_required"
+    end
   end
 
   def no_backend_input
     input = fixture("completed-batch-publication-hichee-terminal.json")
+    input["coordination_applicability"] = "coordination_not_applicable"
     input["coordination_status"] = {
       "contract" => "completed-batch-coordination-not-applicable",
       "version" => 1,
       "batch_id" => input.fetch("batch_id"),
       "mode" => "single_operator",
-      "rationale" => "repository workflow seam declares coordination_backend: n/a",
+      "rationale" => "trusted controller verified one accountable serialized execution",
       "source" => "https://github.com/shakacode/agent-workflows/blob/fb33440cbad49808898c4a15f8c3e0c9276b7470/.agents/agent-workflow.yml",
       "completed_at" => "2026-07-31T11:40:00Z",
       "targets" => JSON.parse(JSON.generate(input.fetch("expected_targets")))
     }
     input
+  end
+
+  def applicability_proof(input, applicability: input.fetch("coordination_applicability"))
+    expected_targets = JSON.parse(JSON.generate(input.fetch("expected_targets"))).sort_by do |target|
+      CompletedBatchPublicationPreflight.target_sort_key(target)
+    end
+    {
+      "contract" => "completed-batch-coordination-applicability",
+      "version" => 1,
+      "batch_id" => input.fetch("batch_id"),
+      "coordination_applicability" => applicability,
+      "expected_targets" => expected_targets,
+      "policy_source" => "https://github.com/shakacode/agent-workflows/blob/" \
+                         "fb33440cbad49808898c4a15f8c3e0c9276b7470/.agents/agent-workflow.yml",
+      "topology_source" => "https://github.com/shakacode/agent-workflows/blob/" \
+                           "fb33440cbad49808898c4a15f8c3e0c9276b7470/.agents/issue-401-topology.json",
+      "verified_at" => "2026-08-25T12:00:00Z",
+      "rationale" => "trusted controller verified one accountable serialized execution"
+    }
+  end
+
+  def applicability_proof_digest(proof)
+    CompletedBatchPublicationPreflight.digest(
+      CompletedBatchPublicationPreflight.canonicalize(proof)
+    )
+  end
+
+  def capture_preflight_cli(env, input, workflow_config:, input_path:)
+    proof = applicability_proof(input)
+    Tempfile.create(["applicability-proof", ".json"]) do |proof_file|
+      proof_file.write(JSON.generate(proof))
+      proof_file.flush
+      Open3.capture3(
+        env,
+        "ruby",
+        env.fetch("FAKE_PREFLIGHT_RUNNER"),
+        "--workflow-config",
+        workflow_config,
+        "--input",
+        input_path,
+        "--applicability-proof",
+        proof_file.path,
+        "--applicability-proof-sha256",
+        applicability_proof_digest(proof)
+      )
+    end
   end
 
   def no_pr_input
@@ -93,6 +142,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       "contract" => "completed-batch-publication-preflight-input",
       "version" => 1,
       "batch_id" => batch_id,
+      "coordination_applicability" => "coordination_required",
       "expected_targets" => [primary_target],
       "coordination_status" => {
         "scope" => { "kind" => "batch", "batch_id" => batch_id },
@@ -363,11 +413,11 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     }
   end
 
-  def qa_v2_evidence(head_sha:, user_visible_ui_change:)
+  def qa_v2_evidence(head_sha:, user_visible_ui_change:, github_host: "github.com")
     ui_change = user_visible_ui_change == "yes"
     destination = ui_change ? "github_pr" : "not_applicable"
     visual_evidence = if ui_change
-                        "durable: before and after https://github.com/shakacode/hichee/pull/10049#visual"
+                        "durable: before and after https://#{github_host}/shakacode/hichee/pull/10049#visual"
                       else
                         "not applicable: no user-visible UI change"
                       end
@@ -405,11 +455,15 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     target_verifier: valid_target_verifier(input),
     artifact_verifier: valid_artifact_verifier(input),
     coordination_verifier: valid_coordination_verifier(input, backend),
+    trusted_applicability: applicability_proof(input),
+    trusted_applicability_digest: applicability_proof_digest(trusted_applicability),
     target_projection_verifier: nil
   )
     CompletedBatchPublicationPreflight.assess(
       input,
       coordination_backend: backend,
+      trusted_applicability:,
+      trusted_applicability_digest:,
       waiver_verifier:,
       target_verifier:,
       artifact_verifier:,
@@ -954,7 +1008,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     target_numbers = result.fetch("targets").map { |target| target.fetch("number") }
     assert_equal [10_026, 10_036, 10_048, 10_049], target_numbers
     assert_match(/\Asha256:[0-9a-f]{64}\z/, result.fetch("snapshot_digest"))
-    assert_equal "sha256:2e73bd93cdf88b511d2865d9572d6e9ba4ee3c13a65bf8048f8cded7f37e5ca5",
+    assert_equal "sha256:f250d9e68683818b2afcaf37849c07752a77b2c0b37e2d63f16546a3a28eb5b4",
                  result.fetch("snapshot_digest")
   end
 
@@ -1058,7 +1112,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal 10_026, waiver.dig("target", "number")
     refute(result.dig("snapshot", "targets").any? { |target| target.key?("completed_at") })
     assert CompletedBatchPublicationPreflight.valid_receipt?(result)
-    assert_equal "sha256:a926d6266be958f222901d99cdcd78e3e3fd6148f575971922d66d491d16a5da",
+    assert_equal "sha256:6cb7aaff240c05d69a7e5161821b56235ec7615e59ee8258c33ef2ae12343ce7",
                  result.fetch("snapshot_digest")
   end
 
@@ -1084,6 +1138,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         assert CompletedBatchPublicationPreflight.valid_receipt?(result)
         assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
           result, coordination_backend: BACKEND,
+                  trusted_applicability: result.fetch("applicability_proof"),
+                  trusted_applicability_digest: result.fetch("applicability_proof_digest"),
                   waiver_verifier: valid_waiver_verifier(input), target_verifier: valid_target_verifier(input),
                   coordination_verifier: valid_coordination_verifier(input, BACKEND),
                   target_projection_verifier: projection
@@ -1302,6 +1358,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       receipt,
       coordination_backend: BACKEND,
+      trusted_applicability: receipt.fetch("applicability_proof"),
+      trusted_applicability_digest: receipt.fetch("applicability_proof_digest"),
       waiver_verifier: valid_waiver_verifier(input),
       target_verifier: valid_target_verifier(input),
       coordination_verifier: valid_coordination_verifier(input, BACKEND),
@@ -1460,6 +1518,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       result,
       coordination_backend: BACKEND,
+      trusted_applicability: result.fetch("applicability_proof"),
+      trusted_applicability_digest: result.fetch("applicability_proof_digest"),
       waiver_verifier: valid_waiver_verifier(input),
       target_verifier: valid_target_verifier(input),
       coordination_verifier: valid_coordination_verifier(input, BACKEND)
@@ -1912,9 +1972,12 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
 
   def test_assess_fails_closed_without_live_target_and_coordination_verifiers
     input = fixture("completed-batch-publication-hichee-terminal.json")
+    proof = applicability_proof(input)
     result = CompletedBatchPublicationPreflight.assess(
       input,
       coordination_backend: BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: applicability_proof_digest(proof),
       waiver_verifier: valid_waiver_verifier(input)
     )
 
@@ -1940,6 +2003,58 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal baseline.fetch("snapshot_digest"), replay.fetch("snapshot_digest")
   end
 
+  def test_validated_target_rejects_hosts_that_evidence_replay_cannot_normalize
+    target = {
+      "host" => "github.example.test",
+      "repo" => "shakacode/hichee",
+      "type" => "pull_request",
+      "number" => 10_049
+    }
+
+    assert_nil CompletedBatchPublicationPreflight.validated_target(target.merge("host" => "-github.example.test"))
+    assert_nil CompletedBatchPublicationPreflight.validated_target(
+      target.merge("host" => "#{'a' * 64}.example.test")
+    )
+    assert_equal(
+      target.merge("host" => "github.example.test:8443"),
+      CompletedBatchPublicationPreflight.validated_target(target.merge("host" => "GITHUB.EXAMPLE.TEST:8443"))
+    )
+  end
+
+  def test_validated_target_canonicalizes_www_github_alias_before_api_snapshot_verification
+    target = {
+      "host" => "www.github.com",
+      "repo" => "shakacode/hichee",
+      "type" => "pull_request",
+      "number" => 10_049
+    }
+    normalized = CompletedBatchPublicationPreflight.validated_target(target)
+    payload = {
+      "number" => 10_049,
+      "html_url" => "https://github.com/shakacode/hichee/pull/10049",
+      "state" => "closed",
+      "merged_at" => "2026-08-24T00:41:33Z",
+      "head" => { "sha" => "a" * 40 }
+    }
+
+    assert_equal "github.com", normalized.fetch("host")
+    assert CompletedBatchPublicationPreflight.verified_target_api_snapshot(payload, normalized)
+  end
+
+  def test_waiver_reference_accepts_www_alias_for_canonical_public_target
+    target = CompletedBatchPublicationPreflight.validated_target(
+      "host" => "www.github.com",
+      "repo" => "shakacode/hichee",
+      "type" => "pull_request",
+      "number" => 10_049
+    )
+    url = "https://www.github.com/shakacode/hichee/pull/10049#issuecomment-5000000000"
+
+    reference = CompletedBatchPublicationPreflight.waiver_comment_reference(url, target)
+
+    assert_equal({ "url" => url, "comment_id" => 5_000_000_000 }, reference)
+  end
+
   def test_receipt_binds_the_exact_raw_source_input
     input = fixture("completed-batch-publication-hichee-terminal.json")
     result = assess_input(input)
@@ -1963,6 +2078,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       result,
       coordination_backend: BACKEND,
+      trusted_applicability: result.fetch("applicability_proof"),
+      trusted_applicability_digest: result.fetch("applicability_proof_digest"),
       waiver_verifier: valid_waiver_verifier(input),
       target_verifier:,
       coordination_verifier: valid_coordination_verifier(input, BACKEND)
@@ -1989,6 +2106,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       result,
       coordination_backend: BACKEND,
+      trusted_applicability: result.fetch("applicability_proof"),
+      trusted_applicability_digest: result.fetch("applicability_proof_digest"),
       waiver_verifier:,
       target_verifier: valid_target_verifier(input),
       coordination_verifier: valid_coordination_verifier(input, BACKEND)
@@ -2054,6 +2173,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       result,
       coordination_backend: BACKEND,
+      trusted_applicability: result.fetch("applicability_proof"),
+      trusted_applicability_digest: result.fetch("applicability_proof_digest"),
       waiver_verifier: valid_waiver_verifier(input),
       target_verifier:,
       artifact_verifier:,
@@ -2063,6 +2184,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
 
   def test_reassessment_rejects_altered_raw_input_even_with_recomputed_digests
     input = fixture("completed-batch-publication-hichee-terminal.json")
+    proof = applicability_proof(input)
     result = assess_input(input)
     result.dig("source_input", "target_snapshots", 0)["head_sha"] = "b" * 40
     result["source_input_digest"] = CompletedBatchPublicationPreflight.digest(result.fetch("source_input"))
@@ -2073,6 +2195,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       result,
       coordination_backend: BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: applicability_proof_digest(proof),
       waiver_verifier: valid_waiver_verifier(input),
       target_verifier: valid_target_verifier(input),
       coordination_verifier: valid_coordination_verifier(input, BACKEND)
@@ -2081,6 +2205,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
 
   def test_reassessment_rejects_source_input_coordination_mode_mismatch_with_recomputed_digests
     input = fixture("completed-batch-publication-hichee-terminal.json")
+    proof = applicability_proof(input)
     result = assess_input(input)
     result.fetch("source_input")["coordination_status"] = no_backend_input.fetch("coordination_status")
     result["source_input_digest"] = CompletedBatchPublicationPreflight.digest(result.fetch("source_input"))
@@ -2093,6 +2218,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       result,
       coordination_backend: BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: applicability_proof_digest(proof),
       waiver_verifier: valid_waiver_verifier(input),
       target_verifier: valid_target_verifier(input),
       coordination_verifier: valid_coordination_verifier(input, BACKEND)
@@ -2101,6 +2228,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
 
   def test_reassessment_rejects_trusted_backend_mismatch_before_live_refresh
     input = fixture("completed-batch-publication-hichee-terminal.json")
+    proof = applicability_proof(input)
     result = assess_input(input)
     target_calls = []
     coordination_calls = []
@@ -2108,6 +2236,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       result,
       coordination_backend: "n/a",
+      trusted_applicability: proof,
+      trusted_applicability_digest: applicability_proof_digest(proof),
       waiver_verifier: ->(**) { flunk "waiver verifier must not run" },
       target_verifier: lambda { |**args|
         target_calls << args
@@ -2170,6 +2300,33 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute result.fetch("eligible")
     assert_includes result.fetch("blockers"),
                     "shakacode/hichee#pull_request:10049 QA UI classification contradicts trusted input"
+  end
+
+  def test_enterprise_server_visual_evidence_uses_the_trusted_target_host
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    target_number = 10_049
+    github_host = "github.example.test"
+    input.fetch("expected_targets").find { |row| row.fetch("number") == target_number }["host"] = github_host
+    input.fetch("target_snapshots").find do |row|
+      row.dig("target", "number") == target_number
+    end.fetch("target")["host"] = github_host
+    qa = input.fetch("qa_evidence").find { |row| row.dig("target", "number") == target_number }
+    qa.fetch("target")["host"] = github_host
+    qa["user_visible_ui_change"] = "yes"
+    head_sha = input.fetch("target_snapshots").find do |row|
+      row.dig("target", "number") == target_number
+    end.fetch("head_sha")
+    qa["evidence"] = qa_v2_evidence(head_sha:, user_visible_ui_change: "yes", github_host:)
+    lane = input.dig("coordination_status", "batches", 0, "lanes").find do |row|
+      row.fetch("targets") == [target_number.to_s]
+    end
+    lane["pr_url"] = lane.fetch("pr_url").sub("github.com", github_host)
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    snapshot = result.dig("snapshot", "qa").find { |row| row.dig("target", "number") == target_number }
+    assert_equal "SATISFIED", snapshot.fetch("verdict")
   end
 
   def test_non_ui_v1_remains_eligible_and_v2_must_not_self_classify_as_ui
@@ -2274,6 +2431,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
         result,
         coordination_backend: BACKEND,
+        trusted_applicability: result.fetch("applicability_proof"),
+        trusted_applicability_digest: result.fetch("applicability_proof_digest"),
         waiver_verifier: valid_waiver_verifier(input),
         target_verifier: valid_target_verifier(input),
         artifact_verifier: valid_artifact_verifier(input),
@@ -2340,6 +2499,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       result,
       coordination_backend: BACKEND,
+      trusted_applicability: result.fetch("applicability_proof"),
+      trusted_applicability_digest: result.fetch("applicability_proof_digest"),
       waiver_verifier: valid_waiver_verifier(input),
       target_verifier: valid_target_verifier(input),
       artifact_verifier: valid_artifact_verifier(input),
@@ -2544,7 +2705,11 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         assert result.fetch("eligible"), "#{boundary}: #{result.fetch('blockers').join('; ')}"
         assert CompletedBatchPublicationPreflight.valid_receipt?(result), boundary.inspect
         assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
-          result, coordination_backend: BACKEND, **verifiers
+          result,
+          coordination_backend: BACKEND,
+          trusted_applicability: result.fetch("applicability_proof"),
+          trusted_applicability_digest: result.fetch("applicability_proof_digest"),
+          **verifiers
         ), boundary.inspect
       end
     end
@@ -2595,6 +2760,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       result,
       coordination_backend: BACKEND,
+      trusted_applicability: result.fetch("applicability_proof"),
+      trusted_applicability_digest: result.fetch("applicability_proof_digest"),
       waiver_verifier: valid_waiver_verifier(input),
       target_verifier: valid_target_verifier(input),
       artifact_verifier: valid_artifact_verifier(input),
@@ -2656,6 +2823,21 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                     "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable"
   end
 
+  def test_authenticated_waiver_accepts_www_evidence_url_with_canonical_api_url
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    row = input.fetch("qa_evidence").find { |candidate| candidate.key?("maintainer_waiver") }
+    canonical_url = row.dig("maintainer_waiver", "url")
+    evidence_url = canonical_url.sub("https://github.com", "https://www.github.com")
+    row["evidence"] = row.fetch("evidence").sub(canonical_url, evidence_url)
+    row.fetch("maintainer_waiver")["url"] = evidence_url
+    comment = valid_waiver_comment(row, input)
+    comment["html_url"] = canonical_url
+
+    result = assess_input(input, waiver_verifier: ->(**_keywords) { comment })
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+  end
+
   def test_forged_nonexistent_maintainer_waiver_comment_blocks
     input = fixture("completed-batch-publication-hichee-terminal.json")
     qa = input.fetch("qa_evidence").find { |row| row.key?("maintainer_waiver") }
@@ -2673,6 +2855,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
 
   def test_checker_reported_nonexistent_comment_and_caller_asserted_metadata_block
     input = fixture("completed-batch-publication-hichee-terminal.json")
+    proof = applicability_proof(input)
     formerly_waived = input.fetch("qa_evidence").find { |row| row.dig("target", "number") == 10_026 }
     satisfied_evidence = formerly_waived.fetch("evidence").sub("status: waived", "status: satisfied")
     satisfied_evidence = satisfied_evidence.sub(/findings: waived: .+/, "findings: none")
@@ -2693,7 +2876,12 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       "body_sha256" => "f" * 64
     }
 
-    result = CompletedBatchPublicationPreflight.assess(input, coordination_backend: BACKEND)
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: applicability_proof_digest(proof)
+    )
 
     refute result.fetch("eligible")
     assert_includes result.fetch("blockers"),
@@ -2817,6 +3005,378 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal "single_operator", result.dig("snapshot", "coordination", "not_applicable", "mode")
   end
 
+  def test_not_applicable_accepts_typed_single_controller_proof_with_real_configured_backend
+    input = no_backend_input
+    coordination_calls = []
+
+    result = assess_input(
+      input,
+      backend: BACKEND,
+      coordination_verifier: lambda do |**arguments|
+        coordination_calls << arguments
+        flunk "coordination_not_applicable must not invoke coordination"
+      end
+    )
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal "coordination_not_applicable", result.fetch("coordination_applicability")
+    assert_equal "coordination_not_applicable", result.dig("snapshot", "coordination_applicability")
+    assert_equal "not_applicable", result.dig("snapshot", "coordination", "status")
+    assert_empty coordination_calls
+  end
+
+  def test_untrusted_receipt_cannot_select_not_applicable_with_real_backend
+    input = no_backend_input
+    verifier = ->(**) { flunk "untrusted applicability must stop before verifier activity" }
+
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      waiver_verifier: verifier,
+      target_verifier: verifier,
+      artifact_verifier: verifier,
+      target_projection_verifier: verifier,
+      coordination_verifier: verifier
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "trusted coordination applicability proof is missing, invalid, or tampered"
+  end
+
+  def test_trusted_applicability_mismatch_stops_before_any_verifier
+    input = no_backend_input
+    proof = applicability_proof(input, applicability: "coordination_required")
+    verifier = ->(**) { flunk "contradictory applicability must stop before verifier activity" }
+
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: applicability_proof_digest(proof),
+      waiver_verifier: verifier,
+      target_verifier: verifier,
+      artifact_verifier: verifier,
+      target_projection_verifier: verifier,
+      coordination_verifier: verifier
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "coordination applicability contradicts trusted proof"
+  end
+
+  def test_required_coordination_with_unavailable_backend_stops_before_any_verifier
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    proof = applicability_proof(input)
+    verifier = ->(**) { flunk "unavailable required coordination must stop before verifier activity" }
+
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: "n/a",
+      trusted_applicability: proof,
+      trusted_applicability_digest: applicability_proof_digest(proof),
+      waiver_verifier: verifier,
+      target_verifier: verifier,
+      artifact_verifier: verifier,
+      target_projection_verifier: verifier,
+      coordination_verifier: verifier
+    )
+
+    refute result.fetch("eligible")
+    assert_equal ["coordination is required but the configured backend is unavailable"], result.fetch("blockers")
+    assert_equal({}, result.fetch("source_input"))
+    assert_empty result.dig("snapshot", "targets")
+    assert_empty result.dig("snapshot", "qa")
+  end
+
+  def test_tampered_trusted_applicability_stops_before_any_verifier
+    input = no_backend_input
+    proof = applicability_proof(input)
+    expected_digest = applicability_proof_digest(proof)
+    proof["rationale"] = "tampered after trust decision"
+    verifier = ->(**) { flunk "tampered applicability must stop before verifier activity" }
+
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: expected_digest,
+      waiver_verifier: verifier,
+      target_verifier: verifier,
+      artifact_verifier: verifier,
+      target_projection_verifier: verifier,
+      coordination_verifier: verifier
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "trusted coordination applicability proof is missing, invalid, or tampered"
+  end
+
+  def test_noncanonical_applicability_target_order_stops_before_any_verifier
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    proof = applicability_proof(input)
+    proof.fetch("expected_targets").reverse!
+    verifier = ->(**) { flunk "noncanonical proof must stop before verifier activity" }
+
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: applicability_proof_digest(proof),
+      waiver_verifier: verifier,
+      target_verifier: verifier,
+      artifact_verifier: verifier,
+      target_projection_verifier: verifier,
+      coordination_verifier: verifier
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "trusted coordination applicability proof is missing, invalid, or tampered"
+  end
+
+  def test_not_applicable_receipt_reassesses_with_real_backend_without_coordination
+    input = no_backend_input
+    receipt = assess_input(input, backend: BACKEND, coordination_verifier: ->(**) { flunk })
+    coordination_calls = []
+
+    assert CompletedBatchPublicationPreflight.valid_receipt?(receipt)
+    assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      receipt,
+      coordination_backend: BACKEND,
+      trusted_applicability: applicability_proof(input),
+      trusted_applicability_digest: applicability_proof_digest(applicability_proof(input)),
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: lambda do |**arguments|
+        coordination_calls << arguments
+        flunk "not-applicable replay must not invoke coordination"
+      end
+    )
+    assert_empty coordination_calls
+  end
+
+  def test_reassessment_rejects_a_different_valid_applicability_artifact_before_verifiers
+    input = no_backend_input
+    receipt = assess_input(input, backend: BACKEND, coordination_verifier: ->(**) { flunk })
+    replacement_proof = applicability_proof(input)
+    replacement_proof["verified_at"] = "2026-08-25T12:01:00Z"
+    verifier = ->(**) { flunk "artifact mismatch must stop before verifier activity" }
+
+    refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      receipt,
+      coordination_backend: BACKEND,
+      trusted_applicability: replacement_proof,
+      trusted_applicability_digest: applicability_proof_digest(replacement_proof),
+      waiver_verifier: verifier,
+      target_verifier: verifier,
+      artifact_verifier: verifier,
+      target_projection_verifier: verifier,
+      coordination_verifier: verifier
+    )
+  end
+
+  def test_invalid_applicability_stops_before_any_publication_verifier
+    [nil, "UNKNOWN", "coordination_required,coordination_not_applicable"].each do |applicability|
+      input = fixture("completed-batch-publication-hichee-terminal.json")
+      input["coordination_applicability"] = applicability
+      verifier = ->(**) { flunk "invalid applicability must stop before verifier activity" }
+
+      result = CompletedBatchPublicationPreflight.assess(
+        input,
+        coordination_backend: BACKEND,
+        waiver_verifier: verifier,
+        target_verifier: verifier,
+        artifact_verifier: verifier,
+        target_projection_verifier: verifier,
+        coordination_verifier: verifier
+      )
+
+      refute result.fetch("eligible"), applicability.inspect
+      assert_includes result.fetch("blockers"),
+                      "coordination applicability is missing, invalid, or contradictory",
+                      applicability.inspect
+    end
+  end
+
+  # One case per guard in `validated_applicability_proof`. Each mutation is re-digested, so the
+  # digest check cannot stand in for the guard under test: deleting any single guard fails a case.
+  def test_each_applicability_proof_guard_blocks_a_freshly_digested_mutation
+    mutations = {
+      "contract" => ->(proof) { proof["contract"] = "completed-batch-coordination-applicability-v2" },
+      "version" => ->(proof) { proof["version"] = 2 },
+      "unknown key" => ->(proof) { proof["operator"] = "someone" },
+      "missing key" => ->(proof) { proof.delete("rationale") },
+      "batch id" => ->(proof) { proof["batch_id"] = "aw-some-other-batch" },
+      "applicability value" => ->(proof) { proof["coordination_applicability"] = "coordination_optional" },
+      "different target set" => lambda { |proof|
+        proof["expected_targets"] = [proof.fetch("expected_targets").first.merge("number" => 999_999)]
+      },
+      "insecure policy source" => ->(proof) { proof["policy_source"] = proof.fetch("policy_source").sub("https", "http") },
+      "non-url topology source" => ->(proof) { proof["topology_source"] = "internal wiki page" },
+      "unparseable verified_at" => ->(proof) { proof["verified_at"] = "last Tuesday" },
+      "blank rationale" => ->(proof) { proof["rationale"] = "   " }
+    }
+
+    mutations.each do |label, mutate|
+      input = no_backend_input
+      proof = applicability_proof(input)
+      mutate.call(proof)
+      verifier = ->(**) { flunk "#{label}: an invalid applicability proof must stop before verifier activity" }
+
+      result = CompletedBatchPublicationPreflight.assess(
+        input,
+        coordination_backend: BACKEND,
+        trusted_applicability: proof,
+        trusted_applicability_digest: applicability_proof_digest(proof),
+        waiver_verifier: verifier,
+        target_verifier: verifier,
+        artifact_verifier: verifier,
+        target_projection_verifier: verifier,
+        coordination_verifier: verifier
+      )
+
+      refute result.fetch("eligible"), label
+      assert_includes result.fetch("blockers"),
+                      "trusted coordination applicability proof is missing, invalid, or tampered",
+                      label
+    end
+  end
+
+  def test_applicability_proof_target_order_is_bound_after_canonicalization
+    input = no_backend_input
+    proof = applicability_proof(input)
+    proof["expected_targets"] = proof.fetch("expected_targets").reverse
+    verifier = ->(**) { flunk "a reordered proof target set must stop before verifier activity" }
+
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: applicability_proof_digest(proof),
+      waiver_verifier: verifier,
+      target_verifier: verifier,
+      artifact_verifier: verifier,
+      target_projection_verifier: verifier,
+      coordination_verifier: verifier
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "trusted coordination applicability proof is missing, invalid, or tampered"
+  end
+
+  def test_missing_typed_evidence_never_reports_an_authenticated_backend_source
+    input = no_backend_input
+    input.delete("coordination_status")
+    proof = applicability_proof(input)
+
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: applicability_proof_digest(proof),
+      waiver_verifier: ->(**) { nil },
+      target_verifier: ->(**) { nil },
+      coordination_verifier: ->(**) { flunk "the not-applicable path must invoke no coordination verifier" }
+    )
+
+    refute result.fetch("eligible")
+    assert_nil result.dig("snapshot", "coordination", "verification_source"),
+               "a blocked result without typed evidence must not claim an authenticated backend source"
+  end
+
+  def test_blocked_results_never_repeat_a_blocker
+    result = CompletedBatchPublicationPreflight.blocked_result(
+      ["configured coordination backend is unavailable", "configured coordination backend is unavailable"]
+    )
+
+    assert_equal ["configured coordination backend is unavailable"], result.fetch("blockers")
+  end
+
+  def test_digest_applicability_proof_publishes_the_canonical_digest_for_independent_retention
+    input = no_backend_input
+    proof = applicability_proof(input)
+
+    Tempfile.create(["applicability-proof", ".json"]) do |proof_file|
+      # Deliberately unsorted keys: an operator's artifact is not canonically ordered on disk,
+      # so a plain `sha256sum` of the file cannot produce the expected digest.
+      proof_file.write(JSON.pretty_generate(proof.to_a.reverse.to_h))
+      proof_file.flush
+
+      stdout, stderr, status = Open3.capture3(
+        "ruby",
+        SCRIPT,
+        "digest-applicability-proof",
+        "--applicability-proof",
+        proof_file.path
+      )
+
+      assert_equal 0, status.exitstatus, stderr
+      assert_equal applicability_proof_digest(proof), stdout.strip
+      refute_equal "sha256:#{Digest::SHA256.hexdigest(File.read(proof_file.path))}", stdout.strip
+    end
+  end
+
+  # Ground truth for the canonicalization itself. The expected value is pinned from an independent
+  # implementation, not from `canonicalize`/`digest`:
+  #   jq -S -c . fixture.json | tr -d '\n' | shasum -a 256
+  # Key order below is deliberately scrambled, and the target array order is deliberately not sorted,
+  # because canonicalization sorts object keys recursively and preserves array order.
+  CANONICAL_DIGEST_FIXTURE = {
+    "version" => 1,
+    "contract" => "completed-batch-coordination-applicability",
+    "rationale" => "trusted controller verified one accountable serialized execution",
+    "verified_at" => "2026-08-25T12:00:00Z",
+    "coordination_applicability" => "coordination_not_applicable",
+    "batch_id" => "aw-canonical-digest-fixture",
+    "expected_targets" => [
+      { "number" => 2, "type" => "pull_request", "repo" => "shakacode/agent-workflows", "host" => "github.com" },
+      { "type" => "issue", "number" => 1, "host" => "github.com", "repo" => "shakacode/agent-workflows" }
+    ],
+    "topology_source" => "https://github.com/shakacode/agent-workflows/blob/" \
+                         "fb33440cbad49808898c4a15f8c3e0c9276b7470/.agents/issue-401-topology.json",
+    "policy_source" => "https://github.com/shakacode/agent-workflows/blob/" \
+                       "fb33440cbad49808898c4a15f8c3e0c9276b7470/.agents/agent-workflow.yml"
+  }.freeze
+  CANONICAL_DIGEST_EXPECTED = "sha256:e63e081b4d0af0890d8f3566093f62398403020a17caf50beef7f5f36168da3c"
+
+  def test_canonical_digest_matches_an_independently_computed_reference
+    assert_equal CANONICAL_DIGEST_EXPECTED, applicability_proof_digest(CANONICAL_DIGEST_FIXTURE)
+
+    Tempfile.create(["applicability-proof", ".json"]) do |proof_file|
+      proof_file.write(JSON.pretty_generate(CANONICAL_DIGEST_FIXTURE))
+      proof_file.flush
+
+      stdout, stderr, status = Open3.capture3(
+        "ruby", SCRIPT, "digest-applicability-proof", "--applicability-proof", proof_file.path
+      )
+
+      assert_equal 0, status.exitstatus, stderr
+      assert_equal CANONICAL_DIGEST_EXPECTED, stdout.strip
+    end
+  end
+
+  def test_digest_applicability_proof_rejects_a_malformed_artifact
+    Tempfile.create(["applicability-proof", ".json"]) do |proof_file|
+      proof_file.write("{not json")
+      proof_file.flush
+
+      _stdout, stderr, status = Open3.capture3(
+        "ruby",
+        SCRIPT,
+        "digest-applicability-proof",
+        "--applicability-proof",
+        proof_file.path
+      )
+
+      refute_equal 0, status.exitstatus
+      assert_includes stderr, "Error:"
+    end
+  end
+
   def test_no_backend_path_rejects_missing_or_malformed_typed_evidence
     mutations = [
       ->(proof) { proof.delete("rationale") },
@@ -2826,16 +3386,38 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       ->(proof) { proof["completed_at"] = "not-a-timestamp" }
     ]
 
-    mutations.each_with_index do |mutate, index|
+    mutations.product(["n/a", BACKEND]).each_with_index do |(mutate, backend), index|
       input = no_backend_input
       mutate.call(input.fetch("coordination_status"))
-      result = assess_input(input, backend: "n/a")
+      coordination_calls = []
+      result = assess_input(input, backend: backend, coordination_verifier: lambda { |**arguments|
+        coordination_calls << arguments
+        flunk "malformed not-applicable evidence must not invoke coordination"
+      })
 
       refute result.fetch("eligible"), index
       assert_includes result.fetch("blockers"),
                       "typed no-backend coordination evidence is absent or invalid",
                       index
+      assert_nil result.dig("snapshot", "coordination", "verification_source"),
+                 "malformed typed evidence must not claim authenticated coordination provenance"
+      assert_empty coordination_calls
     end
+  end
+
+  def test_malformed_typed_evidence_regression_rejects_unconditional_authenticated_provenance
+    original = CompletedBatchPublicationPreflight.method(:canonical_coordination_snapshot)
+    unconditional_authenticated = lambda { |batch, lanes, evidence, **|
+      original.call(batch, lanes, evidence, authenticated: true)
+    }
+
+    failure = assert_raises(Minitest::Assertion) do
+      CompletedBatchPublicationPreflight.define_singleton_method(:canonical_coordination_snapshot, unconditional_authenticated)
+      test_no_backend_path_rejects_missing_or_malformed_typed_evidence
+    end
+    assert_includes failure.message, "malformed typed evidence must not claim authenticated coordination provenance"
+  ensure
+    CompletedBatchPublicationPreflight.define_singleton_method(:canonical_coordination_snapshot, original) if original
   end
 
   def test_cli_reads_the_repository_coordination_backend_seam
@@ -2844,25 +3426,98 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       Tempfile.create(["agent-workflow", ".yml"]) do |config|
         config.write("coordination_backend: agent-coord private backend\n")
         config.flush
-        out, err, status = Open3.capture3(
-          env,
-          "ruby",
-          env.fetch("FAKE_PREFLIGHT_RUNNER"),
-          "--workflow-config",
-          config.path,
-          "--input",
-          File.join(FIXTURES, "completed-batch-publication-hichee-terminal.json")
-        )
+        Tempfile.create(["preflight", ".json"]) do |preflight|
+          preflight.write(JSON.generate(input))
+          preflight.flush
+          out, err, status = capture_preflight_cli(
+            env,
+            input,
+            workflow_config: config.path,
+            input_path: preflight.path
+          )
 
-        assert status.success?, err
-        result = JSON.parse(out)
-        assert result.fetch("eligible")
-        assert_equal "agent-coord private backend", result.dig("snapshot", "coordination_backend")
-        calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
-        assert_includes calls,
-                        "api --hostname github.com repos/shakacode/hichee/pulls/10026"
-        assert_includes calls,
-                        "api --hostname github.com repos/shakacode/hichee/issues/comments/5000000000"
+          assert status.success?, err
+          result = JSON.parse(out)
+          assert result.fetch("eligible")
+          assert_equal "agent-coord private backend", result.dig("snapshot", "coordination_backend")
+          calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
+          assert_includes calls,
+                          "api --hostname github.com repos/shakacode/hichee/pulls/10026"
+          assert_includes calls,
+                          "api --hostname github.com repos/shakacode/hichee/issues/comments/5000000000"
+        end
+      end
+    end
+  end
+
+  def test_cli_missing_applicability_proof_path_stops_before_verifiers
+    input = no_backend_input
+    proof = applicability_proof(input)
+    with_fake_waiver_gh(input) do |env|
+      Tempfile.create(["agent-workflow", ".yml"]) do |config|
+        config.write("coordination_backend: #{BACKEND}\n")
+        config.flush
+        Tempfile.create(["preflight", ".json"]) do |preflight|
+          preflight.write(JSON.generate(input))
+          preflight.flush
+          out, _err, status = Open3.capture3(
+            env,
+            "ruby",
+            env.fetch("FAKE_PREFLIGHT_RUNNER"),
+            "--workflow-config",
+            config.path,
+            "--input",
+            preflight.path,
+            "--applicability-proof",
+            "#{preflight.path}.missing",
+            "--applicability-proof-sha256",
+            applicability_proof_digest(proof)
+          )
+
+          assert_equal 1, status.exitstatus
+          refute JSON.parse(out).fetch("eligible")
+          refute File.exist?(env.fetch("FAKE_GH_LOG"))
+        end
+      end
+    end
+  end
+
+  def test_cli_tampered_applicability_proof_stops_before_verifiers
+    input = no_backend_input
+    proof = applicability_proof(input)
+    expected_digest = applicability_proof_digest(proof)
+    proof["rationale"] = "tampered after digest"
+    with_fake_waiver_gh(input) do |env|
+      Tempfile.create(["agent-workflow", ".yml"]) do |config|
+        config.write("coordination_backend: #{BACKEND}\n")
+        config.flush
+        Tempfile.create(["preflight", ".json"]) do |preflight|
+          preflight.write(JSON.generate(input))
+          preflight.flush
+          Tempfile.create(["applicability-proof", ".json"]) do |proof_file|
+            proof_file.write(JSON.generate(proof))
+            proof_file.flush
+            out, _err, status = Open3.capture3(
+              env,
+              "ruby",
+              env.fetch("FAKE_PREFLIGHT_RUNNER"),
+              "--workflow-config",
+              config.path,
+              "--input",
+              preflight.path,
+              "--applicability-proof",
+              proof_file.path,
+              "--applicability-proof-sha256",
+              expected_digest
+            )
+
+            assert_equal 1, status.exitstatus
+            result = JSON.parse(out)
+            assert_includes result.fetch("blockers"),
+                            "trusted coordination applicability proof is missing, invalid, or tampered"
+            refute File.exist?(env.fetch("FAKE_GH_LOG"))
+          end
+        end
       end
     end
   end
@@ -2882,14 +3537,11 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         Tempfile.create(["preflight", ".json"]) do |preflight|
           preflight.write(JSON.generate(input))
           preflight.flush
-          out, _err, status = Open3.capture3(
+          out, _err, status = capture_preflight_cli(
             env,
-            "ruby",
-            env.fetch("FAKE_PREFLIGHT_RUNNER"),
-            "--workflow-config",
-            config.path,
-            "--input",
-            preflight.path
+            input,
+            workflow_config: config.path,
+            input_path: preflight.path
           )
 
           assert_equal 1, status.exitstatus
@@ -2913,27 +3565,28 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         Tempfile.create(["agent-workflow", ".yml"]) do |config|
           config.write("coordination_backend: agent-coord private backend\n")
           config.flush
-          out, _err, status = Open3.capture3(
-            env,
-            "ruby",
-            env.fetch("FAKE_PREFLIGHT_RUNNER"),
-            "--workflow-config",
-            config.path,
-            "--input",
-            File.join(FIXTURES, "completed-batch-publication-hichee-terminal.json")
-          )
+          Tempfile.create(["preflight", ".json"]) do |preflight|
+            preflight.write(JSON.generate(input))
+            preflight.flush
+            out, _err, status = capture_preflight_cli(
+              env,
+              input,
+              workflow_config: config.path,
+              input_path: preflight.path
+            )
 
-          assert_equal 1, status.exitstatus, permission
-          result = JSON.parse(out)
-          refute result.fetch("eligible"), permission
-          assert_includes result.fetch("blockers"),
-                          "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable",
-                          permission
-          assert_includes(
-            File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true),
-            "api --hostname github.com repos/shakacode/hichee/collaborators/justin808/permission",
-            permission
-          )
+            assert_equal 1, status.exitstatus, permission
+            result = JSON.parse(out)
+            refute result.fetch("eligible"), permission
+            assert_includes result.fetch("blockers"),
+                            "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable",
+                            permission
+            assert_includes(
+              File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true),
+              "api --hostname github.com repos/shakacode/hichee/collaborators/justin808/permission",
+              permission
+            )
+          end
         end
       end
     end

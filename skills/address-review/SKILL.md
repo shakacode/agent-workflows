@@ -6,11 +6,15 @@ argument-hint: '[autopilot] <pr-number-or-url> [check all reviews]'
 
 Fetch review comments from a GitHub PR in this repository, triage them, and create a todo list only for items worth addressing.
 
-Mutating address-review runs assume one active operator per target PR. Repos
-that configure a coordination backend or public claim-comment fallback must use
-the mutual-exclusion gate below before triage. A repo that explicitly opts out
-of both mechanisms is declaring a single-operator workflow; do not run
-concurrent address-review workers against the same PR in that repo.
+Mutating address-review runs assume one active operator per target PR. The
+mutual-exclusion gate below decides that, not the backend configuration:
+classify `coordination_applicability` from trusted repository policy, the
+operator-supplied execution plan, and verified topology first, then use the gate
+for `coordination_required`. An explicit operator durable-handoff request is
+itself a requiring condition. Opting out of both a
+coordination backend and public claim-comment fallback does not by itself
+establish a single-controller run, and never run concurrent address-review
+workers against the same PR without `coordination_required` ownership.
 Use `docs/coordination-backend.md` as the canonical vocabulary for private
 backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
 

@@ -93,13 +93,21 @@ facts remain fail-closed and stop before mutation.
   Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation.
 - **Merge authority**: resolve `merge_authority` before worker launch. Use a
   visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction; otherwise ask
-  for `none`, `ask`, or `auto_merge_when_gates_pass`. `ask` includes an
+  for `none`, `ask`, or the editable alias `auto`. Continue accepting
+  `auto_merge_when_gates_pass` for compatibility. Apply the canonical
+  [PR-Batch Prompt Intake](../../../workflows/pr-batch-intake.md#merge-authority-input-normalization):
+  immediately normalize only `auto` to `auto_merge_when_gates_pass`; preserve
+  `none`, `ask`, and an already-canonical `auto_merge_when_gates_pass`
+  unchanged; and fail closed on missing, unresolved-placeholder, or invalid
+  input before dispatcher selection or worker launch. Reject unnormalized
+  `auto` before constructing worker prompts or durable evidence. `ask` includes an
   [automatic GitHub-native exact-diff walkthrough](../../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)
   before the one final merge decision. Do not silently default it.
 
-The single lane still gets a Lane Card, claim/heartbeat behavior when configured,
-a one-row file-touch map, a Batch QA Lane decision, current-head review and CI
-checks, and the canonical terminal state and handoff evidence.
+The single lane still gets a Lane Card, claim/heartbeat behavior when
+`coordination_required` and configured, a one-row file-touch map, a Batch QA
+Lane decision, current-head review and CI checks, and the canonical terminal
+state and handoff evidence.
 
 Resolve the target repo's `base_branch` from `.agents/agent-workflow.yml` when present, otherwise from the `AGENTS.md`
 **Agent Workflow Configuration** seam. If neither declares it, report

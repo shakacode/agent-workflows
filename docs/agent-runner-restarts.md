@@ -112,12 +112,21 @@ current AGENTS.md and the installed `pr-processing.md` workflow first. Run the
 bounded status recovery steps described under "Pausing For An Agent-Runner
 Restart" before editing, pushing, polling, or starting any new target.
 
-Re-check the worktree, branch, HEAD SHA, uncommitted changes, current PR/check
-state, and private claim or active public `codex-claim` fallback comments. If
-the claim holder changed, cancellation or reassignment is present, ownership is
-UNKNOWN, or the saved handoff names a different stable agent/thread id, stop
-and report the conflict for coordinator reconciliation. Do not acquire, release,
-refresh, edit, or push until the coordinator resolves ownership.
+Resuming in a replacement chat from a durable handoff is a controller/session
+boundary and a durable-handoff requirement, both of which are requiring
+conditions, so this lane is `coordination_required`. Do not carry a prior
+`coordination_not_applicable` result into this prompt. If the repository
+configures no usable backend, that is a pre-launch stop: report it and wait for
+the coordinator rather than proceeding uncoordinated.
+
+Re-check the worktree, branch, HEAD SHA, uncommitted changes, and current
+PR/check state. The rest of this paragraph applies only to
+`coordination_required`: re-check the private claim or active public
+`codex-claim` fallback comments, and if the claim holder changed, cancellation
+or reassignment is present, ownership is UNKNOWN, or the saved handoff names a
+different stable agent/thread id, stop and report the conflict for coordinator
+reconciliation. Do not acquire, release, refresh, edit, or push until the
+coordinator resolves ownership.
 
 Pasted restart handoff:
 <PASTE_RESTART_HANDOFF_HERE>
