@@ -86,10 +86,15 @@ the five typed checkpoints `dispatch`, `pr-open`, `decision-required`,
 `merge-decision`, and `final-handoff`; keep recaps delta-only, findings
 single-surface, and corrections proportional; and report the shadow-only
 `coordinator-narration-volume v1` marker in FYI / decisions made at closeout.
+`decision-required` is limited to blockers that need user action; a
+coordinator-clearable blocked target is a `merge-decision`.
 Four message kinds stay allowed outside those checkpoints and count in the
-marker's `always_allowed` bucket: a direct answer, an explicitly requested
-status report, a turn another contract requires the coordinator to show, and a
-required safety stop.
+marker's scalar `always_allowed` bucket: a direct answer, an explicitly
+requested status report, a turn another contract requires the coordinator to
+show, and a required safety stop. The marker also reports
+`always_allowed_detail` per kind and classifies overlaps in this
+most-specific-first order: `safety-stop`, `required-turn`, `requested-status`,
+then `direct-answer`.
 
 `OC-v1` is presentation only. It relaxes no evidence, verification, or
 `UNKNOWN`-honesty rule, drops no required exact string, deletes no durable copy
