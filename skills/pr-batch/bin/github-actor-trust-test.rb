@@ -6,6 +6,7 @@
 
 require "fileutils"
 require "minitest/autorun"
+require "open3"
 require "tmpdir"
 
 require_relative "../lib/github_actor_trust"
@@ -155,6 +156,34 @@ class GithubActorTrustTest < Minitest::Test
 
       assert GithubActorTrust.resolve_path(path, repo_local_verifier: ->(_path) { false }).fetch(:global)
       refute GithubActorTrust.resolve_path(path, repo_local_verifier: ->(_path) { true }).fetch(:global)
+    end
+  end
+
+  def test_repository_locality_verifier_requires_matching_repo_and_host
+    Dir.mktmpdir("actor-trust-locality") do |root|
+      path = File.join(root, GithubActorTrust::DEFAULT_TRUST_CONFIG)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "trusted_teams: [reviewers]\n")
+      system("git", "-C", root, "init", "--quiet", exception: true)
+      system(
+        "git", "-C", root, "remote", "add", "origin", "https://github.company.example/owner/repo.git",
+        exception: true
+      )
+      capture = ->(*command) { Open3.capture3(*command) }
+
+      matching = GithubActorTrust.repository_locality_verifier(
+        repo: "owner/repo", github_host: "github.company.example", git_capture: capture
+      )
+      wrong_host = GithubActorTrust.repository_locality_verifier(
+        repo: "owner/repo", github_host: "github.com", git_capture: capture
+      )
+      wrong_repo = GithubActorTrust.repository_locality_verifier(
+        repo: "other/repo", github_host: "github.company.example", git_capture: capture
+      )
+
+      assert matching.call(path)
+      refute wrong_host.call(path)
+      refute wrong_repo.call(path)
     end
   end
 

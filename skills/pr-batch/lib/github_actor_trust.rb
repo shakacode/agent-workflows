@@ -14,6 +14,7 @@ require "digest"
 # rubocop:disable Lint/RedundantRequireStatement
 require "set"
 # rubocop:enable Lint/RedundantRequireStatement
+require "uri"
 require "yaml"
 
 module GithubActorTrust
@@ -85,6 +86,152 @@ module GithubActorTrust
     return false if repo_local_verifier.nil?
 
     repo_local_verifier.call(path) ? true : false
+  end
+
+  # Prove that a trust config belongs to the repository and GitHub host being
+  # scanned. Both review-data ingestion boundaries use this verifier so an
+  # unqualified trusted_teams slug cannot be rebound by a caller-specific
+  # locality probe.
+  def repository_locality_verifier(repo:, git_capture:, github_host: nil, github_host_resolver: nil)
+    lambda do |path|
+      root = git_toplevel(chdir: File.dirname(path), git_capture:)
+      next false unless root && path_inside_git_root?(path, root:)
+
+      resolved_host = github_host || github_host_resolver&.call(root:, repo:)
+      next false if resolved_host.to_s.empty?
+
+      git_root_matches_repo?(root, repo, github_host: resolved_host, git_capture:)
+    end
+  end
+
+  def git_toplevel(git_capture:, chdir: nil)
+    args = ["git"]
+    args.push("-C", chdir) if chdir
+    args.concat(["rev-parse", "--show-toplevel"])
+    stdout, _stderr, status = git_capture.call(*args)
+    return unless status&.success?
+
+    root = stdout.force_encoding("UTF-8").scrub.strip
+    root unless root.empty?
+  rescue StandardError
+    nil
+  end
+
+  def path_inside_git_root?(path, root:)
+    expanded_root = canonical_path(root)
+    expanded_path = canonical_path(path)
+    expanded_path == expanded_root ||
+      expanded_path.start_with?("#{expanded_root}#{File::SEPARATOR}")
+  end
+
+  def git_remote_urls(root, git_capture:)
+    # Read stored URLs without applying url.*.insteadOf rewrites. Consumers
+    # using mirror rewrites should retain a canonical remote as well.
+    %w[--local --worktree].flat_map do |scope|
+      stdout, _stderr, status = git_capture.call(
+        "git", "-C", root, "config", scope, "--null", "--get-regexp", "^remote\\..*\\.url$"
+      )
+      next [] unless status&.success?
+
+      stdout.force_encoding("UTF-8").scrub.split("\0").filter_map do |entry|
+        key, url = entry.split("\n", 2)
+        next unless key&.match?(/\Aremote\..*\.url\z/)
+
+        url&.strip
+      end
+    end.uniq
+  rescue StandardError
+    []
+  end
+
+  def normalized_github_host(host)
+    host.to_s.downcase
+  end
+
+  def normalized_remote_host(host)
+    # GitHub documents ssh.github.com:443 for SSH-over-HTTPS clones; compare
+    # those remotes against github.com API scans.
+    %w[ssh.github.com ssh.github.com:443].include?(host) ? "github.com" : host
+  end
+
+  def remote_url_host(host, port, scheme:)
+    normalized = normalized_github_host(host)
+    return if normalized.empty?
+
+    default_port_match = case scheme
+                         when "http" then port == 80
+                         when "https" then port == 443
+                         when "ssh" then port == 22
+                         else false
+                         end
+    normalized_remote_host(port && !default_port_match ? "#{normalized}:#{port}" : normalized)
+  end
+
+  def uri_remote_from_remote_url(normalized)
+    uri = URI.parse(normalized)
+    return unless %w[http https ssh].include?(uri.scheme)
+
+    repo = uri.path.to_s.delete_prefix("/")
+    return unless repo.match?(%r{\A[^/\s]+/[^/\s]+\z})
+
+    port = uri.port || (22 if uri.scheme == "ssh")
+    host = remote_url_host(uri.host, port, scheme: uri.scheme)
+    return unless host
+
+    { host:, port:, repo:, scheme: uri.scheme }
+  rescue URI::Error
+    nil
+  end
+
+  def github_remote_from_remote_url(url)
+    normalized = url.to_s.strip.sub(%r{/+\z}, "").sub(/\.git\z/i, "")
+    return uri_remote_from_remote_url(normalized) if normalized.match?(%r{\A(?:https?|ssh)://}i)
+
+    match = normalized.match(%r{\A[^@/:\s]+@([^:\s]+):([^/\s]+/[^/\s]+)\z}i)
+    return unless match
+
+    { host: normalized_remote_host(normalized_github_host(match[1])), port: 22, repo: match[2], scheme: "ssh" }
+  end
+
+  def host_port(host)
+    host.to_s.match(/\A(.+):(\d+)\z/)&.then { |match| [match[1], match[2].to_i] }
+  end
+
+  def remote_matches_github_host?(remote, github_host)
+    github_host = normalized_github_host(github_host)
+    github_host_port = host_port(github_host)
+    return remote[:host] == github_host unless github_host_port
+
+    github_base_host, github_port = github_host_port
+    return true if remote[:host] == github_host
+    return false unless remote[:host] == github_base_host
+
+    case remote[:scheme]
+    when "http" then github_port == 80 && remote[:port] == 80
+    when "https" then github_port == 443 && remote[:port] == 443
+    when "ssh" then remote[:port] == 22 || (github_port == 443 && remote[:port] == 443)
+    else false
+    end
+  end
+
+  def git_root_matches_repo?(root, repo, github_host:, git_capture:)
+    remote_repos = git_remote_urls(root, git_capture:).filter_map do |url|
+      remote = github_remote_from_remote_url(url)
+      remote[:repo] if remote && remote_matches_github_host?(remote, github_host)
+    end
+    if remote_repos.empty?
+      warn "WARN: could not determine repo from remotes for trust config working tree #{root.inspect}; " \
+           "treating trust config as global"
+      return false
+    end
+
+    remote_repos.any? { |remote_repo| remote_repo.casecmp(repo).zero? }
+  end
+
+  def canonical_path(path)
+    File.realpath(path)
+  rescue SystemCallError
+    File.expand_path(path)
   end
 
   # `global` selects whether unqualified team slugs are accepted; a global

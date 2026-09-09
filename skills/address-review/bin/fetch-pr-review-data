@@ -17,6 +17,10 @@
 
 require "json"
 require "open3"
+# Ruby versions before 3.2 do not load Set by default.
+# rubocop:disable Lint/RedundantRequireStatement
+require "set"
+# rubocop:enable Lint/RedundantRequireStatement
 require "timeout"
 
 require_relative "../../pr-batch/lib/git_probe_env"
@@ -211,13 +215,21 @@ module FetchPrReviewData
   end
 
   # Triage reads replies only as context for a top-level item, so a trusted
-  # reply whose root was excluded would never be looked at. Flag it instead, so
-  # it can be triaged on its own without resurrecting the untrusted root.
+  # reply whose root was excluded would never be looked at. Flag the first
+  # trusted reply for each excluded root/thread as the standalone item; later
+  # trusted replies remain context without duplicating the triage item.
   def mark_orphaned_replies(kept, excluded)
     excluded_ids = excluded.map { |row| row["id"] }.compact.to_set
+    represented_roots = Set.new
     kept.each do |comment|
       parent = comment["in_reply_to_id"]
-      comment["root_excluded"] = true if parent && excluded_ids.include?(parent)
+      next unless parent && excluded_ids.include?(parent)
+
+      representative = comment["thread_id"] || parent
+      next if represented_roots.include?(representative)
+
+      comment["root_excluded"] = true
+      represented_roots << representative
     end
     kept
   end
@@ -414,48 +426,71 @@ module FetchPrReviewData
       repo
     end
 
-    # No repo_local_verifier: proving a config is repo-local needs the remote
-    # *and host* comparison pr-security-preflight does, and address-review can
-    # target a different GH_HOST than the checkout. A cheaper probe would accept
-    # a same-named repo on another host. Without that proof the config is
-    # global, so an unqualified `trusted_teams` slug is dropped with the warning
-    # GithubActorTrust already emits rather than rebound to the --repo owner.
     def trust_boundary(repo, trust_config_path)
       TrustBoundary.for(
         repo:,
         trust_config_path:,
-        # Only consulted when no explicit config was named, so do not pay for a
-        # git subprocess on the --trust-config path.
         repo_root: trust_config_path ? nil : git_toplevel,
+        repo_local_verifier: GithubActorTrust.repository_locality_verifier(
+          repo:,
+          git_capture: method(:capture_probe),
+          github_host_resolver: method(:github_host_for)
+        ),
         team_resolver: method(:team_member?)
       )
     end
 
     def git_toplevel
-      out, status = capture_probe("git", "rev-parse", "--show-toplevel")
-      return unless status&.success?
+      GithubActorTrust.git_toplevel(git_capture: method(:capture_probe))
+    end
 
-      root = out.force_encoding("UTF-8").strip
-      root unless root.empty?
+    # Resolve the API host independently of the checkout remote before the
+    # shared verifier compares them. This prevents a same-named repository on
+    # another host from making a config appear local.
+    def github_host_for(root:, repo:)
+      explicit_host = ENV["GH_HOST"].to_s
+      return GithubActorTrust.normalized_github_host(explicit_host) unless explicit_host.empty?
+
+      out, err, status = capture_probe(
+        "gh", "repo", "view", repo, "--json", "nameWithOwner,url", chdir: root
+      )
+      unless status&.success?
+        warn "WARN: could not resolve GitHub host for #{repo.inspect}: #{err.lines.first&.strip}"
+        return
+      end
+
+      payload = JSON.parse(out)
+      resolved_repo = payload["nameWithOwner"].to_s
+      unless resolved_repo.casecmp?(repo)
+        warn "WARN: gh repo view resolved #{resolved_repo.inspect}, expected #{repo.inspect}; " \
+             "treating trust config as global"
+        return
+      end
+
+      GithubActorTrust.github_remote_from_remote_url(payload["url"])&.fetch(:host)
+    rescue JSON::ParserError => e
+      warn "WARN: could not resolve GitHub host for #{repo.inspect}: #{e.message.lines.first&.strip}"
+      nil
     end
 
     # Bounded and environment-sanitized like the preflight's git probe, so a
     # hung credential helper or a GIT_CONFIG_* override cannot stall this tool.
-    def capture_probe(*cmd)
+    def capture_probe(*cmd, chdir: nil)
+      options = chdir ? { chdir: } : {}
       Timeout.timeout(PROBE_TIMEOUT_SECONDS) do
-        Open3.capture2(PrBatchGitProbeEnv.probe_env, *cmd)
+        Open3.capture3(PrBatchGitProbeEnv.probe_env, *cmd, **options)
       end
     rescue Timeout::Error
       warn "WARN: #{cmd.first(3).join(' ')} timed out after #{PROBE_TIMEOUT_SECONDS}s"
-      [+"", nil]
+      [+"", +"", nil]
     rescue SystemCallError
-      [+"", nil]
+      [+"", +"", nil]
     end
 
     # Team membership is a GitHub fact, not a local one; an unreachable API
     # must not silently promote an actor to actionable.
     def team_member?(owner:, slug:, login:)
-      out, status = capture_probe(
+      out, _err, status = capture_probe(
         "gh", "api", "orgs/#{owner}/teams/#{slug}/memberships/#{login}", "-q", ".state"
       )
       status&.success? ? out.strip == "active" : false

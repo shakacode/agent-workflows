@@ -10,6 +10,7 @@
 # Run with: ruby .agents/skills/address-review/bin/fetch-pr-review-data-trust-test.rb
 
 require "json"
+require "fileutils"
 require "minitest/autorun"
 require "open3"
 require "tmpdir"
@@ -192,9 +193,10 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     end
   end
 
-  # Triage uses replies only as context for a top-level item, so a trusted
-  # reply under an excluded root needs a marker or it is never looked at.
-  def test_trusted_reply_under_an_excluded_root_is_flagged
+  # Triage uses replies only as context for a top-level item. Exactly one
+  # trusted reply per excluded root becomes the standalone representative;
+  # later trusted replies stay available as context.
+  def test_one_trusted_reply_per_excluded_root_is_flagged
     with_trust_config do |path|
       inline = <<~JSON
         [[
@@ -202,8 +204,14 @@ class FetchPrReviewDataTrustTest < Minitest::Test
            "created_at":"2026-01-01T00:00:00Z","html_url":"https://gh/rc/30"},
           {"id":31,"node_id":"RC_31","path":"a.rb","body":"this is wrong, here is why","user":{"login":"justin808"},
            "in_reply_to_id":30,"created_at":"2026-01-02T00:00:00Z","html_url":"https://gh/rc/31"},
+          {"id":33,"node_id":"RC_33","path":"a.rb","body":"additional trusted context","user":{"login":"justin808"},
+           "in_reply_to_id":30,"created_at":"2026-01-03T00:00:00Z","html_url":"https://gh/rc/33"},
+          {"id":40,"node_id":"RC_40","path":"c.rb","body":#{INJECTION.to_json},"user":{"login":"drive-by"},
+           "created_at":"2026-01-04T00:00:00Z","html_url":"https://gh/rc/40"},
+          {"id":41,"node_id":"RC_41","path":"c.rb","body":"a second standalone concern","user":{"login":"justin808"},
+           "in_reply_to_id":40,"created_at":"2026-01-05T00:00:00Z","html_url":"https://gh/rc/41"},
           {"id":32,"node_id":"RC_32","path":"b.rb","body":"unrelated trusted note","user":{"login":"justin808"},
-           "created_at":"2026-01-03T00:00:00Z","html_url":"https://gh/rc/32"}
+           "created_at":"2026-01-06T00:00:00Z","html_url":"https://gh/rc/32"}
         ]]
       JSON
       trust = FetchPrReviewData::TrustBoundary.for(repo: "owner/repo", trust_config_path: path)
@@ -213,9 +221,12 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       )
       by_id = out["inline_comments"].to_h { |row| [row["id"], row] }
 
-      assert_equal([30], out["excluded_interactions"].map { |row| row["id"] })
+      assert_equal([30, 40], out["excluded_interactions"].map { |row| row["id"] })
       assert_equal true, by_id[31]["root_excluded"], "an orphaned trusted reply must be flagged"
+      refute by_id[33].key?("root_excluded"), "later replies must remain context"
+      assert_equal true, by_id[41]["root_excluded"], "each excluded root needs one representative"
       refute by_id[32].key?("root_excluded"), "a top-level trusted comment is not orphaned"
+      assert_equal "additional trusted context", by_id[33]["body"]
     end
   end
 
@@ -237,6 +248,29 @@ class FetchPrReviewDataTrustTest < Minitest::Test
 
       assert verified.actionable?("dev"), "a verified repo-local config honours its team"
       refute unverified.actionable?("dev"), "an unverified config must not rebind an unqualified slug"
+    end
+  end
+
+  def test_runner_honours_unqualified_team_from_verified_repo_local_config
+    Dir.mktmpdir("aw794-repo-local-team") do |root|
+      config_path = File.join(root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(File.dirname(config_path))
+      File.write(config_path, "trusted_teams:\n  - reviewers\n")
+      system(PrBatchGitProbeEnv.probe_env, "git", "-C", root, "init", "--quiet", exception: true)
+      system(
+        PrBatchGitProbeEnv.probe_env,
+        "git", "-C", root, "remote", "add", "origin", "https://github.com/owner/repo.git",
+        exception: true
+      )
+
+      runner = FetchPrReviewData::Runner.new
+      runner.define_singleton_method(:github_host_for) { |**| "github.com" }
+      runner.define_singleton_method(:team_member?) do |owner:, slug:, login:|
+        [owner, slug, login] == %w[owner reviewers dev]
+      end
+      trust = Dir.chdir(root) { runner.send(:trust_boundary, "owner/repo", nil) }
+
+      assert trust.actionable?("dev"), "the reader must match preflight's repo-local team behavior"
     end
   end
 
