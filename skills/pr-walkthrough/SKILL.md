@@ -5,6 +5,9 @@ description: Explain a pull request as a conceptual walkthrough, either interact
 
 # PR Walkthrough
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Build the reviewer's mental model of a PR without making them reconstruct it
 from file-order diffs. Inspect the entire exact-diff change first, then present
 coherent changes interactively. This is an explanation workflow, not a code

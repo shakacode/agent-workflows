@@ -6,6 +6,9 @@ argument-hint: '[consumer repository root]'
 
 # Secure GitHub Actions
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Use this skill when authoring or reviewing `.github/workflows/*.yml`,
 `.github/workflows/*.yaml`, or composite `action.yml` / `action.yaml` files. It
 provides a read-only deterministic gate plus a bounded manual security review.

@@ -5,9 +5,27 @@ description: Prepare or recover Codex tasks and subagents around an app restart,
 
 # Restart Codex Tasks
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Restartability is normal operation. Preparation improves evidence; it is never
 a prerequisite for the operator to restart. No control tower is required.
 Use supported task and collaboration tools; unavailable state stays UNKNOWN.
+
+## Choose the restart phase first
+
+On a bare invocation with no clear phase, ask before inventory, dispatch,
+checkpointing or pausing any task:
+
+- **Recover after restart** — reconcile interrupted tasks on the selected machine.
+- **Prepare before restart** — collect a short handoff before the operator restarts.
+- **Recover this task only** — resume the current task and its unfinished children.
+
+Use multiple-choice UI under the shared input contract; recommend recovery when
+context indicates an update, login or restart has already happened. If the user
+already stated the phase, reuse it and ask only for missing machine/task scope.
+Do not interpret a bare invocation, an idle task, or an old prepare handoff as
+permission to prepare. Wait for required answers; do not default on silence.
 
 ## Modes
 
@@ -15,8 +33,9 @@ Use supported task and collaboration tools; unavailable state stays UNKNOWN.
   affected local parents, including standalone tasks.
 - `resume`: recover the current parent and only its unfinished children.
 - `fleet-resume`: recover the recorded parent IDs on the specified host.
-- If already interrupted, default to `resume`. Otherwise use short preparation
-  when requested; a request for instructions only prints the relevant prompts.
+- If already interrupted, choose recovery, resolving current-task versus fleet
+  scope before dispatch. Prepare only when explicitly requested. A request for
+  instructions only prints the relevant prompts.
 
 Read the installed [pause recovery procedure](../pause/references/recovery.md)
 for checkpoint recording, log fallback, and the copy-ready recovery prompt.

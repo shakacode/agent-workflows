@@ -5,6 +5,9 @@ description: Drive a portable red-green-refactor workflow for features, bug fixe
 
 # Test-Driven Development
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 <!-- Keep this skill in sync with `workflows/tdd.md`. -->
 
 Memorable invocation: `$tdd`

@@ -5,6 +5,9 @@ description: Use when preparing a ready prompt for Claude, Codex, or another age
 
 # Plan Issue Triage
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Generate a ready-to-run prompt for issue triage. Do not perform the full audit, change code, or launch workers unless the user explicitly asks.
 
 Resolve writing style before authoring human-facing prose. Run

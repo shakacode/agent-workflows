@@ -5,6 +5,9 @@ description: Analyze current branch changes with the repo CI detector and run us
 
 # Run CI Command
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Analyze the current branch changes and run appropriate CI checks locally.
 
 ## Base Handling
@@ -23,7 +26,7 @@ Before running commands, inspect:
 
 ## Instructions
 
-1. First, run `.agents/bin/ci-detect` to inspect what changed when the user asks for routing details and the script exists; otherwise use `.agents/bin/validate` directly
+1. Inspect the wrapper and, when supported, run the read-only `.agents/bin/ci-detect` to identify available checks. Do not run validation before a required job choice is answered. Reuse an explicit job choice already supplied by the user.
 2. Show the user what the detector recommends
 3. Ask the user if they want to:
    - Run the recommended CI jobs (`.agents/bin/validate` in its default mode)

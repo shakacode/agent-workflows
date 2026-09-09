@@ -5,6 +5,9 @@ description: Audit multiple Codex tasks and visible ChatGPT chats for archive an
 
 # Audit Chats
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Audit the available chat surfaces without confusing work state, next owner, and
 archive readiness. Read and classify every task in the stated scope, reconcile
 stale blockers before recommending action, and state any inventory limitation.

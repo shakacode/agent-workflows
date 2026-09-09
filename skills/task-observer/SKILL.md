@@ -6,6 +6,9 @@ argument-hint: '[observe this session, append observation, review observations]'
 
 # Task Observer
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Capture sanitized, reviewable observations from real work so shared skills and
 portable workflow lessons can improve without turning every task into a
 mandatory observation run.

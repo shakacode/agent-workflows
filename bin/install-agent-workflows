@@ -23,6 +23,7 @@ Installed paths:
   <target>/docs/schemas/task-review-loop-v1.schema.json
   <target>/docs/agent-workflows-model-routing.md
   <target>/docs/user-facing-coordination.md
+  <target>/docs/skill-input.md
   <target>/docs/writing-style.md
   <target>/docs/writing-style-asd-ste100.md
   <target>/docs/solutions/*
@@ -69,6 +70,7 @@ pack_docs=(
   schemas/task-review-loop-v1.schema.json
   agent-workflows-model-routing.md
   user-facing-coordination.md
+  skill-input.md
   writing-style.md
   writing-style-asd-ste100.md
 )

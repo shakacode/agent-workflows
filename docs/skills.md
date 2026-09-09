@@ -5,6 +5,12 @@ skill by naming it in your request, for example `$verify`. The linked
 `SKILL.md` files are the agent-facing contracts; the descriptions here explain
 when a person would choose each one.
 
+You can invoke a skill without memorizing its arguments. When a required choice
+is missing, it asks with plain-language options before acting; choices already
+provided in the conversation are reused. See [Skill input](skill-input.md).
+For restart recovery, invoke `$restart-codex-subagents` and say that you have
+already restarted, or select **Recover after restart** when asked.
+
 If you also use Caveman, Ponytail, or another skill library, see
 [Compose With Other Skill Libraries](adoption.md#compose-with-other-skill-libraries)
 for workflow ownership, writing style, and compression boundaries.

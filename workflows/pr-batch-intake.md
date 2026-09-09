@@ -57,6 +57,24 @@ wording. Before branch creation, editing, or dispatch, every bounded status and 
 
 ## Short Invocation Expansion
 
+Apply [Skill input](../docs/skill-input.md) before dependent actions. A bare
+invocation opens the missing-choice interview; it does not authorize worker
+launch. Use multiple-choice questions for unresolved modes and scope where
+supported. For missing merge authority, present these outcomes through a host
+question path permitted to collect the decision:
+
+- **Ask before merging** (`ask`) — prepare the walkthrough, then request the
+  final merge decision.
+- **Stop with PRs ready** (`none`) — publish verified PRs without merging.
+- **Merge when gates pass** (`auto`) — authorize merging the selected targets
+  only when the existing merge gates permit it.
+
+Recommend `ask` when no preference is known, but do not assign it until answered.
+An explicit earlier authority choice remains valid within its original scope.
+Do not launch workers while required authority is unanswered. Targets, execution
+mode and other required missing decisions below use the same input contract;
+repo configuration and verified context may already supply many of these facts.
+
 The user should not need to write a long launch prompt. If the request is
 short, ask only for facts that are missing; never guess or ask again for an
 exact value already supplied:

@@ -6,6 +6,9 @@ argument-hint: '[batch id or id prefix] [owner/repo#N ...]'
 
 # Batch Status
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Answer "where are my batches?" from the conversation that planned them or after
 dispatch. This skill is **read-only**: it probes, cross-verifies, and reports. It
 never claims, merges, comments, relabels, or advances a lane.

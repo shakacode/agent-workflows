@@ -6,6 +6,9 @@ argument-hint: '[task, exact issue/PR numbers, or filters]'
 
 # PR Batch
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 For new Codex planning, resolve the advisory `astra-pilot-v1` profile from
 [central routing data](../plan-pr-batch/references/model-routing-profiles.json) with the plan skill's
 `bin/model-routing-profile --role <role>`. Its named preferences supersede the

@@ -5,6 +5,9 @@ description: Recover and close stale or unfinished PR-batch tasks by resolving l
 
 # Close Batch
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Recover the current task from live evidence, finish the closeout work it still
 owns, and remove it from the active task list only when its lifecycle permits.
 Do not create a replacement batch or redo completed work merely because the

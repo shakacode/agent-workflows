@@ -6,6 +6,9 @@ argument-hint: '[changed behavior, PR, or acceptance criteria]'
 
 # Manual Testing
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Use this when automated checks are green but the change still needs proof in the
 running system: a browser-visible feature, API behavior, integration wiring,
 auth/session flow, generated artifact, or user-requested manual verification.

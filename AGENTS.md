@@ -23,6 +23,8 @@ When integrating current `main` into an ordinary PR, keep the current-base
 ## Editing Rules
 
 - Keep `skills/*/SKILL.md` concise and portable.
+- Route every skill through `docs/skill-input.md` for missing required choices;
+  keep the entrypoint link when adding or updating skills.
 - Do not hardcode consumer repo commands, labels, branches, release trackers, or
   package paths in shared skills.
 - When a workflow needs repo-specific values, name the corresponding

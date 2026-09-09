@@ -5,6 +5,9 @@ description: 'Run a structured second-model code review as a closeout gate on a 
 
 # Auto Review
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Run a structured second-model review as a **closeout check** before commit, push, or ship,
 then loop until the review reports no accepted/actionable findings. This is code review, not
 PR merge/approval routing.
