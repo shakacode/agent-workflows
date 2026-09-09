@@ -2069,6 +2069,7 @@ class TrustedBaseHighRiskOperations
   MAX_GITLINK_DEPTH = 32
   TRACKED_WORKTREE_CHANGES = "trusted checkout has tracked working-tree changes"
   COMMAND_SEAM_PATH = ".agents/bin".b.freeze
+  COMMAND_SEAM_ANCESTOR_PATH = ".agents".b.freeze
   INSTRUCTION_SEAM_BASENAMES = Set.new(["AGENTS.md".b, "CLAUDE.md".b]).freeze
 
   def git_toplevel
@@ -2419,6 +2420,12 @@ class TrustedBaseHighRiskOperations
     return [true, nil] if exact_command_or_instruction_seam_path?(path)
 
     components = path.b.split("/".b, -1)
+    if components.length == 1
+      ancestor_alias, ancestor_alias_error = same_checkout_entry?(root, path, COMMAND_SEAM_ANCESTOR_PATH)
+      return [nil, ancestor_alias_error] if ancestor_alias_error
+      return [true, nil] if ancestor_alias
+    end
+
     if components.length >= 2
       command_candidate = components.first(2).join("/".b)
       command_alias, command_alias_error = same_checkout_entry?(root, command_candidate, COMMAND_SEAM_PATH)
@@ -2440,6 +2447,7 @@ class TrustedBaseHighRiskOperations
 
   def exact_command_or_instruction_seam_path?(path)
     path == COMMAND_SEAM_PATH || path.start_with?("#{COMMAND_SEAM_PATH}/".b) ||
+      (!path.empty? && COMMAND_SEAM_PATH.start_with?("#{path}/".b)) ||
       INSTRUCTION_SEAM_BASENAMES.include?(File.basename(path))
   end
 

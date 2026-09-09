@@ -3952,6 +3952,7 @@ class PrSecurityPreflightTest < Minitest::Test
   def test_command_and_instruction_seam_aliases_use_native_entry_identity
     operations = TrustedBaseHighRiskOperations.new
     aliases = {
+      ".AGENTS" => [".AGENTS", ".agents"],
       ".AGENTS/BIN" => [".AGENTS/BIN", ".agents/bin"],
       ".agents/BIN/validate" => [".agents/BIN", ".agents/bin"],
       ".agentſ/bin/validate" => [".agentſ/bin", ".agents/bin"],
@@ -4065,8 +4066,49 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_checkout_binding_rejects_symlink_ancestor_of_command_seam
+    {
+      "tracked" => :tracked,
+      "untracked" => :untracked,
+      "ignored" => :ignored
+    }.each do |label, state|
+      with_clean_real_git_checkout(
+        "trusted-base-symlinked-command-seam-ancestor"
+      ) do |dir, repo_root, base_sha, operations|
+        external_agents = File.join(dir, "external-agents")
+        FileUtils.mkdir_p(File.join(external_agents, "bin"))
+        File.write(File.join(external_agents, "bin", "validate"), "untrusted command\n")
+        File.symlink(external_agents, File.join(repo_root, ".agents"))
+
+        if state == :tracked
+          git! "-C", repo_root, "add", "--", ".agents"
+          git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+               "commit", "--quiet", "-m", "track symlinked command-seam ancestor"
+          base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+        elsif state == :ignored
+          git_dir = git_output!("-C", repo_root, "rev-parse", "--absolute-git-dir")
+          File.open(File.join(git_dir, "info", "exclude"), "a") { |file| file.puts("/.agents") }
+        end
+
+        matches, error = operations.checkout_matches_fetched_base?(
+          repo_root,
+          base_sha,
+          "refs/heads/main"
+        )
+
+        refute matches, label
+        expected_error = if state == :tracked
+                           "trusted checkout command/instruction seams cannot be symlinks"
+                         else
+                           "trusted checkout has untracked or ignored command/instruction seams"
+                         end
+        assert_equal expected_error, error, label
+      end
+    end
+  end
+
   def test_checkout_binding_rejects_tracked_symlink_case_aliases_on_case_insensitive_filesystems
-    [".agents/BIN", ".agentſ/bin", "nested/agents.md", "nested/AGENTſ.md"].each do |relative_path|
+    [".AGENTS", ".agents/BIN", ".agentſ/bin", "nested/agents.md", "nested/AGENTſ.md"].each do |relative_path|
       with_clean_real_git_checkout("trusted-base-case-insensitive-symlinked-seam") do |dir, repo_root, _base_sha, operations|
         operations.define_singleton_method(:same_checkout_entry?) { |_root, _path, _canonical| [true, nil] }
         external_path = File.join(dir, "external-#{relative_path.tr('/', '-')}")
