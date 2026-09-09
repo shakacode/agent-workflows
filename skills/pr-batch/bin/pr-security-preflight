@@ -2323,7 +2323,10 @@ class TrustedBaseHighRiskOperations
         regular_entries << entry
       when "120000"
         return [false, TRACKED_WORKTREE_CHANGES] unless File.symlink?(path)
-        if command_or_instruction_seam_path?(relative_path)
+
+        seam_path, seam_path_error = command_or_instruction_seam_path?(root, relative_path)
+        return [false, seam_path_error] if seam_path_error
+        if seam_path
           return [false, "trusted checkout command/instruction seams cannot be symlinks"]
         end
 
@@ -2400,15 +2403,57 @@ class TrustedBaseHighRiskOperations
       paths.concat(records)
     end
 
-    seams = paths.uniq.select { |path| command_or_instruction_seam_path?(path) }
+    seams = []
+    paths.uniq.each do |path|
+      seam_path, seam_path_error = command_or_instruction_seam_path?(root, path)
+      return [nil, seam_path_error] if seam_path_error
+
+      seams << path if seam_path
+    end
     [seams, nil]
   rescue ArgumentError, SystemCallError, TypeError => e
     [nil, "trusted checkout untracked seam state could not be verified: #{e.message.lines.first&.strip}"]
   end
 
-  def command_or_instruction_seam_path?(path)
+  def command_or_instruction_seam_path?(root, path)
+    return [true, nil] if exact_command_or_instruction_seam_path?(path)
+
+    components = path.b.split("/".b, -1)
+    if components.length >= 2
+      command_candidate = components.first(2).join("/".b)
+      command_alias, command_alias_error = same_checkout_entry?(root, command_candidate, COMMAND_SEAM_PATH)
+      return [nil, command_alias_error] if command_alias_error
+      return [true, nil] if command_alias
+    end
+
+    basename = File.basename(path)
+    prefix = path.byteslice(0, path.bytesize - basename.bytesize)
+    INSTRUCTION_SEAM_BASENAMES.each do |canonical_basename|
+      canonical_path = prefix + canonical_basename
+      instruction_alias, instruction_alias_error = same_checkout_entry?(root, path, canonical_path)
+      return [nil, instruction_alias_error] if instruction_alias_error
+      return [true, nil] if instruction_alias
+    end
+
+    [false, nil]
+  end
+
+  def exact_command_or_instruction_seam_path?(path)
     path == COMMAND_SEAM_PATH || path.start_with?("#{COMMAND_SEAM_PATH}/".b) ||
       INSTRUCTION_SEAM_BASENAMES.include?(File.basename(path))
+  end
+
+  def same_checkout_entry?(root, path, canonical_path)
+    path_stat = File.lstat(File.join(root.b, path))
+    canonical_stat = begin
+      File.lstat(File.join(root.b, canonical_path))
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      return [false, nil]
+    end
+
+    [path_stat.dev == canonical_stat.dev && path_stat.ino == canonical_stat.ino, nil]
+  rescue ArgumentError, SystemCallError, TypeError => e
+    [nil, "trusted checkout case-alias identity could not be verified: #{e.message.lines.first&.strip}"]
   end
 
   def tracked_path_ancestors_are_directories?(root, relative_path)

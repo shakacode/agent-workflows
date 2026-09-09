@@ -3872,6 +3872,104 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_checkout_binding_rejects_case_aliases_on_case_insensitive_filesystems
+    cases = {
+      ".AGENTS/BIN/validate" => false,
+      "nested/agents.MD" => false,
+      "ignored/claude.md" => true,
+      ".agentſ/bin/validate" => false,
+      "ignored/AGENTſ.md" => true
+    }
+
+    cases.each do |relative_path, ignored|
+      with_clean_real_git_checkout("trusted-base-case-insensitive-seams") do |_dir, repo_root, base_sha, operations|
+        operations.define_singleton_method(:same_checkout_entry?) { |_root, _path, _canonical| [true, nil] }
+        path = File.join(repo_root, relative_path)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "untrusted case alias\n")
+        if ignored
+          git_dir = git_output!("-C", repo_root, "rev-parse", "--absolute-git-dir")
+          File.open(File.join(git_dir, "info", "exclude"), "a") do |file|
+            file.puts("/#{relative_path}")
+          end
+        end
+
+        matches, error = operations.checkout_matches_fetched_base?(
+          repo_root,
+          base_sha,
+          "refs/heads/main"
+        )
+
+        refute matches, relative_path
+        assert_equal "trusted checkout has untracked or ignored command/instruction seams", error, relative_path
+      end
+    end
+  end
+
+  def test_command_and_instruction_seam_aliases_use_native_entry_identity
+    operations = TrustedBaseHighRiskOperations.new
+    aliases = {
+      ".AGENTS/BIN" => [".AGENTS/BIN", ".agents/bin"],
+      ".agents/BIN/validate" => [".agents/BIN", ".agents/bin"],
+      ".agentſ/bin/validate" => [".agentſ/bin", ".agents/bin"],
+      "nested/agents.MD" => ["nested/agents.MD", "nested/AGENTS.md"],
+      "nested/AGENTſ.md" => ["nested/AGENTſ.md", "nested/AGENTS.md"],
+      "claude.md" => ["claude.md", "CLAUDE.md"]
+    }
+    native_aliases = aliases.values.map { |pair| pair.map(&:b) }
+    operations.define_singleton_method(:same_checkout_entry?) do |_root, path, canonical|
+      [native_aliases.include?([path.b, canonical.b]), nil]
+    end
+
+    aliases.each_key do |path|
+      seam, error = operations.send(:command_or_instruction_seam_path?, "/repo", path)
+      assert seam, path
+      assert_nil error, path
+    end
+    refute operations.send(:command_or_instruction_seam_path?, "/repo", ".agents/BINOCULAR/validate").first
+    refute operations.send(:command_or_instruction_seam_path?, "/repo", "nested/MYAGENTS.md").first
+  end
+
+  def test_checkout_binding_accepts_case_distinct_nonseams_on_case_sensitive_directories
+    [".agents/BIN/validate", ".agentſ/bin/validate", "nested/AGENTſ.md"].each do |relative_path|
+      with_clean_real_git_checkout("trusted-base-case-sensitive-seams") do |_dir, repo_root, base_sha, operations|
+        operations.define_singleton_method(:same_checkout_entry?) { |_root, _path, _canonical| [false, nil] }
+        path = File.join(repo_root, relative_path)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "case-distinct content\n")
+
+        matches, error = operations.checkout_matches_fetched_base?(
+          repo_root,
+          base_sha,
+          "refs/heads/main"
+        )
+
+        assert matches, relative_path
+        assert_nil error, relative_path
+      end
+    end
+  end
+
+  def test_checkout_binding_fails_closed_when_case_alias_identity_is_unverifiable
+    with_clean_real_git_checkout("trusted-base-case-alias-identity") do |_dir, repo_root, base_sha, operations|
+      operations.define_singleton_method(:same_checkout_entry?) do |_root, _path, _canonical|
+        [nil, "trusted checkout case-alias identity could not be verified: simulated failure"]
+      end
+      path = File.join(repo_root, "nested/agents.md")
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "untrusted case alias\n")
+
+      matches, error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+
+      refute matches
+      assert_equal "trusted checkout case-alias identity could not be verified: simulated failure", error
+    end
+  end
+
   def test_checkout_binding_fails_closed_when_untracked_seam_probe_is_malformed
     with_clean_real_git_checkout("trusted-base-untracked-seam-probe") do |_dir, repo_root, base_sha, operations|
       expected_args = TRUSTED_CHECKOUT_CONFIG_ARGS + [
@@ -3910,6 +4008,32 @@ class PrSecurityPreflightTest < Minitest::Test
         git! "-C", repo_root, "add", "--", relative_path
         git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
              "commit", "--quiet", "-m", "track symlinked seam"
+        base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+
+        matches, error = operations.checkout_matches_fetched_base?(
+          repo_root,
+          base_sha,
+          "refs/heads/main"
+        )
+
+        refute matches, relative_path
+        assert_equal "trusted checkout command/instruction seams cannot be symlinks", error, relative_path
+      end
+    end
+  end
+
+  def test_checkout_binding_rejects_tracked_symlink_case_aliases_on_case_insensitive_filesystems
+    [".agents/BIN", ".agentſ/bin", "nested/agents.md", "nested/AGENTſ.md"].each do |relative_path|
+      with_clean_real_git_checkout("trusted-base-case-insensitive-symlinked-seam") do |dir, repo_root, _base_sha, operations|
+        operations.define_singleton_method(:same_checkout_entry?) { |_root, _path, _canonical| [true, nil] }
+        external_path = File.join(dir, "external-#{relative_path.tr('/', '-')}")
+        File.write(external_path, "untrusted target\n")
+        path = File.join(repo_root, relative_path)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.symlink(external_path, path)
+        git! "-C", repo_root, "add", "--", relative_path
+        git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+             "commit", "--quiet", "-m", "track case-aliased symlinked seam"
         base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
 
         matches, error = operations.checkout_matches_fetched_base?(
