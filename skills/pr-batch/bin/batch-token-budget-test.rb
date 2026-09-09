@@ -3018,6 +3018,39 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_reconcile_rejects_known_usage_vector_that_underreports_input_plus_output_without_mutation
+    with_state do |state_path|
+      initialize_budget(state_path)
+      reserve(state_path, id: "underreported-known-vector", tokens: 100)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 10, "lane-b" => 0 }
+      )
+      receipt.dig("batch", "usage", "descendant_inclusive").merge!(
+        "input_tokens" => 8,
+        "output_tokens" => 5,
+        "total_tokens" => 10
+      )
+      state_before = File.binread(state_path)
+
+      blocked, stderr, status = reconcile_receipt(
+        state_path,
+        receipt,
+        "underreported-known-vector",
+        completed_reservation_ids: ["underreported-known-vector"]
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+    end
+  end
+
   def test_legacy_v1_usage_receipt_is_rejected_as_unsupported_not_malformed
     with_state do |state_path|
       initialize_budget(state_path)
@@ -5427,6 +5460,60 @@ class BatchTokenBudgetTest < Minitest::Test
       assert_equal "replayed", blocked_replay.fetch("status")
       assert_equal "blocked", blocked_replay.fetch("decision_status")
       assert_equal blocked_snapshot, File.read(state_path)
+    end
+  end
+
+  def test_threshold_approval_coalescing_without_prior_decisions_preserves_event_pre_state
+    with_state do |state_path|
+      initialize_budget(state_path)
+      active_approval_id = "active-threshold-approval"
+      active_approval, active_approval_stderr, active_approval_status = run_helper(
+        state_path,
+        command("approve", "approval" => approval(state_path, id: active_approval_id))
+      )
+      assert active_approval_status.success?, active_approval_stderr
+      assert_equal "approved", active_approval.fetch("status")
+
+      active, active_stderr, active_status = reserve(
+        state_path,
+        id: "active-threshold-owner",
+        tokens: 480,
+        overrides: { "approval_id" => active_approval_id }
+      )
+      assert active_status.success?, active_stderr
+      assert_equal "admitted-with-warning", active.fetch("status")
+
+      coalesced_approval_id = "coalesced-threshold-approval"
+      coalesced_approval, coalesced_approval_stderr, coalesced_approval_status = run_helper(
+        state_path,
+        command("approve", "approval" => approval(state_path, id: coalesced_approval_id))
+      )
+      assert coalesced_approval_status.success?, coalesced_approval_stderr
+      assert_equal "approved", coalesced_approval.fetch("status")
+
+      coalesced, coalesced_stderr, coalesced_status = reserve(
+        state_path,
+        id: "coalesced-threshold-owner",
+        tokens: 1,
+        overrides: { "approval_id" => coalesced_approval_id }
+      )
+
+      assert coalesced_status.success?, coalesced_stderr
+      assert_equal "coalesced", coalesced.fetch("status")
+      saved = JSON.parse(File.read(state_path))
+      assert_equal "coalesced-threshold-owner", saved.dig(
+        "approvals", coalesced_approval_id, "consumed_by"
+      )
+      assert_empty saved.fetch("admission_decisions")
+      replayed, replayed_stderr, replayed_status = reserve(
+        state_path,
+        id: "coalesced-threshold-owner",
+        tokens: 1,
+        overrides: { "approval_id" => coalesced_approval_id }
+      )
+      assert replayed_status.success?, replayed_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal "coalesced", replayed.fetch("decision_status")
     end
   end
 

@@ -1490,7 +1490,7 @@ module BatchTokenBudget
   end
 
   def resolve_admission_decisions(original_state, decisions, reservation, evaluated_at)
-    return original_state if decisions.empty?
+    return deep_copy(original_state) if decisions.empty?
 
     state = deep_copy(original_state)
     resolved_decisions = decisions.map do |decision|
@@ -2427,8 +2427,13 @@ module BatchTokenBudget
   end
 
   def usage_counter_shape?(value)
-    exact_object_keys?(value, %w[cache_read_tokens input_tokens output_tokens reasoning_output_tokens total_tokens]) &&
-      value.values.all? { |counter| nonnegative_integer?(counter) || counter == "UNKNOWN" }
+    return false unless exact_object_keys?(
+      value,
+      %w[cache_read_tokens input_tokens output_tokens reasoning_output_tokens total_tokens]
+    ) && value.values.all? { |counter| nonnegative_integer?(counter) || counter == "UNKNOWN" }
+
+    input, output, total = value.values_at("input_tokens", "output_tokens", "total_tokens")
+    ![input, output, total].all? { |counter| counter.is_a?(Integer) } || total >= input + output
   end
 
   def requested_route_shape?(value)
