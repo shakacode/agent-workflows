@@ -701,6 +701,81 @@ class TaskScratchLifecycleTest < Minitest::Test
     end
   end
 
+  def test_create_removes_unreceipted_root_when_cleanup_rename_is_unsupported
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      instrumented_helper = File.read(HELPER)
+                                .sub('    if RUBY_PLATFORM.include?("darwin")', "    if false")
+                                .sub('    elsif RUBY_PLATFORM.include?("linux")', "    elsif false")
+                                .sub(
+                                  "  def open_at(directory, name)\n",
+                                  <<~'RUBY'
+                                    def open_at(directory, name)
+                                      if ENV["TASK_SCRATCH_FAIL_ROOT_OPEN"] && name.start_with?("task-scratch-")
+                                        raise Errno::ENFILE, "injected persistent root open failure"
+                                      end
+                                  RUBY
+                                )
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      File.chmod(0o755, lifecycle_helper)
+
+      blocked, stderr, status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        helper: lifecycle_helper,
+        env: { "TASK_SCRATCH_FAIL_ROOT_OPEN" => "1" }
+      )
+
+      refute status.success?
+      assert_empty stderr
+      assert_equal "scratch-initialization-failure", blocked.fetch("reason")
+      assert_empty Dir.children(scratch_parent)
+    end
+  end
+
+  def test_create_blocks_before_mutation_when_directory_removal_flag_is_unknown
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      instrumented_helper = File.read(HELPER).sub(
+        "REMOVE_DIRECTORY = case RUBY_PLATFORM",
+        'REMOVE_DIRECTORY = case "unsupported-platform"'
+      )
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      File.chmod(0o755, lifecycle_helper)
+
+      blocked, stderr, status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        helper: lifecycle_helper
+      )
+
+      refute status.success?
+      assert_empty stderr
+      assert_equal "scratch-initialization-failure", blocked.fetch("reason")
+      assert_empty Dir.children(scratch_parent)
+    end
+  end
+
   def test_create_blocks_before_mutation_when_descriptor_reservation_is_unavailable
     Dir.mktmpdir("task-scratch-lifecycle") do |directory|
       repository, = build_repository(directory)

@@ -31,9 +31,20 @@ module TaskScratchLifecycle
     extern "int mkdirat(int, const char *, unsigned int)"
     extern "int renameat(int, const char *, int, const char *)"
     extern "int unlinkat(int, const char *, int)"
-    if RUBY_PLATFORM.include?("darwin")
-      REMOVE_DIRECTORY = 0x80
+    REMOVE_DIRECTORY = case RUBY_PLATFORM
+                       when /darwin/
+                         0x80
+                       when /linux/
+                         0x200
+                       end
 
+    def self.ensure_directory_removal_supported!(unavailable_reason)
+      return true if REMOVE_DIRECTORY
+
+      raise LifecycleError, unavailable_reason
+    end
+
+    if RUBY_PLATFORM.include?("darwin")
       def self.ensure_cleanup_supported!
         extern "int renameatx_np(int, const char *, int, const char *, unsigned int)" unless
           respond_to?(:renameatx_np)
@@ -47,8 +58,6 @@ module TaskScratchLifecycle
         renameatx_np(source_directory_fd, source, destination_directory_fd, destination, 0x4)
       end
     elsif RUBY_PLATFORM.include?("linux")
-      REMOVE_DIRECTORY = 0x200
-
       def self.ensure_cleanup_supported!
         extern "int renameat2(int, const char *, int, const char *, unsigned int)" unless
           respond_to?(:renameat2)
@@ -62,8 +71,6 @@ module TaskScratchLifecycle
         renameat2(source_directory_fd, source, destination_directory_fd, destination, 0x1)
       end
     else
-      REMOVE_DIRECTORY = 0
-
       def self.ensure_cleanup_supported!
         raise LifecycleError, "cleanup-syscall-unavailable"
       end
@@ -607,6 +614,7 @@ module TaskScratchLifecycle
   end
 
   def create_private_directory(parent, prefix, create_unavailable_reason, open_unavailable_reason)
+    CleanupSyscalls.ensure_directory_removal_supported!(open_unavailable_reason)
     reserve = begin
       File.open(File::NULL, File::RDONLY)
     rescue SystemCallError, ArgumentError
