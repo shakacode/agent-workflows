@@ -245,6 +245,33 @@ module AgentWorkflowsStatus
       inventory_error = stable_release_inventory_error(materialized, metadata)
       return [nil, inventory_error] if inventory_error
 
+      doctor = File.join(materialized, "bin/agent_doctor")
+      if File.exist?(doctor) || File.symlink?(doctor)
+        unless File.directory?(doctor) && !File.symlink?(doctor)
+          return [nil, "release doctor runtime is not a regular directory"]
+        end
+
+        installed_bin = File.join(target, "bin")
+        unless File.directory?(installed_bin) && !File.symlink?(installed_bin)
+          return [nil, "installed doctor runtime ancestor is not a regular directory"]
+        end
+
+        _, _, matches = Open3.capture3(
+          RbConfig.ruby, File.join(doctor, "install_ownership.rb"), "compare", doctor, File.join(target, "bin/agent_doctor")
+        )
+        return [nil, "installed doctor runtime differs from verified release"] unless matches.success?
+      end
+      if metadata["delivery_mode"] == "plugin-companion"
+        scanner = File.join(materialized, "skills/secure-github-actions/lib/secure_github_actions_scanner.rb")
+        return [nil, "release scanner is not a regular file"] unless File.file?(scanner) && !File.symlink?(scanner)
+
+        scanner_error = stable_managed_surface_error(
+          target, { "release_scanner" => { "secure_github_actions_scanner.rb" => Digest::SHA256.file(scanner).hexdigest } },
+          fields: { "companion scanner" => %w[release_scanner lib/agent-workflows] }
+        )
+        return [nil, scanner_error] if scanner_error
+      end
+
       workflows = AgentWorkflowsDeliveryState.filesystem_entries(File.join(materialized, "workflows")) || {}
       fingerprints = workflows.filter_map do |name, path|
         next if File.directory?(path) && !File.symlink?(path)
@@ -342,7 +369,7 @@ module AgentWorkflowsStatus
 
         path = File.join(target, directory, name)
         ancestor = target
-        ancestors = ([directory] + name.split("/")[0...-1]).reject { |part| part == "." }.map do |part|
+        ancestors = (directory.split("/") + name.split("/")[0...-1]).reject { |part| part == "." }.map do |part|
           ancestor = File.join(ancestor, part)
           stat = File.lstat(ancestor)
           return "installed #{label} ancestor is not a regular directory: #{name}" unless stat.directory? && !stat.symlink?
@@ -525,13 +552,17 @@ module AgentWorkflowsStatus
       )
     end
     integrity_revision = revision
+    integrity_version = available_version
     if requested_channel == "stable"
       if requested_release != metadata["release_ref"]
-        integrity_revision, _, _, integrity_error = verify_stable_release(source, metadata, metadata["release_ref"], fetch: false)
+        integrity_revision, integrity_version, _, integrity_error = verify_stable_release(source, metadata, metadata["release_ref"], fetch: false)
         raise ArgumentError, integrity_error if integrity_error
       end
       unless metadata["source_revision"] == integrity_revision
         raise ArgumentError, "installed stable metadata revision does not match its release tag"
+      end
+      unless metadata["version"] == integrity_version
+        raise ArgumentError, "installed stable metadata version does not match its release tag"
       end
     end
     delivery, delivery_error = if requested_channel == "stable"

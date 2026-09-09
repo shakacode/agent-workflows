@@ -6,6 +6,12 @@ argument-hint: '[focus text or scope]'
 
 # Continue
 
+For crash or restart recovery, first read the installed
+[pause recovery procedure](../pause/references/recovery.md). Combine available
+checkpoints with newer relevant logs and live state; a missing handoff is not
+a blocker. Verify uncertain external effects before replaying them. Preserve
+intentional pauses, expired windows and budgets; recovery grants no new authority.
+
 Resume the current task. Before doing any new work, re-establish context so work does not drift or
 repeat:
 

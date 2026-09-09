@@ -436,6 +436,99 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
     end
   end
 
+  def test_stable_status_checks_installed_auxiliary_runtimes
+    with_release_repository do |source, target, _commits|
+      install_stable(source, target, "v0.1.0", host: "claude")
+      companion = "#{target}-companion"
+      install_stable(source, companion, "v0.1.0", host: "claude")
+      plugin = File.join(companion, "plugins/cache/agent-workflows/scw/0.1.0")
+      FileUtils.mkdir_p([File.join(plugin, "skills/example"), File.join(plugin, ".claude-plugin")])
+      File.write(File.join(plugin, "skills/example/SKILL.md"), "example\n")
+      File.write(File.join(plugin, ".claude-plugin/plugin.json"), JSON.generate(name: "scw", version: "0.1.0", skills: "./skills/"))
+      File.write(File.join(companion, "settings.json"), JSON.generate(enabledPlugins: { "scw@agent-workflows" => true }))
+      File.write(File.join(companion, "plugins/installed_plugins.json"), JSON.generate(version: 2, plugins: {
+                                                                                         "scw@agent-workflows" => [{ scope: "user", installPath: plugin, version: "0.1.0" }]
+                                                                                       }))
+      preview = ["--host", "claude", "--target", companion, "--source", source, "--delivery-mode", "plugin-companion"]
+      output, status = run_command(File.join(companion, "bin/agent-workflows-status"), *preview, "--json")
+      assert_equal 0, status.exitstatus, output
+      output, status = run_command(File.join(companion, "bin/upgrade-agent-workflows"), *preview, "--dry-run", "--release", "v0.1.0", "--no-fetch")
+      assert status.success?, output
+      assert_equal "flat", JSON.parse(File.read(File.join(companion, ".agent-workflows-install.json"))).fetch("delivery_mode")
+      output, status = run_command(File.join(source, "bin/install-agent-workflows"), "--host", "claude", "--target", companion,
+                                   "--release", "v0.1.0", "--delivery-mode", "plugin-companion")
+      assert status.success?, output
+
+      [[target, "bin/agent_doctor/contract.rb"], [companion, "lib/agent-workflows/secure_github_actions_scanner.rb"]].each do |home, relative|
+        command = [File.join(home, "bin/agent-workflows-status"), "--host", "claude", "--target", home, "--source", source, "--json"]
+        output, status = run_command(*command)
+        assert_equal 0, status.exitstatus, output
+        path = File.join(home, relative)
+        original = File.binread(path)
+        %w[missing modified].each do |mutation|
+          FileUtils.rm_f(path)
+          File.write(path, "raise 'modified runtime'\n") if mutation == "modified"
+          output, status = run_command(*command)
+          assert_equal 3, status.exitstatus, "#{relative} #{mutation}: #{output}"
+          assert_equal "CHECK_FAILED", JSON.parse(output).fetch("status")
+          File.binwrite(path, original)
+        end
+      end
+
+      command = [File.join(companion, "bin/agent-workflows-status"), "--host", "claude", "--target", companion,
+                 "--source", source, "--delivery-mode", "flat", "--json"]
+      output, status = run_command(*command)
+      refute status.success?, output
+      File.write(File.join(companion, "settings.json"), JSON.generate(enabledPlugins: { "scw@agent-workflows" => false }))
+      output, status = run_command(*command)
+      assert_equal 0, status.exitstatus, output
+      scanner = File.join(companion, "lib/agent-workflows/secure_github_actions_scanner.rb")
+      original = File.binread(scanner)
+      %w[missing modified].each do |mutation|
+        FileUtils.rm_f(scanner)
+        File.write(scanner, "raise 'modified runtime'\n") if mutation == "modified"
+        output, status = run_command(*command)
+        assert_equal 3, status.exitstatus, output
+        assert_includes JSON.parse(output).fetch("reason"), "scanner"
+        File.binwrite(scanner, original)
+      end
+      File.write(File.join(companion, "settings.json"), JSON.generate(enabledPlugins: { "scw@agent-workflows" => true }))
+
+      lib = File.join(companion, "lib")
+      external = "#{companion}-lib"
+      FileUtils.mv(lib, external)
+      File.symlink(external, lib)
+      output, status = run_command(File.join(companion, "bin/agent-workflows-status"), "--host", "claude", "--target", companion, "--source", source, "--json")
+      assert_equal 3, status.exitstatus, output
+      assert_includes output, "ancestor"
+    end
+  end
+
+  def test_stable_status_binds_version_to_installed_release_when_checking_upgrades
+    with_release_repository do |source, target, _commits|
+      install_stable(source, target, "v0.1.0", host: "claude")
+      metadata_path = File.join(target, ".agent-workflows-install.json")
+      original = File.binread(metadata_path)
+      command = [File.join(target, "bin/agent-workflows-status"), "--host", "claude", "--target", target, "--source", source, "--json"]
+      [nil, false, "9.9.9"].each do |version|
+        metadata = JSON.parse(original)
+        version.nil? ? metadata.delete("version") : metadata["version"] = version
+        File.write(metadata_path, JSON.generate(metadata))
+        [[], ["--release", "v0.1.1"]].each do |selection|
+          output, status = run_command(*command, *selection)
+          assert_equal 3, status.exitstatus, output
+          assert_includes JSON.parse(output).fetch("reason"), "version"
+        end
+      end
+      File.binwrite(metadata_path, original)
+      output, status = run_command(*command, "--release", "v0.1.1")
+      assert_equal 1, status.exitstatus, output
+      payload = JSON.parse(output)
+      assert_equal "0.1.0", payload.fetch("installed_version")
+      assert_equal "0.1.1", payload.fetch("available_version")
+    end
+  end
+
   private
 
   def with_release_repository(add_release_two_assets: false, release_two_instruction_surface: nil)
