@@ -182,6 +182,10 @@ breakage first found in a fix diff remains open until a later fix round.
 Reviewer-level `deferred` and `waived_by_maintainer` dispositions remain open
 inside this loop. Only the coordinator's evidence-backed cap adjudication can
 defer or waive them for task completion.
+Before finding admission, apply [Initial-Pass Optional-Nit Cutoff](pr-processing.md#initial-pass-optional-nit-cutoff).
+Keep unselected or late optional notes outside executable open findings; use
+the existing review summary/disposition surface instead. A `deferred` finding
+in this reducer is not a shortcut for declining optional work.
 An `accepted_fixed` outcome requires `verification.status: verified` and
 `verification.current_head_state: current` in every retained round before the
 finding can be retired; stale or unverified fix claims fail closed.
@@ -198,8 +202,9 @@ normalization. This applies to open and retired findings in every retained round
 Review initial task compliance and task quality against the brief and exact
 task diff. Re-review only the fix diff and the existing open findings. Admit a
 new finding to the loop only when the fix diff causes consequential breakage.
-Record unrelated observations for the final whole-branch review; they do not
-silently expand the task loop.
+Route demonstrated consequential defects outside the fix diff to the coordinator
+for substantive handling and final whole-branch review; do not dismiss them as
+optional or silently expand the task loop. Preserve the optional phase there.
 
 ## Fix And Re-Review Rounds
 

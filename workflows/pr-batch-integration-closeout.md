@@ -1107,6 +1107,11 @@ If self-review finds a real issue, fix it locally before pushing. Do not post se
 
 ## Pre-Push AI Review And Simplify Gate
 
+Apply [Initial-Pass Optional-Nit Cutoff](pr-processing.md#initial-pass-optional-nit-cutoff)
+to all review and simplify steps below, including final whole-branch review.
+Reuse the task's existing phase; a new reviewer or integration stage does not
+reopen optional work.
+
 <!-- host-branch: available-tool start -->
 
 For non-trivial, high-risk, or repeatedly churny changes, do more local review before
@@ -1362,6 +1367,10 @@ Before final handoff, kill or explicitly confirm no stray GitHub polling process
 still running.
 
 ## Review Comment Handling
+
+Apply [Initial-Pass Optional-Nit Cutoff](pr-processing.md#initial-pass-optional-nit-cutoff)
+before the defaults and coordinated worklist construction below, preserving
+the phase through review carryover and continuation.
 
 Use `.agents/skills/address-review/SKILL.md` when skills are available; Claude Code exposes the same workflow as `/address-review`. For assistants without skill support, use `.agents/workflows/address-review.md`. The default stance is:
 
