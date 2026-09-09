@@ -51,6 +51,21 @@ class GoalStateChangeMonitorTest < Minitest::Test
     [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
   end
 
+  def test_cleanup_option_without_plan_identity_is_structured_invalid_input
+    stdout, stderr, status = Open3.capture3(
+      HELPER,
+      "--state",
+      "/unused",
+      "--cleanup-after-clean-review"
+    )
+
+    refute status.success?
+    assert_empty stdout
+    decision = JSON.parse(stderr)
+    assert_equal "invalid-input", decision.fetch("status")
+    assert_equal "options-invalid", decision.fetch("reason")
+  end
+
   def canonicalize_for_digest(value)
     case value
     when Hash

@@ -662,6 +662,45 @@ class TaskScratchLifecycleTest < Minitest::Test
     end
   end
 
+  def test_create_removes_unreceipted_root_after_persistent_descriptor_open_failure
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      instrumented_helper = File.read(HELPER).sub(
+        "  def open_at(directory, name)\n",
+        <<~'RUBY'
+          def open_at(directory, name)
+            if ENV["TASK_SCRATCH_FAIL_ROOT_OPEN"] && name.start_with?("task-scratch-")
+              raise Errno::ENFILE, "injected persistent root open failure"
+            end
+        RUBY
+      )
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      File.chmod(0o755, lifecycle_helper)
+
+      blocked, stderr, status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        helper: lifecycle_helper,
+        env: { "TASK_SCRATCH_FAIL_ROOT_OPEN" => "1" }
+      )
+
+      refute status.success?
+      assert_empty stderr
+      assert_equal "scratch-initialization-failure", blocked.fetch("reason")
+      assert_empty Dir.children(scratch_parent)
+    end
+  end
+
   def test_create_blocks_before_mutation_when_descriptor_reservation_is_unavailable
     Dir.mktmpdir("task-scratch-lifecycle") do |directory|
       repository, = build_repository(directory)
@@ -750,6 +789,60 @@ class TaskScratchLifecycleTest < Minitest::Test
       assert_equal "cleaned", cleaned.fetch("status")
       assert_path_exists failure_marker
       assert_empty Dir.children(scratch_parent)
+    end
+  end
+
+  def test_cleanup_removes_unbound_holder_after_persistent_descriptor_open_failure
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, base_sha, head_sha = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      durable_root = File.join(directory, "durable")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(durable_root)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      review_helper = File.join(helper_root, "task-review-loop")
+      File.write(lifecycle_helper, File.read(HELPER))
+      File.chmod(0o755, lifecycle_helper)
+      write_clean_review_helper(review_helper)
+
+      created, create_stderr, create_status = run_create(
+        repository, scratch_parent, identity_path, ["evidence.json"], helper: lifecycle_helper
+      )
+      assert create_status.success?, create_stderr
+      receipt = created.fetch("receipt")
+      File.write(File.join(receipt.fetch("scratch_root"), "evidence.json"), "owned evidence\n")
+      receipt_path = File.join(durable_root, "scratch-receipt.json")
+      File.write(receipt_path, JSON.generate(receipt))
+      review_input_path, = write_clean_review_input(durable_root, repository, base_sha, head_sha)
+
+      instrumented_helper = File.read(HELPER).sub(
+        "  def open_at(directory, name)\n",
+        <<~'RUBY'
+          def open_at(directory, name)
+            if ENV["TASK_SCRATCH_FAIL_HOLDER_OPEN"] && name.start_with?(".task-scratch-cleanup-")
+              raise Errno::ENFILE, "injected persistent holder open failure"
+            end
+        RUBY
+      )
+      refute_equal File.read(HELPER), instrumented_helper
+      File.write(lifecycle_helper, instrumented_helper)
+      File.chmod(0o755, lifecycle_helper)
+
+      blocked, stderr, status = run_cleanup(
+        receipt_path,
+        review_input_path,
+        helper: lifecycle_helper,
+        env: { "TASK_SCRATCH_FAIL_HOLDER_OPEN" => "1" }
+      )
+
+      refute status.success?
+      assert_empty stderr
+      assert_equal "cleanup-holder-unavailable", blocked.fetch("reason")
+      assert_equal [File.basename(receipt.fetch("scratch_root"))], Dir.children(scratch_parent)
     end
   end
 

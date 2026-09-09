@@ -599,6 +599,13 @@ module TaskScratchLifecycle
     captured&.close
   end
 
+  def remove_unbound_empty_private_directory(parent, name)
+    result = CleanupSyscalls.unlinkat(parent.fileno, name, CleanupSyscalls::REMOVE_DIRECTORY)
+    result.zero? || Fiddle.last_error == Errno::ENOENT::Errno
+  rescue SystemCallError, ArgumentError
+    false
+  end
+
   def create_private_directory(parent, prefix, create_unavailable_reason, open_unavailable_reason)
     reserve = begin
       File.open(File::NULL, File::RDONLY)
@@ -637,6 +644,10 @@ module TaskScratchLifecycle
 
       sleep 0.01
     end
+    # No receipt or path escapes before this helper returns. If descriptor
+    # binding remains unavailable, remove the still-empty private entry by its
+    # unguessable invocation-owned name without opening another descriptor.
+    remove_unbound_empty_private_directory(parent, name)
     fail!(open_unavailable_reason)
   ensure
     reserve&.close unless reserve&.closed?

@@ -13,16 +13,6 @@ TASK_ACTIONS = {
 }.freeze
 OBSERVATION_DIGEST_VERSION = 2
 
-options = {}
-OptionParser.new do |parser|
-  parser.banner = "Usage: goal-state-change-monitor --state PATH < observation.json"
-  parser.on("--state PATH", "Restart-safe monitor state path") { |value| options[:state_path] = value }
-  parser.on(
-    "--cleanup-after-clean-review PLAN_IDENTITY",
-    "Require an authoritative adapter for persistent-state cleanup"
-  ) { |value| options[:cleanup_plan_identity] = value }
-end.parse!
-
 def fail_json(reason)
   warn JSON.generate(
     "contract" => "goal-state-change-decision",
@@ -31,6 +21,22 @@ def fail_json(reason)
     "reason" => reason
   )
   exit 1
+end
+
+options = {}
+parser = OptionParser.new do |parser|
+  parser.banner = "Usage: goal-state-change-monitor --state PATH < observation.json"
+  parser.on("--state PATH", "Restart-safe monitor state path") { |value| options[:state_path] = value }
+  parser.on(
+    "--cleanup-after-clean-review PLAN_IDENTITY",
+    "Require an authoritative adapter for persistent-state cleanup"
+  ) { |value| options[:cleanup_plan_identity] = value }
+end
+
+begin
+  parser.parse!
+rescue OptionParser::ParseError, ArgumentError
+  fail_json("options-invalid")
 end
 
 def canonicalize(value)
