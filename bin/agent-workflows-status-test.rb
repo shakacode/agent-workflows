@@ -246,6 +246,14 @@ class AgentWorkflowsStatusTest < Minitest::Test
         File.write(File.join(target, "skills/example/SKILL.md"), "stable skill\n")
         File.write(File.join(source, ".claude-plugin/plugin.json"), "{\"version\":\"1.2.3\"}\n")
         File.write(File.join(source, ".codex-plugin/plugin.json"), "{\"version\":\"1.2.3\"}\n")
+        FileUtils.mkdir_p(File.join(source, "bin"))
+        [source, target].each do |root|
+          FileUtils.mkdir_p(File.join(root, "docs"))
+          File.write(File.join(root, "docs/café.md"), "unicode document name\n")
+        end
+        File.write(File.join(source, "bin/install-agent-workflows"), "echo incidental-inventory-warning >&2\nprintf '%s\\n' '#{JSON.generate(version: 1, bin_helpers: [], pack_docs: ['café.md'])}'\n")
+        File.write(File.join(source, "THIRD_PARTY-NOTICES.md"), "release notices\n")
+        FileUtils.cp(File.join(source, "THIRD_PARTY-NOTICES.md"), File.join(target, "THIRD_PARTY-NOTICES.md"))
         system("git", "-C", source, "init", "--quiet", exception: true)
         system("git", "-C", source, "config", "user.email", "status-test@example.com", exception: true)
         system("git", "-C", source, "config", "user.name", "Status Test", exception: true)
@@ -270,12 +278,12 @@ class AgentWorkflowsStatusTest < Minitest::Test
           "release_ref" => "v1.2.3",
           "tag_object" => tag_object,
           "managed_bin_helper_copy_fingerprints" => {},
-          "managed_pack_root_copy_fingerprints" => {},
-          "managed_pack_doc_copy_fingerprints" => {}
+          "managed_pack_root_copy_fingerprints" => { "THIRD_PARTY-NOTICES.md" => Digest::SHA256.file(File.join(target, "THIRD_PARTY-NOTICES.md")).hexdigest },
+          "managed_pack_doc_copy_fingerprints" => { "café.md" => Digest::SHA256.file(File.join(target, "docs/café.md")).hexdigest }
         )
 
         out, status = run_status(
-          {}, "--target", target, "--host", "claude", "--source", source,
+          { "LANG" => "C", "LC_ALL" => "C" }, "--target", target, "--host", "claude", "--source", source,
           "--channel", "stable", "--release", "v1.2.3", "--json"
         )
         payload = JSON.parse(out)
@@ -373,6 +381,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
         FileUtils.chmod(0o755, helper)
         File.write(File.join(source, "docs/release-doc.md"), "stable doc\n")
         FileUtils.cp(File.join(source, "docs/release-doc.md"), doc)
+        File.write(File.join(source, "bin/install-agent-workflows"), "printf '%s\\n' '#{JSON.generate(version: 1, bin_helpers: ['release-helper'], pack_docs: ['release-doc.md'])}'\n")
         system("git", "-C", source, "init", "--quiet", exception: true)
         system("git", "-C", source, "config", "user.email", "status-test@example.com", exception: true)
         system("git", "-C", source, "config", "user.name", "Status Test", exception: true)
@@ -440,6 +449,25 @@ class AgentWorkflowsStatusTest < Minitest::Test
           assert_equal 3, status.exitstatus, "#{mutation}: #{out}"
           assert_includes JSON.parse(out).fetch("reason"), "THIRD_PARTY-NOTICES.md"
         end
+      end
+    end
+  end
+
+  def test_stable_managed_surface_rejects_symlinked_parent_directory
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("external-managed-docs") do |external|
+        FileUtils.mkdir_p(File.join(target, "docs"))
+        File.write(File.join(external, "example.md"), "unchanged content")
+        File.symlink(external, File.join(target, "docs/solutions"))
+        metadata = {
+          "managed_bin_helper_copy_fingerprints" => {},
+          "managed_pack_root_copy_fingerprints" => {},
+          "managed_pack_doc_copy_fingerprints" => {
+            "solutions/example.md" => Digest::SHA256.file(File.join(external, "example.md")).hexdigest
+          }
+        }
+        error = AgentWorkflowsStatus.stable_managed_surface_error(target, metadata)
+        assert_includes error.to_s, "ancestor"
       end
     end
   end

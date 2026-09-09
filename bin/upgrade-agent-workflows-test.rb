@@ -412,6 +412,30 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
     end
   end
 
+  def test_stable_status_rejects_reduced_metadata_and_symlinked_ancestors
+    with_release_repository do |source, target, _commits|
+      install_stable(source, target, "v0.1.0")
+      metadata_path = File.join(target, ".agent-workflows-install.json")
+      original = File.binread(metadata_path)
+      %w[managed_bin_helper_copy_fingerprints managed_pack_doc_copy_fingerprints managed_pack_root_copy_fingerprints].each do |field|
+        reduced = JSON.parse(original)
+        reduced[field] = {}
+        File.write(metadata_path, JSON.generate(reduced))
+        output, status = run_command(File.join(target, "bin/agent-workflows-status"), "--target", target, "--source", source, "--json")
+        assert_equal 3, status.exitstatus, "#{field}: #{output}"
+        assert_includes output, "inventory does not match release: #{field}"
+      end
+      File.write(metadata_path, original)
+      docs = File.join(target, "docs/solutions")
+      saved = File.join(File.dirname(target), "external-solutions")
+      FileUtils.mv(docs, saved)
+      File.symlink(saved, docs)
+      output, status = run_command(File.join(target, "bin/agent-workflows-status"), "--target", target, "--source", source, "--json")
+      assert_equal 3, status.exitstatus, output
+      assert_includes output, "ancestor"
+    end
+  end
+
   private
 
   def with_release_repository(add_release_two_assets: false, release_two_instruction_surface: nil)
