@@ -2569,6 +2569,10 @@ end
 def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, trust_config_resolution:,
                                    operations: TrustedBaseHighRiskOperations.new, post_fetch_rescan: nil)
   return [nil, "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"] unless clean_for_trusted_base_high_risk_acceptance?(result)
+  if trust_config_resolution.fetch(:source) == "repo-local" &&
+     all_changed_paths(result.fetch(:file_records)).include?(DEFAULT_TRUST_CONFIG)
+    return [nil, "PR changes automatically selected repo-local trust config"]
+  end
 
   operator_ref, operator_ref_error = operator_trusted_base_ref
   return [nil, operator_ref_error] if operator_ref_error

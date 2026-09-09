@@ -2138,6 +2138,49 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_rejects_pr_that_changes_automatically_selected_repo_local_trust_config
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED" => "1" }
+    ) do |env, _trust_config_path, repo_root, provenance|
+      repo_config = File.join(repo_root, DEFAULT_TRUST_CONFIG)
+      write_trust_config(repo_config, users: ["justin808"])
+      provenance.fetch(:operations).fetched_files[DEFAULT_TRUST_CONFIG] = File.binread(repo_config)
+
+      out, status = run_trusted_base_preflight(env, nil, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "PR changes automatically selected repo-local trust config"
+    end
+  end
+
+  def test_trusted_base_rejects_pr_that_renames_automatically_selected_repo_local_trust_config
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED" => "previous" }
+    ) do |env, _trust_config_path, repo_root, provenance|
+      repo_config = File.join(repo_root, DEFAULT_TRUST_CONFIG)
+      write_trust_config(repo_config, users: ["justin808"])
+      provenance.fetch(:operations).fetched_files[DEFAULT_TRUST_CONFIG] = File.binread(repo_config)
+
+      out, status = run_trusted_base_preflight(env, nil, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "PR changes automatically selected repo-local trust config"
+    end
+  end
+
+  def test_trusted_base_accepts_explicit_trust_config_when_pr_changes_repo_local_trust_config
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED" => "1" }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "Trust config source: explicit"
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
   def test_trusted_base_rejects_automatically_selected_repo_local_trust_config_changed_from_base
     with_trusted_base_preflight do |env, _trust_config_path, repo_root, provenance|
       repo_config = File.join(repo_root, DEFAULT_TRUST_CONFIG)
@@ -8604,9 +8647,19 @@ class PrSecurityPreflightTest < Minitest::Test
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls/123/files?per_page=100" ]; then
         if [ "$mode" = "trusted-base-high-risk" ]; then
-          cat <<'JSON'
+          if [ "${PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED:-}" = "previous" ]; then
+            cat <<'JSON'
+      [[{"filename":".github/workflows/test.yml"},{"filename":"AGENTS.md"},{"filename":"docs/former-trust-config.yml","previous_filename":".agents/trusted-github-actors.yml"}]]
+      JSON
+          elif [ "${PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED:-}" = "1" ]; then
+            cat <<'JSON'
+      [[{"filename":".github/workflows/test.yml"},{"filename":"AGENTS.md"},{"filename":".agents/trusted-github-actors.yml"}]]
+      JSON
+          else
+            cat <<'JSON'
       [[{"filename":".github/workflows/test.yml"},{"filename":"AGENTS.md"}]]
       JSON
+          fi
         elif [ "$mode" = "high-risk-file-predicates" ]; then
           cat <<'JSON'
       [[{"filename":".github/workflows/test.yml"},{"filename":"skills/pr-batch/bin/security-floor-contract-test.rb"},{"filename":"AGENTS.md"},{"filename":".agents/bin/test"},{"filename":"docs/safe.md"}]]
@@ -8631,7 +8684,11 @@ class PrSecurityPreflightTest < Minitest::Test
         base_oid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         changed_files=1
         if [ "$mode" = "trusted-base-high-risk" ]; then
-          changed_files=2
+          if [ -n "${PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED:-}" ]; then
+            changed_files=3
+          else
+            changed_files=2
+          fi
         elif [ "$mode" = "high-risk-file-predicates" ]; then
           changed_files=5
         elif [ "$mode" = "truncated-pr-files" ]; then
@@ -8653,7 +8710,13 @@ class PrSecurityPreflightTest < Minitest::Test
         for arg in "$@"; do
           if [ "$arg" = "--name-only" ]; then
             if [ "$mode" = "trusted-base-high-risk" ]; then
-              printf '.github/workflows/test.yml\nAGENTS.md\n'
+              if [ "${PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED:-}" = "previous" ]; then
+                printf '.github/workflows/test.yml\nAGENTS.md\ndocs/former-trust-config.yml\n'
+              elif [ "${PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED:-}" = "1" ]; then
+                printf '.github/workflows/test.yml\nAGENTS.md\n.agents/trusted-github-actors.yml\n'
+              else
+                printf '.github/workflows/test.yml\nAGENTS.md\n'
+              fi
               exit 0
             fi
             if [ "$mode" = "high-risk-file-predicates" ]; then
@@ -8669,6 +8732,46 @@ class PrSecurityPreflightTest < Minitest::Test
           fi
         done
         if [ "$mode" = "trusted-base-high-risk" ]; then
+          if [ "${PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED:-}" = "previous" ]; then
+            cat <<'DIFF'
+      diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+      index 0000000..1111111 100644
+      --- a/.github/workflows/test.yml
+      +++ b/.github/workflows/test.yml
+      +safe workflow change
+      diff --git a/AGENTS.md b/AGENTS.md
+      index 0000000..1111111 100644
+      --- a/AGENTS.md
+      +++ b/AGENTS.md
+      +safe agent guidance
+      diff --git a/.agents/trusted-github-actors.yml b/docs/former-trust-config.yml
+      similarity index 100%
+      rename from .agents/trusted-github-actors.yml
+      rename to docs/former-trust-config.yml
+      DIFF
+            exit 0
+          fi
+          if [ "${PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED:-}" = "1" ]; then
+            cat <<'DIFF'
+      diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+      index 0000000..1111111 100644
+      --- a/.github/workflows/test.yml
+      +++ b/.github/workflows/test.yml
+      +safe workflow change
+      diff --git a/AGENTS.md b/AGENTS.md
+      index 0000000..1111111 100644
+      --- a/AGENTS.md
+      +++ b/AGENTS.md
+      +safe agent guidance
+      diff --git a/.agents/trusted-github-actors.yml b/.agents/trusted-github-actors.yml
+      index 0000000..1111111 100644
+      --- a/.agents/trusted-github-actors.yml
+      +++ b/.agents/trusted-github-actors.yml
+      +trusted_users:
+      +  - justin808
+      DIFF
+            exit 0
+          fi
           if [ "${PREFLIGHT_TEST_SUSPICIOUS_DIFF:-}" = "1" ]; then
             cat <<'DIFF'
       diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
