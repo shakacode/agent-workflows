@@ -345,7 +345,8 @@ end
 
 TEAM_MEMBERSHIP_RESOLVER = lambda do |owner:, slug:, login:|
   run_gh_json("api", "orgs/#{owner}/teams/#{slug}/memberships/#{login}").fetch("state") == "active"
-rescue StandardError
+rescue StandardError => e
+  warn "WARN: could not fetch team membership for #{login} in #{owner}/#{slug}: #{e.message.lines.first&.strip}"
   false
 end
 

@@ -298,6 +298,8 @@ module GithubActorTrust
     build_config(data, contents:, path:, global:)
   rescue Psych::Exception
     raise Error, "Invalid trust config #{path}: malformed YAML"
+  rescue SystemCallError => e
+    raise Error, "Invalid trust config #{path}: #{e.message}"
   end
 
   def build_config(data, contents:, path:, global:)
@@ -363,6 +365,7 @@ module GithubActorTrust
   def trusted_team_member?(repo, login, config, team_cache, team_resolver)
     teams = config.fetch(:trusted_teams)
     return false if teams.empty?
+    return false if normalized_login(login).end_with?("[bot]")
     raise Error, "trusted_teams requires a team_resolver" if team_resolver.nil?
 
     repo_owner = repo.to_s.split("/", 2).first

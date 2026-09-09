@@ -46,6 +46,13 @@ class GithubActorTrustTest < Minitest::Test
     assert_equal :metadata_only, classify("github-actions[bot]")
   end
 
+  def test_metadata_only_bot_does_not_require_a_team_membership_probe
+    yaml = "trusted_teams: [owner/reviewers]\n"
+    resolver = ->(**) { flunk "metadata-only bots cannot belong to GitHub teams" }
+
+    assert_equal :metadata_only, classify("github-actions[bot]", yaml:, team_resolver: resolver)
+  end
+
   # A human squatting on a bot's base name must not inherit the bot's trust.
   def test_bot_trust_requires_the_bot_suffix
     yaml = "trusted_bots: [coderabbitai]\n"
@@ -73,6 +80,17 @@ class GithubActorTrustTest < Minitest::Test
     error = assert_raises(GithubActorTrust::Error) { config("trusted_users: [\n") }
 
     assert_match(/malformed YAML/, error.message)
+  end
+
+  def test_unreadable_trust_path_uses_the_module_error_contract
+    Dir.mktmpdir("actor-trust-directory") do |dir|
+      error = assert_raises(GithubActorTrust::Error) do
+        GithubActorTrust.load(path: dir, global: true)
+      end
+
+      assert_match(/Invalid trust config/, error.message)
+      assert_match(/directory|read/i, error.message)
+    end
   end
 
   def test_non_mapping_config_fails_closed

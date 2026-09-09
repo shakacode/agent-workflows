@@ -408,12 +408,66 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     runner.define_singleton_method(:fetch) { |*| flunk "fetch must not run for an untrusted authenticated actor" }
 
     _out, warning = capture_io do
-      assert_equal 1, runner.run(["12", "--repo", "owner/repo"])
+      assert_equal 1, runner.run(
+        ["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml",
+         "--expected-trust-digest", config.fetch(:content_digest)]
+      )
     end
 
     assert_includes warning, "authenticated GitHub actor @justin808 is untrusted"
     assert_includes warning, "packaged-fallback trust config"
     assert_includes warning, "trusted_users"
+  end
+
+  def test_cli_requires_preflight_trust_path_and_digest
+    runner = FetchPrReviewData::Runner.new
+    runner.define_singleton_method(:github_host_for) { |**| raise "host lookup must not run" }
+
+    _out, warning = capture_io do
+      assert_equal 1, runner.run(["12", "--repo", "owner/repo"])
+    end
+    assert_includes warning, "--trust-config is required"
+
+    _out, warning = capture_io do
+      assert_equal 1, runner.run(["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml"])
+    end
+    assert_includes warning, "--expected-trust-digest is required"
+
+    _out, warning = capture_io do
+      assert_equal 1, runner.run(
+        ["12", "--repo", "owner/repo", "--trust-config", "relative.yml",
+         "--expected-trust-digest", "sha256:#{'0' * 64}"]
+      )
+    end
+    assert_includes warning, "--trust-config must be an absolute path"
+
+    _out, warning = capture_io do
+      assert_equal 1, runner.run(
+        ["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml",
+         "--expected-trust-digest", "not-a-digest"]
+      )
+    end
+    assert_includes warning, "--expected-trust-digest must be a lowercase sha256: digest"
+  end
+
+  def test_cli_rejects_a_trust_digest_that_differs_from_preflight
+    with_trust_config do |path|
+      trust = FetchPrReviewData::TrustBoundary.for(repo: "owner/repo", trust_config_path: path)
+      runner = FetchPrReviewData::Runner.new
+      runner.define_singleton_method(:git_toplevel) { nil }
+      runner.define_singleton_method(:github_host_for) { |**| "github.com" }
+      runner.define_singleton_method(:trust_boundary) { |*| trust }
+      runner.define_singleton_method(:capture_probe) { |*| flunk "actor lookup must not run" }
+
+      _out, warning = capture_io do
+        assert_equal 1, runner.run(
+          ["12", "--repo", "owner/repo", "--trust-config", path,
+           "--expected-trust-digest", "sha256:#{'0' * 64}"]
+        )
+      end
+      assert_includes warning, "trust config digest changed after preflight"
+      assert_includes warning, trust.provenance.fetch("content_digest")
+    end
   end
 
   def test_authenticated_actor_gate_fails_closed_for_unavailable_missing_and_metadata_only_identity
@@ -575,8 +629,12 @@ class FetchPrReviewDataTrustTest < Minitest::Test
 
       previous_host = ENV.delete("GH_HOST")
       _out, _warning = capture_io do
+        digest = "sha256:#{Digest::SHA256.hexdigest(File.binread(config_path))}"
         result = Dir.chdir(root) do
-          runner.run(["12", "--repo", "owner/repo", "--trust-config", config_path])
+          runner.run(
+            ["12", "--repo", "owner/repo", "--trust-config", config_path,
+             "--expected-trust-digest", digest]
+          )
         end
         assert_equal 0, result
       end
@@ -598,6 +656,28 @@ class FetchPrReviewDataTrustTest < Minitest::Test
 
     assert_equal "ghe.example.com", runner.send(:github_host_for, root: nil, repo: "owner/repo")
     assert_equal ["gh", "repo", "view", "owner/repo", "--json", "nameWithOwner,url"], observed_command
+  end
+
+  def test_github_commands_use_a_separate_timeout_from_git_probes
+    runner = FetchPrReviewData::Runner.new
+    observed = {}
+    capture = lambda do |_env, *cmd, timeout_seconds:|
+      observed[cmd.first] = timeout_seconds
+      ["", "", FakeStatus.new(true)]
+    end
+
+    original_capture = PrBatchGitProbeEnv.method(:capture3)
+    PrBatchGitProbeEnv.define_singleton_method(:capture3) { |*args, **kwargs| capture.call(*args, **kwargs) }
+    runner.send(:capture_probe, "git", "status")
+    runner.send(:capture_probe, "gh", "api", "user")
+
+    assert_equal PrBatchGitProbeEnv::GIT_TIMEOUT_SECONDS, observed.fetch("git")
+    assert_equal FetchPrReviewData::GH_TIMEOUT_SECONDS, observed.fetch("gh")
+    assert_operator observed.fetch("gh"), :>, observed.fetch("git")
+  ensure
+    PrBatchGitProbeEnv.define_singleton_method(:capture3) do |*args, **kwargs|
+      original_capture.call(*args, **kwargs)
+    end
   end
 
   def test_github_host_fails_closed_when_checkout_has_no_matching_remote
@@ -678,7 +758,8 @@ class FetchPrReviewDataTrustTest < Minitest::Test
   def test_missing_explicit_trust_config_fails_closed
     out, status = Open3.capture2e(
       { "GH_HOST" => "github.com" },
-      "ruby", SCRIPT, "12", "--repo", "owner/repo", "--trust-config", "/nonexistent/trust.yml"
+      "ruby", SCRIPT, "12", "--repo", "owner/repo", "--trust-config", "/nonexistent/trust.yml",
+      "--expected-trust-digest", "sha256:#{'0' * 64}"
     )
 
     refute status.success?

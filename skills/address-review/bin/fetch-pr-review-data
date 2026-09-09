@@ -29,6 +29,8 @@ require_relative "../../pr-batch/lib/github_actor_trust"
 # raw `gh --paginate --slurp` output strings so they can be unit-tested directly.
 module FetchPrReviewData
   SUMMARY_MARKER = "<!-- address-review-summary -->"
+  GH_TIMEOUT_SECONDS = Integer(ENV.fetch("FETCH_PR_REVIEW_DATA_GH_TIMEOUT_SECONDS", "60"))
+  TRUST_DIGEST_FORMAT = /\Asha256:[0-9a-f]{64}\z/
 
   REVIEW_THREADS_QUERY = <<~GRAPHQL
     query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) {
@@ -335,13 +337,11 @@ module FetchPrReviewData
 
     Options:
           --repo REPO          GitHub repo in OWNER/REPO form. Defaults to gh repo view.
-          --trust-config PATH  Trusted GitHub actor allowlist. Defaults to the same
-                               user-controlled sources as pr-security-preflight:
-                               $#{GithubActorTrust::USER_TRUST_CONFIG_ENV},
-                               #{GithubActorTrust::HOME_TRUST_CONFIG}, then the packaged
-                               fail-closed fallback. A PR checkout's repo-local config
-                               is never auto-discovered; select a config explicitly
-                               only after verifying it from a trusted base.
+          --trust-config PATH  Absolute path to the trusted GitHub actor allowlist
+                               selected by trusted-base preflight (required).
+          --expected-trust-digest DIGEST
+                               sha256 digest emitted by trusted-base preflight for
+                               that allowlist (required).
           --json               Print JSON (default).
           --text               Print a human-readable count summary instead of JSON.
           --self-check         Run a parser check plus a read-only gh smoke check.
@@ -381,9 +381,11 @@ module FetchPrReviewData
 
       pr_number = validate_pr!(opts[:pr])
       repo = resolve_repo!(opts[:repo])
+      validate_trust_binding!(opts[:trust_config], opts[:expected_trust_digest])
       github_host = github_host_for(root: git_toplevel, repo:)
       with_github_host(github_host) do
         trust = trust_boundary(repo, opts[:trust_config])
+        verify_trust_digest!(trust, opts[:expected_trust_digest])
         verify_authenticated_actor!(trust)
         print_result(fetch(repo, pr_number, trust), opts[:format])
       end
@@ -396,13 +398,18 @@ module FetchPrReviewData
     private
 
     def parse_args(argv)
-      opts = { format: "json", help: false, self_check: false, pr: nil, repo: nil, trust_config: nil }
+      opts = {
+        format: "json", help: false, self_check: false, pr: nil, repo: nil,
+        trust_config: nil, expected_trust_digest: nil
+      }
       args = argv.dup
       until args.empty?
         arg = args.shift
         case arg
         when "--repo" then opts[:repo] = take_value!(args, "--repo")
         when "--trust-config" then opts[:trust_config] = take_value!(args, "--trust-config")
+        when "--expected-trust-digest"
+          opts[:expected_trust_digest] = take_value!(args, "--expected-trust-digest")
         when "--json" then opts[:format] = "json"
         when "--text" then opts[:format] = "text"
         when "--self-check" then opts[:self_check] = true
@@ -441,6 +448,24 @@ module FetchPrReviewData
       raise Error, "--repo must be in OWNER/REPO form (got: '#{repo}')" unless repo.match?(REPO_FORMAT)
 
       repo
+    end
+
+    def validate_trust_binding!(trust_config_path, expected_digest)
+      raise Error, "--trust-config is required; use the path resolved by trusted-base preflight" if trust_config_path.nil?
+      unless File.absolute_path(trust_config_path) == trust_config_path
+        raise Error, "--trust-config must be an absolute path resolved from the trusted base"
+      end
+      raise Error, "--expected-trust-digest is required; use the digest emitted by trusted-base preflight" if expected_digest.nil?
+      return if expected_digest.match?(TRUST_DIGEST_FORMAT)
+
+      raise Error, "--expected-trust-digest must be a lowercase sha256: digest"
+    end
+
+    def verify_trust_digest!(trust, expected_digest)
+      actual_digest = trust.provenance.fetch("content_digest")
+      return if actual_digest == expected_digest
+
+      raise Error, "trust config digest changed after preflight: expected #{expected_digest}, got #{actual_digest}"
     end
 
     def trust_boundary(repo, trust_config_path)
@@ -551,9 +576,10 @@ module FetchPrReviewData
       end
     end
 
-    # Bounded and environment-sanitized like the preflight's git probe, so a
-    # hung credential helper or a GIT_CONFIG_* override cannot stall this tool.
-    def capture_probe(*cmd, timeout_seconds: PrBatchGitProbeEnv::GIT_TIMEOUT_SECONDS)
+    # Git and GitHub probes are bounded separately and environment-sanitized,
+    # so a hung credential helper or a GIT_CONFIG_* override cannot stall this tool.
+    def capture_probe(*cmd, timeout_seconds: nil)
+      timeout_seconds ||= cmd.first == "gh" ? GH_TIMEOUT_SECONDS : PrBatchGitProbeEnv::GIT_TIMEOUT_SECONDS
       PrBatchGitProbeEnv.capture3(
         PrBatchGitProbeEnv.probe_env, *cmd, timeout_seconds:
       )

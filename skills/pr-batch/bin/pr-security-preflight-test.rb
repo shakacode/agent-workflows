@@ -1338,6 +1338,18 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_team_membership_lookup_failure_is_reported_before_fail_closed_classification
+    with_fake_gh("team-membership-error") do |env, trust_config_path, _log_path|
+      write_trust_config(trust_config_path, users: [], teams: ["owner/maintainers"])
+
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      assert status.success?, out
+      assert_includes out, "WARN: could not fetch team membership for justin808 in owner/maintainers"
+      assert_includes out, "Untrusted or hidden participant findings:"
+    end
+  end
+
   def test_trust_config_rejects_invalid_utf8
     with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
       File.binwrite(trust_config_path, "trusted_users:\n  - \xFF\n".b)
@@ -3580,6 +3592,11 @@ class PrSecurityPreflightTest < Minitest::Test
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/collaborators/justin808/permission" ]; then
         printf '{"permission":"admin"}'
         exit 0
+      fi
+
+      if [ "$mode" = "team-membership-error" ] && [ "$1" = "api" ] && [ "$2" = "orgs/owner/teams/maintainers/memberships/justin808" ]; then
+        printf 'temporary upstream error' >&2
+        exit 1
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "orgs/owner/teams/maintainers/memberships/justin808" ]; then
