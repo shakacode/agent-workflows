@@ -379,10 +379,14 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     runner.define_singleton_method(:capture_probe) { |*| active }
     assert runner.send(:team_member?, owner: "owner", slug: "reviewers", login: "dev")
 
+    probes = []
     runner.define_singleton_method(:capture_probe) do |*cmd|
-      cmd.include?("memberships/dev") ? missing : visible_team
+      probes << cmd
+      cmd.any? { |arg| arg.include?("memberships/dev") } ? missing : visible_team
     end
     refute runner.send(:team_member?, owner: "owner", slug: "reviewers", login: "dev")
+    assert_equal 2, probes.length
+    assert(probes.any? { |cmd| cmd.include?("orgs/owner/teams/reviewers") })
 
     [unavailable, ["", "", nil]].each do |failure|
       runner.define_singleton_method(:capture_probe) { |*| failure }
