@@ -62,12 +62,24 @@ module FetchPrReviewData
       @source = source
       @team_resolver = team_resolver
       @team_cache = {}
+      @classification_cache = {}
     end
 
     def classification(login)
-      GithubActorTrust.classify(
+      cache_key = GithubActorTrust.normalized_login(login)
+      return @classification_cache[cache_key] if @classification_cache.key?(cache_key)
+
+      classification = GithubActorTrust.classify(
         repo: @repo, login:, config: @config, team_cache: @team_cache, team_resolver: @team_resolver
       )
+      # A failed membership lookup may be transient. Retry it once immediately,
+      # then memoize the classification so comment volume cannot amplify API use.
+      if classification == :untrusted && @config.fetch(:trusted_teams).any?
+        classification = GithubActorTrust.classify(
+          repo: @repo, login:, config: @config, team_cache: @team_cache, team_resolver: @team_resolver
+        )
+      end
+      @classification_cache[cache_key] = classification
     rescue GithubActorTrust::Error => e
       raise Error, e.message
     end

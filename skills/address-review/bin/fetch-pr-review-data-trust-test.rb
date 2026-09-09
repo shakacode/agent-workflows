@@ -158,6 +158,36 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     end
   end
 
+  def test_team_classification_retries_once_then_memoizes_per_actor
+    config = GithubActorTrust.build_config(
+      { "trusted_teams" => ["owner/reviewers"] },
+      contents: "trusted_teams: [owner/reviewers]\n", path: "(test)", global: true
+    )
+
+    transient_calls = 0
+    transient = FetchPrReviewData::TrustBoundary.new(
+      repo: "owner/repo", config:, source: "test",
+      team_resolver: lambda { |**|
+        transient_calls += 1
+        transient_calls > 1
+      }
+    )
+    assert_equal :trusted, transient.classification("dev")
+    assert_equal :trusted, transient.classification("dev")
+    assert_equal 2, transient_calls, "a transient negative should retry once and then cache the positive"
+
+    nonmember_calls = 0
+    nonmember = FetchPrReviewData::TrustBoundary.new(
+      repo: "owner/repo", config:, source: "test",
+      team_resolver: lambda { |**|
+        nonmember_calls += 1
+        false
+      }
+    )
+    20.times { assert_equal :untrusted, nonmember.classification("drive-by") }
+    assert_equal 2, nonmember_calls, "comment volume must not control membership API volume"
+  end
+
   def test_metadata_only_and_untrusted_interactions_stay_auditable
     with_trust_config do |path|
       excluded = assembled(path)["excluded_interactions"]
