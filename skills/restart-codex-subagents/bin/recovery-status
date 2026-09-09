@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Audit recovery acknowledgments in an existing fleet manifest; never dispatch work."""
+import json
+from pathlib import Path
+import sys
+
+
+def audit(manifest):
+    generation = manifest.get("restart_id")
+    parents = manifest.get("parents")
+    if not isinstance(generation, str) or not generation or not isinstance(parents, list) or not parents:
+        raise ValueError("restart_id and nonempty parents are required")
+    seen, results = set(), []
+    expected = {"resume": "resumed", "keep-paused": "preserved-pause", "complete": "already-complete"}
+    for parent in parents:
+        if not isinstance(parent, dict):
+            raise ValueError("parent must be an object")
+        identity = parent.get("id")
+        if not isinstance(identity, str) or not identity or identity in seen:
+            raise ValueError("parent identities must be nonempty and unique")
+        seen.add(identity)
+        receipt = parent.get("recovery")
+        disposition = parent.get("resume_disposition")
+        reason = None
+        handoff = parent.get("handoff")
+        if handoff and (not isinstance(handoff, str) or Path(handoff).stem != identity):
+            reason = "handoff filename belongs to another parent"
+        elif disposition not in expected:
+            reason = "pre-restart pause/authority disposition needs reconciliation"
+        elif not isinstance(receipt, dict):
+            reason = "no recovery acknowledgment; readiness or dispatch is not recovery"
+        elif receipt.get("restart_id") != generation or receipt.get("parent_id") != identity:
+            reason = "recovery acknowledgment belongs to another restart or parent"
+        elif not all(isinstance(receipt.get(key), str) and receipt[key].strip()
+                     for key in ("evidence", "next_action")):
+            reason = "recovery acknowledgment lacks evidence or next action"
+        elif receipt.get("status") != expected[disposition]:
+            reason = "recovery is incomplete or conflicts with the saved disposition"
+        results.append({"parent_id": identity, "status": "needs-attention" if reason else receipt["status"],
+                        "reason": reason})
+    return {"restart_id": generation, "status": "RECOVERY_INCOMPLETE" if any(row["reason"] for row in results)
+            else "RECOVERY_COMPLETE", "parents": results}
+
+
+if __name__ == "__main__":
+    try:
+        if len(sys.argv) != 2:
+            raise ValueError("usage: recovery-status /path/to/existing-fleet.json")
+        result = audit(json.loads(Path(sys.argv[1]).read_text()))
+        print(json.dumps(result, indent=2))
+        sys.exit(0 if result["status"] == "RECOVERY_COMPLETE" else 2)
+    except (OSError, ValueError, TypeError, AttributeError):
+        print("recovery-status: invalid or unavailable manifest; recovery is UNKNOWN", file=sys.stderr)
+        sys.exit(2)

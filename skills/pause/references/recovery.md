@@ -84,6 +84,15 @@ See [official troubleshooting](https://developers.openai.com/codex/app/troublesh
 
 ## Recovery Prompt
 
+A restart-only hold is different from an intentional pause that predates the
+restart. Authorized recovery clears the former after live checks. For a fleet,
+the existing coordinator sends explicit recovery to every selected parent and
+collects a current-generation acknowledgment with evidence and next action.
+`RESTART_READY` only certifies preparation. Use the installed
+[restart skill](../../restart-codex-subagents/SKILL.md) for identity checks and
+the recovery acknowledgment audit; neither readiness nor a queued prompt proves
+that a task resumed.
+
 ```text
 Recover from interruption; preparation may be missing or incomplete.
 Combine any durable checkpoint with newer relevant task logs and live Git,

@@ -132,6 +132,7 @@ ruby bin/check-control-tower-prompt-size-test.rb
 bin/check-control-tower-prompt-size
 ruby skills/pause/bin/pause-prompt-test.rb
 python3 skills/pause/bin/recovery_record_test.py
+python3 skills/restart-codex-subagents/bin/recovery_status_test.py
 ruby skills/close-batch/bin/close-batch-contract-test.rb
 ruby skills/post-merge-audit/bin/post-merge-audit-policy-test.rb
 ruby skills/post-merge-audit/bin/completed-batch-publication-preflight-test.rb
