@@ -469,7 +469,8 @@ class TaskReviewLoopTest < Minitest::Test
           if [ "$1" = "diff" ] && [ -n "$MOVE_HEAD_TO" ]; then
             "$REAL_GIT" "$@"
             probe_status=$?
-            "$REAL_GIT" update-ref HEAD "$MOVE_HEAD_TO" || exit 125
+            env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+              "$REAL_GIT" -C "$MOVE_REPOSITORY_ROOT" update-ref HEAD "$MOVE_HEAD_TO" || exit 125
             printf 'moved\n' > "$MOVE_HEAD_SIGNAL"
             exit "$probe_status"
           fi
@@ -512,7 +513,11 @@ class TaskReviewLoopTest < Minitest::Test
       moved, moved_stderr, moved_status = evaluate_repository(
         input,
         repository,
-        env: probe_env.merge("MOVE_HEAD_TO" => moved_head, "MOVE_HEAD_SIGNAL" => move_signal)
+        env: probe_env.merge(
+          "MOVE_HEAD_TO" => moved_head,
+          "MOVE_HEAD_SIGNAL" => move_signal,
+          "MOVE_REPOSITORY_ROOT" => repository
+        )
       )
 
       assert moved_status.success?, moved_stderr
@@ -739,6 +744,143 @@ class TaskReviewLoopTest < Minitest::Test
       assert_equal "blocked", repository_backed.fetch("status")
       assert_includes repository_backed.fetch("reasons"), "review-package-canonical-diff-mismatch"
       assert_includes repository_backed.fetch("reasons"), "review-round-0-canonical-diff-mismatch"
+    end
+  end
+
+  def test_repository_backed_mode_ignores_uncommitted_and_info_attributes_for_canonical_diff
+    Dir.mktmpdir("task-review-loop-repository") do |directory|
+      repository = File.join(directory, "repository")
+      FileUtils.mkdir_p(File.join(repository, "nested"))
+      system("git", "init", "--quiet", repository) || raise("git init failed")
+      system("git", "-C", repository, "config", "user.name", "Test") || raise("git config failed")
+      system("git", "-C", repository, "config", "user.email", "test@example.com") || raise("git config failed")
+      source_path = File.join(repository, "nested/work.txt")
+      File.write(source_path, "base\n")
+      system("git", "-C", repository, "add", "nested/work.txt") || raise("git add failed")
+      system("git", "-C", repository, "commit", "--quiet", "-m", "base") || raise("git commit failed")
+      base_sha = git_output(repository, "rev-parse", "HEAD")
+      File.write(source_path, "reviewed\n")
+      system("git", "-C", repository, "commit", "--quiet", "-am", "reviewed") ||
+        raise("git commit failed")
+      head_sha = git_output(repository, "rev-parse", "HEAD")
+      expected_diff = canonical_git_diff(repository, base_sha, head_sha)
+      input = clean_review_input(
+        directory,
+        changed_paths: ["nested/work.txt"],
+        base_sha: base_sha,
+        head_sha: head_sha,
+        exact_diff: expected_diff
+      )
+
+      File.write(File.join(repository, ".gitattributes"), "nested/work.txt binary\n")
+      result, stderr, status = evaluate_repository(input, repository)
+      assert status.success?, stderr
+      assert_equal "task_complete", result.fetch("status"), result.inspect
+
+      File.delete(File.join(repository, ".gitattributes"))
+      File.write(File.join(repository, "nested/.gitattributes"), "work.txt binary\n")
+      result, stderr, status = evaluate_repository(input, repository)
+      assert status.success?, stderr
+      assert_equal "task_complete", result.fetch("status"), result.inspect
+      captured, capture_stderr, capture_status = Open3.capture3(
+        HELPER, "--repository-root", repository, "--capture-exact-diff", base_sha, head_sha
+      )
+      assert capture_status.success?, capture_stderr
+      assert_equal expected_diff, captured
+
+      File.delete(File.join(repository, "nested/.gitattributes"))
+      File.write(File.join(repository, ".git/info/attributes"), "nested/work.txt binary\n")
+      result, stderr, status = evaluate_repository(input, repository)
+      assert status.success?, stderr
+      assert_equal "task_complete", result.fetch("status"), result.inspect
+      captured, capture_stderr, capture_status = Open3.capture3(
+        HELPER, "--repository-root", repository, "--capture-exact-diff", base_sha, head_sha
+      )
+      assert capture_status.success?, capture_stderr
+      assert_equal expected_diff, captured
+
+      File.delete(File.join(repository, ".git/info/attributes"))
+      xdg_config = File.join(directory, "xdg")
+      FileUtils.mkdir_p(File.join(xdg_config, "git"))
+      File.write(File.join(xdg_config, "git/attributes"), "nested/work.txt binary\n")
+      result, stderr, status = evaluate_repository(input, repository, env: { "XDG_CONFIG_HOME" => xdg_config })
+      assert status.success?, stderr
+      assert_equal "task_complete", result.fetch("status"), result.inspect
+      captured, capture_stderr, capture_status = Open3.capture3(
+        { "XDG_CONFIG_HOME" => xdg_config },
+        HELPER, "--repository-root", repository, "--capture-exact-diff", base_sha, head_sha
+      )
+      assert capture_status.success?, capture_stderr
+      assert_equal expected_diff, captured
+
+      template_directory = File.join(directory, "malicious-template")
+      FileUtils.mkdir_p(File.join(template_directory, "info"))
+      File.write(File.join(template_directory, "info/attributes"), "nested/work.txt binary\n")
+      template_env = { "GIT_TEMPLATE_DIR" => template_directory }
+      result, stderr, status = evaluate_repository(input, repository, env: template_env)
+      assert status.success?, stderr
+      assert_equal "task_complete", result.fetch("status"), result.inspect
+      captured, capture_stderr, capture_status = Open3.capture3(
+        template_env,
+        HELPER, "--repository-root", repository, "--capture-exact-diff", base_sha, head_sha
+      )
+      assert capture_status.success?, capture_stderr
+      assert_equal expected_diff, captured
+
+      File.write(File.join(xdg_config, "git/config"), "[init]\n\ttemplateDir = #{template_directory}\n")
+      result, stderr, status = evaluate_repository(input, repository, env: { "XDG_CONFIG_HOME" => xdg_config })
+      assert status.success?, stderr
+      assert_equal "task_complete", result.fetch("status"), result.inspect
+
+      inherited_env = { "GIT_DEFAULT_HASH" => "sha256", "GIT_DIFF_OPTS" => "--unified=0" }
+      result, stderr, status = evaluate_repository(input, repository, env: inherited_env)
+      assert status.success?, stderr
+      assert_equal "task_complete", result.fetch("status"), result.inspect
+      captured, capture_stderr, capture_status = Open3.capture3(
+        inherited_env,
+        HELPER, "--repository-root", repository, "--capture-exact-diff", base_sha, head_sha
+      )
+      assert capture_status.success?, capture_stderr
+      assert_equal expected_diff, captured
+    end
+  end
+
+  def test_repository_backed_mode_keeps_committed_head_attributes_in_canonical_diff
+    Dir.mktmpdir("task-review-loop-repository") do |directory|
+      repository = File.join(directory, "repository")
+      Dir.mkdir(repository)
+      system("git", "init", "--quiet", repository) || raise("git init failed")
+      system("git", "-C", repository, "config", "user.name", "Test") || raise("git config failed")
+      system("git", "-C", repository, "config", "user.email", "test@example.com") || raise("git config failed")
+      File.write(File.join(repository, ".gitattributes"), "work.txt binary\n")
+      source_path = File.join(repository, "work.txt")
+      File.write(source_path, "base\n")
+      system("git", "-C", repository, "add", ".gitattributes", "work.txt") || raise("git add failed")
+      system("git", "-C", repository, "commit", "--quiet", "-m", "base") || raise("git commit failed")
+      base_sha = git_output(repository, "rev-parse", "HEAD")
+      File.write(source_path, "reviewed\n")
+      system("git", "-C", repository, "commit", "--quiet", "-am", "reviewed") ||
+        raise("git commit failed")
+      head_sha = git_output(repository, "rev-parse", "HEAD")
+      expected_diff = canonical_git_diff(repository, base_sha, head_sha)
+      assert_includes expected_diff, "GIT binary patch"
+      input = clean_review_input(
+        directory,
+        changed_paths: ["work.txt"],
+        base_sha: base_sha,
+        head_sha: head_sha,
+        exact_diff: expected_diff
+      )
+
+      result, stderr, status = evaluate_repository(input, repository)
+
+      assert status.success?, stderr
+      assert_equal "task_complete", result.fetch("status"), result.inspect
+      captured, capture_stderr, capture_status = Open3.capture3(
+        HELPER, "--repository-root", repository, "--capture-exact-diff", base_sha, head_sha
+      )
+      assert capture_status.success?, capture_stderr
+      assert_equal expected_diff, captured
     end
   end
 
@@ -2160,7 +2302,8 @@ class TaskReviewLoopTest < Minitest::Test
         --src-prefix=a/ --dst-prefix=b/ --ignore-submodules=none --submodule=short
       ]
       workflow = File.read(File.join(REPO_ROOT, "workflows/pr-batch-task-review.md"))
-      capture_flags.each { |flag| assert_includes workflow, flag }
+      assert_includes workflow, '"${PR_BATCH_SKILL_DIR}/bin/task-review-loop"'
+      assert_includes workflow, "--capture-exact-diff"
       patch, stderr, status = Open3.capture3(
         "git", "-c", "diff.noprefix=true", "-c", "diff.mnemonicPrefix=true",
         "-c", "color.ui=always", "-c", "diff.relative=true",

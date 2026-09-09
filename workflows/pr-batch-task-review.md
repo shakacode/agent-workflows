@@ -108,17 +108,21 @@ SHAs, expected current head, implementer and reviewer identities, commit list,
 diff stat, and prior-round digest.
 
 Capture the complete diff in a readable artifact with canonical `a/` and `b/`
-prefixes, overriding local diff presentation settings. From the repository root,
-use the accepted exact base and head as `REVIEW_BASE_SHA` and `REVIEW_HEAD_SHA`:
+prefixes. The helper reads attributes from the reviewed head in an isolated Git
+directory. It does not use working-tree, repository-local, global, or system
+attribute overrides. From the repository root, use the accepted exact base and
+head as `REVIEW_BASE_SHA` and `REVIEW_HEAD_SHA`:
 
 ```bash
-git diff --no-ext-diff --no-textconv --no-color --no-relative --binary \
-  --src-prefix=a/ --dst-prefix=b/ --ignore-submodules=none --submodule=short \
-  "$REVIEW_BASE_SHA" "$REVIEW_HEAD_SHA" -- > "$EXACT_DIFF_PATH"
+"${PR_BATCH_SKILL_DIR}/bin/task-review-loop" \
+  --repository-root . --capture-exact-diff \
+  "$REVIEW_BASE_SHA" "$REVIEW_HEAD_SHA" > "$EXACT_DIFF_PATH"
 ```
 
-Do not pass `--no-prefix`, custom prefixes, or a path filter. Recapture existing
-noncanonical artifacts before review; the reducer does not infer prefix modes.
+Do not replace the helper with an ordinary worktree `git diff`; uncommitted
+`.gitattributes`, `$GIT_DIR/info/attributes`, and user or system attributes can
+change or conceal the review text. Recapture existing noncanonical artifacts
+before review; the reducer does not infer prefix or attribute modes.
 On every repository-backed invocation, the helper recaptures every current and
 retained round's canonical diff from each package's exact base/head and compares
 it byte-for-byte with the submitted exact-diff artifact. A mismatch or

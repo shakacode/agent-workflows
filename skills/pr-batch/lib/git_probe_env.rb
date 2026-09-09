@@ -2,11 +2,14 @@
 
 require "shellwords"
 require "tempfile"
+require "tmpdir"
+require "pathname"
 
 module PrBatchGitProbeEnv
   GIT_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS", "10"))
   TimeoutError = Class.new(StandardError)
   OutputLimitError = Class.new(StandardError)
+  IsolationError = Class.new(StandardError)
 
   # Keep this fallback in sync with `git rev-parse --local-env-vars` for the
   # oldest supported Git; it is used only when the dynamic query fails.
@@ -38,10 +41,13 @@ module PrBatchGitProbeEnv
     GIT_CONFIG_GLOBAL
     GIT_CONFIG_NOSYSTEM
     GIT_CONFIG_SYSTEM
+    GIT_DEFAULT_HASH
+    GIT_DIFF_OPTS
     GIT_GLOB_PATHSPECS
     GIT_ICASE_PATHSPECS
     GIT_LITERAL_PATHSPECS
     GIT_NOGLOB_PATHSPECS
+    GIT_TEMPLATE_DIR
   ].freeze
 
   module_function
@@ -210,6 +216,65 @@ module PrBatchGitProbeEnv
       env["GIT_CONFIG_PARAMETERS"] = "'advice.graftFileDeprecated'='false'"
       preserve_safe_directory_config(env, source_env)
     end
+  end
+
+  def with_committed_attributes(repository_root)
+    common_dir, common_dir_stderr, common_dir_status = capture3(
+      probe_env,
+      "git", "rev-parse", "--git-common-dir", chdir: repository_root
+    )
+    unless common_dir_status.success? && common_dir_stderr.empty?
+      raise IsolationError, "Git common directory is unavailable"
+    end
+
+    common_dir_path = common_dir.strip
+    common_dir_path = File.expand_path(common_dir_path, repository_root) unless Pathname.new(common_dir_path).absolute?
+    object_directory = File.realpath(File.join(common_dir_path, "objects"))
+    object_format, object_format_stderr, object_format_status = capture3(
+      probe_env,
+      "git", "rev-parse", "--show-object-format", chdir: repository_root
+    )
+    unless object_format_status.success? && object_format_stderr.empty? && object_format.strip == "sha1"
+      raise IsolationError, "Git SHA-1 object format is required"
+    end
+
+    Dir.mktmpdir("pr-batch-committed-attributes") do |isolation_root|
+      git_directory = File.join(isolation_root, "repository.git")
+      template_directory = File.join(isolation_root, "empty-template")
+      Dir.mkdir(template_directory, 0o700)
+      init_env = probe_env.merge(
+        "GIT_ATTR_NOSYSTEM" => "1",
+        "GIT_CONFIG_GLOBAL" => File::NULL,
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_CONFIG_SYSTEM" => File::NULL,
+        "GIT_DEFAULT_HASH" => nil,
+        "GIT_TEMPLATE_DIR" => nil
+      )
+      init_arguments = [
+        "git", "init", "--bare", "--quiet", "--object-format=sha1", "--template=#{template_directory}"
+      ]
+      init_arguments << git_directory
+      _stdout, stderr, status = capture3(init_env, *init_arguments)
+      raise IsolationError, "Isolated Git directory initialization failed" unless status.success? && stderr.empty?
+
+      env = probe_env.merge(
+        "GIT_DIR" => git_directory,
+        "GIT_OBJECT_DIRECTORY" => object_directory,
+        "GIT_INDEX_FILE" => File.join(git_directory, "canonical-diff.index"),
+        "GIT_WORK_TREE" => nil,
+        "GIT_ATTR_NOSYSTEM" => "1",
+        "GIT_CONFIG_GLOBAL" => File::NULL,
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_CONFIG_SYSTEM" => File::NULL
+      )
+      config_count = Integer(env.fetch("GIT_CONFIG_COUNT", "0"), exception: false) || 0
+      env["GIT_CONFIG_COUNT"] = (config_count + 1).to_s
+      env["GIT_CONFIG_KEY_#{config_count}"] = "core.attributesFile"
+      env["GIT_CONFIG_VALUE_#{config_count}"] = File::NULL
+      yield env, git_directory
+    end
+  rescue SystemCallError, ArgumentError, TypeError => e
+    raise IsolationError, e.message
   end
 
   def preserve_safe_directory_config(env, source_env)
