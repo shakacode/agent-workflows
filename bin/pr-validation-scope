@@ -72,12 +72,13 @@ module PrValidationScope
   end
 
   # A conservative projection, not a Markdown parser: keep whole inline-code
-  # lines, indented lines, and fences with their contents. Unusual/unclosed
+  # lines, indented lines, and fences with their contents and line positions.
+  # Moving unchanged commands between sections must retain full coverage. Unusual/unclosed
   # fences over-collect through EOF. Raw HTML retains the whole file.
   def code_lines(text)
     text = text.b
     fence = nil
-    text.lines.select do |line|
+    text.lines.each_with_index.select do |line, _index|
       if fence
         fence = nil if line.chomp.match?(/\A {0,3}#{Regexp.escape(fence[0])}{#{fence.length},}[ \t]*\z/)
         true

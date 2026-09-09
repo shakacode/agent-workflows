@@ -87,8 +87,8 @@ jobs:
         if: steps.scope.outputs.scope != 'docs'
         run: |
           gem install json -v 2.21.2 --no-document
-          gem install rubocop -v "$(tr -d '[:space:]' < .rubocop-version)" --conservative --no-document
-          gem install json_schemer -v "$(tr -d '[:space:]' < .json-schemer-version)" --conservative --no-document
+          gem install rubocop -v "$(tr -d '[:space:]' < .rubocop-version)" --no-document
+          gem install json_schemer -v "$(tr -d '[:space:]' < .json-schemer-version)" --no-document
           ruby -rjson -e 'abort "Expected JSON 2.21.2, got #{JSON::VERSION}" unless JSON::VERSION == "2.21.2"; puts "JSON #{JSON::VERSION}"'
 
       - name: Run pack validation (bin/validate)

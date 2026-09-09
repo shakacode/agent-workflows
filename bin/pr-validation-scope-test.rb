@@ -103,6 +103,20 @@ class PrValidationScopeTest < Minitest::Test
     assert_equal "full", selection
   end
 
+  def test_moving_unchanged_commands_between_sections_selects_full
+    ["```bash\ninstall safe\n```", "Run `install safe` now.", "    install safe"].each do |code|
+      git("checkout", "--detach", @base)
+      write("README.md", "# Readme\n\n## First\n\n#{code}\n\n## Second\n\nMore prose.\n")
+      code_base = commit
+      write("README.md", "# Readme\n\n## First\n\n## Second\n\nMore prose.\n\n#{code}\n")
+      head = commit
+      assert_equal "full", selection(base: code_base), code
+      git("checkout", "--detach", code_base)
+      git("merge", "--no-ff", "-m", "integration", head)
+      assert_equal "full", selection(base: code_base, head: head, target: git("rev-parse", "HEAD"), draft: "false"), code
+    end
+  end
+
   def test_multiline_and_mismatched_inline_code_use_full_coverage
     ["`sh\ninstall safe\n`", "``sh\ninstall safe\n``", "`install safe``",
      "Run \\` before `sh\ninstall safe\nargument` after \\`.",
