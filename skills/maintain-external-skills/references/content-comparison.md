@@ -27,7 +27,10 @@ def manifest(argument):
                 continue
             if not stat.S_ISREG(mode):
                 raise RuntimeError(f"unsupported path type: {path}")
-            files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+            files[path.relative_to(root).as_posix()] = (
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+                bool(mode & stat.S_IXUSR),
+            )
     if "SKILL.md" not in files:
         raise RuntimeError(f"missing SKILL.md in {root}")
     return files
@@ -41,6 +44,9 @@ print("content matches")
 PY
 ```
 
-The command follows a top-level skill-directory symlink, but rejects nested
-symlinks and special files. A nonzero result is evidence to investigate, not a
-request to overwrite the installed copy.
+The command compares each regular file's SHA-256 and owner-execute intent. It
+allows group and other permission differences from a umask, but reports a lost
+owner-execute bit for an upstream executable helper. It follows a top-level
+skill-directory symlink, but rejects nested symlinks and special files. A
+nonzero result is evidence to investigate, not a request to overwrite the
+installed copy.

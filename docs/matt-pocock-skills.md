@@ -34,6 +34,10 @@ one canonical copy under `~/.agents/skills`, with Claude links under
 symlinks](https://developers.openai.com/codex/skills/). Avoid adding another copy
 of those same skills under `~/.codex/skills`.
 
+These roots are defaults. Confirm Agent Workflows ownership from the configured
+`CODEX_HOME` or installer `--target` and its `.agent-workflows-install.json`, not
+from an assumed home-directory path.
+
 Leave Agent Workflows in its existing delivery mode. Flat Agent Workflows
 installs can coexist with distinct third-party skill names. Native `scw` users
 retain their plugin plus `plugin-companion` assets; see
@@ -98,21 +102,37 @@ Before an installation or update:
    destination/overwrite summary. Do not use `--all`, a wildcard selection, or
    unattended overwrite approval when migrating an existing installation.
 
-For example, after setting `MATT_SKILLS_CHECKOUT` to that clean pinned checkout
-and `SKILLS_CLI_VERSION` to the reviewed installer version:
+For example, set `MATT_SKILLS_CHECKOUT` to the clean pinned checkout,
+`MATT_SKILLS_SHA` and `MATT_SKILLS_ORIGIN` to the recorded values, and
+`SKILLS_CLI_VERSION` to the reviewed installer version. Verify the checkout
+before running the separate skills CLI command:
 
 ```bash
+git -C "$MATT_SKILLS_CHECKOUT" remote get-url origin
 git -C "$MATT_SKILLS_CHECKOUT" rev-parse HEAD
 git -C "$MATT_SKILLS_CHECKOUT" status --short
+recorded_origin=$(git -C "$MATT_SKILLS_CHECKOUT" remote get-url origin) &&
+recorded_sha=$(git -C "$MATT_SKILLS_CHECKOUT" rev-parse HEAD) &&
+checkout_status=$(git -C "$MATT_SKILLS_CHECKOUT" status --porcelain) &&
+test "$recorded_origin" = "$MATT_SKILLS_ORIGIN" &&
+test "$recorded_sha" = "$MATT_SKILLS_SHA" &&
+test -z "$checkout_status"
+```
+
+The origin, full SHA, and status must match the recorded origin, full SHA, and
+clean state. Stop on any mismatch; only then run:
+
+```bash
 npx "skills@$SKILLS_CLI_VERSION" add "$MATT_SKILLS_CHECKOUT" --list
 npx "skills@$SKILLS_CLI_VERSION" add "$MATT_SKILLS_CHECKOUT" \
   --global --agent claude-code codex \
   --skill grill-me grilling grill-with-docs domain-modeling diagnosing-bugs
 ```
 
-Use the installer's symlink option. Keep your explicit commit/selection record:
-the CLI's generated lock file is installation metadata, not a substitute for
-that reproducible configuration, especially for local-path sources.
+Keep the default symlink mode: choose **Symlink** when prompted, and do not pass
+`--copy`. Keep your explicit commit/selection record: the CLI's generated lock
+file is installation metadata, not a substitute for that reproducible
+configuration, especially for local-path sources.
 
 To upgrade, review the difference from the recorded commit to a proposed new
 commit, including dependencies and invocation metadata. Reinstall the reviewed
