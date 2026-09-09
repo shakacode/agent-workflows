@@ -89,6 +89,14 @@ For engineering work, check the relevant subset of:
 - background agents, coordination claims, monitors, or active goals;
 - published artifacts or deployment state when those were part of the task.
 
+Preserve the [delivery coverage report](../verify/references/verification-evidence.md#delivery-coverage):
+phase, candidate/base identities, selected/full coverage, required results,
+omissions, and selection reason. Selected integration success does not prove
+complete promotion checks. A retry or review stopping boundary leaves failed
+requirements open with disposition ownership; merge authority does not confer
+release/deployment permission. Apply the same reference's exact, clean-state
+rules before reusing local command evidence.
+
 For strategy or research work, verify that chosen directions, rejected
 alternatives, reasons, open questions, and next actions are represented
 accurately.

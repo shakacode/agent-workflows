@@ -1,5 +1,32 @@
 # Verification evidence reuse
 
+## Delivery coverage
+
+Resolve integration versus promotion from the task and trusted repository
+policy. Read `AGENTS.md`, `.agents/bin/README.md`, and existing
+`.agents/agent-workflow.yml` notes: wrappers own required checks,
+`review_gate` owns review requirements, and `hosted_qa_gate` owns broader
+hosted QA. Use the documented complete invocation for promotion; there is no
+portable fast/full flag or effort preset. Omission preserves existing behavior.
+
+Only trusted-base policy may select reduced integration coverage. Policy,
+selector, tests, security, build/release changes, unknown paths, or uncertain
+identity/classification require complete coverage when that command is known
+and safe; otherwise preserve the blocking input. Invalid supplied policy
+cannot opt into reduced coverage. Keep mandatory lint, independent review,
+security, and current integration/CI evidence.
+
+Across verification, review preparation, and closeout, carry the phase,
+candidate and relevant base/integration identities, selected/full coverage,
+required checks and results, omitted checks, and selection/escalation reason.
+This is ordinary reporting, not a new receipt schema. Exit zero establishes
+only the checks that ran. Existing retry and review stopping rules keep their
+counts and disposition; reaching a budget never waives failed or unresolved
+required checks. Selected evidence cannot qualify omitted promotion checks,
+and merge authority never grants release or deployment permission.
+
+## Reusing a local result
+
 Use one durable local command result across verification, autoreview preparation,
 and PR closeout when its applicability is unchanged. This reduces repeated work;
 it does not waive verification or establish merge readiness.

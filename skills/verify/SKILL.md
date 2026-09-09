@@ -17,9 +17,10 @@ Use `/verify` for local pre-PR checks. Use `/run-ci` when you need `.agents/bin/
    `git diff --stat "origin/${BASE_BRANCH}...HEAD"`.
 3. Decide the required verification set that covers the changed surface area using the **Scope Guide** below. Always
    include `.agents/bin/lint` when present, and always include `.agents/bin/validate` before
-   creating a commit, even when the changed surface is documentation-only, because that gate can scan all files of its
-   language, not just changed or staged ones, so docs-only commits can still expose pre-existing offenses that CI will
-   catch.
+   creating a commit, including documentation-only changes. The repository wrapper owns its required coverage;
+   consume its trusted selection and documented complete invocation under the
+   [delivery coverage contract](references/verification-evidence.md#delivery-coverage).
+   Do not infer reduced coverage from file extensions, project labels, or a candidate's changed policy.
 4. Run each command in order; on failure, pause the command sequence to diagnose and fix it. Record the failing command, relevant error output, and next fix to attempt.
 5. For formatting failures (auto-fixable formatter or lint offenses), run the repo's documented autofix command or `.agents/bin/lint` mode when it supports fixes; do not manually edit formatting-only changes.
 6. After one or more edits for a failure, restart at the failed command and continue forward. Track a loop counter per
@@ -37,7 +38,9 @@ Use `/verify` for local pre-PR checks. Use `/run-ci` when you need `.agents/bin/
      permission, product, or consequential tradeoff decision cannot be resolved from available evidence.
      A failed check stays failed until it passes; diagnosis or escalation never waives a required gate.
    - Do not claim a failure is fixed until the command passes locally.
-7. Finish with the exact commands run and their pass/fail status. Once the required checks pass, continue
+7. Report phase, candidate/base identity, selected or full coverage, required commands and results,
+   omitted checks, and the selection or escalation reason. A selected pass does not qualify an omitted
+   promotion check. Once the required checks pass, continue
    the authorized task; repeat or broaden verification only after relevant changes, failures, unresolved
    concerns, or an explicit repository requirement.
 
@@ -53,7 +56,7 @@ Use this order unless the changed files make a narrower or broader set clearly a
    - `git diff --check "origin/${BASE_BRANCH}...HEAD"` for committed branch content before creating or updating a PR; detects trailing whitespace and conflict markers, not source formatting
    - `.agents/bin/lint` when present, or the repo's documented formatter check
 2. Mandatory pre-commit gate:
-   - `.agents/bin/validate` - **mandatory gate before every commit/PR update**; see Instructions step 3 for why this still applies to documentation-only commits
+   - `.agents/bin/validate` - **mandatory gate before every commit/PR update**, using the repository's documented coverage; promotion requires its complete invocation
 3. Ruby (or the repo's equivalent backend language):
    - the repo's type/signature validation command when signatures or public APIs changed
    - the repo's targeted unit-test command for the changed backend behavior
@@ -99,8 +102,10 @@ Use this concise summary:
 
 ```text
 Verification:
+- Phase: integration; candidate/base: <exact identities>; coverage: selected|full
 - PASS git diff --check "origin/${BASE_BRANCH}...HEAD"
 - FAIL <repo formatter check>
+- Omitted: <checks or none>; reason: <trusted selection or escalation>
 
 Next fix:
 - Run the repo's format/autofix command to fix formatting, then rerun the formatter check.

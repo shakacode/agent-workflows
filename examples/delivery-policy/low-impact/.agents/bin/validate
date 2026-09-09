@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "open3"
+
+# This repository owns these choices. Execute the trusted-base copy; see the example command table.
+def git(*args)
+  output, error, status = Open3.capture3("git", *args)
+  raise error unless status.success?
+
+  output
+end
+
+phase = ARGV.shift || "integration"
+abort "Unsupported example invocation" unless %w[integration promotion].include?(phase) && ARGV.empty?
+head = git("rev-parse", "HEAD").strip
+base = ENV.fetch("EXAMPLE_BASE_SHA", "")
+clean = git("status", "--porcelain").empty?
+coverage = "full"
+reason = "promotion requires complete checks"
+if phase == "integration"
+  reason = "unknown or broad change; complete checks required"
+  begin
+    raise "missing or invalid base" unless base.match?(/\A[0-9a-f]{40}\z/)
+
+    git("cat-file", "-e", "#{base}^{commit}")
+    raw = git("diff", "--raw", "-z", "--no-abbrev", "--no-renames", base, head, "--")
+    ordinary = !raw.empty? && raw.end_with?("\0") && raw.split("\0").length.even? &&
+               raw.split("\0").each_slice(2).all? do |header, path|
+                 header.match?(/\A:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M\z/) && path == "docs/overview.md"
+               end
+    if clean && ordinary
+      # This non-operational overview accepts plain prose only. Code, links,
+      # routing instructions, other files, and ambiguous syntax retain full checks.
+      prose = [base, head].all? do |revision|
+        git("show", "#{revision}:docs/overview.md").match?(/\A# Overview\n\n[A-Za-z .,!?'\n-]+\z/)
+      end
+      if prose
+        coverage = "selected"
+        reason = "ordinary overview prose; limited audience and reversible tool changes"
+      end
+    end
+  rescue RuntimeError => e
+    reason = "#{e.message.lines.first.to_s.strip}; complete checks required"
+  end
+end
+
+required = coverage == "selected" ? %w[lint docs] : %w[lint docs test]
+puts "phase: #{phase}\nhead: #{head}\nbase: #{base.empty? ? 'UNKNOWN' : base}"
+puts "working tree: #{clean ? 'clean' : 'dirty'}\ncoverage: #{coverage}\nreason: #{reason}"
+puts "omitted: #{coverage == 'selected' ? 'test' : 'none'}"
+passed = true
+required.each do |check|
+  success = system(".agents/bin/#{check}")
+  puts "required #{check}: #{success ? 'PASS' : 'FAIL'}"
+  passed = false unless success
+end
+if git("rev-parse", "HEAD").strip != head || (clean && !git("status", "--porcelain").empty?)
+  warn "Candidate changed during validation; rerun for the resulting tree"
+  passed = false
+end
+if phase == "promotion" && !clean
+  warn "Promotion blocked: candidate has uncommitted changes"
+  passed = false
+end
+exit(passed ? 0 : 1)
