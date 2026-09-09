@@ -9,7 +9,7 @@ You can invoke a skill without memorizing its arguments. When a required choice
 is missing, it asks with plain-language options before acting; choices already
 provided in the conversation are reused. See [Skill input](skill-input.md).
 For restart recovery, invoke `$restart-codex-subagents` and say that you have
-already restarted, or select **Recover after restart** when asked.
+already restarted, or select **Recover after restart** when asked. Recovery\ncan discover interrupted tasks even when preparation saved no manifest or\ncheckpoint.
 
 If you also use Caveman, Ponytail, or another skill library, see
 [Compose With Other Skill Libraries](adoption.md#compose-with-other-skill-libraries)

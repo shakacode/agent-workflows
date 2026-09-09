@@ -17,13 +17,16 @@ Use supported task and collaboration tools; unavailable state stays UNKNOWN.
 On a bare invocation with no clear phase, ask before inventory, dispatch,
 checkpointing or pausing any task:
 
-- **Recover after restart** — reconcile interrupted tasks on the selected machine.
+- **Recover after restart** — recover interrupted parents on the selected machine
+  (`fleet-resume`).
 - **Prepare before restart** — collect a short handoff before the operator restarts.
 - **Recover this task only** — resume the current task and its unfinished children.
 
 Use multiple-choice UI under the shared input contract; recommend recovery when
 context indicates an update, login or restart has already happened. If the user
 already stated the phase, reuse it and ask only for missing machine/task scope.
+The recovery menu choices already select fleet versus current-task scope; do
+not ask that choice again after selection.
 Do not interpret a bare invocation, an idle task, or an old prepare handoff as
 permission to prepare. Wait for required answers; do not default on silence.
 
@@ -32,7 +35,8 @@ permission to prepare. Wait for required answers; do not default on silence.
 - `prepare`: stop admitting work and collect readily available evidence for the
   affected local parents, including standalone tasks.
 - `resume`: recover the current parent and only its unfinished children.
-- `fleet-resume`: recover the recorded parent IDs on the specified host.
+- `fleet-resume`: recover interrupted parent tasks on the specified host; use
+  recorded IDs when available, otherwise discover candidates from that host.
 - If already interrupted, choose recovery, resolving current-task versus fleet
   scope before dispatch. Prepare only when explicitly requested. A request for
   instructions only prints the relevant prompts.
@@ -129,9 +133,46 @@ runtime state. This skill ships no app-killing script.
    with evidence, next action and owner. Unknown external effects need live
    verification before retrying. Preserve absent goals as absent.
 
+## Fleet Recovery Without Preparation Records
+
+A missing fleet manifest or failed checkpoint is missing evidence, not a missing
+user argument. Once the user selected fleet recovery and a host, discover that
+host's candidates before asking the user to identify tasks or locate files.
+Do not return to preparation or pause active work to manufacture a handoff.
+
+1. Use the owning host's supported task inventory. If it is capped, supplement
+   it with the installed [audit inventory](../audit-chats/SKILL.md#establish-the-inventory)
+   read-only catalog and relevant recent logs. Inventory on another machine
+   does not establish this host's fleet. Inspect only likely interrupted
+   user-visible parents; include standalone tasks and exclude internal workers.
+2. Apply [interrupted-task recovery](../audit-chats/references/interrupted-task-recovery.md)
+   for eligibility, ownership, original authority and one-attempt safeguards.
+   Missing handoffs are allowed. An idle icon or age alone is not interruption
+   evidence. Reuse the existing coordinator; an already-active task stays with
+   its owner and receives no duplicate resume or prepare message.
+3. Reconstruct the scoped manifest in approved private storage on the owning
+   host, outside worktrees. Reuse an identified restart ID; if none exists,
+   assign one ID to this recovery attempt and label its origin as reconstructed.
+   Record discovered parent IDs, host, evidence sources and unknown prior state.
+   Never invent pre-restart readiness, pause intent, completed preparation or
+   recovery acknowledgments. Reconcile prior attempts before any dispatch.
+4. Recover only verified eligible tasks, using supported live controls on their
+   host. Keep unclear candidates unresolved and continue independent eligible
+   ones. Save dispatch and verified responses in the reconstructed manifest;
+   preserve deliberate pauses, expired limits and already-complete work.
+5. Report inspected coverage, already-active tasks left alone, resumptions and
+   concrete exceptions. Ask only after available discovery cannot resolve a
+   consequential scope/authority choice; present the discovered task titles.
+   If the host cannot expose inventory, live status or resume controls, name
+   that specific capability blocker. Do not substitute a request for a manifest.
+   If nothing is eligible, report that result and its coverage rather than
+   claiming the entire fleet recovered. Unassessed or ambiguous candidates
+   prevent a whole-fleet completion claim.
+
 ## Close The Recovery Loop
 
-For `fleet-resume`, re-list the specified host's parents using the existing IDs.
+For `fleet-resume`, re-list the specified host's parents using the recorded or
+reconstructed IDs. If preparation records are absent, run the discovery above.
 Reconcile the actual restart boundary and latest authority before sending work.
 Set each parent's `resume_disposition` in the same manifest to `resume`,
 `keep-paused`, or `complete`. A hold introduced solely for this restart must not
@@ -149,8 +190,8 @@ remaining blocker, not merely receipt of the prompt.
 Persist dispatch separately from acknowledgment. A successful send, an idle
 task, `RESTART_READY`, or a receipt for another generation is not recovery.
 Wait in bounded snapshots and read back the parent's response. If delivery is
-uncertain, check its recent turn before retrying once with the same restart and
-parent IDs; do not duplicate active recovery. Missing acknowledgment remains
+uncertain, reconcile its recent turn, saved attempt and live state without
+automatically resending; do not duplicate active recovery. Missing acknowledgment remains
 needs-attention with an owner and exact next action. A known recurring failure
 gets no automatic retry loop. Do not send directly to child threads.
 

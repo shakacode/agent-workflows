@@ -24,6 +24,10 @@ owns its operations, scope, validation and authority rules.
   the consequence briefly; show internal argument names only when useful.
   Recommend an option when context supports it, without submitting it for the
   user. Permit a free-text answer through the host UI or chat.
+- Distinguish user choices from discoverable implementation details. Once the
+  user has selected an operation and scope, inspect available state to recover
+  missing record paths or task IDs before asking for them. Missing bookkeeping
+  alone must not trigger another argument interview.
 - Ask only for missing decisions needed by the next stage. Group closely
   related questions when supported; do not dump every possible parameter.
   For a missing target, offer only candidates actually established in context
@@ -43,6 +47,7 @@ owns its operations, scope, validation and authority rules.
 | Bare PR-batch with known targets but no merge authority | Ask whether to stop with PRs ready, ask before merging, or merge when the required gates pass. Wait before worker launch. |
 | PR-batch with targets and explicit merge authority | Reuse those values; ask only for any other required missing choice. |
 | Review skill with one unambiguous current PR | Use that PR; no menu solely because a positional argument was omitted. |
+| Fleet recovery on a named host, no manifest or checkpoint | Discover interrupted parent candidates from that host; preserve active tasks; ask only about an unresolved consequential choice. |
 | Any choice dismissed without an answer | Leave the dependent action unstarted. |
 
 These instructions guide the agent's behavior. They do not install a native
