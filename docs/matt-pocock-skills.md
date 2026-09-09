@@ -5,6 +5,11 @@ for interviews, domain modeling, and debugging. Keep Agent Workflows responsible
 for delivery: scope acceptance, lane ownership, execution, verification, review,
 and shipping. Compose these techniques through an explicit handoff.
 
+Use [`$maintain-external-skills`](../skills/maintain-external-skills/SKILL.md)
+for the read-only freshness check or an already-authorized pinned rollout. The
+skill keeps the portable maintenance boundary; this guide keeps Matt's selected
+skills and compatibility snapshot.
+
 ## Recommended installation model
 
 Keep two independently managed sources:
@@ -119,10 +124,11 @@ explicitly; reinstalling an older selection need not remove newer files.
 
 After installation, on **each host on each machine**:
 
-- Confirm the same selected files and supporting resources by content hashes,
-  plus the intended Claude symlink targets. Confirm `tdd` and `triage` still
-  resolve to Agent Workflows and that obsolete copies are absent or deliberately
-  retained under distinct ownership.
+- [Compare installed contents](../skills/maintain-external-skills/references/content-comparison.md#compare-installed-contents)
+  for the same selected files and supporting resources, plus the intended Claude
+  symlink targets. Confirm `tdd` and `triage` still resolve to Agent Workflows
+  and that obsolete copies are absent or deliberately retained under distinct
+  ownership.
 - Start a fresh session and inspect the skill picker/catalog. Check each
   selected skill appears once and dependencies can be loaded. Restart Codex if
   discovery is stale; reload Claude plugins when using its plugin route.
