@@ -28,6 +28,7 @@
 require "json"
 require "open3"
 require "time"
+require "uri"
 require "yaml"
 require_relative "../../../bin/agent_doctor/ci_readiness_policy"
 load File.expand_path("diff-identity", __dir__) unless defined?(DiffIdentity)
@@ -855,7 +856,7 @@ module PrCiReadiness
       checked_at = Time.now.utc.iso8601
       target_pr =
         begin
-          fetch_target_pr_identity(repo, pr_number)
+          fetch_target_pr_identity(repo, pr_number, live_policy_base: !trusted_repo_root.nil?)
         rescue StandardError => e
           return unavailable_target_pr_result(repo, pr_number, checked_at, e)
         end
@@ -869,7 +870,7 @@ module PrCiReadiness
                             PrCiReadiness.trusted_ci_policy_at(
                               repo_root: trusted_repo_root,
                               base_ref: target_pr.fetch(:base_ref),
-                              base_sha: target_pr.fetch(:base_sha)
+                              base_sha: target_pr.fetch(:live_base_sha)
                             )
                           end
       required_fetch = fetch_checks(repo, pr_number, required: true)
@@ -938,7 +939,7 @@ module PrCiReadiness
       inventory = exact_head_inventory(repo, target_pr)
       target_identity_error =
         begin
-          final_target_pr = fetch_target_pr_identity(repo, pr_number)
+          final_target_pr = fetch_target_pr_identity(repo, pr_number, live_policy_base: !trusted_repo_root.nil?)
           unless same_target_pr_identity?(target_pr, final_target_pr)
             "target PR identity moved during exact-head inventory: " \
               "#{target_pr_identity_description(target_pr)} -> " \
@@ -1682,7 +1683,7 @@ module PrCiReadiness
       head
     end
 
-    def fetch_target_pr_identity(repo, pr_number)
+    def fetch_target_pr_identity(repo, pr_number, live_policy_base: false)
       data = capture_json!("gh", "api", "repos/#{repo}/pulls/#{pr_number}")
       raise Error, "target PR response was not an object" unless data.is_a?(Hash)
 
@@ -1728,14 +1729,30 @@ module PrCiReadiness
         raise Error, "target PR base ref was not canonical"
       end
 
+      live_base_sha = nil
+      if live_policy_base
+        # Recorded PR base metadata and caller-supplied diff identity cannot
+        # choose the policy. Resolve the repository's actual target branch.
+        encoded_ref = base_ref.split("/").map { |part| URI.encode_www_form_component(part) }.join("/")
+        live_ref = capture_json!("gh", "api", "repos/#{repo}/git/ref/heads/#{encoded_ref}")
+        unless live_ref.is_a?(Hash) && live_ref["ref"] == "refs/heads/#{base_ref}" &&
+               live_ref["object"].is_a?(Hash) && live_ref.dig("object", "type") == "commit" &&
+               live_ref.dig("object", "sha").is_a?(String) &&
+               live_ref.dig("object", "sha").match?(/\A[0-9a-f]{40}\z/)
+          raise Error, "live policy base ref was unavailable or malformed"
+        end
+
+        live_base_sha = live_ref.dig("object", "sha")
+      end
+
       {
-        id:, number:, head_sha:, head_ref:, head_repo_id:, base_sha:, base_ref:,
+        id:, number:, head_sha:, head_ref:, head_repo_id:, base_sha:, base_ref:, live_base_sha:,
         head_repo_full_name: head_repo["full_name"].to_s
       }
     end
 
     def same_target_pr_identity?(left, right)
-      keys = %i[id number head_sha head_ref head_repo_id base_sha base_ref]
+      keys = %i[id number head_sha head_ref head_repo_id base_sha base_ref live_base_sha]
       left.values_at(*keys) == right.values_at(*keys)
     end
 
@@ -1745,7 +1762,8 @@ module PrCiReadiness
       "id=#{identity.fetch(:id)} number=##{identity.fetch(:number)} " \
         "head=#{identity.fetch(:head_sha)} ref=#{identity.fetch(:head_ref)} " \
         "head_repo_id=#{identity.fetch(:head_repo_id)} head_repo=#{repo_name} " \
-        "base=#{identity.fetch(:base_ref)}@#{identity.fetch(:base_sha)}"
+        "base=#{identity.fetch(:base_ref)}@#{identity.fetch(:base_sha)} " \
+        "live_policy_base=#{identity.fetch(:live_base_sha)}"
     end
 
     def fetch_actions_run(repo, run_id)

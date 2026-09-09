@@ -450,6 +450,44 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
+  def test_integrated_identity_binds_fresh_diff_ci_without_mutating_recorded_base_or_policy
+    ci, trusted_policy = ready_ci_with_optional_hold
+    ci["base"] = { "ref" => "main", "sha" => "e" * 40 }
+    autonomous = autonomous_result("autonomous-merge-eligible")
+    autonomous["current_integration"] = reused_current_integration(integrated: true)
+    original_ci = Marshal.load(Marshal.dump(ci))
+    result = MergeAssurance.assess(
+      ci_result: ci, autonomous_result: autonomous, trusted_ci_policy: trusted_policy,
+      context: context("auto_merge_when_gates_pass"), now: NOW
+    )
+
+    assert_equal true, result.fetch("eligible"), Array(result["failures"]).join("; ")
+    assert_equal original_ci, ci
+    assert_equal original_ci, result.dig("evidence", "ci_result")
+    assert_equal "current-head-integrated", result.dig("bindings", "current_integration", "reuse", "decision")
+
+    cases = {
+      "stale CI" => ->(value, _integration) { value["checked_at"] = (NOW - 301).iso8601 },
+      "missing CI" => ->(value, _integration) { value.clear },
+      "old reviewed diff" => ->(value, _integration) { value["diff_base_sha"] = "e" * 40 },
+      "old head" => ->(value, _integration) { value["head_sha"] = "c" * 40 },
+      "old policy" => ->(value, _integration) { value.fetch("ci_policy")["base"] = value.fetch("base") },
+      "reversed parents" => ->(_value, integration) { integration.fetch("candidate")["parents"].reverse! },
+      "invented savings" => ->(_value, integration) { integration.fetch("telemetry")["review_replays_avoided"] = 1 }
+    }
+    cases.each do |label, mutate|
+      changed_ci = Marshal.load(Marshal.dump(ci))
+      changed_autonomous = Marshal.load(Marshal.dump(autonomous))
+      mutate.call(changed_ci, changed_autonomous.fetch("current_integration"))
+      blocked = MergeAssurance.assess(
+        ci_result: changed_ci, autonomous_result: changed_autonomous, trusted_ci_policy: trusted_policy,
+        context: context("auto_merge_when_gates_pass"), now: NOW
+      )
+      assert_equal false, blocked.fetch("eligible"), label
+      refute_empty blocked.fetch("failures"), label
+    end
+  end
+
   def test_ci_recorded_base_reuse_does_not_rebind_old_policy_provenance
     ci, trusted_policy = ready_ci_with_optional_hold
     ci["base"] = { "ref" => "main", "sha" => "e" * 40 }
@@ -5112,7 +5150,7 @@ class MergeAssuranceTest < Minitest::Test
     )
   end
 
-  def reused_current_integration
+  def reused_current_integration(integrated: false)
     {
       "contract" => "current-integration-evidence",
       "version" => 1,
@@ -5129,10 +5167,15 @@ class MergeAssuranceTest < Minitest::Test
         "parents" => [BASE_SHA, HEAD_SHA]
       },
       "base_delta" => { "paths" => ["docs/guide.md"] },
-      "reuse" => { "decision" => "reuse-exact-head", "reasons" => ["base-delta-reuse-safe"] },
+      "reuse" => if integrated
+                   { "decision" => "current-head-integrated",
+                     "reasons" => %w[current-base-ancestor head-tree-matches-candidate] }
+                 else
+                   { "decision" => "reuse-exact-head", "reasons" => ["base-delta-reuse-safe"] }
+                 end,
       "telemetry" => {
-        "validator_replays_avoided" => 1,
-        "review_replays_avoided" => 1,
+        "validator_replays_avoided" => integrated ? 0 : 1,
+        "review_replays_avoided" => integrated ? 0 : 1,
         "elapsed_seconds_saved" => nil
       }
     }

@@ -92,10 +92,11 @@ module CurrentIntegrationEvidence
       raise Error, "recorded PR base is not an ancestor of the trusted current base"
     end
 
-    recorded_tree = git_output!(repo_root, "rev-parse", "#{recorded_base_sha}^{tree}").strip
+    diff_base = git_output!(repo_root, "merge-base", trusted_base_sha, head_sha).strip
+    recorded_tree = git_output!(repo_root, "rev-parse", "#{diff_base}^{tree}").strip
     head_tree = git_output!(repo_root, "rev-parse", "#{head_sha}^{tree}").strip
     patch_identity = framed_digest("current-integration-patch-v1", recorded_tree, head_tree)
-    git_pr_paths = changed_paths(repo_root, recorded_base_sha, head_sha)
+    git_pr_paths = changed_paths(repo_root, diff_base, head_sha)
     expected_pr_paths = canonical_paths(pr_paths, "PR path")
     unless git_pr_paths == expected_pr_paths
       raise Error, "Git PR paths do not match complete GitHub changed-file evidence"
@@ -104,6 +105,10 @@ module CurrentIntegrationEvidence
     base_delta_paths = changed_paths(repo_root, recorded_base_sha, trusted_base_sha)
     candidate = candidate_from_snapshot(initial, trusted_base_sha:, head_sha:) ||
                 local_candidate(repo_root, trusted_base_sha, head_sha)
+    head_integrated = git_success?(repo_root, "merge-base", "--is-ancestor", trusted_base_sha, head_sha)
+    if head_integrated && candidate.fetch("tree_oid") != head_tree
+      raise Error, "current integration candidate tree does not match already-integrated PR head"
+    end
 
     final = snapshot_reader.call(repo:, pr_number:, base_ref:)
     validate_snapshot!(final, base_ref:, head_sha:, trusted_base_sha:)
@@ -112,10 +117,14 @@ module CurrentIntegrationEvidence
       raise Error, "current integration changed during evidence collection"
     end
 
-    decision, reasons = reuse_decision(
-      recorded_base_sha:, trusted_base_sha:, pr_paths: git_pr_paths,
-      base_delta_paths:, policy:, changelog_path:
-    )
+    decision, reasons = if head_integrated && recorded_base_sha != trusted_base_sha
+                          ["current-head-integrated", %w[current-base-ancestor head-tree-matches-candidate]]
+                        else
+                          reuse_decision(
+                            recorded_base_sha:, trusted_base_sha:, pr_paths: git_pr_paths,
+                            base_delta_paths:, policy:, changelog_path:
+                          )
+                        end
     avoided = decision == "reuse-exact-head" ? 1 : 0
 
     {

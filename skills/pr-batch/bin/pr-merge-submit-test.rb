@@ -117,6 +117,20 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "mergePullRequest"
   end
 
+  def test_integrated_head_identity_replays_the_candidate_and_live_base
+    %w[current_integration_match current_integration_mismatch current_integration_live_base_mismatch].each do |mode|
+      result, log, = run_cli(mode:, receipt_mode: :integrated_head)
+
+      if mode == "current_integration_match"
+        assert result.fetch(:status).success?, result.fetch(:stderr)
+        assert_includes log, "mergePullRequest"
+      else
+        assert_equal 1, result.fetch(:status).exitstatus
+        refute_includes log, "mergePullRequest"
+      end
+    end
+  end
+
   def test_reused_integration_uses_independent_live_base_not_mutable_pr_base_ref_oid
     accepted, accepted_log, = run_cli(
       mode: "current_integration_match",
@@ -2254,7 +2268,7 @@ class PrMergeSubmitTest < Minitest::Test
       },
       "evidence_failures" => []
     }
-    if mode == :reused_integration
+    if %i[reused_integration integrated_head].include?(mode)
       ci_result = collected_ci_at_recorded_base(
         repo:, head:, base_ref:, recorded_base: "9" * 40, host:, pr_number:
       )
@@ -2274,10 +2288,15 @@ class PrMergeSubmitTest < Minitest::Test
           "parents" => [base_sha, head]
         },
         "base_delta" => { "paths" => ["docs/guide.md"] },
-        "reuse" => { "decision" => "reuse-exact-head", "reasons" => ["base-delta-reuse-safe"] },
+        "reuse" => if mode == :integrated_head
+                     { "decision" => "current-head-integrated",
+                       "reasons" => %w[current-base-ancestor head-tree-matches-candidate] }
+                   else
+                     { "decision" => "reuse-exact-head", "reasons" => ["base-delta-reuse-safe"] }
+                   end,
         "telemetry" => {
-          "validator_replays_avoided" => 1,
-          "review_replays_avoided" => 1,
+          "validator_replays_avoided" => mode == :integrated_head ? 0 : 1,
+          "review_replays_avoided" => mode == :integrated_head ? 0 : 1,
           "elapsed_seconds_saved" => nil
         }
       }
