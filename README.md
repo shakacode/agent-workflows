@@ -17,7 +17,7 @@ and a short `AGENTS.md` pointer section named
 
 ## Why This Exists
 
-Engineering teams need one reliable way to distribute agent skills across many
+Engineering teams need a reliable way to distribute agent skills across many
 repositories without copying the workflow pack into every checkout or erasing
 the policy each repository owns. Copied skill trees drift; purely global
 instructions cannot express repo-specific commands, trust, CI, and release
