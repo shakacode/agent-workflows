@@ -3899,6 +3899,31 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_checkout_binding_rejects_tracked_symlinks_on_command_and_instruction_seams
+    [".agents/bin", ".agents/bin/validate", "nested/AGENTS.md", "CLAUDE.md"].each do |relative_path|
+      with_clean_real_git_checkout("trusted-base-symlinked-seam") do |dir, repo_root, _base_sha, operations|
+        external_path = File.join(dir, "external-#{relative_path.tr('/', '-')}")
+        File.write(external_path, "untrusted target\n")
+        path = File.join(repo_root, relative_path)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.symlink(external_path, path)
+        git! "-C", repo_root, "add", "--", relative_path
+        git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+             "commit", "--quiet", "-m", "track symlinked seam"
+        base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+
+        matches, error = operations.checkout_matches_fetched_base?(
+          repo_root,
+          base_sha,
+          "refs/heads/main"
+        )
+
+        refute matches, relative_path
+        assert_equal "trusted checkout command/instruction seams cannot be symlinks", error, relative_path
+      end
+    end
+  end
+
   def test_checkout_binding_does_not_lazy_fetch_missing_promisor_object
     Dir.mktmpdir("trusted-base-promisor") do |repo_root|
       tracked_path = File.join(repo_root, "tracked.txt")

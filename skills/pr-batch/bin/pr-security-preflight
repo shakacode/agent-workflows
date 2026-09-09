@@ -2323,6 +2323,9 @@ class TrustedBaseHighRiskOperations
         regular_entries << entry
       when "120000"
         return [false, TRACKED_WORKTREE_CHANGES] unless File.symlink?(path)
+        if command_or_instruction_seam_path?(relative_path)
+          return [false, "trusted checkout command/instruction seams cannot be symlinks"]
+        end
 
         link_oids, link_error = raw_blob_oids(root, "--stdin", stdin_data: File.readlink(path), expected_count: 1)
         return [false, link_error] if link_error
@@ -2397,13 +2400,15 @@ class TrustedBaseHighRiskOperations
       paths.concat(records)
     end
 
-    seams = paths.uniq.select do |path|
-      path == COMMAND_SEAM_PATH || path.start_with?("#{COMMAND_SEAM_PATH}/".b) ||
-        INSTRUCTION_SEAM_BASENAMES.include?(File.basename(path))
-    end
+    seams = paths.uniq.select { |path| command_or_instruction_seam_path?(path) }
     [seams, nil]
   rescue ArgumentError, SystemCallError, TypeError => e
     [nil, "trusted checkout untracked seam state could not be verified: #{e.message.lines.first&.strip}"]
+  end
+
+  def command_or_instruction_seam_path?(path)
+    path == COMMAND_SEAM_PATH || path.start_with?("#{COMMAND_SEAM_PATH}/".b) ||
+      INSTRUCTION_SEAM_BASENAMES.include?(File.basename(path))
   end
 
   def tracked_path_ancestors_are_directories?(root, relative_path)
