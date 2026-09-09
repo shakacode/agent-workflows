@@ -150,14 +150,17 @@ class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
     trusted_base_policy_from_yaml(yaml, repo:)
   end
 
-  def fetched_file(_root, _base_sha, path)
+  def fetched_file(_root, _base_sha, path, allow_absent: false)
     if @fetched_files.key?(path)
       value = @fetched_files.fetch(path)
       return value if value.is_a?(Array)
 
       record = value.is_a?(Hash) ? value : { contents: value, mode: "100644" }
+      record = record.merge(present: true)
       return [record, nil]
     end
+
+    return [{ present: false }, nil] if allow_absent
 
     [nil, "fetched trusted base lacks #{path}"]
   end
@@ -1469,6 +1472,203 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_repo_local_symlink_config_fails_closed_without_global_fallback
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      env_config = File.join(dir, "global-trusted-github-actors.yml")
+      repo_config = File.join(consumer_root, DEFAULT_TRUST_CONFIG)
+      FileUtils.mkdir_p(File.dirname(repo_config))
+      write_trust_config(env_config, users: ["justin808"])
+      File.symlink(env_config, repo_config)
+
+      out, status = run_script(
+        env.merge(USER_TRUST_CONFIG_ENV => env_config),
+        "--repo",
+        "owner/repo",
+        "--strict-trust",
+        "123",
+        chdir: consumer_root
+      )
+
+      refute status.success?, out
+      assert_equal 1, status.exitstatus
+      assert_includes out, "trust config is not a regular file"
+      refute_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_bounded_trust_config_reader_rejects_fifo_directory_and_device_without_blocking
+    Dir.mktmpdir("bounded-trust-config-nonregular") do |dir|
+      fifo_path = File.join(dir, "fifo.yml")
+      directory_path = File.join(dir, "directory.yml")
+      FileUtils.mkdir_p(directory_path)
+      raise "could not create FIFO fixture" unless system(REAL_MKFIFO, fifo_path)
+
+      [fifo_path, directory_path, File::NULL].each do |path|
+        reader_options = if path == File::NULL
+                           { allow_symlink: true }
+                         else
+                           { allow_symlink: false, trusted_root: dir }
+                         end
+        worker = Thread.new { bounded_trust_config_contents(path, **reader_options) }
+        unless worker.join(1)
+          worker.kill
+          worker.join
+          flunk "trust config reader blocked on nonregular path #{path}"
+        end
+
+        contents, error = worker.value
+        assert_nil contents, path
+        assert_includes error, "trust config is not a regular file", path
+      end
+    end
+  end
+
+  def test_bounded_trust_config_reader_rejects_regular_to_fifo_replacement_without_blocking
+    Dir.mktmpdir("bounded-trust-config-fifo-race") do |dir|
+      dir = File.realpath(dir)
+      path = File.join(dir, "trusted-github-actors.yml")
+      File.write(path, "trusted_users: []\n")
+      original_lstat = File.method(:lstat)
+      replaced = false
+      replace_with_fifo = lambda do |candidate|
+        stat = original_lstat.call(candidate)
+        if candidate == path && !replaced
+          replaced = true
+          FileUtils.rm_f(candidate)
+          raise "could not create FIFO fixture" unless system(REAL_MKFIFO, candidate)
+        end
+
+        stat
+      end
+      file_singleton = File.singleton_class
+      file_singleton.send(:define_method, :lstat, &replace_with_fifo)
+      worker = Thread.new { bounded_trust_config_contents(path, allow_symlink: false, trusted_root: dir) }
+
+      unless worker.join(1)
+        worker.kill
+        worker.join
+        flunk "trust config reader blocked while opening a raced FIFO"
+      end
+
+      contents, error = worker.value
+      assert_nil contents
+      assert_includes error, "trust config is not a regular file"
+    ensure
+      file_singleton&.send(:define_method, :lstat, original_lstat) if original_lstat
+      worker&.kill if worker&.alive?
+      worker&.join
+    end
+  end
+
+  def test_bounded_trust_config_reader_allows_regular_symlink_for_explicit_operator_path
+    Dir.mktmpdir("bounded-trust-config-explicit-symlink") do |dir|
+      target = File.join(dir, "target.yml")
+      symlink = File.join(dir, "explicit.yml")
+      contents = "trusted_users: []\n"
+      File.binwrite(target, contents)
+      File.symlink(target, symlink)
+
+      actual, error = bounded_trust_config_contents(symlink, allow_symlink: true)
+
+      assert_nil error
+      assert_equal contents, actual
+    end
+  end
+
+  def test_repo_local_parent_symlink_fails_closed_for_in_repo_and_external_targets
+    %w[in-repo external].each do |target_location|
+      with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+        consumer_root = File.join(dir, "consumer-#{target_location}")
+        agents_target = if target_location == "in-repo"
+                          File.join(consumer_root, ".agents-real")
+                        else
+                          File.join(dir, "external-agents")
+                        end
+        env_config = File.join(dir, "global-trusted-github-actors.yml")
+        repo_config = File.join(agents_target, File.basename(DEFAULT_TRUST_CONFIG))
+        FileUtils.mkdir_p([consumer_root, agents_target])
+        write_trust_config(env_config, users: [])
+        write_trust_config(repo_config, users: ["justin808"])
+        File.symlink(agents_target, File.join(consumer_root, ".agents"))
+
+        out, status = run_script(
+          env.merge(USER_TRUST_CONFIG_ENV => env_config),
+          "--repo",
+          "owner/repo",
+          "--strict-trust",
+          "123",
+          chdir: consumer_root
+        )
+
+        refute status.success?, "#{target_location}: #{out}"
+        assert_equal 1, status.exitstatus, target_location
+        assert_includes out, "trust config path has an unsafe ancestor", target_location
+        refute_includes out, "SECURITY_PREFLIGHT_OK", target_location
+      end
+    end
+  end
+
+  def test_bounded_trust_config_reader_rejects_parent_directory_replaced_by_symlink
+    Dir.mktmpdir("bounded-trust-config-parent-race") do |root|
+      root = File.realpath(root)
+      agents_path = File.join(root, ".agents")
+      moved_agents_path = File.join(root, ".agents-moved")
+      path = File.join(agents_path, File.basename(DEFAULT_TRUST_CONFIG))
+      FileUtils.mkdir_p(agents_path)
+      File.write(path, "trusted_users: []\n")
+      original_open = File.method(:open)
+      raced = false
+      replace_parent = lambda do |candidate, *args, &block|
+        if !raced && candidate == path
+          raced = true
+          File.rename(agents_path, moved_agents_path)
+          File.symlink(moved_agents_path, agents_path)
+        end
+        original_open.call(candidate, *args, &block)
+      end
+      file_singleton = File.singleton_class
+      file_singleton.send(:define_method, :open, &replace_parent)
+
+      contents, error = bounded_trust_config_contents(path, allow_symlink: false, trusted_root: root)
+
+      assert_nil contents
+      assert_includes error, "trust config path changed during safe read"
+    ensure
+      file_singleton&.send(:define_method, :open, original_open) if original_open
+    end
+  end
+
+  def test_trust_config_presence_rejects_parent_directory_replaced_before_terminal_probe
+    Dir.mktmpdir("trust-config-presence-parent-race") do |root|
+      root = File.realpath(root)
+      agents_path = File.join(root, ".agents")
+      moved_agents_path = File.join(root, ".agents-moved")
+      external_agents_path = File.join(root, "external-agents")
+      path = File.join(agents_path, File.basename(DEFAULT_TRUST_CONFIG))
+      FileUtils.mkdir_p([agents_path, external_agents_path])
+      original_lstat = File.method(:lstat)
+      raced = false
+      replace_parent = lambda do |candidate|
+        if !raced && candidate == path
+          raced = true
+          File.rename(agents_path, moved_agents_path)
+          File.symlink(external_agents_path, agents_path)
+        end
+        original_lstat.call(candidate)
+      end
+      file_singleton = File.singleton_class
+      file_singleton.send(:define_method, :lstat, &replace_parent)
+
+      present, error = trust_config_path_present?(path, trusted_root: root)
+
+      assert_nil present
+      assert_includes error, "trust config path changed during selection"
+    ensure
+      file_singleton&.send(:define_method, :lstat, original_lstat) if original_lstat
+    end
+  end
+
   def test_trust_config_rejects_bot_overlap
     with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
       File.write(trust_config_path, <<~YAML)
@@ -2138,6 +2338,138 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
       assert_includes out, %("trust_config_source":"#{provenance.fetch(:base_sha)}:#{DEFAULT_TRUST_CONFIG}")
       assert_includes out, '"trust_config_file_mode":"100644"'
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_trusted_base_implicit_trust_config_ignores_path_git_lie_from_subdirectory
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      repo_config = File.join(repo_root, DEFAULT_TRUST_CONFIG)
+      subdirectory = File.join(repo_root, "nested", "path")
+      path_git = File.join(env.fetch("PATH").split(File::PATH_SEPARATOR).first, "git")
+      path_git_marker = File.join(File.dirname(path_git), "trust-config-path-git.log")
+      FileUtils.mkdir_p(subdirectory)
+      write_trust_config(repo_config, users: [])
+      provenance.fetch(:operations).fetched_files[DEFAULT_TRUST_CONFIG] = File.binread(repo_config)
+      File.write(path_git, <<~SH)
+        #!/usr/bin/env bash
+        if [ ! -s #{Shellwords.shellescape(path_git_marker)} ]; then
+          printf 'lied\\n' > #{Shellwords.shellescape(path_git_marker)}
+          printf '%s\\n' #{Shellwords.shellescape(subdirectory)}
+          exit 0
+        fi
+        exec #{Shellwords.shellescape(REAL_GIT)} "$@"
+      SH
+      FileUtils.chmod(0o755, path_git)
+
+      out, status = run_trusted_base_preflight(
+        env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => trust_config_path),
+        nil,
+        repo_root,
+        chdir: subdirectory
+      )
+
+      assert_trusted_base_blocked(out, status)
+      assert_trust_config_evidence(out, path: File.realpath(repo_config), source: "repo-local")
+      assert_includes out, "not in trusted actor allowlist"
+      refute File.exist?(path_git_marker), "implicit trust-config discovery executed inherited-PATH Git"
+    end
+  end
+
+  def test_trusted_base_rejects_implicit_global_fallback_when_repo_config_appears_during_fetch
+    repo_config = nil
+    hidden_repo_config = nil
+    mutation = -> { File.rename(hidden_repo_config, repo_config) }
+    with_trusted_base_preflight(during_fetch: mutation) do |env, trust_config_path, repo_root, provenance|
+      repo_config = File.join(repo_root, DEFAULT_TRUST_CONFIG)
+      hidden_repo_config = "#{repo_config}.hidden"
+      write_trust_config(repo_config, users: [])
+      provenance.fetch(:operations).fetched_files[DEFAULT_TRUST_CONFIG] = File.binread(repo_config)
+      File.rename(repo_config, hidden_repo_config)
+
+      out, status = run_trusted_base_preflight(
+        env.merge(USER_TRUST_CONFIG_ENV => trust_config_path),
+        nil,
+        repo_root
+      )
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "implicit trust config selection changed during trusted-base verification"
+    end
+  ensure
+    if hidden_repo_config && repo_config && File.exist?(hidden_repo_config) && !File.exist?(repo_config)
+      File.rename(hidden_repo_config, repo_config)
+    end
+  end
+
+  def test_trusted_base_rejects_implicit_global_fallback_when_fetched_base_has_repo_config
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      strict_config = <<~YAML
+        trusted_users: []
+        trusted_bots: []
+        trusted_metadata_bots: []
+        trusted_teams: []
+      YAML
+      provenance.fetch(:operations).fetched_files[DEFAULT_TRUST_CONFIG] = strict_config
+
+      out, status = run_trusted_base_preflight(
+        env.merge(USER_TRUST_CONFIG_ENV => trust_config_path),
+        nil,
+        repo_root
+      )
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "fetched trusted base contains #{DEFAULT_TRUST_CONFIG}"
+    end
+  end
+
+  def test_trusted_base_rejects_implicit_global_fallback_when_fetched_repo_config_state_is_unverifiable
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      provenance.fetch(:operations).fetched_files[DEFAULT_TRUST_CONFIG] = [
+        nil,
+        "fetched trusted base file metadata could not be verified: simulated failure"
+      ]
+
+      out, status = run_trusted_base_preflight(
+        env.merge(USER_TRUST_CONFIG_ENV => trust_config_path),
+        nil,
+        repo_root
+      )
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "fetched trusted base file metadata could not be verified"
+    end
+  end
+
+  def test_trusted_base_rejects_implicit_global_config_mutated_during_fetch
+    global_config = nil
+    mutation = -> { write_trust_config(global_config, users: %w[justin808 late-change]) }
+    with_trusted_base_preflight(during_fetch: mutation) do |env, trust_config_path, repo_root, _provenance|
+      global_config = trust_config_path
+
+      out, status = run_trusted_base_preflight(
+        env.merge(USER_TRUST_CONFIG_ENV => trust_config_path),
+        nil,
+        repo_root
+      )
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "implicit trust config changed during trusted-base verification"
+    end
+  end
+
+  def test_trusted_base_accepts_stable_implicit_global_fallback_when_repo_config_is_absent
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(
+        env.merge(USER_TRUST_CONFIG_ENV => trust_config_path),
+        nil,
+        repo_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "Trust config source: env"
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, '"repo_local_trust_config_state":"absent-current-and-fetched-base"'
       assert_includes out, "SECURITY_PREFLIGHT_OK"
     end
   end
@@ -4429,6 +4761,32 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_authoritative_trusted_repository_root_rejects_failed_malformed_and_mismatched_pinned_roots
+    Dir.mktmpdir("trusted-authoritative-root") do |dir|
+      repo_root = File.join(dir, "repo")
+      nested = File.join(repo_root, "nested")
+      unrelated_root = File.join(dir, "unrelated")
+      FileUtils.mkdir_p([nested, unrelated_root])
+      init_git_root(repo_root)
+      cases = {
+        "failed" => ["", "fatal: simulated failure", TestCommandStatus.new(128)],
+        "empty" => ["", "", TestCommandStatus.new(0)],
+        "malformed" => ["invalid\0root\n", "", TestCommandStatus.new(0)],
+        "mismatched" => ["#{unrelated_root}\n", "", TestCommandStatus.new(0)]
+      }
+
+      cases.each do |label, response|
+        matcher = ->(args) { args.last(2) == ["rev-parse", "--show-toplevel"] }
+        with_trusted_git_probe_fault(matcher, response) do
+          root, error = authoritative_trusted_repository_root(chdir: nested)
+
+          assert_nil root, label
+          refute_nil error, label
+        end
+      end
+    end
+  end
+
   def test_checkout_binding_fails_closed_on_malformed_or_failed_core_worktree_probes
     with_clean_real_git_checkout("trusted-base-core-worktree-probe") do |_dir, repo_root, base_sha, operations|
       cases = {
@@ -5639,7 +5997,7 @@ class PrSecurityPreflightTest < Minitest::Test
 
       assert status.success?, out
       assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
-      assert_only_ordinary_path_git_probes(provenance.fetch(:path_git_marker))
+      assert_empty File.readlines(provenance.fetch(:path_git_marker))
     end
   end
 
@@ -5896,7 +6254,7 @@ class PrSecurityPreflightTest < Minitest::Test
 
       assert status.success?, out
       assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
-      assert_only_ordinary_path_git_probes(marker)
+      assert_empty File.readlines(marker)
     end
   end
 
@@ -8036,10 +8394,10 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
-  def run_trusted_base_preflight(env, trust_config_path, repo_root)
+  def run_trusted_base_preflight(env, trust_config_path, repo_root, chdir: repo_root)
     status = nil
     stdout, stderr = with_env(env.merge(clean_git_env)) do
-      Dir.chdir(repo_root) do
+      Dir.chdir(chdir) do
         capture_io do
           args = ["--repo", "owner/repo"]
           args.concat(["--trust-config", trust_config_path]) if trust_config_path

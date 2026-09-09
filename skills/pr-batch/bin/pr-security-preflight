@@ -24,6 +24,8 @@ TRUSTED_BASE_REF_ENV = "PR_SECURITY_PREFLIGHT_TRUSTED_BASE_REF"
 TRUSTED_GIT_FIXED_TEMP_ROOTS = %w[
   /tmp /private/tmp /var/tmp /private/var/tmp /var/folders /private/var/folders
 ].freeze
+TRUSTED_NO_STRUCTURAL_REPOSITORY =
+  "trusted checkout invocation path is not inside a structurally identifiable Git worktree"
 GIT_OBJECT_ID_PATTERN = /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/
 TRUSTED_CHECKOUT_CONFIG_ARGS = %w[
   -c core.fileMode=true
@@ -57,7 +59,7 @@ def trusted_structural_git_repository_root(chdir)
 
     parent = File.dirname(current)
     if parent == current
-      return [nil, "trusted checkout invocation path is not inside a structurally identifiable Git worktree"]
+      return [nil, TRUSTED_NO_STRUCTURAL_REPOSITORY]
     end
 
     current = parent
@@ -492,30 +494,241 @@ def resolved_trust_config(explicit_path, repo:, github_host:)
     expanded = File.expand_path(explicit_path)
     abort "Trust config not found: #{expanded}" unless File.exist?(expanded)
 
-    return { path: expanded, global: trust_config_global?(expanded, repo, github_host:), source: "explicit" }
+    contents, contents_error = bounded_trust_config_contents(expanded, allow_symlink: true)
+    abort contents_error if contents_error
+
+    return {
+      path: expanded,
+      global: trust_config_global?(expanded, repo, github_host:),
+      source: "explicit",
+      implicit: false,
+      contents:
+    }
   end
 
-  repo_path = repo_trust_config_path
-  if File.exist?(repo_path)
-    return { path: repo_path, global: trust_config_global?(repo_path, repo, github_host:), source: "repo-local" }
+  resolution, error = implicit_trust_config_resolution(repo:, github_host:)
+  abort error if error
+
+  resolution
+end
+
+def implicit_trust_config_resolution(repo:, github_host:)
+  authoritative_root, root_error = authoritative_trusted_repository_root
+  return [nil, "Implicit trust config root is unsafe: #{root_error}"] if root_error
+
+  selection_root = authoritative_root || File.realpath(Dir.pwd)
+  repo_path = File.join(selection_root, DEFAULT_TRUST_CONFIG)
+  repo_path_present, repo_path_error = trust_config_path_present?(repo_path, trusted_root: selection_root)
+  return [nil, repo_path_error] if repo_path_error
+
+  common = {
+    implicit: true,
+    authoritative_root:,
+    repo_trust_config_path: repo_path
+  }
+  if repo_path_present
+    return trust_config_resolution_with_contents(
+      common.merge(
+        path: repo_path,
+        global: trust_config_global?(repo_path, repo, github_host:),
+        source: "repo-local"
+      ),
+      allow_symlink: false,
+      trusted_root: selection_root
+    )
   end
 
   env_path = ENV[USER_TRUST_CONFIG_ENV].to_s
   unless env_path.empty?
     expanded_env_path = File.expand_path(env_path)
-    abort "#{USER_TRUST_CONFIG_ENV} points to a missing trust config: #{expanded_env_path}" unless File.exist?(expanded_env_path)
+    env_path_present, env_path_error = trust_config_path_present?(expanded_env_path)
+    return [nil, env_path_error] if env_path_error
+    unless env_path_present
+      return [nil, "#{USER_TRUST_CONFIG_ENV} points to a missing trust config: #{expanded_env_path}"]
+    end
 
-    return { path: expanded_env_path, global: true, source: "env" }
+    return trust_config_resolution_with_contents(
+      common.merge(path: expanded_env_path, global: true, source: "env"),
+      allow_symlink: true
+    )
   end
 
   home_path = File.expand_path(HOME_TRUST_CONFIG)
-  return { path: home_path, global: true, source: "user-global" } if File.exist?(home_path)
+  home_path_present, home_path_error = trust_config_path_present?(home_path)
+  return [nil, home_path_error] if home_path_error
+  if home_path_present
+    return trust_config_resolution_with_contents(
+      common.merge(path: home_path, global: true, source: "user-global"),
+      allow_symlink: true
+    )
+  end
 
-  { path: PACKAGED_TRUST_CONFIG, global: false, source: "packaged-fallback" }
+  trust_config_resolution_with_contents(
+    common.merge(path: PACKAGED_TRUST_CONFIG, global: false, source: "packaged-fallback"),
+    allow_symlink: true
+  )
+rescue ArgumentError, SystemCallError => e
+  [nil, "implicit trust config selection failed: #{e.message.lines.first&.strip}"]
+end
+
+def trust_config_path_present?(path, trusted_root: nil)
+  path_bindings = nil
+  if trusted_root
+    path_bindings, binding_error = trusted_trust_config_path_bindings(path, trusted_root:, include_terminal: false)
+    return [nil, binding_error] if binding_error
+    return [false, nil] if path_bindings.empty?
+  end
+
+  present = begin
+    File.lstat(path)
+    true
+  rescue Errno::ENOENT, Errno::ENOTDIR
+    false
+  end
+  if path_bindings && !trust_config_path_bindings_unchanged?(path_bindings)
+    return [nil, "trust config path changed during selection: #{File.expand_path(path)}"]
+  end
+
+  [present, nil]
+rescue SystemCallError => e
+  [nil, "trust config path could not be inspected: #{e.message.lines.first&.strip}"]
+end
+
+def trust_config_resolution_with_contents(resolution, allow_symlink:, trusted_root: nil)
+  contents, error = bounded_trust_config_contents(resolution.fetch(:path), allow_symlink:, trusted_root:)
+  return [nil, error] if error
+
+  [resolution.merge(contents:), nil]
+end
+
+def trusted_trust_config_path_bindings(path, trusted_root:, include_terminal:)
+  expanded_path = File.expand_path(path)
+  expanded_root = File.expand_path(trusted_root)
+  canonical_root = File.realpath(trusted_root)
+  selection_root = [expanded_root, canonical_root].find do |candidate_root|
+    prefix = candidate_root.end_with?(File::SEPARATOR) ? candidate_root : "#{candidate_root}#{File::SEPARATOR}"
+    expanded_path.start_with?(prefix)
+  end
+  unless selection_root
+    return [nil, "trust config path is outside its trusted selection root: #{expanded_path}"]
+  end
+
+  root_prefix = selection_root.end_with?(File::SEPARATOR) ? selection_root : "#{selection_root}#{File::SEPARATOR}"
+  relative_path = expanded_path.delete_prefix(root_prefix)
+  components = relative_path.split(File::SEPARATOR)
+  return [nil, "trust config path is invalid: #{expanded_path}"] if components.empty?
+
+  bindings = []
+  current_path = canonical_root
+  root_stat = File.lstat(current_path)
+  unless root_stat.directory?
+    return [nil, "trust config path has an unsafe ancestor: #{current_path}"]
+  end
+
+  bindings << { path: current_path, type: :directory, dev: root_stat.dev, ino: root_stat.ino }
+
+  bound_components = include_terminal ? components : components[0...-1]
+  bound_components.each_with_index do |component, index|
+    current_path = File.join(current_path, component)
+    path_stat = begin
+      File.lstat(current_path)
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      return [[], nil] unless include_terminal
+
+      raise
+    end
+    terminal = include_terminal && index == bound_components.length - 1
+    expected_type = terminal ? :file : :directory
+    type_matches = expected_type == :file ? path_stat.file? : path_stat.directory?
+    unless type_matches
+      description = terminal ? "trust config is not a regular file" : "trust config path has an unsafe ancestor"
+      return [nil, "#{description}: #{current_path}"]
+    end
+
+    bindings << { path: current_path, type: expected_type, dev: path_stat.dev, ino: path_stat.ino }
+  end
+
+  [bindings, nil]
+end
+
+def trust_config_path_bindings_unchanged?(bindings)
+  bindings.all? do |binding|
+    path_stat = File.lstat(binding.fetch(:path))
+    type_matches = binding.fetch(:type) == :file ? path_stat.file? : path_stat.directory?
+    type_matches && path_stat.dev == binding.fetch(:dev) && path_stat.ino == binding.fetch(:ino)
+  end
+rescue SystemCallError
+  false
+end
+
+def bounded_trust_config_contents(path, allow_symlink:, trusted_root: nil)
+  expanded_path = File.expand_path(path)
+  if allow_symlink
+    read_path = File.realpath(expanded_path)
+    path_bindings = nil
+  else
+    return [nil, "trusted root is required for an implicit repo trust config"] unless trusted_root
+
+    path_bindings, binding_error = trusted_trust_config_path_bindings(
+      expanded_path,
+      trusted_root:,
+      include_terminal: true
+    )
+    return [nil, binding_error] if binding_error
+
+    read_path = path_bindings.last.fetch(:path)
+  end
+  path_stat = File.lstat(read_path)
+  return [nil, "trust config is not a regular file: #{expanded_path}"] unless path_stat.file?
+
+  contents = File.open(read_path, File::RDONLY | File::NOFOLLOW | File::NONBLOCK) do |file|
+    file_stat = file.stat
+    unless file_stat.file? && file_stat.dev == path_stat.dev && file_stat.ino == path_stat.ino
+      return [nil, "trust config is not a regular file: #{expanded_path}"]
+    end
+
+    file.read
+  end
+  if path_bindings && !trust_config_path_bindings_unchanged?(path_bindings)
+    return [nil, "trust config path changed during safe read: #{expanded_path}"]
+  end
+
+  [contents.b, nil]
+rescue Errno::ENOENT, Errno::ENOTDIR
+  [nil, "trust config not found: #{expanded_path}"]
+rescue Errno::ELOOP
+  [nil, "trust config is not a regular file: #{expanded_path}"]
+rescue SystemCallError => e
+  [nil, "trust config could not be read safely: #{e.message.lines.first&.strip}"]
+end
+
+def revalidate_implicit_trust_config_selection(trust_config_resolution, trust_config, repo:, github_host:)
+  return [nil, nil] unless trust_config_resolution.fetch(:implicit, false)
+
+  refreshed_resolution, resolution_error = implicit_trust_config_resolution(repo:, github_host:)
+  if resolution_error
+    return [nil, "implicit trust config selection could not be revalidated: #{resolution_error}"]
+  end
+
+  identity_keys = %i[source path global authoritative_root repo_trust_config_path]
+  unless identity_keys.all? { |key| refreshed_resolution[key] == trust_config_resolution[key] }
+    return [nil, "implicit trust config selection changed during trusted-base verification"]
+  end
+
+  refreshed_digest = "sha256:#{Digest::SHA256.hexdigest(refreshed_resolution.fetch(:contents))}"
+  unless refreshed_digest == trust_config.fetch(:content_digest)
+    description = trust_config_resolution.fetch(:source) == "repo-local" ? "repo-local" : "implicit"
+    return [nil, "#{description} trust config changed during trusted-base verification"]
+  end
+
+  [refreshed_resolution, nil]
 end
 
 def repo_trust_config_path
-  root = git_toplevel || Dir.pwd
+  root, error = authoritative_trusted_repository_root
+  abort "Implicit trust config root is unsafe: #{error}" if error
+  root ||= File.realpath(Dir.pwd)
+
   File.join(root, DEFAULT_TRUST_CONFIG)
 end
 
@@ -546,12 +759,34 @@ rescue StandardError
   nil
 end
 
+def authoritative_trusted_repository_root(chdir: Dir.pwd)
+  structural_root, structural_error = trusted_structural_git_repository_root(chdir)
+  return [nil, nil] if structural_error == TRUSTED_NO_STRUCTURAL_REPOSITORY
+  return [nil, structural_error] if structural_error
+
+  pinned_root = trusted_git_toplevel(chdir:)
+  return [nil, "pinned Git could not resolve the repository top level"] unless pinned_root
+
+  canonical_pinned_root = File.realpath(pinned_root)
+  unless canonical_pinned_root == structural_root
+    return [nil, "pinned Git top level does not match the structural invocation repository"]
+  end
+
+  [canonical_pinned_root, nil]
+rescue ArgumentError, SystemCallError => e
+  [nil, "pinned Git repository top level could not be resolved: #{e.message.lines.first&.strip}"]
+end
+
 def trust_config_repo_local?(path, repo, github_host:)
-  root = git_toplevel(chdir: File.dirname(path))
+  root, error = authoritative_trusted_repository_root(chdir: File.dirname(path))
+  if error
+    warn "WARN: could not establish trusted repository root for trust config #{path.inspect}: #{error}"
+    return false
+  end
   return false unless root
   return false unless path_inside_git_root?(path, root:)
 
-  git_root_matches_repo?(root, repo, github_host:)
+  git_root_matches_repo?(root, repo, github_host:, trusted: true)
 end
 
 def trust_config_global?(path, repo, github_host:)
@@ -565,12 +800,11 @@ def path_inside_git_root?(path, root:)
     expanded_path.start_with?("#{expanded_root}#{File::SEPARATOR}")
 end
 
-def git_remote_urls(root)
+def git_remote_urls(root, trusted: false)
   # Intentionally reads stored remote URLs without applying url.*.insteadOf
   # rewrites; consumers using mirror rewrites should keep a canonical remote too.
   %w[--local --worktree].flat_map do |scope|
-    stdout, _stderr, status = capture_git_probe(
-      "git",
+    args = [
       "-C",
       root,
       "config",
@@ -578,7 +812,12 @@ def git_remote_urls(root)
       "--null",
       "--get-regexp",
       "^remote\\..*\\.url$"
-    )
+    ]
+    stdout, _stderr, status = if trusted
+                                capture_trusted_git_probe(*args)
+                              else
+                                capture_git_probe("git", *args)
+                              end
     next [] unless status&.success?
 
     stdout = stdout.force_encoding("UTF-8").scrub
@@ -693,8 +932,8 @@ def remote_matches_github_host?(remote, github_host)
   end
 end
 
-def git_root_matches_repo?(root, repo, github_host:)
-  remote_repos = git_remote_urls(root).filter_map do |url|
+def git_root_matches_repo?(root, repo, github_host:, trusted: false)
+  remote_repos = git_remote_urls(root, trusted:).filter_map do |url|
     remote = github_remote_from_remote_url(url)
     remote[:repo] if remote && remote_matches_github_host?(remote, github_host)
   end
@@ -733,9 +972,8 @@ def normalized_trusted_teams(values, require_owner:)
   Array(values).filter_map { |value| normalized_team_entry(value, require_owner:) }
 end
 
-def load_trust_config(path:, global:)
+def load_trust_config(path:, global:, contents:)
   path = File.expand_path(path)
-  contents = File.exist?(path) ? File.binread(path) : ""
   parse_contents = contents.dup.force_encoding(Encoding::UTF_8)
   abort "Invalid trust config #{path}: expected valid UTF-8" unless parse_contents.valid_encoding?
 
@@ -2125,7 +2363,7 @@ class TrustedBaseHighRiskOperations
     fetched_trusted_base_policy(root, base_sha, repo:, operations: self)
   end
 
-  def fetched_file(root, base_sha, path)
+  def fetched_file(root, base_sha, path, allow_absent: false)
     metadata_stdout, metadata_stderr, metadata_status = capture_trusted_git_probe(
       "-C", root, "ls-tree", "--full-tree", "-z", base_sha, "--", path
     )
@@ -2133,7 +2371,11 @@ class TrustedBaseHighRiskOperations
       return [nil, "fetched trusted base file metadata could not be verified: " \
                    "#{metadata_stderr.to_s.lines.first&.strip}"]
     end
-    return [nil, "fetched trusted base lacks #{path}"] if metadata_stdout.to_s.empty?
+    if metadata_stdout.to_s.empty?
+      return [{ present: false }, nil] if allow_absent
+
+      return [nil, "fetched trusted base lacks #{path}"]
+    end
 
     records = metadata_stdout.to_s.b.split("\0", -1)
     terminated = records.length > 1 && records.pop.empty?
@@ -2158,7 +2400,7 @@ class TrustedBaseHighRiskOperations
       return [nil, "fetched trusted base file contents could not be verified: #{stderr.to_s.lines.first&.strip}"]
     end
 
-    [{ contents: stdout.b, mode: match[:mode] }, nil]
+    [{ present: true, contents: stdout.b, mode: match[:mode] }, nil]
   end
 
   def pr_provenance(result, repo:, policy_ref:, trust_config:, team_cache:)
@@ -2603,7 +2845,7 @@ end
 def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, trust_config_resolution:,
                                    operations: TrustedBaseHighRiskOperations.new, post_fetch_rescan: nil)
   return [nil, "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"] unless clean_for_trusted_base_high_risk_acceptance?(result)
-  if trust_config_resolution.fetch(:source) == "repo-local" &&
+  if trust_config_resolution.fetch(:implicit, false) &&
      all_changed_paths(result.fetch(:file_records)).include?(DEFAULT_TRUST_CONFIG)
     return [nil, "PR changes automatically selected repo-local trust config"]
   end
@@ -2611,10 +2853,11 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
   operator_ref, operator_ref_error = operator_trusted_base_ref
   return [nil, operator_ref_error] if operator_ref_error
 
-  # This PATH-portable read is only an untrusted capability gate: it can decide
-  # not to attempt trusted-base provenance, but never contributes to acceptance.
-  preliminary_root = git_toplevel
-  return [nil, "could not resolve the repository worktree"] unless preliminary_root
+  # Read the bootstrap policy from the structurally bound invocation repository
+  # before requiring pinned Git. This preserves a cheap policy-disabled stop
+  # without executing an inherited-PATH Git command.
+  preliminary_root, preliminary_root_error = trusted_structural_git_repository_root(Dir.pwd)
+  return [nil, preliminary_root_error] if preliminary_root_error
 
   preliminary_policy, preliminary_error = bootstrap_trusted_base_policy(preliminary_root, repo:)
   return [nil, preliminary_error] unless preliminary_policy
@@ -2657,6 +2900,10 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
       next [nil, "bootstrap and fetched-base trusted-base policies do not match"]
     end
 
+    post_fetch_trust_config_resolution, trust_config_revalidation_error =
+      revalidate_implicit_trust_config_selection(trust_config_resolution, trust_config, repo:, github_host:)
+    next [nil, trust_config_revalidation_error] if trust_config_revalidation_error
+
     repo_local_trust_config_binding = {}
     if trust_config_resolution.fetch(:source) == "repo-local"
       fetched_trust_config, fetched_trust_config_error = operations.fetched_file(
@@ -2666,11 +2913,8 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
       )
       next [nil, fetched_trust_config_error] unless fetched_trust_config
 
-      begin
-        current_trust_config_digest = "sha256:#{Digest::SHA256.hexdigest(File.binread(trust_config_resolution.fetch(:path)))}"
-      rescue SystemCallError => e
-        next [nil, "repo-local trust config could not be revalidated: #{e.message.lines.first&.strip}"]
-      end
+      current_trust_config_digest =
+        "sha256:#{Digest::SHA256.hexdigest(post_fetch_trust_config_resolution.fetch(:contents))}"
       unless current_trust_config_digest == trust_config.fetch(:content_digest)
         next [nil, "repo-local trust config changed during trusted-base verification"]
       end
@@ -2685,6 +2929,24 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
         trust_config_content_digest: fetched_trust_config_digest,
         trust_config_file_mode: fetched_trust_config.fetch(:mode)
       }
+    elsif trust_config_resolution.fetch(:implicit, false)
+      fetched_trust_config, fetched_trust_config_error = operations.fetched_file(
+        fetch_root,
+        base_sha,
+        DEFAULT_TRUST_CONFIG,
+        allow_absent: true
+      )
+      next [nil, fetched_trust_config_error] if fetched_trust_config_error
+      if fetched_trust_config.fetch(:present)
+        next [nil, "fetched trusted base contains #{DEFAULT_TRUST_CONFIG} while implicit selection used " \
+                   "#{trust_config_resolution.fetch(:source)} trust config"]
+      end
+
+      repo_local_trust_config_binding = {
+        trust_config_selection_source: trust_config_resolution.fetch(:source),
+        trust_config_content_digest: trust_config.fetch(:content_digest),
+        repo_local_trust_config_state: "absent-current-and-fetched-base"
+      }
     end
 
     checkout_matches, checkout_error = operations.checkout_matches_fetched_base?(
@@ -2694,6 +2956,10 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
       invocation_root:
     )
     next [nil, checkout_error] unless checkout_matches
+
+    _refreshed_trust_config_resolution, trust_config_revalidation_error =
+      revalidate_implicit_trust_config_selection(trust_config_resolution, trust_config, repo:, github_host:)
+    next [nil, trust_config_revalidation_error] if trust_config_revalidation_error
 
     unless post_fetch_rescan
       next [nil, "post-fetch security-sensitive PR rescan is unavailable"]
@@ -2727,6 +2993,10 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
     merge_sha = pr_provenance.fetch(:merge_sha)
     ancestor, ancestor_error = operations.ancestor?(fetch_root, merge_sha, base_sha)
     next [nil, ancestor_error] unless ancestor
+
+    _final_trust_config_resolution, trust_config_revalidation_error =
+      revalidate_implicit_trust_config_selection(trust_config_resolution, trust_config, repo:, github_host:)
+    next [nil, trust_config_revalidation_error] if trust_config_revalidation_error
 
     receipt = {
       repository: repo,
@@ -4113,7 +4383,8 @@ def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.n
   puts "Trust config source: #{trust_config_resolution.fetch(:source)}"
   trust_config = load_trust_config(
     path: trust_config_resolution.fetch(:path),
-    global: trust_config_resolution.fetch(:global)
+    global: trust_config_resolution.fetch(:global),
+    contents: trust_config_resolution.fetch(:contents)
   )
   puts "Trust config content digest: #{trust_config.fetch(:content_digest)}"
 
