@@ -2247,6 +2247,15 @@ module BatchTokenBudget
                         checkpoint["batch_id"] == state["batch_id"] &&
                         !scope(state, checkpoint["scope_id"]).nil?
     return false unless %w[warning approval-required budget-exhausted].include?(checkpoint["status"])
+
+    if checkpoint["status"] == "budget-exhausted"
+      matching_hard_decision = state.fetch("admission_decisions").values.any? do |decision|
+        decision["status"] == "budget-exhausted" &&
+          decision["scope_id"] == checkpoint["scope_id"] &&
+          decision["resolved_by_reservation_id"].nil?
+      end
+      return false unless matching_hard_decision
+    end
     return false unless checkpoint["completion"] == "NOT COMPLETE"
     return false unless checkpoint["exact_work"].is_a?(Array) &&
                         checkpoint["exact_work"].all? { |item| nonempty_string?(item) }
@@ -2268,14 +2277,14 @@ module BatchTokenBudget
 
   def checkpoint_command(original_state, command)
     checkpoint = command["checkpoint"]
-    raise InvalidInput, "invalid-checkpoint" unless valid_checkpoint?(checkpoint, original_state)
-
-    existing = original_state.fetch("checkpoints").find { |item| item["id"] == checkpoint["id"] }
-    if existing
-      raise InvalidInput, "checkpoint-replay-mismatch" unless existing == canonicalize(checkpoint)
-
+    existing = if checkpoint.is_a?(Hash)
+                 original_state.fetch("checkpoints").find { |item| item["id"] == checkpoint["id"] }
+               end
+    if existing && existing == canonicalize(checkpoint)
       return [original_state, result(original_state, "replayed", "checkpoint" => existing)]
     end
+    raise InvalidInput, "invalid-checkpoint" unless valid_checkpoint?(checkpoint, original_state)
+    raise InvalidInput, "checkpoint-replay-mismatch" if existing
 
     state = deep_copy(original_state)
     canonical_checkpoint = canonicalize(checkpoint)

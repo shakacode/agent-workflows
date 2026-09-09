@@ -317,6 +317,25 @@ class BatchTokenBudgetTest < Minitest::Test
     )
   end
 
+  def budget_exhausted_checkpoint(id:, scope_id: "lane-a")
+    {
+      "type" => "batch-token-budget-checkpoint",
+      "version" => 1,
+      "id" => id,
+      "batch_id" => "batch-399",
+      "scope_id" => scope_id,
+      "status" => "budget-exhausted",
+      "completion" => "NOT COMPLETE",
+      "exact_work" => ["Finished bounded work before a reported hard stop."],
+      "branch" => "jg-codex/399-hierarchical-token-budgets",
+      "head_sha" => "a" * 40,
+      "gates" => %w[security review qa exact-head ownership merge].to_h { |gate| [gate, "remaining"] },
+      "receipt_cutoff" => "2026-08-12T11:00:00Z",
+      "resume_conditions" => ["Restore scope headroom."],
+      "resume_action" => "Resume #{scope_id} after resolving its hard decision."
+    }
+  end
+
   def usage_receipt(id: "usage-1", segments: nil)
     segments ||= [
       { "id" => "physical-self-1", "kind" => "self", "scope_id" => "lane-a", "target_id" => "task-lane-a", "tokens" => 160 },
@@ -6431,6 +6450,96 @@ class BatchTokenBudgetTest < Minitest::Test
       recovered, = run_helper(state_path, command("closeout"))
       assert_equal "complete", recovered.fetch("status")
       assert_equal "COMPLETE", recovered.fetch("completion")
+    end
+  end
+
+  def test_budget_exhausted_checkpoint_requires_a_matching_unresolved_hard_decision
+    with_state do |state_path|
+      initialize_budget(state_path)
+      other_scope, other_scope_stderr, other_scope_status = reserve(
+        state_path,
+        id: "hard-decision-for-lane-b",
+        lane_id: "lane-b",
+        tokens: 500
+      )
+      assert other_scope_status.success?, other_scope_stderr
+      assert_equal "budget-exhausted", other_scope.fetch("status")
+      checkpoint = budget_exhausted_checkpoint(id: "checkpoint-without-hard-decision")
+      state_before = File.binread(state_path)
+
+      result, stderr, status = run_helper(
+        state_path,
+        command("checkpoint", "checkpoint" => checkpoint)
+      )
+
+      refute status.success?
+      assert_nil result
+      assert_equal "invalid-checkpoint", JSON.parse(stderr).fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+    end
+
+    with_state do |state_path|
+      initialize_budget(state_path)
+      matching_hard, matching_hard_stderr, matching_hard_status = reserve(
+        state_path,
+        id: "resolved-hard-decision-for-lane-a",
+        lane_id: "lane-a",
+        tokens: 600
+      )
+      assert matching_hard_status.success?, matching_hard_stderr
+      assert_equal "budget-exhausted", matching_hard.fetch("status")
+      checkpoint_before_resolution = budget_exhausted_checkpoint(id: "checkpoint-before-hard-decision-resolution")
+      checkpointed, checkpointed_stderr, checkpointed_status = run_helper(
+        state_path,
+        command("checkpoint", "checkpoint" => checkpoint_before_resolution)
+      )
+      assert checkpointed_status.success?, checkpointed_stderr
+      assert_equal "checkpointed", checkpointed.fetch("status")
+      aggregate_override = budget_override(
+        state_path,
+        id: "resolve-aggregate-headroom-for-lane-a",
+        scope_id: "aggregate",
+        old_limit_tokens: 1_000,
+        new_limit_tokens: 1_500
+      )
+      lane_override = budget_override(
+        state_path,
+        id: "resolve-hard-decision-for-lane-a",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 1_300
+      )
+      run_helper(state_path, command("override", "override" => aggregate_override))
+      run_helper(state_path, command("override", "override" => lane_override))
+      resumed, resumed_stderr, resumed_status = reserve(
+        state_path,
+        id: "resume-after-hard-decision-for-lane-a",
+        lane_id: "lane-a",
+        tokens: 600
+      )
+      assert resumed_status.success?, resumed_stderr
+      assert_equal "admitted", resumed.fetch("status")
+
+      checkpoint_after_resolution = budget_exhausted_checkpoint(id: "checkpoint-after-resolved-hard-decision")
+      state_before_resolved_checkpoint = File.binread(state_path)
+      resolved_result, resolved_stderr, resolved_status = run_helper(
+        state_path,
+        command("checkpoint", "checkpoint" => checkpoint_after_resolution)
+      )
+      refute resolved_status.success?
+      assert_nil resolved_result
+      assert_equal "invalid-checkpoint", JSON.parse(resolved_stderr).fetch("reason")
+      assert_equal state_before_resolved_checkpoint, File.binread(state_path)
+
+      state_before_replay = File.binread(state_path)
+      replayed, replayed_stderr, replayed_status = run_helper(
+        state_path,
+        command("checkpoint", "checkpoint" => checkpoint_before_resolution)
+      )
+      assert replayed_status.success?, replayed_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal checkpoint_before_resolution, replayed.fetch("checkpoint")
+      assert_equal state_before_replay, File.binread(state_path)
     end
   end
 
