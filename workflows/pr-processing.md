@@ -2107,6 +2107,14 @@ any human decision.
 
 ### Pausing For An Agent-Runner Restart
 
+Preparation is optional. For immediate or short-grace interruption, use the
+[combined recovery procedure](../skills/pause/references/recovery.md) and the
+installed `restart-codex-subagents` skill. Its one shared absolute deadline takes
+precedence over collecting every handoff below. Missing handoffs are expected:
+recover from available checkpoints, newer relevant logs and live state. Never
+replace a surviving writer or replay an uncertain external operation without
+reconciliation. Preserve goals, authority, deliberate pauses, windows and budgets.
+
 Use this when the operator needs to restart an agent app, runner, or session host
 but expects the same coordinator and worker lanes to resume afterward. This is a
 pause, not cancellation: workers preserve their claims, worktrees, branches, and
@@ -2125,8 +2133,8 @@ and its handoff/fencing protocol instead of cancelling or relaunching the batch.
 
 If a thread has already exited before the operator can paste this prompt, treat
 it as a dead-thread case after restart: the coordinator starts a replacement
-worker from the last known handoff state rather than expecting that thread to
-resume.
+worker from available checkpoint, log and live-state evidence only after
+reconciling the previous writer; do not assume its process stopped with the app.
 
 Before quitting the agent runner, paste this prompt into every active
 coordinator, worker, and QA-lane thread:

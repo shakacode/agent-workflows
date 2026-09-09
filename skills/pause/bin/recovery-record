@@ -1,0 +1,149 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "fileutils"
+require "json"
+require "optparse"
+require "securerandom"
+require "tempfile"
+require "time"
+
+# Local recovery evidence, independent of the runner and coordination backend.
+module RecoveryRecord
+  module_function
+
+  def now
+    Time.now.utc.iso8601(6).sub(/Z\z/, "+00:00")
+  end
+
+  def atomic_write(path, value)
+    directory = File.dirname(path)
+    Tempfile.create([".pending-", ""], directory) do |stream|
+      stream.write("#{JSON.pretty_generate(value)}\n")
+      stream.flush
+      stream.fsync
+      File.rename(stream.path, path)
+      File.open(directory, File::RDONLY, &:fsync)
+    end
+  end
+
+  def task_directory(root, task, create:)
+    directory = File.join(root, Digest::SHA256.hexdigest(task))
+    [root, directory].each do |path|
+      raise ArgumentError, "recovery directories must not be symlinks" if File.symlink?(path)
+
+      FileUtils.mkdir_p(path, mode: 0o700) if create
+      next unless File.exist?(path)
+
+      stat = File.stat(path)
+      unless stat.directory? && stat.uid == Process.uid && (stat.mode & 0o077).zero?
+        raise ArgumentError, "recovery directories must be owner-only (0700)"
+      end
+    end
+    directory
+  end
+
+  def inspect_records(directory, task)
+    records = []
+    unreadable = []
+    Dir.glob("*.json", base: directory).sort.each do |name|
+      path = File.join(directory, name)
+
+      raise ArgumentError, "symlink" if File.symlink?(path)
+
+      source = File.read(path, encoding: Encoding::UTF_8)
+      raise EncodingError, "record must be UTF-8" unless source.valid_encoding?
+
+      record = JSON.parse(source)
+      unless record.is_a?(Hash) && record["task"] == task && %w[checkpoint operation].include?(record["kind"]) &&
+             %w[id recorded_at].all? { |key| record[key].is_a?(String) }
+        raise ArgumentError, "invalid record"
+      end
+
+      records << record
+    rescue SystemCallError, IOError, ArgumentError, EncodingError, JSON::ParserError
+      unreadable << File.basename(path)
+
+    end
+    records.sort_by! { |record| record["recorded_at"] }
+    { "records" => records,
+      "unresolved" => records.filter_map { |record| record["id"] if record["kind"] == "operation" && record["status"] != "exited" },
+      "unreadable" => unreadable }
+  end
+
+  def main(argv)
+    options = { root: File.join(Dir.home, ".local/state/agent-workflows/recovery") }
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: recovery-record [--state-dir PATH] --task TASK_ID checkpoint|inspect|run [--label LABEL -- COMMAND ...]"
+      opts.on("--state-dir PATH") { |path| options[:root] = path }
+      opts.on("--task TASK_ID", "Stable task identity; never a credential") { |task| options[:task] = task }
+    end
+    parser.order!(argv)
+    raise ArgumentError, "--task must be nonempty" if !options[:task] || options[:task].empty?
+
+    action = argv.shift
+    raise ArgumentError, "expected checkpoint, inspect, or run" unless %w[checkpoint inspect run].include?(action)
+
+    if action == "run"
+      OptionParser.new do |opts|
+        opts.on("--label LABEL", "Non-secret target; argv/output are not saved") { |label| options[:label] = label }
+      end.order!(argv)
+      raise ArgumentError, "run requires --label and command argv after --" unless options[:label] && !argv.empty?
+    elsif !argv.empty?
+      raise ArgumentError, "unexpected arguments"
+    end
+
+    %i[task label].each do |key|
+      next unless options[key]
+
+      options[key] = options[key].dup.force_encoding(Encoding::UTF_8)
+      raise EncodingError, "#{key} must be UTF-8" unless options[key].valid_encoding?
+    end
+    raise ArgumentError, "--label must describe the operation" if action == "run" && options[:label].strip.empty?
+
+    directory = task_directory(File.expand_path(options[:root]), options[:task], create: action != "inspect")
+    if action == "inspect"
+      result = inspect_records(directory, options[:task])
+      puts JSON.pretty_generate(result)
+      return result["unreadable"].empty? ? 0 : 2
+    end
+
+    record = { "id" => SecureRandom.hex(16), "task" => options[:task], "recorded_at" => now }
+    path = File.join(directory, "#{record['id']}.json")
+    if action == "checkpoint"
+      source = $stdin.set_encoding(Encoding::UTF_8).read
+      raise EncodingError, "checkpoint must be UTF-8" unless source.valid_encoding?
+
+      state = JSON.parse(source)
+      raise ArgumentError, "checkpoint must be a JSON object" unless state.is_a?(Hash)
+
+      atomic_write(path, record.merge("kind" => "checkpoint", "state" => state))
+      puts path
+      return 0
+    end
+
+    cwd = Dir.pwd.force_encoding(Encoding::UTF_8)
+    raise EncodingError, "cwd must be UTF-8" unless cwd.valid_encoding?
+
+    record.merge!("kind" => "operation", "label" => options[:label], "cwd" => cwd, "status" => "intent")
+    atomic_write(path, record) # A failed intent write must prevent command execution.
+    warn "recovery intent: #{path}"
+    # The explicit executable/argv0 pair prevents Ruby's single-string shell fallback.
+    # Inherit streams; never capture output or replay an uncertain operation.
+    pid = Process.spawn([argv.first, argv.first], *argv.drop(1))
+    _, status = Process.wait2(pid)
+    code = status.signaled? ? -status.termsig : status.exitstatus
+    atomic_write(path, record.merge("status" => "exited", "exit_code" => code, "finished_at" => now))
+    code.negative? ? 128 - code : code
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  begin
+    exit RecoveryRecord.main(ARGV)
+  rescue SystemCallError, IOError, ArgumentError, EncodingError, JSON::ParserError, OptionParser::ParseError => e
+    warn "recovery-record: #{e.class}: evidence unavailable; inspect live state"
+    exit 2
+  end
+end
