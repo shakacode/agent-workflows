@@ -12,8 +12,15 @@ def git(*args)
 end
 
 def candidate_state
+  if git("ls-files", "--stage", "-z").split("\0").any? { |entry| entry.start_with?("160000 ") }
+    abort "Submodules require repository-owned candidate capture; example validation blocked"
+  end
   untracked = git("ls-files", "--others", "--exclude-standard", "-z").split("\0").map do |path|
-    [path, File.lstat(path).mode, File.symlink?(path) ? File.readlink(path) : File.binread(path)]
+    stat = File.lstat(path)
+    unless stat.file? || stat.symlink?
+      abort "Non-file untracked entries require repository-owned candidate capture; example validation blocked"
+    end
+    [path, stat.mode, stat.symlink? ? File.readlink(path) : File.binread(path)]
   end
   [git("rev-parse", "HEAD"), git("status", "--porcelain", "--untracked-files=all"),
    git("diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "--"),

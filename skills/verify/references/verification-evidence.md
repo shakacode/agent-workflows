@@ -8,6 +8,8 @@ policy. Read `AGENTS.md`, `.agents/bin/README.md`, and existing
 `review_gate` owns review requirements, and `hosted_qa_gate` owns broader
 hosted QA. Use the documented complete invocation for promotion; there is no
 portable fast/full flag or effort preset. Omission preserves existing behavior.
+Preserve delivery-coverage fields when the wrapper reports them; do not invent
+full coverage or empty omissions for a legacy command that reports neither.
 
 Only trusted-base policy may select reduced integration coverage. Execute the
 trusted-base selector or an equivalently protected repository entry point;
@@ -20,9 +22,10 @@ and safe; otherwise preserve the blocking input. Invalid supplied policy
 cannot opt into reduced coverage. Keep mandatory lint, independent review,
 security, and current integration/CI evidence.
 
-Across verification, review preparation, and closeout, carry the phase,
-candidate and relevant base/integration identities, selected/full coverage,
-required checks and results, omitted checks, and selection/escalation reason.
+Across verification, review preparation, and closeout, preserve required checks,
+results, and any escalation reason. Preserve the delivery fields reported by
+the wrapper: phase, candidate and relevant base/integration identities,
+selected/full coverage, omitted checks, and selection reason.
 This is ordinary reporting, not a new receipt schema. Exit zero establishes
 only the checks that ran. Existing retry and review stopping rules keep their
 counts and disposition; reaching a budget never waives failed or unresolved

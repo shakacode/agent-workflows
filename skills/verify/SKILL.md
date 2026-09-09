@@ -38,8 +38,9 @@ Use `/verify` for local pre-PR checks. Use `/run-ci` when you need `.agents/bin/
      permission, product, or consequential tradeoff decision cannot be resolved from available evidence.
      A failed check stays failed until it passes; diagnosis or escalation never waives a required gate.
    - Do not claim a failure is fixed until the command passes locally.
-7. Report phase, candidate/base identity, selected or full coverage, required commands and results,
-   omitted checks, and the selection or escalation reason. A selected pass does not qualify an omitted
+7. Report required commands, results, and any escalation reason. When the wrapper reports delivery
+   coverage, preserve its phase, candidate/base identity, selected or full coverage, omitted checks,
+   and selection reason. A selected pass does not qualify an omitted
    promotion check. Once the required checks pass, continue
    the authorized task; repeat or broaden verification only after relevant changes, failures, unresolved
    concerns, or an explicit repository requirement.
@@ -98,14 +99,15 @@ Use this order unless the changed files make a narrower or broader set clearly a
 
 ## Output Format
 
-Use this concise summary:
+Use this concise summary. Include delivery coverage and omissions only when
+the wrapper reports them; always include required results and any escalation:
 
 ```text
 Verification:
-- Phase: integration; candidate/base: <exact identities>; coverage: selected|full
+- Delivery coverage: <phase; candidate/base identities; selected|full>
 - PASS git diff --check "origin/${BASE_BRANCH}...HEAD"
 - FAIL <repo formatter check>
-- Omitted: <checks or none>; reason: <trusted selection or escalation>
+- Omissions: <checks or none>; reason: <trusted selection or escalation>
 
 Next fix:
 - Run the repo's format/autofix command to fix formatting, then rerun the formatter check.

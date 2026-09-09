@@ -20,6 +20,10 @@ their existing validation behavior; no seam setting enables them implicitly.
 The executable example recognizes only its two reviewed overview sentences.
 It does not infer whether arbitrary English is operationally harmless; all
 other content, including plain-English commands, keeps complete coverage.
+The examples capture ordinary files and symlinks. Submodules and other untracked
+entry types, including nested repositories, require an adopter's own candidate
+capture. An unsupported initial candidate blocks before checks; unsupported
+state created by a check also blocks reusable passing evidence.
 
 `EXAMPLE_BASE_SHA` and the `promotion` argument belong only to these examples.
 Shared skills must use each adopting repository's documented invocation.

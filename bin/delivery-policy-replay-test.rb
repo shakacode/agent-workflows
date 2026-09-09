@@ -201,6 +201,28 @@ class DeliveryPolicyReplayTest < Minitest::Test
     end
   end
 
+  def test_nested_repositories_require_repository_owned_candidate_capture
+    %w[low-impact critical].each do |kind|
+      %w[gitlink untracked].each do |mode|
+        with_repository(kind) do
+          write("nested/file", "initial")
+          git("-C", "nested", "init", "-q")
+          git("-C", "nested", "config", "user.email", "fixture@example.com")
+          git("-C", "nested", "config", "user.name", "Fixture")
+          git("-C", "nested", "add", ".")
+          git("-C", "nested", "commit", "-qm", "nested fixture")
+          commit if mode == "gitlink"
+          write("nested/file", "already dirty")
+          output, status, checks = run_gate
+          refute status.success?, output
+          expected = mode == "gitlink" ? "Submodules require" : "Non-file untracked entries require"
+          assert_includes output, "#{expected} repository-owned candidate capture"
+          assert_empty checks
+        end
+      end
+    end
+  end
+
   def test_existing_retry_boundary_preserves_failed_required_evidence
     with_repository("low-impact") do
       head = change_prose
