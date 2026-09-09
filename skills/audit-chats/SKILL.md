@@ -32,7 +32,8 @@ State the requested surface before classifying it. Distinguish:
 
 Use the app task-list tool for live pins, recent tasks, task status, source kind,
 and deep links. Its non-pinned result may be capped. When local filesystem access
-is available, run `scripts/local_chat_inventory.py` from this skill to enumerate
+is available, run `scripts/local_chat_inventory.rb` (Ruby and the `sqlite3` CLI
+with JSON output support) from this skill to enumerate
 the full local Codex Desktop catalog read-only, then union and deduplicate it
 with the app result by task id. The app result owns live status, pins, source,
 and deep links; local inventory supplies fields absent there. Surface conflicts
