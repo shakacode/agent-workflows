@@ -1,54 +1,72 @@
-#!/usr/bin/env python3
-"""Audit recovery acknowledgments in an existing fleet manifest; never dispatch work."""
-import json
-from pathlib import Path
-import sys
+#!/usr/bin/env ruby
+# frozen_string_literal: true
 
+require "json"
 
-def audit(manifest):
-    generation = manifest.get("restart_id")
-    parents = manifest.get("parents")
-    if not isinstance(generation, str) or not generation or not isinstance(parents, list) or not parents:
-        raise ValueError("restart_id and nonempty parents are required")
-    seen, results = set(), []
-    expected = {"resume": "resumed", "keep-paused": "preserved-pause", "complete": "already-complete"}
-    for parent in parents:
-        if not isinstance(parent, dict):
-            raise ValueError("parent must be an object")
-        identity = parent.get("id")
-        if not isinstance(identity, str) or not identity or identity in seen:
-            raise ValueError("parent identities must be nonempty and unique")
-        seen.add(identity)
-        receipt = parent.get("recovery")
-        disposition = parent.get("resume_disposition")
-        reason = None
-        handoff = parent.get("handoff")
-        if handoff and (not isinstance(handoff, str) or Path(handoff).stem != identity):
-            reason = "handoff filename belongs to another parent"
-        elif disposition not in expected:
-            reason = "pre-restart pause/authority disposition needs reconciliation"
-        elif not isinstance(receipt, dict):
-            reason = "no recovery acknowledgment; readiness or dispatch is not recovery"
-        elif receipt.get("restart_id") != generation or receipt.get("parent_id") != identity:
-            reason = "recovery acknowledgment belongs to another restart or parent"
-        elif not all(isinstance(receipt.get(key), str) and receipt[key].strip()
-                     for key in ("evidence", "next_action")):
-            reason = "recovery acknowledgment lacks evidence or next action"
-        elif receipt.get("status") != expected[disposition]:
-            reason = "recovery is incomplete or conflicts with the saved disposition"
-        results.append({"parent_id": identity, "status": "needs-attention" if reason else receipt["status"],
-                        "reason": reason})
-    return {"restart_id": generation, "status": "RECOVERY_INCOMPLETE" if any(row["reason"] for row in results)
-            else "RECOVERY_COMPLETE", "parents": results}
+# Audit recovery acknowledgments in an existing fleet manifest; never dispatch work.
+module RecoveryStatus
+  module_function
 
+  def audit(manifest)
+    raise ArgumentError, "manifest must be an object" unless manifest.is_a?(Hash)
 
-if __name__ == "__main__":
-    try:
-        if len(sys.argv) != 2:
-            raise ValueError("usage: recovery-status /path/to/existing-fleet.json")
-        result = audit(json.loads(Path(sys.argv[1]).read_text()))
-        print(json.dumps(result, indent=2))
-        sys.exit(0 if result["status"] == "RECOVERY_COMPLETE" else 2)
-    except (OSError, ValueError, TypeError, AttributeError):
-        print("recovery-status: invalid or unavailable manifest; recovery is UNKNOWN", file=sys.stderr)
-        sys.exit(2)
+    generation = manifest["restart_id"]
+    parents = manifest["parents"]
+    unless generation.is_a?(String) && !generation.empty? && parents.is_a?(Array) && !parents.empty?
+      raise ArgumentError, "restart_id and nonempty parents are required"
+    end
+
+    seen = []
+    expected = { "resume" => "resumed", "keep-paused" => "preserved-pause", "complete" => "already-complete" }
+    results = parents.map do |parent|
+      raise ArgumentError, "parent must be an object" unless parent.is_a?(Hash)
+
+      identity = parent["id"]
+      unless identity.is_a?(String) && !identity.empty? && !seen.include?(identity)
+        raise ArgumentError, "parent identities must be nonempty and unique"
+      end
+
+      seen << identity
+      receipt = parent["recovery"]
+      disposition = parent["resume_disposition"]
+      handoff = parent["handoff"]
+      reason = if handoff && handoff != "" && (!handoff.is_a?(String) || File.basename(handoff, File.extname(handoff)) != identity)
+                 "handoff filename belongs to another parent"
+               elsif !expected.key?(disposition)
+                 "pre-restart pause/authority disposition needs reconciliation"
+               elsif !receipt.is_a?(Hash)
+                 "no recovery acknowledgment; readiness or dispatch is not recovery"
+               elsif receipt["restart_id"] != generation || receipt["parent_id"] != identity
+                 "recovery acknowledgment belongs to another restart or parent"
+               elsif !%w[evidence next_action].all? { |key| receipt[key].is_a?(String) && !receipt[key].strip.empty? }
+                 "recovery acknowledgment lacks evidence or next action"
+               elsif receipt["status"] != expected[disposition]
+                 "recovery is incomplete or conflicts with the saved disposition"
+               end
+      { "parent_id" => identity, "status" => reason ? "needs-attention" : receipt["status"], "reason" => reason }
+    end
+    { "restart_id" => generation,
+      "status" => results.any? { |row| row["reason"] } ? "RECOVERY_INCOMPLETE" : "RECOVERY_COMPLETE",
+      "parents" => results }
+  end
+
+  def main(argv)
+    raise ArgumentError, "usage: recovery-status /path/to/existing-fleet.json" unless argv.length == 1
+
+    source = File.read(argv.first, encoding: Encoding::UTF_8)
+    raise EncodingError, "manifest must be UTF-8" unless source.valid_encoding?
+
+    result = audit(JSON.parse(source))
+    puts JSON.pretty_generate(result)
+    result["status"] == "RECOVERY_COMPLETE" ? 0 : 2
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  begin
+    exit RecoveryStatus.main(ARGV)
+  rescue SystemCallError, IOError, ArgumentError, EncodingError, JSON::ParserError
+    warn "recovery-status: invalid or unavailable manifest; recovery is UNKNOWN"
+    exit 2
+  end
+end

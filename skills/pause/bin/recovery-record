@@ -1,121 +1,148 @@
-#!/usr/bin/env python3
-"""Local recovery evidence, independent of the runner and coordination backend."""
-import argparse
-import hashlib
-import json
-import os
-from pathlib import Path
-import subprocess
-import sys
-import tempfile
-from datetime import datetime, timezone
-import uuid
+#!/usr/bin/env ruby
+# frozen_string_literal: true
 
+require "digest"
+require "fileutils"
+require "json"
+require "optparse"
+require "securerandom"
+require "tempfile"
+require "time"
 
-def now():
-    return datetime.now(timezone.utc).isoformat()
+# Local recovery evidence, independent of the runner and coordination backend.
+module RecoveryRecord
+  module_function
 
+  def now
+    Time.now.utc.iso8601(6).sub(/Z\z/, "+00:00")
+  end
 
-def atomic_write(path, value):
-    fd, temporary = tempfile.mkstemp(prefix=".pending-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as stream:
-            json.dump(value, stream, indent=2)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+  def atomic_write(path, value)
+    directory = File.dirname(path)
+    Tempfile.create([".pending-", ""], directory) do |stream|
+      stream.write("#{JSON.pretty_generate(value)}\n")
+      stream.flush
+      stream.fsync
+      File.rename(stream.path, path)
+      File.open(directory, File::RDONLY, &:fsync)
+    end
+  end
 
+  def task_directory(root, task, create:)
+    directory = File.join(root, Digest::SHA256.hexdigest(task))
+    [root, directory].each do |path|
+      raise ArgumentError, "recovery directories must not be symlinks" if File.symlink?(path)
 
-def task_directory(root, task, create):
-    directory = root / hashlib.sha256(task.encode()).hexdigest()
-    if create:
-        root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        directory.mkdir(mode=0o700, exist_ok=True)
-    for path in (root, directory):
-        if path.is_symlink():
-            raise ValueError("recovery directories must not be symlinks")
-        if path.exists():
-            stat = path.stat()
-            if stat.st_uid != os.getuid() or stat.st_mode & 0o077:
-                raise ValueError("recovery directories must be owner-only (0700)")
-    return directory
+      FileUtils.mkdir_p(path, mode: 0o700) if create
+      next unless File.exist?(path)
 
+      stat = File.stat(path)
+      unless stat.directory? && stat.uid == Process.uid && (stat.mode & 0o077).zero?
+        raise ArgumentError, "recovery directories must be owner-only (0700)"
+      end
+    end
+    directory
+  end
 
-def inspect(directory):
-    records, unreadable = [], []
-    if directory.exists():
-        for path in sorted(directory.glob("*.json")):
-            try:
-                if path.is_symlink():
-                    raise ValueError("symlink")
-                record = json.loads(path.read_text())
-                if not isinstance(record, dict) or record.get("kind") not in ("checkpoint", "operation"):
-                    raise ValueError("invalid record")
-                if not all(isinstance(record.get(key), str) for key in ("id", "recorded_at")):
-                    raise ValueError("missing record identity or timestamp")
-                records.append(record)
-            except (OSError, ValueError):
-                unreadable.append(path.name)
-    records.sort(key=lambda record: record["recorded_at"])
-    return {"records": records, "unresolved": [record["id"] for record in records
-            if record.get("kind") == "operation" and record.get("status") != "exited"],
-            "unreadable": unreadable}
+  def inspect_records(directory)
+    records = []
+    unreadable = []
+    Dir.glob("*.json", base: directory).sort.each do |name|
+      path = File.join(directory, name)
 
+      raise ArgumentError, "symlink" if File.symlink?(path)
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--state-dir", type=Path, default=Path.home() / ".local/state/agent-workflows/recovery")
-    parser.add_argument("--task", required=True, help="stable task identity; never a credential")
-    sub = parser.add_subparsers(dest="action", required=True)
-    sub.add_parser("checkpoint", help="append a compact, non-secret JSON object from stdin")
-    sub.add_parser("inspect", help="read evidence; never replay commands or declare readiness")
-    run = sub.add_parser("run", help="flush intent, execute argv, then record exit status")
-    run.add_argument("--label", required=True, help="non-secret operation target; argv/output are not saved")
-    run.add_argument("command", nargs=argparse.REMAINDER)
-    args = parser.parse_args()
-    directory = task_directory(args.state_dir.expanduser().absolute(), args.task, args.action != "inspect")
-    if args.action == "inspect":
-        result = inspect(directory)
-        print(json.dumps(result, indent=2))
-        return 2 if result["unreadable"] else 0
-    record = {"id": uuid.uuid4().hex, "task": args.task, "recorded_at": now()}
-    path = directory / (record["id"] + ".json")
-    if args.action == "checkpoint":
-        state = json.load(sys.stdin)
-        if not isinstance(state, dict):
-            raise ValueError("checkpoint must be a JSON object")
-        record.update(kind="checkpoint", state=state)
-        atomic_write(path, record)
-        print(path)
-        return 0
-    command = args.command[1:] if args.command[:1] == ["--"] else args.command
-    if not command:
-        raise ValueError("run requires command argv after --")
-    record.update(kind="operation", label=args.label, cwd=os.getcwd(), status="intent")
-    atomic_write(path, record)  # A failed intent write must prevent command execution.
-    print(f"recovery intent: {path}", file=sys.stderr, flush=True)
-    try:
-        result = subprocess.run(command, check=False)  # Inherit streams; no shell or output capture.
-    except OSError:
-        # Preserve uncertainty; do not replay even if starting the process failed.
-        raise
-    record.update(status="exited", exit_code=result.returncode, finished_at=now())
-    atomic_write(path, record)
-    return result.returncode if result.returncode >= 0 else 128 - result.returncode
+      source = File.read(path, encoding: Encoding::UTF_8)
+      raise EncodingError, "record must be UTF-8" unless source.valid_encoding?
 
+      record = JSON.parse(source)
+      unless record.is_a?(Hash) && %w[checkpoint operation].include?(record["kind"]) &&
+             %w[id recorded_at].all? { |key| record[key].is_a?(String) }
+        raise ArgumentError, "invalid record"
+      end
 
-if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except (OSError, ValueError) as error:
-        print(f"recovery-record: {type(error).__name__}: evidence unavailable; inspect live state", file=sys.stderr)
-        sys.exit(2)
+      records << record
+    rescue SystemCallError, IOError, ArgumentError, EncodingError, JSON::ParserError
+      unreadable << File.basename(path)
+
+    end
+    records.sort_by! { |record| record["recorded_at"] }
+    { "records" => records,
+      "unresolved" => records.filter_map { |record| record["id"] if record["kind"] == "operation" && record["status"] != "exited" },
+      "unreadable" => unreadable }
+  end
+
+  def main(argv)
+    options = { root: File.join(Dir.home, ".local/state/agent-workflows/recovery") }
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: recovery-record [--state-dir PATH] --task TASK_ID checkpoint|inspect|run [--label LABEL -- COMMAND ...]"
+      opts.on("--state-dir PATH") { |path| options[:root] = path }
+      opts.on("--task TASK_ID", "Stable task identity; never a credential") { |task| options[:task] = task }
+    end
+    parser.order!(argv)
+    raise ArgumentError, "--task is required" unless options[:task]
+
+    action = argv.shift
+    raise ArgumentError, "expected checkpoint, inspect, or run" unless %w[checkpoint inspect run].include?(action)
+
+    if action == "run"
+      OptionParser.new do |opts|
+        opts.on("--label LABEL", "Non-secret target; argv/output are not saved") { |label| options[:label] = label }
+      end.order!(argv)
+      raise ArgumentError, "run requires --label and command argv after --" unless options[:label] && !argv.empty?
+    elsif !argv.empty?
+      raise ArgumentError, "unexpected arguments"
+    end
+
+    %i[task label].each do |key|
+      next unless options[key]
+
+      options[key] = options[key].dup.force_encoding(Encoding::UTF_8)
+      raise EncodingError, "#{key} must be UTF-8" unless options[key].valid_encoding?
+    end
+
+    directory = task_directory(File.expand_path(options[:root]), options[:task], create: action != "inspect")
+    if action == "inspect"
+      result = inspect_records(directory)
+      puts JSON.pretty_generate(result)
+      return result["unreadable"].empty? ? 0 : 2
+    end
+
+    record = { "id" => SecureRandom.hex(16), "task" => options[:task], "recorded_at" => now }
+    path = File.join(directory, "#{record['id']}.json")
+    if action == "checkpoint"
+      source = $stdin.set_encoding(Encoding::UTF_8).read
+      raise EncodingError, "checkpoint must be UTF-8" unless source.valid_encoding?
+
+      state = JSON.parse(source)
+      raise ArgumentError, "checkpoint must be a JSON object" unless state.is_a?(Hash)
+
+      atomic_write(path, record.merge("kind" => "checkpoint", "state" => state))
+      puts path
+      return 0
+    end
+
+    cwd = Dir.pwd.force_encoding(Encoding::UTF_8)
+    raise EncodingError, "cwd must be UTF-8" unless cwd.valid_encoding?
+
+    record.merge!("kind" => "operation", "label" => options[:label], "cwd" => cwd, "status" => "intent")
+    atomic_write(path, record) # A failed intent write must prevent command execution.
+    warn "recovery intent: #{path}"
+    # The explicit executable/argv0 pair prevents Ruby's single-string shell fallback.
+    # Inherit streams; never capture output or replay an uncertain operation.
+    pid = Process.spawn([argv.first, argv.first], *argv.drop(1))
+    _, status = Process.wait2(pid)
+    code = status.signaled? ? -status.termsig : status.exitstatus
+    atomic_write(path, record.merge("status" => "exited", "exit_code" => code, "finished_at" => now))
+    code.negative? ? 128 - code : code
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  begin
+    exit RecoveryRecord.main(ARGV)
+  rescue SystemCallError, IOError, ArgumentError, EncodingError, JSON::ParserError, OptionParser::ParseError => e
+    warn "recovery-record: #{e.class}: evidence unavailable; inspect live state"
+    exit 2
+  end
+end

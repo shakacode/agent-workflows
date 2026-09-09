@@ -17,12 +17,12 @@ private storage outside disposable worktrees and temporary directories; local
 recording must work without a NAS. Do not duplicate full transcripts or secrets.
 
 When an existing workflow already records intent and results, reuse it.
-Otherwise `../bin/recovery-record` provides a local fallback (Python 3.9+):
+Otherwise `../bin/recovery-record` provides a local fallback (Ruby 2.7+):
 
 ```bash
-python3 /path/to/skills/pause/bin/recovery-record --task TASK_ID checkpoint < checkpoint.json
-python3 /path/to/skills/pause/bin/recovery-record --task TASK_ID run --label 'push branch example' -- git push origin example
-python3 /path/to/skills/pause/bin/recovery-record --task TASK_ID inspect
+ruby /path/to/skills/pause/bin/recovery-record --task TASK_ID checkpoint < checkpoint.json
+ruby /path/to/skills/pause/bin/recovery-record --task TASK_ID run --label 'push branch example' -- git push origin example
+ruby /path/to/skills/pause/bin/recovery-record --task TASK_ID inspect
 ```
 
 Replace the paths and target with actual authorized values. The checkpoint

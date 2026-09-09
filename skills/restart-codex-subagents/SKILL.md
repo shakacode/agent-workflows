@@ -138,7 +138,7 @@ gets no automatic retry loop. Do not send directly to child threads.
 Store a verified `recovery` object per parent in the existing manifest:
 `restart_id`, `parent_id`, `status`, `evidence`, and `next_action`. The evidence
 must identify the actual response/live-state check; do not invent receipts.
-Run `python3 <this-skill>/bin/recovery-status <existing-fleet.json>` to detect
+Run `ruby <this-skill>/bin/recovery-status <existing-fleet.json>` to detect
 missing, stale, misrouted or conflicting acknowledgments before reporting
 `RECOVERY_COMPLETE`. It is a read-only consistency check of supplied evidence,
 not an independent proof of live state, dispatcher, scheduler, or second ledger.
