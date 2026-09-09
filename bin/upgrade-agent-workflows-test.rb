@@ -381,6 +381,8 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
       FileUtils.mkdir_p(source)
       system("rsync", "-a", "--exclude", ".git", "#{ROOT}/", "#{source}/", exception: true)
       git(source, "init", "--quiet")
+      # Background maintenance must not outlive this disposable repository.
+      git(source, "config", "maintenance.auto", "false")
       git(source, "config", "user.email", "upgrade-test@example.com")
       git(source, "config", "user.name", "Upgrade Test")
       write_version(source, "0.1.0")
