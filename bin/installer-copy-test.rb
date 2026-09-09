@@ -106,4 +106,29 @@ class InstallerCopyTest < Minitest::Test
 
     assert_equal 23, status.exitstatus
   end
+
+  def test_partial_batch_failure_preserves_all_installed_children
+    fake_bin = File.join(@tmp, "bin")
+    script = write(fake_bin, "rsync", <<~'BASH')
+      #!/usr/bin/env bash
+      destination="${!#}"
+      mkdir -p "$destination/alpha"
+      printf partial > "$destination/alpha/SKILL.md"
+      exit 23
+    BASH
+    File.chmod(0o755, script)
+    %w[alpha omega].each do |name|
+      write(@source, "#{name}/SKILL.md", "new #{name}")
+      write(@target, "#{name}/SKILL.md", "old #{name}")
+    end
+    write(@target, "personal", "keep")
+
+    _stdout, _stderr, status = copy("PATH" => "#{fake_bin}:#{ENV.fetch('PATH')}")
+
+    assert_equal 23, status.exitstatus
+    assert_equal "old alpha", File.read(File.join(@target, "alpha/SKILL.md"))
+    assert_equal "old omega", File.read(File.join(@target, "omega/SKILL.md"))
+    assert_equal "keep", File.read(File.join(@target, "personal"))
+    assert_equal %w[alpha omega personal], Dir.children(@target).sort
+  end
 end
