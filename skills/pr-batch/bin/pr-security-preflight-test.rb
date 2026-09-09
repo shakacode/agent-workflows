@@ -3840,6 +3840,65 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_checkout_binding_rejects_untracked_or_ignored_command_and_instruction_seams
+    with_clean_real_git_checkout("trusted-base-untracked-seams") do |_dir, repo_root, base_sha, operations|
+      cases = {
+        ".agents/bin/validate" => false,
+        "nested/AGENTS.md" => false,
+        "ignored/CLAUDE.md" => true
+      }
+
+      cases.each do |relative_path, ignored|
+        path = File.join(repo_root, relative_path)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "untrusted seam\n")
+        if ignored
+          git_dir = git_output!("-C", repo_root, "rev-parse", "--absolute-git-dir")
+          File.open(File.join(git_dir, "info", "exclude"), "a") do |file|
+            file.puts("/#{relative_path}")
+          end
+        end
+
+        matches, error = operations.checkout_matches_fetched_base?(
+          repo_root,
+          base_sha,
+          "refs/heads/main"
+        )
+
+        refute matches, relative_path
+        assert_equal "trusted checkout has untracked or ignored command/instruction seams", error, relative_path
+        FileUtils.rm_rf(File.join(repo_root, relative_path.split("/").first))
+      end
+    end
+  end
+
+  def test_checkout_binding_fails_closed_when_untracked_seam_probe_is_malformed
+    with_clean_real_git_checkout("trusted-base-untracked-seam-probe") do |_dir, repo_root, base_sha, operations|
+      expected_args = TRUSTED_CHECKOUT_CONFIG_ARGS + [
+        "-C", repo_root, "ls-files", "--others", "--exclude-standard", "-z", "--"
+      ]
+      cases = {
+        "probe failure" => ["", "fatal: simulated untracked scan failure", TestCommandStatus.new(128)],
+        "unterminated output" => ["AGENTS.md", "", TestCommandStatus.new(0)],
+        "empty record" => ["AGENTS.md\0\0", "", TestCommandStatus.new(0)],
+        "unexpected stderr" => ["", "warning: simulated output", TestCommandStatus.new(0)]
+      }
+
+      cases.each do |label, response|
+        with_trusted_git_probe_fault(->(args) { args == expected_args }, response) do
+          matches, error = operations.checkout_matches_fetched_base?(
+            repo_root,
+            base_sha,
+            "refs/heads/main"
+          )
+
+          refute matches, label
+          assert_includes error, "trusted checkout untracked seam", label
+        end
+      end
+    end
+  end
+
   def test_checkout_binding_does_not_lazy_fetch_missing_promisor_object
     Dir.mktmpdir("trusted-base-promisor") do |repo_root|
       tracked_path = File.join(repo_root, "tracked.txt")

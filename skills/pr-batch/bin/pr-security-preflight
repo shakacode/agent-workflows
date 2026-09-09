@@ -2068,6 +2068,8 @@ class TrustedBaseHighRiskOperations
   INDEX_ENTRY_PATTERN = /\A(?<mode>\d{6}) (?<oid>[0-9a-f]{40}|[0-9a-f]{64}) (?<stage>\d)\t(?<path>.+)\z/m
   MAX_GITLINK_DEPTH = 32
   TRACKED_WORKTREE_CHANGES = "trusted checkout has tracked working-tree changes"
+  COMMAND_SEAM_PATH = ".agents/bin".b.freeze
+  INSTRUCTION_SEAM_BASENAMES = Set.new(["AGENTS.md".b, "CLAUDE.md".b]).freeze
 
   def git_toplevel
     trusted_git_toplevel
@@ -2360,7 +2362,48 @@ class TrustedBaseHighRiskOperations
       return [false, TRACKED_WORKTREE_CHANGES] unless oids == [entry.fetch(:oid)]
     end
 
+    seam_paths, seam_paths_error = untracked_or_ignored_command_and_instruction_seams(root)
+    return [false, seam_paths_error] if seam_paths_error
+    if seam_paths.any?
+      return [false, "trusted checkout has untracked or ignored command/instruction seams"]
+    end
+
     [true, nil]
+  end
+
+  def untracked_or_ignored_command_and_instruction_seams(root)
+    paths = []
+    [
+      ["--others", "--exclude-standard"],
+      ["--others", "--ignored", "--exclude-standard"]
+    ].each do |selection|
+      stdout, stderr, status = capture_checkout_git_probe(
+        root, "ls-files", *selection, "-z", "--"
+      )
+      unless status&.success? && stderr.to_s.empty?
+        return [nil, "trusted checkout untracked seam state could not be verified: " \
+                     "#{stderr.to_s.lines.first&.strip}"]
+      end
+
+      output = stdout.to_s.b
+      next if output.empty?
+
+      records = output.split("\0".b, -1)
+      terminated = records.length > 1 && records.pop.empty?
+      unless terminated && records.none?(&:empty?)
+        return [nil, "trusted checkout untracked seam probe returned malformed output"]
+      end
+
+      paths.concat(records)
+    end
+
+    seams = paths.uniq.select do |path|
+      path == COMMAND_SEAM_PATH || path.start_with?("#{COMMAND_SEAM_PATH}/".b) ||
+        INSTRUCTION_SEAM_BASENAMES.include?(File.basename(path))
+    end
+    [seams, nil]
+  rescue ArgumentError, SystemCallError, TypeError => e
+    [nil, "trusted checkout untracked seam state could not be verified: #{e.message.lines.first&.strip}"]
   end
 
   def tracked_path_ancestors_are_directories?(root, relative_path)
