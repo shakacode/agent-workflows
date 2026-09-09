@@ -370,7 +370,7 @@ module FetchPrReviewData
 
       pr_number = validate_pr!(opts[:pr])
       repo = resolve_repo!(opts[:repo])
-      github_host = github_host_for(root: git_toplevel || Dir.pwd, repo:)
+      github_host = github_host_for(root: git_toplevel, repo:)
       with_github_host(github_host) do
         trust = trust_boundary(repo, opts[:trust_config])
         verify_authenticated_actor!(trust)
@@ -477,49 +477,42 @@ module FetchPrReviewData
       "the #{provenance.fetch('source')} trust config #{provenance.fetch('config_path')}"
     end
 
-    # Resolve the API host independently of the checkout remote before the
-    # shared verifier compares them. This prevents a same-named repository on
-    # another host from making a config appear local.
+    # A matching checkout remote is the authoritative host when one exists.
+    # Otherwise a same-named repository on gh's default host could redirect
+    # both review data and trusted-user identities into another namespace.
     def github_host_for(root:, repo:)
       explicit_host = ENV["GH_HOST"].to_s
       return GithubActorTrust.normalized_github_host(explicit_host) unless explicit_host.empty?
 
+      return checkout_github_host(root:, repo:) if root
+
       out, err, status = capture_probe(
-        "gh", "repo", "view", repo, "--json", "nameWithOwner,url", chdir: root
+        "gh", "repo", "view", repo, "--json", "nameWithOwner,url"
       )
-      if status&.success?
-        payload = JSON.parse(out)
-        resolved_repo = payload["nameWithOwner"].to_s
-        if resolved_repo.casecmp?(repo)
-          remote = GithubActorTrust.github_remote_from_remote_url(payload["url"])
-          return remote.fetch(:host) if remote
+      raise Error, "could not resolve GitHub host for #{repo.inspect}: #{err.lines.first&.strip}" unless status&.success?
 
-          warn "WARN: gh repo view returned an unrecognized GitHub URL for #{repo.inspect}; " \
-               "falling back to local remotes"
-        else
-          warn "WARN: gh repo view resolved #{resolved_repo.inspect}, expected #{repo.inspect}; " \
-               "falling back to local remotes"
-        end
-      else
-        warn "WARN: could not resolve GitHub host for #{repo.inspect}: #{err.lines.first&.strip}"
-      end
+      payload = JSON.parse(out)
+      resolved_repo = payload["nameWithOwner"].to_s
+      raise Error, "gh repo view resolved #{resolved_repo.inspect}, expected #{repo.inspect}" unless resolved_repo.casecmp?(repo)
 
-      fallback_github_host(root:, repo:)
+      remote = GithubActorTrust.github_remote_from_remote_url(payload["url"])
+      raise Error, "gh repo view returned an unrecognized GitHub URL for #{repo.inspect}" unless remote
+
+      remote.fetch(:host)
     rescue JSON::ParserError => e
-      warn "WARN: could not resolve GitHub host for #{repo.inspect}: #{e.message.lines.first&.strip}"
-      fallback_github_host(root:, repo:)
+      raise Error, "could not resolve GitHub host for #{repo.inspect}: #{e.message.lines.first&.strip}"
     end
 
-    def fallback_github_host(root:, repo:)
+    def checkout_github_host(root:, repo:)
       matching_hosts = GithubActorTrust.git_remote_urls(root, git_capture: method(:capture_probe)).filter_map do |url|
         remote = GithubActorTrust.github_remote_from_remote_url(url)
         remote[:host] if remote && remote[:repo].casecmp?(repo)
       end.uniq
-      matching_hosts.one? ? matching_hosts.first : expected_github_host
-    end
 
-    def expected_github_host
-      GithubActorTrust.normalized_github_host(ENV.fetch("GH_HOST", "github.com"))
+      return matching_hosts.first if matching_hosts.one?
+
+      reason = matching_hosts.empty? ? "no matching checkout remote" : "checkout remotes span multiple hosts"
+      raise Error, "could not bind #{repo.inspect} to one GitHub host: #{reason}; set GH_HOST explicitly"
     end
 
     def with_github_host(github_host)

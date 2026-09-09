@@ -322,6 +322,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       repo: "owner/repo", config:, source: "packaged-fallback"
     )
     runner = FetchPrReviewData::Runner.new
+    runner.define_singleton_method(:github_host_for) { |**| "github.com" }
     runner.define_singleton_method(:trust_boundary) { |*| trust }
     runner.define_singleton_method(:capture_probe) { |*| ["justin808\n", "", FakeStatus.new(true)] }
     runner.define_singleton_method(:fetch) { |*| flunk "fetch must not run for an untrusted authenticated actor" }
@@ -399,23 +400,18 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     assert_includes error.message, "could not verify visibility"
   end
 
-  def test_github_host_falls_back_to_matching_local_remote_when_repo_view_fails
+  def test_github_host_uses_the_matching_checkout_remote_without_gh_lookup
     runner = FetchPrReviewData::Runner.new
     runner.define_singleton_method(:capture_probe) do |*cmd, **|
-      if cmd.first == "gh"
-        ["", "offline", FakeStatus.new(false)]
-      else
-        [+"remote.origin.url\nssh://git@ghe.example.com/owner/repo.git\0", "", FakeStatus.new(true)]
-      end
+      flunk "the checkout host must be resolved before gh lookup" if cmd.first == "gh"
+
+      [+"remote.origin.url\nssh://git@ghe.example.com/owner/repo.git\0", "", FakeStatus.new(true)]
     end
 
-    _out, warning = capture_io do
-      assert_equal "ghe.example.com", runner.send(:github_host_for, root: "/repo", repo: "owner/repo")
-    end
-    assert_includes warning, "could not resolve GitHub host"
+    assert_equal "ghe.example.com", runner.send(:github_host_for, root: "/repo", repo: "owner/repo")
   end
 
-  def test_cli_binds_fallback_host_before_actor_team_and_data_queries
+  def test_cli_binds_checkout_host_before_actor_team_and_data_queries
     Dir.mktmpdir("aw794-enterprise-host") do |root|
       config_path = File.join(root, ".agents", "trusted-github-actors.yml")
       FileUtils.mkdir_p(File.dirname(config_path))
@@ -426,8 +422,6 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       runner.define_singleton_method(:git_toplevel) { root }
       runner.define_singleton_method(:capture_probe) do |*cmd, **|
         case cmd
-        when ["gh", "repo", "view", "owner/repo", "--json", "nameWithOwner,url"]
-          ["", "offline", FakeStatus.new(false)]
         when ["git", "-C", File.dirname(config_path), "rev-parse", "--show-toplevel"]
           ["#{root}\n", "", FakeStatus.new(true)]
         when ["git", "-C", root, "config", "--local", "--null", "--get-regexp", "^remote\\..*\\.url$"]
@@ -451,47 +445,41 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       runner.define_singleton_method(:print_result) { |*| nil }
 
       previous_host = ENV.delete("GH_HOST")
-      _out, warning = capture_io do
+      _out, _warning = capture_io do
         assert_equal 0, Dir.chdir(root) { runner.run(["12", "--repo", "owner/repo"]) }
       end
       assert_equal ["ghe.example.com"] * 3, observed_hosts
       assert_nil ENV["GH_HOST"], "the in-process test runner must restore an initially absent GH_HOST"
-      assert_includes warning, "could not resolve GitHub host"
     ensure
       ENV["GH_HOST"] = previous_host if previous_host
     end
   end
 
-  def test_github_host_falls_back_to_matching_local_remote_on_repo_mismatch
+  def test_github_host_without_a_checkout_uses_verified_gh_repo_url
     runner = FetchPrReviewData::Runner.new
+    observed_command = nil
     runner.define_singleton_method(:capture_probe) do |*cmd, **|
-      if cmd.first == "gh"
-        payload = { "nameWithOwner" => "other/repo", "url" => "https://github.com/other/repo" }
-        [JSON.generate(payload), "", FakeStatus.new(true)]
-      else
-        [+"remote.origin.url\nhttps://ghe.example.com/owner/repo.git\0", "", FakeStatus.new(true)]
-      end
+      observed_command = cmd
+      payload = { "nameWithOwner" => "owner/repo", "url" => "https://ghe.example.com/owner/repo" }
+      [JSON.generate(payload), "", FakeStatus.new(true)]
     end
 
-    _out, warning = capture_io do
-      assert_equal "ghe.example.com", runner.send(:github_host_for, root: "/repo", repo: "owner/repo")
-    end
-    assert_includes warning, "falling back to local remotes"
+    assert_equal "ghe.example.com", runner.send(:github_host_for, root: nil, repo: "owner/repo")
+    assert_equal ["gh", "repo", "view", "owner/repo", "--json", "nameWithOwner,url"], observed_command
   end
 
-  def test_github_host_fallback_defaults_fail_closed_when_no_remote_matches
+  def test_github_host_fails_closed_when_checkout_has_no_matching_remote
     runner = FetchPrReviewData::Runner.new
     runner.define_singleton_method(:capture_probe) do |*cmd, **|
-      if cmd.first == "gh"
-        ["", "offline", FakeStatus.new(false)]
-      else
-        [+"remote.origin.url\nhttps://ghe.example.com/other/repo.git\0", "", FakeStatus.new(true)]
-      end
+      flunk "an unmatched checkout must not fall through to gh's default host" if cmd.first == "gh"
+
+      [+"remote.origin.url\nhttps://ghe.example.com/other/repo.git\0", "", FakeStatus.new(true)]
     end
 
-    _out, _warning = capture_io do
-      assert_equal "github.com", runner.send(:github_host_for, root: "/repo", repo: "owner/repo")
+    error = assert_raises(FetchPrReviewData::Error) do
+      runner.send(:github_host_for, root: "/repo", repo: "owner/repo")
     end
+    assert_includes error.message, "set GH_HOST explicitly"
   end
 
   def test_probe_timeout_terminates_the_process_and_fails_closed
@@ -557,6 +545,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
 
   def test_missing_explicit_trust_config_fails_closed
     out, status = Open3.capture2e(
+      { "GH_HOST" => "github.com" },
       "ruby", SCRIPT, "12", "--repo", "owner/repo", "--trust-config", "/nonexistent/trust.yml"
     )
 
