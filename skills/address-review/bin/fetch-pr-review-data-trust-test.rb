@@ -158,23 +158,11 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     end
   end
 
-  def test_team_classification_retries_once_then_memoizes_per_actor
+  def test_team_classification_memoizes_confirmed_results_but_not_errors
     config = GithubActorTrust.build_config(
       { "trusted_teams" => ["owner/reviewers"] },
       contents: "trusted_teams: [owner/reviewers]\n", path: "(test)", global: true
     )
-
-    transient_calls = 0
-    transient = FetchPrReviewData::TrustBoundary.new(
-      repo: "owner/repo", config:, source: "test",
-      team_resolver: lambda { |**|
-        transient_calls += 1
-        transient_calls > 1
-      }
-    )
-    assert_equal :trusted, transient.classification("dev")
-    assert_equal :trusted, transient.classification("dev")
-    assert_equal 2, transient_calls, "a transient negative should retry once and then cache the positive"
 
     nonmember_calls = 0
     nonmember = FetchPrReviewData::TrustBoundary.new(
@@ -185,7 +173,22 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       }
     )
     20.times { assert_equal :untrusted, nonmember.classification("drive-by") }
-    assert_equal 2, nonmember_calls, "comment volume must not control membership API volume"
+    assert_equal 1, nonmember_calls, "a confirmed non-member should be cached"
+
+    transient_calls = 0
+    transient = FetchPrReviewData::TrustBoundary.new(
+      repo: "owner/repo", config:, source: "test",
+      team_resolver: lambda { |**|
+        transient_calls += 1
+        raise FetchPrReviewData::Error, "temporary membership lookup failure" if transient_calls == 1
+
+        true
+      }
+    )
+    assert_raises(FetchPrReviewData::Error) { transient.classification("dev") }
+    assert_equal :trusted, transient.classification("dev")
+    assert_equal :trusted, transient.classification("dev")
+    assert_equal 2, transient_calls, "a failed lookup should retry on the next classification"
   end
 
   def test_metadata_only_and_untrusted_interactions_stay_auditable
@@ -338,8 +341,40 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     end
   end
 
-  def test_runner_honours_unqualified_team_from_verified_repo_local_config
+  def test_runner_does_not_auto_discover_trust_config_from_the_pr_checkout
     Dir.mktmpdir("aw794-repo-local-team") do |root|
+      config_path = File.join(root, ".agents", "trusted-github-actors.yml")
+      trusted_path = File.join(root, "trusted-base-actors.yml")
+      FileUtils.mkdir_p(File.dirname(config_path))
+      File.write(config_path, "trusted_users:\n  - attacker\n")
+      File.write(trusted_path, "trusted_users:\n  - operator\n")
+      system(PrBatchGitProbeEnv.probe_env, "git", "-C", root, "init", "--quiet", exception: true)
+      system(
+        PrBatchGitProbeEnv.probe_env,
+        "git", "-C", root, "remote", "add", "origin", "https://github.com/owner/repo.git",
+        exception: true
+      )
+
+      runner = FetchPrReviewData::Runner.new
+      runner.define_singleton_method(:github_host_for) { |**| "github.com" }
+      previous_config = ENV[GithubActorTrust::USER_TRUST_CONFIG_ENV]
+      ENV[GithubActorTrust::USER_TRUST_CONFIG_ENV] = trusted_path
+      trust = Dir.chdir(root) { runner.send(:trust_boundary, "owner/repo", nil) }
+
+      refute trust.actionable?("attacker"), "PR checkout policy must not authorize its contributor"
+      assert trust.actionable?("operator")
+      assert_equal "env", trust.provenance.fetch("source")
+    ensure
+      if previous_config
+        ENV[GithubActorTrust::USER_TRUST_CONFIG_ENV] = previous_config
+      else
+        ENV.delete(GithubActorTrust::USER_TRUST_CONFIG_ENV)
+      end
+    end
+  end
+
+  def test_runner_honours_an_explicit_verified_repo_local_team_config
+    Dir.mktmpdir("aw794-explicit-repo-local-team") do |root|
       config_path = File.join(root, ".agents", "trusted-github-actors.yml")
       FileUtils.mkdir_p(File.dirname(config_path))
       File.write(config_path, "trusted_teams:\n  - reviewers\n")
@@ -355,9 +390,9 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       runner.define_singleton_method(:team_member?) do |owner:, slug:, login:|
         [owner, slug, login] == %w[owner reviewers dev]
       end
-      trust = Dir.chdir(root) { runner.send(:trust_boundary, "owner/repo", nil) }
+      trust = Dir.chdir(root) { runner.send(:trust_boundary, "owner/repo", config_path) }
 
-      assert trust.actionable?("dev"), "the reader must match preflight's repo-local team behavior"
+      assert trust.actionable?("dev"), "an explicitly selected verified config may use its local team"
     end
   end
 
@@ -505,7 +540,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     assert_equal "ghe.example.com", runner.send(:github_host_for, root: "/repo", repo: "owner/repo")
   end
 
-  def test_cli_binds_checkout_host_before_actor_team_and_data_queries
+  def test_cli_binds_checkout_host_before_actor_team_and_data_queries_with_explicit_config
     Dir.mktmpdir("aw794-enterprise-host") do |root|
       config_path = File.join(root, ".agents", "trusted-github-actors.yml")
       FileUtils.mkdir_p(File.dirname(config_path))
@@ -540,7 +575,10 @@ class FetchPrReviewDataTrustTest < Minitest::Test
 
       previous_host = ENV.delete("GH_HOST")
       _out, _warning = capture_io do
-        assert_equal 0, Dir.chdir(root) { runner.run(["12", "--repo", "owner/repo"]) }
+        result = Dir.chdir(root) do
+          runner.run(["12", "--repo", "owner/repo", "--trust-config", config_path])
+        end
+        assert_equal 0, result
       end
       assert_equal ["ghe.example.com"] * 3, observed_hosts
       assert_nil ENV["GH_HOST"], "the in-process test runner must restore an initially absent GH_HOST"

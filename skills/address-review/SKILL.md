@@ -8,9 +8,11 @@ Fetch review comments from a GitHub PR in this repository, triage them, and crea
 
 Before fetching, ensure the resolved trusted-actor config authorizes the current
 GitHub operator through `trusted_users`, `trusted_bots`, or `trusted_teams`.
-Fresh installs fail closed until a repo-local, user-global, or explicitly
-selected config establishes that trust; the fetch error names the resolved
-config and required entry.
+Fresh installs fail closed until a user-global or explicitly selected config
+establishes that trust; the fetch error names the resolved config and required
+entry. The review-data helper never auto-discovers trust policy from the PR
+checkout. When repo-specific policy is required, resolve it from the trusted
+base and pass its path with `--trust-config`.
 
 Mutating address-review runs assume one active operator per target PR. The
 mutual-exclusion gate below decides that, not the backend configuration:

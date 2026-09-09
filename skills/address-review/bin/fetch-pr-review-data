@@ -45,11 +45,13 @@ module FetchPrReviewData
 
   class Error < StandardError; end
 
-  # Decides which actors may supply actionable review text, using the same
-  # allowlist and resolution order as pr-security-preflight.
+  # Decides which actors may supply actionable review text using the shared
+  # allowlist, without discovering policy from the checkout being reviewed.
   class TrustBoundary
-    def self.for(repo:, trust_config_path: nil, repo_root: nil, team_resolver: nil, repo_local_verifier: nil)
-      resolved = GithubActorTrust.resolve_path(trust_config_path, repo_root:, repo_local_verifier:)
+    def self.for(repo:, trust_config_path: nil, team_resolver: nil, repo_local_verifier: nil)
+      resolved = GithubActorTrust.resolve_path(
+        trust_config_path, repo_local_verifier:, allow_repo_local: false
+      )
       config = GithubActorTrust.load(path: resolved.fetch(:path), global: resolved.fetch(:global))
       new(repo:, config:, source: resolved.fetch(:source), team_resolver:)
     rescue GithubActorTrust::Error => e
@@ -72,13 +74,6 @@ module FetchPrReviewData
       classification = GithubActorTrust.classify(
         repo: @repo, login:, config: @config, team_cache: @team_cache, team_resolver: @team_resolver
       )
-      # A failed membership lookup may be transient. Retry it once immediately,
-      # then memoize the classification so comment volume cannot amplify API use.
-      if classification == :untrusted && @config.fetch(:trusted_teams).any?
-        classification = GithubActorTrust.classify(
-          repo: @repo, login:, config: @config, team_cache: @team_cache, team_resolver: @team_resolver
-        )
-      end
       @classification_cache[cache_key] = classification
     rescue GithubActorTrust::Error => e
       raise Error, e.message
@@ -341,11 +336,12 @@ module FetchPrReviewData
     Options:
           --repo REPO          GitHub repo in OWNER/REPO form. Defaults to gh repo view.
           --trust-config PATH  Trusted GitHub actor allowlist. Defaults to the same
-                               compatibility order pr-security-preflight uses:
-                               repo-local #{GithubActorTrust::DEFAULT_TRUST_CONFIG},
+                               user-controlled sources as pr-security-preflight:
                                $#{GithubActorTrust::USER_TRUST_CONFIG_ENV},
                                #{GithubActorTrust::HOME_TRUST_CONFIG}, then the packaged
-                               fail-closed fallback.
+                               fail-closed fallback. A PR checkout's repo-local config
+                               is never auto-discovered; select a config explicitly
+                               only after verifying it from a trusted base.
           --json               Print JSON (default).
           --text               Print a human-readable count summary instead of JSON.
           --self-check         Run a parser check plus a read-only gh smoke check.
@@ -355,8 +351,10 @@ module FetchPrReviewData
     trusted_teams) contribute bodies. trusted_metadata_bots and non-allowlisted
     actors, including any comment with a missing or hidden login, are summarized
     in excluded_interactions with actor, kind, timestamp, and URL but no body, so
-    contributor text can never reach an agent as instructions. The resolved trust
-    source, path, and sha256 content digest are bound to the packet under "trust".
+    excluded comment text and paths can never reach an agent as instructions.
+    Trusted inline comments retain their repository path as location metadata.
+    The resolved trust source, path, and sha256 content digest are bound to the
+    packet under "trust".
     The authenticated `gh api user` actor must also be actionable under that
     resolved config so self-authored checkpoints and replies cannot be trusted
     under a different authority boundary.
@@ -449,7 +447,6 @@ module FetchPrReviewData
       TrustBoundary.for(
         repo:,
         trust_config_path:,
-        repo_root: trust_config_path ? nil : git_toplevel,
         repo_local_verifier: GithubActorTrust.repository_locality_verifier(
           repo:,
           git_capture: method(:capture_probe),
