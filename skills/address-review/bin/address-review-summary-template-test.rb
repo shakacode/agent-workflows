@@ -66,9 +66,11 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     refute_includes primary, "<details open>"
   end
 
-  def test_posting_identity_is_required_and_not_guessed
-    assert_includes template, ': "${POSTING_CLIENT:?set POSTING_CLIENT to the posting client, such as Codex or Claude}"'
-    assert_includes template, ': "${POSTING_MODEL_FAMILY:?set POSTING_MODEL_FAMILY to the posting model family, such as Astra, Sol, or Opus 5}"'
+  def test_posting_identity_uses_unknown_when_runtime_metadata_is_unavailable
+    assert_includes template, 'POSTING_CLIENT="${POSTING_CLIENT:-UNKNOWN}"'
+    assert_includes template, 'POSTING_MODEL_FAMILY="${POSTING_MODEL_FAMILY:-UNKNOWN}"'
+    refute_includes template, "\${POSTING_CLIENT:?"
+    refute_includes template, "\${POSTING_MODEL_FAMILY:?"
     assert_equal 2, template.scan("printf '🤖 **%s · %s**\\n\\n'").length
   end
 

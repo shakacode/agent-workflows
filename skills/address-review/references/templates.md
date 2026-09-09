@@ -201,7 +201,9 @@ Rules for the summary comment:
   non-cutoff status, and tell the next run to use `check all reviews`.
 - Make the first visible line `🤖 **<client> · <model family>**`, using the
   posting runtime's real client and model family (for example, `Codex · Astra`
-  or `Claude · Opus 5`). Never guess either value.
+  or `Claude · Opus 5`). Use `UNKNOWN` for any runtime field the host does not
+  expose; never guess either value or block the workflow only because it is
+  unavailable.
 - Keep the visible checkpoint human-ready: state the useful result in simple,
   concise language and say plainly when another pass is needed. Put scan
   metadata, itemized outcomes, tracking receipts, and rescan instructions in
@@ -247,9 +249,10 @@ fi
 #   SCAN_SCOPE="since previous summary at ${REVIEW_CUTOFF_AT}"  # cutoff active
 #   SCAN_SCOPE="full history via check all reviews"              # CHECK_ALL_REVIEWS set
 # Set POSTING_CLIENT and POSTING_MODEL_FAMILY from reliable runtime context,
-# e.g. POSTING_CLIENT="Codex" and POSTING_MODEL_FAMILY="Astra". Do not guess.
-: "${POSTING_CLIENT:?set POSTING_CLIENT to the posting client, such as Codex or Claude}"
-: "${POSTING_MODEL_FAMILY:?set POSTING_MODEL_FAMILY to the posting model family, such as Astra, Sol, or Opus 5}"
+# e.g. POSTING_CLIENT="Codex" and POSTING_MODEL_FAMILY="Astra". When the host
+# does not expose a field, use UNKNOWN rather than guessing or blocking progress.
+POSTING_CLIENT="${POSTING_CLIENT:-UNKNOWN}"
+POSTING_MODEL_FAMILY="${POSTING_MODEL_FAMILY:-UNKNOWN}"
 # Set CUTOFF_SAFE=1 only after verifying the cutoff guard; leave 0 for a non-cutoff status.
 CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
 # Set OPTIONAL_OUTCOMES to bullets for optional items with recorded outcomes or
