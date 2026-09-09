@@ -29,6 +29,8 @@ When integrating current `main` into an ordinary PR, keep the current-base
   `AGENTS.md` seam key instead of embedding an example command.
 - Keep helper scripts in the skill folder that invokes them, unless the helper is
   repo-wide like `bin/agent-workflow-seam-doctor`.
+- Prefer Ruby for new shared helpers and validation tests; reuse existing runtime
+  dependencies.
 - Do not add repo-local domain skills here. Domain skills belong in the consumer
   repo.
 - Keep root documentation user-facing. Do not add extra README files inside
