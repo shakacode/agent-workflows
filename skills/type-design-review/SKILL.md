@@ -6,6 +6,9 @@ argument-hint: '[diff, PR, or type surface]'
 
 # Type Design Review
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Use this as a focused review lens when a diff adds or changes data models,
 function signatures, domain types, parsing/validation boundaries, casts, or
 state machines.

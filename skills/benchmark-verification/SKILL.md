@@ -6,6 +6,9 @@ argument-hint: '[PR, branch, or benchmark scope]'
 
 # Benchmark Verification
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Run a benchmark gate when a change touches performance-sensitive behavior, a PR
 uses the repo's benchmark labels, or a user asks for benchmark proof.
 

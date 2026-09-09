@@ -6,6 +6,9 @@ argument-hint: '[PR URL or number]'
 
 # PR Monitoring
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Use this after a PR is opened or updated and the task requires current PR state,
 review-comment follow-up, check readiness, or final handoff. A PR being open is
 not itself a finished state.

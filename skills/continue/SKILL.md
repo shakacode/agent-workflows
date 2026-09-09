@@ -6,6 +6,9 @@ argument-hint: '[focus text or scope]'
 
 # Continue
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 For crash or restart recovery, first read the installed
 [pause recovery procedure](../pause/references/recovery.md). Combine available
 checkpoints with newer relevant logs and live state; a missing handoff is not

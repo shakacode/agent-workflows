@@ -6,6 +6,9 @@ argument-hint: '[scope] [--tier quick|standard|deep|exhaustive] [options]'
 
 # QA Stress
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Run a no-mercy QA stress campaign against repo-owned demos or target apps. This
 skill coordinates parallel persona agents that build, abuse, instrument, and
 measure the target inside an isolated workspace, then reports findings only

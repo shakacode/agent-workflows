@@ -7,6 +7,9 @@ argument-hint: '[issue URL or number]'
 
 # Evaluate Issue
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Decide whether an issue or proposed fix deserves implementation now. Do not treat every valid observation as a priority.
 
 Resolve writing style before authoring human-facing prose. Run

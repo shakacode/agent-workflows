@@ -6,6 +6,9 @@ argument-hint: '[diff, PR, branch, or merged range]'
 
 # Structural Review
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Every other review axis in this pack asks "is this **wrong**?" This one asks
 "is this making the codebase **worse**?"
 

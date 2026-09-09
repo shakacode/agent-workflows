@@ -5,6 +5,9 @@ description: Report tight progress on the current work - done, in progress, bloc
 
 # Status
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Give a tight status update on the current work. **Do not start new work.**
 
 Report:

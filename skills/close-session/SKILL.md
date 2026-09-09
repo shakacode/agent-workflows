@@ -5,6 +5,9 @@ description: Close an active agent task with live-state verification, durable ou
 
 # Close Session
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Close the current task without starting unrelated work. Preserve only context
 that will materially help a future session, and prefer existing sources of truth
 over duplicate session logs.

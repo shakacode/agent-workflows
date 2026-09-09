@@ -5,6 +5,9 @@ description: Run a local verification loop for the current branch before creatin
 
 # Verify Command
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Run a local verification loop for the current branch before creating or updating a PR.
 
 Use `/verify` for local pre-PR checks. Use `/run-ci` when you need `.agents/bin/ci-detect` or want to reproduce CI job selection locally.

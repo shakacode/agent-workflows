@@ -206,6 +206,9 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/docs/review-finding-schema.md"
   assert_file "$target/docs/agent-workflows-model-routing.md"
   assert_file "$target/docs/user-facing-coordination.md"
+  assert_file "$target/skills/restart-codex-subagents/../../docs/skill-input.md"
+  cmp -s "$target/docs/skill-input.md" "$ROOT/docs/skill-input.md" || \
+    fail "copy install must deliver the shared skill input contract"
   assert_file "$target/docs/writing-style.md"
   assert_file "$target/docs/writing-style-asd-ste100.md"
   assert_file "$target/docs/solutions/README.md"
@@ -7193,6 +7196,9 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/docs/review-finding-schema.md"
   assert_symlink "$target/docs/agent-workflows-model-routing.md"
   assert_symlink "$target/docs/user-facing-coordination.md"
+  assert_symlink "$target/docs/skill-input.md"
+  cmp -s "$target/docs/skill-input.md" "$ROOT/docs/skill-input.md" || \
+    fail "symlink install must resolve the shared skill input contract"
   assert_symlink "$target/docs/writing-style.md"
   assert_symlink "$target/docs/writing-style-asd-ste100.md"
   ruby_bin="$(ruby -rrbconfig -e 'print RbConfig.ruby')"

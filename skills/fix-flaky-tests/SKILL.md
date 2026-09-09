@@ -6,6 +6,9 @@ argument-hint: '[failing test, run URL, or flake report]'
 
 # Fix Flaky Tests
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 A flaky test fails intermittently on unchanged code. That single property
 invalidates the two habits an agent falls into by default: reasoning about the
 cause from the source alone, and proving a fix by running it locally.

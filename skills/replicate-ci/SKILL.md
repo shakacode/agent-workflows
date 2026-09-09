@@ -6,6 +6,9 @@ argument-hint: '[PR, check name, job URL, or failure summary]'
 
 # Replicate CI
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Reproduce a failing hosted check in a CI-matched environment and report the
 parity delta. The goal is evidence first; do not change code until the
 reproduction explains the failure.

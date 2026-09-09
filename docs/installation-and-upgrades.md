@@ -482,6 +482,7 @@ The installer writes:
 - `<target>/docs/review-finding-schema.md`
 - `<target>/docs/agent-workflows-model-routing.md`
 - `<target>/docs/user-facing-coordination.md`
+- `<target>/docs/skill-input.md`
 - `<target>/docs/writing-style.md`
 - `<target>/docs/writing-style-asd-ste100.md`
 - `<target>/docs/solutions/*`

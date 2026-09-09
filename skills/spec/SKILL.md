@@ -6,6 +6,9 @@ argument-hint: '[feature, bug, or product intent]'
 
 # Spec
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Turn fuzzy intent into a spec that can drive `$plan-pr-batch` and `$pr-batch`.
 Choose the mode from the user's authorized outcome. A standalone specification or plan-only
 request ends with the spec and handoff; do not implement. In an authorized implementation

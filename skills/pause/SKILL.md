@@ -5,6 +5,9 @@ description: Print restart-safe copy-paste prompts for pausing an agent thread b
 
 # Pause
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Print operator prompts for safe agent-runner restarts.
 
 ## Interruption And Short Grace

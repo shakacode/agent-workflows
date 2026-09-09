@@ -7,6 +7,9 @@ argument-hint: '[PR URL or number]'
 
 # Verify PR Fix
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Prove a bug-fix PR works by **reproducing the failure first, then showing the fix removes it**, with
 evidence a reader can check. A fix that "passes" means nothing unless you first showed the bug.
 

@@ -6,6 +6,9 @@ argument-hint: '[classification-sweep BASE_REF..TARGET_REF|release|rc|beta|versi
 
 # Update Changelog
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Add user-visible entries to the repo's changelog, optionally preparing a version
 header. Keep classification and release authority visible; use the existing
 `bin/changelog-merged-prs` helper for PR enumeration.

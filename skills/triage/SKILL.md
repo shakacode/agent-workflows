@@ -6,6 +6,9 @@ argument-hint: '[repo, scope, or batch objective]'
 
 # Triage
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 For Codex route preferences, consult the unmeasured `astra-pilot-v1`
 [central profile](../plan-pr-batch/references/model-routing-profiles.json) through the plan skill's
 `bin/model-routing-profile --role <role>`. It supersedes named GPT-5.6

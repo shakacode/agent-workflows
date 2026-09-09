@@ -6,6 +6,9 @@ argument-hint: '[implementation plan or batch plan]'
 
 # Plan Review
 
+For missing required choices, follow [Skill input](../../docs/skill-input.md)
+before starting the dependent work.
+
 Use this when a plan should be checked before implementation, especially before
 multi-agent work, high-risk changes, broad refactors, migration work, or any
 plan whose wrong approach would be expensive to unwind.
