@@ -9,9 +9,7 @@ agent_stack_command_destination_safe() {
 }
 
 agent_stack_install_file() {
-  local source_file="$1"
-  local destination="$2"
-  local temporary
+  local source_file="$1" destination="$2" temporary
   agent_stack_command_destination_safe "$destination" || return 1
   if [[ "$source_file" = "$destination" && ! -L "$destination" ]]; then
     chmod +x "$destination"

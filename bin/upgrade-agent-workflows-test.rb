@@ -372,6 +372,46 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
     end
   end
 
+  def test_stable_dry_run_checks_installed_content_before_comparing_another_release
+    %w[skills workflows].each do |surface|
+      with_release_repository(release_two_instruction_surface: surface) do |source, target, _commits|
+        install_stable(source, target, "v0.1.0")
+        metadata = File.binread(File.join(target, ".agent-workflows-install.json"))
+        output, status = run_command(
+          File.join(target, "bin/upgrade-agent-workflows"), "--target", target,
+          "--source", source, "--release", "v0.1.1", "--no-fetch", "--dry-run"
+        )
+        assert status.success?, output
+        assert_includes output, "UPGRADE_AVAILABLE"
+        assert_equal metadata, File.binread(File.join(target, ".agent-workflows-install.json"))
+      end
+    end
+  end
+
+  def test_stable_dry_run_requires_published_release_provenance
+    with_release_repository do |source, target, _commits|
+      install_stable(source, target, "v0.1.0")
+      receipt_path = File.join(@release_receipt_dir, "v0.1.1.json")
+      receipt = File.binread(receipt_path)
+      File.unlink(receipt_path)
+      output, status = run_command(
+        File.join(target, "bin/upgrade-agent-workflows"), "--target", target,
+        "--source", source, "--release", "v0.1.1", "--no-fetch", "--dry-run"
+      )
+      assert_equal 3, status.exitstatus, output
+      assert_includes output, "CHECK_FAILED"
+      data = JSON.parse(receipt)
+      data.fetch("approval")["human_non_author"] = false
+      File.write(receipt_path, JSON.generate(data))
+      output, status = run_command(
+        File.join(target, "bin/upgrade-agent-workflows"), "--target", target,
+        "--source", source, "--release", "v0.1.1", "--no-fetch", "--dry-run"
+      )
+      assert_equal 3, status.exitstatus, output
+      assert_includes output, "protected-environment approval"
+    end
+  end
+
   private
 
   def with_release_repository(add_release_two_assets: false, release_two_instruction_surface: nil)

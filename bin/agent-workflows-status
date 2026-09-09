@@ -120,7 +120,7 @@ module AgentWorkflowsStatus
   end
 
   def verify_stable_release(source, metadata, release_ref, fetch:)
-    unless release_ref.match?(/\Av\d+\.\d+\.\d+\z/)
+    unless release_ref.is_a?(String) && release_ref.match?(/\Av\d+\.\d+\.\d+\z/)
       return [nil, nil, nil, "stable status requires an exact vX.Y.Z release"]
     end
 
@@ -153,6 +153,14 @@ module AgentWorkflowsStatus
     end
 
     verified = JSON.parse(output)
+    if release_ref != metadata["release_ref"]
+      output, status = Open3.capture2e(
+        RbConfig.ruby, helper, "verify-published", "--root", source, "--release", release_ref,
+        "--approved-commit", verified.fetch("peeled_commit"), "--expected-tag-object", tag_object,
+        "--repository", "shakacode/agent-workflows", "--json"
+      )
+      return [nil, nil, nil, JSON.parse(output).fetch("reason")] unless status.success?
+    end
     [verified.fetch("peeled_commit"), verified.fetch("version"), tag_object, nil]
   rescue JSON::ParserError, SystemCallError => e
     [nil, nil, nil, "stable release verification failed: #{e.message}"]
@@ -276,6 +284,7 @@ module AgentWorkflowsStatus
   def stable_managed_surface_error(target, metadata, fields: nil)
     fields ||= {
       "managed helper" => %w[managed_bin_helper_copy_fingerprints bin],
+      "managed pack root file" => %w[managed_pack_root_copy_fingerprints .],
       "managed pack document" => %w[managed_pack_doc_copy_fingerprints docs]
     }
     fields.each do |label, (field, directory)|
@@ -283,7 +292,7 @@ module AgentWorkflowsStatus
       return "installed stable metadata is missing #{field}" unless fingerprints.is_a?(Hash)
 
       fingerprints.each do |name, expected|
-        valid_name = if directory == "bin"
+        valid_name = if %w[bin .].include?(directory)
                        name.is_a?(String) && name.match?(/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/)
                      else
                        segments = name.is_a?(String) ? name.split("/", -1) : []
@@ -469,8 +478,18 @@ module AgentWorkflowsStatus
         delivery_state: superpowers_delivery_state(host, target)
       )
     end
+    integrity_revision = revision
+    if requested_channel == "stable"
+      if requested_release != metadata["release_ref"]
+        integrity_revision, _, _, integrity_error = verify_stable_release(source, metadata, metadata["release_ref"], fetch: false)
+        raise ArgumentError, integrity_error if integrity_error
+      end
+      unless metadata["source_revision"] == integrity_revision
+        raise ArgumentError, "installed stable metadata revision does not match its release tag"
+      end
+    end
     delivery, delivery_error = if requested_channel == "stable"
-                                 stable_delivery_state(host:, target:, source:, revision:, delivery_mode:)
+                                 stable_delivery_state(host:, target:, source:, revision: integrity_revision, delivery_mode:)
                                else
                                  delivery_state(host:, target:, source:, delivery_mode:)
                                end

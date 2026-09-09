@@ -270,6 +270,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
           "release_ref" => "v1.2.3",
           "tag_object" => tag_object,
           "managed_bin_helper_copy_fingerprints" => {},
+          "managed_pack_root_copy_fingerprints" => {},
           "managed_pack_doc_copy_fingerprints" => {}
         )
 
@@ -285,6 +286,16 @@ class AgentWorkflowsStatusTest < Minitest::Test
         assert_equal "v1.2.3", payload.fetch("release_ref")
         assert_equal commit, payload.fetch("exact_commit")
         assert_equal "1.2.3", payload.fetch("available_version")
+
+        metadata_path = File.join(target, ".agent-workflows-install.json")
+        original_metadata = File.binread(metadata_path)
+        invalid_metadata = JSON.parse(original_metadata)
+        invalid_metadata["release_ref"] = 123
+        File.write(metadata_path, JSON.generate(invalid_metadata))
+        invalid_out, invalid_status = run_status({}, "--target", target, "--host", "claude", "--source", source, "--json")
+        assert_equal 3, invalid_status.exitstatus, invalid_out
+        assert_equal "CHECK_FAILED", JSON.parse(invalid_out).fetch("status")
+        File.write(metadata_path, original_metadata)
 
         out, status = run_status(
           { "QA_SUPERPOWERS_STATE" => "active", "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev" },
@@ -353,6 +364,9 @@ class AgentWorkflowsStatusTest < Minitest::Test
         File.write(File.join(source, ".codex-plugin/plugin.json"), "{\"version\":\"1.2.3\"}\n")
         helper = File.join(target, "bin/release-helper")
         doc = File.join(target, "docs/release-doc.md")
+        root_file = File.join(target, "THIRD_PARTY-NOTICES.md")
+        File.write(File.join(source, "THIRD_PARTY-NOTICES.md"), "release notices\n")
+        FileUtils.cp(File.join(source, "THIRD_PARTY-NOTICES.md"), root_file)
         File.write(File.join(source, "bin/release-helper"), "#!/usr/bin/env bash\nexit 0\n")
         FileUtils.chmod(0o755, File.join(source, "bin/release-helper"))
         FileUtils.cp(File.join(source, "bin/release-helper"), helper)
@@ -378,6 +392,9 @@ class AgentWorkflowsStatusTest < Minitest::Test
           "tag_object" => tag_object,
           "managed_bin_helper_copy_fingerprints" => {
             "release-helper" => Digest::SHA256.file(helper).hexdigest
+          },
+          "managed_pack_root_copy_fingerprints" => {
+            "THIRD_PARTY-NOTICES.md" => Digest::SHA256.file(root_file).hexdigest
           },
           "managed_pack_doc_copy_fingerprints" => {
             "release-doc.md" => Digest::SHA256.file(doc).hexdigest
@@ -415,6 +432,14 @@ class AgentWorkflowsStatusTest < Minitest::Test
           failures << "non-executable helper reason was not useful"
         end
         assert_empty failures, failures.join("\n")
+        FileUtils.chmod(0o755, helper)
+        %w[changed missing].each do |mutation|
+          FileUtils.rm_f(root_file)
+          File.write(root_file, "changed notices\n") if mutation == "changed"
+          out, status = run_status({}, "--target", target, "--host", "claude", "--source", source, "--json")
+          assert_equal 3, status.exitstatus, "#{mutation}: #{out}"
+          assert_includes JSON.parse(out).fetch("reason"), "THIRD_PARTY-NOTICES.md"
+        end
       end
     end
   end
@@ -429,6 +454,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
         "managed_bin_helper_copy_fingerprints" => {
           "release-helper" => Digest::SHA256.file(helper).hexdigest
         },
+        "managed_pack_root_copy_fingerprints" => {},
         "managed_pack_doc_copy_fingerprints" => {}
       }
       mutated = false

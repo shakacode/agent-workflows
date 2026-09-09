@@ -6,6 +6,7 @@ require "digest"
 require "open3"
 require "optparse"
 require "time"
+require "tmpdir"
 
 class ReleaseError < StandardError; end
 
@@ -321,6 +322,57 @@ rescue KeyError => e
   raise ReleaseError, "receipt is incomplete: #{e.message}"
 end
 
+def download_release_evidence(url, path, label = "published release evidence")
+  output, status = Open3.capture2e(
+    "curl", "--proto", "=https", "--tlsv1.2", "--fail", "--silent", "--show-error", "--location",
+    "--header", "Accept: application/vnd.github+json", "--header", "X-GitHub-Api-Version: 2022-11-28",
+    "--output", path, url
+  )
+  raise ReleaseError, "#{label} is unavailable at #{url}: #{output.strip}" unless status.success?
+rescue Errno::ENOENT
+  raise ReleaseError, "curl is required for published release verification"
+end
+
+def verify_published(options)
+  repository = required_option(options, :repository)
+  release = required_option(options, :release)
+  unless repository.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z}) && release.match?(/\Av\d+\.\d+\.\d+\z/)
+    raise ReleaseError, "published release requires a repository and exact vX.Y.Z tag"
+  end
+
+  Dir.mktmpdir("agent-workflows-release-evidence") do |temp|
+    receipt_path = File.join(temp, "receipt.json")
+    download_release_evidence(
+      "https://github.com/#{repository}/releases/download/#{release}/agent-workflows-release-receipt.json",
+      receipt_path, "protected release receipt"
+    )
+    receipt = read_json(receipt_path)
+    unless receipt["release_ref"] == release && receipt["peeled_commit"] == required_option(options, :approved_commit) &&
+           receipt["tag_object"] == required_option(options, :expected_tag_object)
+      raise ReleaseError, "published receipt does not bind the requested release identity"
+    end
+
+    workflow = receipt["workflow"]
+    unless workflow.is_a?(Hash) && [workflow["run_id"], workflow["run_attempt"]].all? { |value| value.is_a?(Integer) && value.positive? }
+      raise ReleaseError, "stable release receipt lacks a valid workflow run ID and attempt"
+    end
+
+    api = "https://api.github.com/repos/#{repository}"
+    run_url = "#{api}/actions/runs/#{workflow.fetch('run_id')}"
+    evidence = {
+      github_release: "#{api}/releases/tags/#{release}",
+      github_workflow_run: "#{run_url}/attempts/#{workflow.fetch('run_attempt')}",
+      github_workflow_approvals: "#{run_url}/approvals"
+    }.to_h do |key, url|
+      path = File.join(temp, "#{key}.json")
+      download_release_evidence(url, path)
+      [key, path]
+    end
+    verified = verify_receipt(options.merge(evidence).merge(receipt: receipt_path))
+    { "status" => "PUBLISHED_RELEASE_VERIFIED", "release" => verified.fetch("release") }
+  end
+end
+
 command = ARGV.shift
 options = { root: Dir.pwd, json: ARGV.delete("--json") ? true : false }
 parser = OptionParser.new do |opts|
@@ -376,6 +428,8 @@ begin
               record_receipt(options)
             when "verify-receipt"
               verify_receipt(options)
+            when "verify-published"
+              verify_published(options)
             else
               raise ReleaseError, "unknown command: #{command.inspect}"
             end

@@ -627,7 +627,7 @@ upgrade-agent-workflows \
   --consumer-root /path/to/consumer/repo
 ```
 
-For an already-updated local source clone, skip the network step:
+For an already-updated local source clone, skip the Git fetch:
 
 ```bash
 upgrade-agent-workflows \
@@ -783,10 +783,13 @@ stale workflow instructions or that explicitly need the new process.
 
 ## Network And Privacy
 
-`agent-workflows-status` does not contact the network unless `--fetch` is
-provided. `upgrade-agent-workflows` fetches the explicitly selected stable tag
-or development branch by default. Use `--no-fetch` when the source clone already
-has the selected ref or when the session must avoid network access.
+Checking the installed stable release uses local evidence unless `--fetch` is
+provided. Checking a different stable release, including an upgrade dry run,
+also verifies its published receipt and GitHub provenance before reporting it
+as available. Installed-file integrity is checked against the installed release.
+`upgrade-agent-workflows` fetches tags or the development branch by default.
+`--no-fetch` skips that Git fetch; stable installation and alternate-release
+checks still require network access to verify published release evidence.
 
 ## Troubleshooting
 
