@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Local recovery evidence, independent of the runner and coordination backend."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+import uuid
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def atomic_write(path, value):
+    fd, temporary = tempfile.mkstemp(prefix=".pending-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(value, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def task_directory(root, task, create):
+    directory = root / hashlib.sha256(task.encode()).hexdigest()
+    if create:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory.mkdir(mode=0o700, exist_ok=True)
+    for path in (root, directory):
+        if path.is_symlink():
+            raise ValueError("recovery directories must not be symlinks")
+        if path.exists():
+            stat = path.stat()
+            if stat.st_uid != os.getuid() or stat.st_mode & 0o077:
+                raise ValueError("recovery directories must be owner-only (0700)")
+    return directory
+
+
+def inspect(directory):
+    records, unreadable = [], []
+    if directory.exists():
+        for path in sorted(directory.glob("*.json")):
+            try:
+                if path.is_symlink():
+                    raise ValueError("symlink")
+                record = json.loads(path.read_text())
+                if not isinstance(record, dict) or record.get("kind") not in ("checkpoint", "operation"):
+                    raise ValueError("invalid record")
+                if not all(isinstance(record.get(key), str) for key in ("id", "recorded_at")):
+                    raise ValueError("missing record identity or timestamp")
+                records.append(record)
+            except (OSError, ValueError):
+                unreadable.append(path.name)
+    records.sort(key=lambda record: record["recorded_at"])
+    return {"records": records, "unresolved": [record["id"] for record in records
+            if record.get("kind") == "operation" and record.get("status") != "exited"],
+            "unreadable": unreadable}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--state-dir", type=Path, default=Path.home() / ".local/state/agent-workflows/recovery")
+    parser.add_argument("--task", required=True, help="stable task identity; never a credential")
+    sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("checkpoint", help="append a compact, non-secret JSON object from stdin")
+    sub.add_parser("inspect", help="read evidence; never replay commands or declare readiness")
+    run = sub.add_parser("run", help="flush intent, execute argv, then record exit status")
+    run.add_argument("--label", required=True, help="non-secret operation target; argv/output are not saved")
+    run.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    directory = task_directory(args.state_dir.expanduser().absolute(), args.task, args.action != "inspect")
+    if args.action == "inspect":
+        result = inspect(directory)
+        print(json.dumps(result, indent=2))
+        return 2 if result["unreadable"] else 0
+    record = {"id": uuid.uuid4().hex, "task": args.task, "recorded_at": now()}
+    path = directory / (record["id"] + ".json")
+    if args.action == "checkpoint":
+        state = json.load(sys.stdin)
+        if not isinstance(state, dict):
+            raise ValueError("checkpoint must be a JSON object")
+        record.update(kind="checkpoint", state=state)
+        atomic_write(path, record)
+        print(path)
+        return 0
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if not command:
+        raise ValueError("run requires command argv after --")
+    record.update(kind="operation", label=args.label, cwd=os.getcwd(), status="intent")
+    atomic_write(path, record)  # A failed intent write must prevent command execution.
+    print(f"recovery intent: {path}", file=sys.stderr, flush=True)
+    try:
+        result = subprocess.run(command, check=False)  # Inherit streams; no shell or output capture.
+    except OSError:
+        # Preserve uncertainty; do not replay even if starting the process failed.
+        raise
+    record.update(status="exited", exit_code=result.returncode, finished_at=now())
+    atomic_write(path, record)
+    return result.returncode if result.returncode >= 0 else 128 - result.returncode
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError) as error:
+        print(f"recovery-record: {type(error).__name__}: evidence unavailable; inspect live state", file=sys.stderr)
+        sys.exit(2)

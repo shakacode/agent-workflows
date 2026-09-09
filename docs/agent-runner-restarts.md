@@ -1,9 +1,31 @@
-# Agent Runner Restart Prompts
+# Agent Runner Restarts
 
 Use these prompts when an operator needs to restart Codex, Claude Desktop,
 Claude Code, or another agent runner without losing useful handoff state.
 Use `$pause` when installed skills are available and you want these copy-paste
 prompts printed directly.
+
+## Restart Without Advance Notice
+
+Restartability is a normal operating requirement. Preparation is optional;
+recovery combines checkpoints, newer relevant logs and live state. A missing
+handoff is expected after a crash and must not prevent recovery.
+
+Use immediate restart when no time is available. When time permits, use one
+shared absolute UTC deadline, normally 60 seconds for the affected host,
+including dispatch and waits. Report missing acknowledgments and unknown or
+running operations when it expires; never extend it per task or call a timeout
+`RESTART_READY`. Planned preparation can use an explicitly longer deadline.
+These prompts cannot preempt a stalled host RPC or guarantee safe interruption.
+
+The installed [restart skill](../skills/restart-codex-subagents/SKILL.md) owns
+bounded parent/child preparation and fleet recovery. A standalone task can
+coordinate its host; no control tower or network service is required.
+[Combined recovery and local recording](../skills/pause/references/recovery.md)
+owns the recovery algorithm, recorder commands, limitations and recovery prompt.
+Use it when handoffs are missing or stale; the planned prompts below remain
+available when time permits. A state mismatch is first reconciled from evidence;
+only an unresolved conflict or changed authority requires operator direction.
 
 ## Which Prompt To Use
 
@@ -18,10 +40,10 @@ prompts printed directly.
   in [Cancelling Or Stopping A Batch](../workflows/pr-processing.md#cancelling-or-stopping-a-batch),
   then launch a new batch from a checkout that already has the desired files.
 - If a non-batch thread already exited before the pause prompt could be pasted,
-  resume from the last saved handoff and re-check branch, HEAD, local changes,
+  use available checkpoints plus newer logs and re-check branch, HEAD, local changes,
   and running processes before editing or pushing.
 - If a batch lane already exited before the pause prompt could be pasted, resume
-  from the last saved handoff and run
+  from available checkpoints plus newer relevant logs and run
   [bounded status recovery](../workflows/pr-processing.md#bounded-status-recovery)
   before editing, pushing, polling, or starting a new target.
 
@@ -64,11 +86,11 @@ current AGENTS.md first. Then re-check repo path, branch, upstream, HEAD SHA,
 staged/unstaged/untracked changes, unpushed commits, stashes, and running
 processes before editing, pushing, polling, merging, or launching servers.
 
-Reconstruct the current goal from the handoff and this request. Continue only
-from the recorded next resume step after the live state matches the handoff.
-If live state does not match the handoff, report the mismatch and stop for
-operator direction before editing, pushing, polling, merging, or launching
-servers.
+Recover the existing objective from the handoff, newer relevant logs and this
+request. Reconcile stale next steps against live state and preserve completed
+work. Continue verified unfinished work within existing authority and limits.
+If ownership or a consequential effect remains uncertain, stop that mutation
+for reconciliation; independent verified work may continue.
 
 Pasted restart handoff:
 <PASTE_RESTART_HANDOFF_HERE>
