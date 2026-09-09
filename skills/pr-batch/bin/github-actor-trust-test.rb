@@ -273,6 +273,16 @@ class GithubActorTrustTest < Minitest::Test
     assert_equal 8443, remote.fetch(:port)
   end
 
+  def test_canonical_ssh_remote_survives_an_unavailable_ssh_config_probe
+    remote = GithubActorTrust.github_remote_from_remote_url(
+      "git@github.com:owner/repo.git",
+      ssh_host_resolver: ->(_host) {}
+    )
+
+    assert_equal "github.com", remote.fetch(:host)
+    assert_equal "owner/repo", remote.fetch(:repo)
+  end
+
   def test_ssh_transport_port_is_not_inferred_as_the_github_api_port
     remote = GithubActorTrust.github_remote_from_remote_url(
       "ssh://git@github.company.example:2222/owner/repo.git"

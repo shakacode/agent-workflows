@@ -220,7 +220,7 @@ module GithubActorTrust
     return remote unless remote && remote[:scheme] == "ssh" && ssh_host_resolver
 
     resolved_host = ssh_host_resolver.call(ssh_config_host)
-    return unless resolved_host
+    return remote unless resolved_host
 
     normalized_resolved_host = normalized_github_host(resolved_host)
     return remote if normalized_resolved_host == normalized_github_host(ssh_config_host)

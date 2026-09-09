@@ -584,7 +584,8 @@ module FetchPrReviewData
       hostname = GithubActorTrust.ssh_config_hostname(host, ssh_capture: method(:capture_probe))
       return hostname if hostname
 
-      raise Error, "could not resolve SSH host #{host.inspect}; set GH_HOST explicitly"
+      warn "WARN: could not resolve SSH host #{host.inspect}; using the parsed remote host"
+      nil
     end
 
     def with_github_host(github_host)
