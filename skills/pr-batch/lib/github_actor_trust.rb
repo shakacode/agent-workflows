@@ -186,21 +186,27 @@ module GithubActorTrust
 
   def github_remote_from_remote_url(url, ssh_host_resolver: nil)
     normalized = url.to_s.strip.sub(%r{/+\z}, "").sub(/\.git\z/i, "")
+    ssh_config_host = nil
     remote = if normalized.match?(%r{\A(?:https?|ssh)://}i)
-               uri_remote_from_remote_url(normalized)
+               parsed = uri_remote_from_remote_url(normalized)
+               ssh_config_host = URI.parse(normalized).host if parsed && parsed[:scheme] == "ssh"
+               parsed
              else
                match = normalized.match(%r{\A[^@/:\s]+@([^:\s]+):([^/\s]+/[^/\s]+)\z}i)
                if match
+                 ssh_config_host = match[1]
                  { host: normalized_remote_host(normalized_github_host(match[1])), port: 22,
                    repo: match[2], scheme: "ssh" }
                end
              end
     return remote unless remote && remote[:scheme] == "ssh" && ssh_host_resolver
 
-    resolved_host = ssh_host_resolver.call(remote.fetch(:host))
+    resolved_host = ssh_host_resolver.call(ssh_config_host)
     return unless resolved_host
 
     remote.merge(host: normalized_remote_host(normalized_github_host(resolved_host)))
+  rescue URI::Error
+    nil
   end
 
   def host_port(host)

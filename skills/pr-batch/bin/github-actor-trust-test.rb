@@ -209,6 +209,21 @@ class GithubActorTrustTest < Minitest::Test
     end
   end
 
+  def test_ssh_uri_alias_resolution_uses_the_host_without_its_explicit_port
+    resolved_aliases = []
+    remote = GithubActorTrust.github_remote_from_remote_url(
+      "ssh://git@github.com-work:2222/owner/repo.git",
+      ssh_host_resolver: lambda do |host|
+        resolved_aliases << host
+        "github.com"
+      end
+    )
+
+    assert_equal "github.com", remote.fetch(:host)
+    assert_equal 2222, remote.fetch(:port)
+    assert_equal ["github.com-work"], resolved_aliases
+  end
+
   def test_resolve_path_rejects_a_missing_explicit_config
     error = assert_raises(GithubActorTrust::Error) do
       GithubActorTrust.resolve_path("/nonexistent/trusted-github-actors.yml")
