@@ -19,13 +19,15 @@
      (`agent_claimed_label`, default `agent-claimed`) — an active agent lane
      claim — and list it as reserved; owned means skip for agents as for humans.
    - Separate independent work from dependency-ordered work. Give every planned
-     lane a stable agent id and a lane name; for dependency-ordered work, define
-     explicit `depends_on` refs in the form `<batch-id>:<lane-name>` so
+     lane a stable agent id and a lane name. For `coordination_required` dependency-ordered work, define explicit
+     `depends_on` refs in the form `<batch-id>:<lane-name>` so
      `agent-coord status --batch-id <batch-id> --json` can show whether the
      lane is blocked.
-     Coordinators must create or update the private backend
+     Only for `coordination_required`, coordinators must create or update the private backend
      `batches/<batch-id>.json` with those lane refs before dependent workers
      start; otherwise targeted batch status cannot report `blocked_on` lanes.
+     For `coordination_not_applicable`, preserve dependency order only in the
+     typed stage plan/live gate below; do not create or update a private-backend batch.
    - Emit a persisted `stage-dependency-plan` v1 file for the complete planned
      graph plus a separate `stage-dependency-gate` v1 live replay, using the
      exact schemas in `workflows/pr-processing.md` -> **Stage-Typed Dependency

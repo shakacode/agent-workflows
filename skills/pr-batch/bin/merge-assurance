@@ -303,7 +303,7 @@ module MergeAssurance
     when Array
       value.any? { |nested| contains_unknown_ci_value?(nested, parent_key:) }
     when String
-      CI_OPAQUE_TEXT_KEYS.include?(parent_key) ? value == "UNKNOWN" : value.include?("UNKNOWN")
+      CI_OPAQUE_TEXT_KEYS.include?(parent_key) ? value.strip == "UNKNOWN" : value.include?("UNKNOWN")
     else
       false
     end
