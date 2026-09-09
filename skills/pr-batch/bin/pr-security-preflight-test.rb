@@ -5743,6 +5743,91 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_git_operator_executable_override_rejects_candidate_inside_filesystem_root_checkout
+    Dir.mktmpdir("trusted-git-root-checkout", Dir.home) do |dir|
+      executable = File.join(dir, "git")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, executable)
+
+      error = with_trusted_git_repository_root("/") do
+        with_env("PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE" => executable) do
+          assert_raises(RuntimeError) { resolve_trusted_git_executable }
+        end
+      end
+
+      assert_includes error.message, "PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE"
+    end
+  end
+
+  def test_trusted_ssh_operator_executable_override_rejects_candidate_inside_filesystem_root_checkout
+    Dir.mktmpdir("trusted-ssh-root-checkout", Dir.home) do |dir|
+      executable = File.join(dir, "ssh")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, executable)
+
+      error = with_trusted_git_repository_root("/") do
+        with_env("PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE" => executable) do
+          assert_raises(RuntimeError) { resolve_trusted_ssh_executable }
+        end
+      end
+
+      assert_includes error.message, "PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE"
+    end
+  end
+
+  def test_default_trusted_git_candidate_is_rejected_inside_filesystem_root_checkout
+    available_candidate = %w[/usr/bin/git /bin/git /usr/local/bin/git /opt/homebrew/bin/git].find do |candidate|
+      File.file?(candidate) && File.executable?(candidate)
+    end
+    skip "no fixed Git candidate is available" unless available_candidate
+
+    error = with_trusted_git_repository_root("/") do
+      with_env("PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE" => nil) do
+        assert_raises(RuntimeError) { resolve_trusted_git_executable }
+      end
+    end
+
+    assert_includes error.message, "no pinned system Git executable is available"
+  end
+
+  def test_default_trusted_ssh_candidate_is_rejected_inside_filesystem_root_checkout
+    available_candidate = %w[/usr/bin/ssh /bin/ssh /usr/local/bin/ssh /opt/homebrew/bin/ssh].find do |candidate|
+      File.file?(candidate) && File.executable?(candidate)
+    end
+    skip "no fixed SSH candidate is available" unless available_candidate
+
+    resolved = with_trusted_git_repository_root("/") do
+      with_env("PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE" => nil) do
+        resolve_trusted_ssh_executable
+      end
+    end
+
+    assert_equal "/nonexistent/ssh", resolved
+  end
+
+  def test_trusted_executable_override_allows_non_root_sibling_candidate
+    Dir.mktmpdir("trusted-executable-sibling", Dir.home) do |parent|
+      repository = File.join(parent, "repo")
+      sibling = File.join(parent, "repo-sibling")
+      FileUtils.mkdir_p([repository, sibling])
+
+      {
+        "PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE" => method(:resolve_trusted_git_executable),
+        "PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE" => method(:resolve_trusted_ssh_executable)
+      }.each do |environment_name, resolver|
+        executable = File.join(sibling, File.basename(environment_name).downcase)
+        File.write(executable, "#!/bin/sh\nexit 0\n")
+        FileUtils.chmod(0o755, executable)
+
+        resolved = with_trusted_git_repository_root(repository) do
+          with_env(environment_name => executable) { resolver.call }
+        end
+
+        assert_equal File.realpath(executable), resolved, environment_name
+      end
+    end
+  end
+
   def test_trusted_git_operator_executable_override_rejects_repository_parent_of_cwd
     nested_cwd = File.join(Dir.pwd, "docs")
 
@@ -7948,6 +8033,16 @@ class PrSecurityPreflightTest < Minitest::Test
     previous.each do |key, value|
       value.nil? ? ENV.delete(key) : ENV[key] = value
     end
+  end
+
+  def with_trusted_git_repository_root(root)
+    original = Object.instance_method(:trusted_git_repository_root)
+    Object.send(:define_method, :trusted_git_repository_root) { root }
+    Object.send(:private, :trusted_git_repository_root)
+    yield
+  ensure
+    Object.send(:define_method, :trusted_git_repository_root, original)
+    Object.send(:private, :trusted_git_repository_root)
   end
 
   def yaml_list(values)

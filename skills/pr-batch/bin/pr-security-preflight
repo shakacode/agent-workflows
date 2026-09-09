@@ -90,6 +90,11 @@ def trusted_executable_prohibited_roots
   end
 end
 
+def trusted_path_within_root?(path, root)
+  root_prefix = root.end_with?(File::SEPARATOR) ? root : "#{root}#{File::SEPARATOR}"
+  path == root || path.start_with?(root_prefix)
+end
+
 def resolve_trusted_git_executable
   prohibited_roots = trusted_executable_prohibited_roots
   configured = ENV.fetch(TRUSTED_GIT_EXECUTABLE_ENV, nil)
@@ -99,7 +104,7 @@ def resolve_trusted_git_executable
     next unless File.file?(candidate) && File.executable?(candidate)
 
     canonical = File.realpath(candidate)
-    next if prohibited_roots.any? { |root| canonical == root || canonical.start_with?("#{root}/") }
+    next if prohibited_roots.any? { |root| trusted_path_within_root?(canonical, root) }
 
     return canonical
   rescue SystemCallError
@@ -122,7 +127,7 @@ def resolve_trusted_ssh_executable
     next unless File.file?(candidate) && File.executable?(candidate)
 
     canonical = File.realpath(candidate)
-    next if prohibited_roots.any? { |root| canonical == root || canonical.start_with?("#{root}/") }
+    next if prohibited_roots.any? { |root| trusted_path_within_root?(canonical, root) }
 
     return canonical
   rescue SystemCallError
