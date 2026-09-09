@@ -551,19 +551,42 @@ module FetchPrReviewData
     end
 
     # Team membership is a GitHub fact, not a local one; an unreachable API
-    # must not silently promote an actor to actionable.
+    # must not silently promote or demote an actor. GitHub uses 404 both for a
+    # non-member and for a team hidden from the token, so confirm that the team
+    # itself is visible before interpreting a membership 404 as negative.
     def team_member?(owner:, slug:, login:)
       out, _err, status = capture_probe(
         "gh", "api", "--include", "orgs/#{owner}/teams/#{slug}/memberships/#{login}", "-q", ".state"
       )
-      http_status = out.scan(%r{^HTTP/\S+\s+(\d{3})}).last&.first
+      http_status = response_http_status(out)
       body = out.split(/\r?\n\r?\n/).last.to_s.strip
       return body == "active" if status&.success? && http_status&.start_with?("2")
-      return false if http_status == "404"
+      return false if http_status == "404" && team_visible?(owner:, slug:)
 
       raise Error,
             "could not verify GitHub team membership for @#{login} in #{owner}/#{slug}; " \
             "review inventory is incomplete"
+    end
+
+    def team_visible?(owner:, slug:)
+      @team_visibility ||= {}
+      key = [owner.downcase, slug.downcase]
+      return @team_visibility[key] if @team_visibility.key?(key)
+
+      out, _err, status = capture_probe(
+        "gh", "api", "--include", "orgs/#{owner}/teams/#{slug}", "-q", ".slug"
+      )
+      if status&.success? && response_http_status(out)&.start_with?("2")
+        return @team_visibility[key] = true
+      end
+
+      raise Error,
+            "could not verify visibility of GitHub team #{owner}/#{slug}; " \
+            "review inventory is incomplete"
+    end
+
+    def response_http_status(out)
+      out.scan(%r{^HTTP/\S+\s+(\d{3})}).last&.first
     end
 
     def fetch(repo, pr_number, trust)

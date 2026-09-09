@@ -370,26 +370,33 @@ class FetchPrReviewDataTrustTest < Minitest::Test
 
   def test_team_membership_distinguishes_nonmember_from_incomplete_verification
     runner = FetchPrReviewData::Runner.new
-    cases = {
-      active: ["HTTP/2.0 200 OK\r\ncontent-type: application/json\r\n\r\nactive\n", "", FakeStatus.new(true)],
-      missing: ["HTTP/2.0 404 Not Found\r\n\r\n", "gh: Not Found", FakeStatus.new(false)],
-      unavailable: ["HTTP/2.0 503 Service Unavailable\r\n\r\n", "gh: unavailable", FakeStatus.new(false)],
-      timeout: ["", "", nil]
-    }
+    active = ["HTTP/2.0 200 OK\r\ncontent-type: application/json\r\n\r\nactive\n", "", FakeStatus.new(true)]
+    missing = ["HTTP/2.0 404 Not Found\r\n\r\n", "gh: Not Found", FakeStatus.new(false)]
+    unavailable = ["HTTP/2.0 503 Service Unavailable\r\n\r\n", "gh: unavailable", FakeStatus.new(false)]
+    visible_team = ["HTTP/2.0 200 OK\r\n\r\nreviewers\n", "", FakeStatus.new(true)]
 
-    runner.define_singleton_method(:capture_probe) { |*| cases.fetch(:active) }
+    runner.define_singleton_method(:capture_probe) { |*| active }
     assert runner.send(:team_member?, owner: "owner", slug: "reviewers", login: "dev")
 
-    runner.define_singleton_method(:capture_probe) { |*| cases.fetch(:missing) }
+    runner.define_singleton_method(:capture_probe) do |*cmd|
+      cmd.include?("memberships/dev") ? missing : visible_team
+    end
     refute runner.send(:team_member?, owner: "owner", slug: "reviewers", login: "dev")
 
-    %i[unavailable timeout].each do |failure|
-      runner.define_singleton_method(:capture_probe) { |*| cases.fetch(failure) }
+    [unavailable, ["", "", nil]].each do |failure|
+      runner.define_singleton_method(:capture_probe) { |*| failure }
       error = assert_raises(FetchPrReviewData::Error) do
         runner.send(:team_member?, owner: "owner", slug: "reviewers", login: "dev")
       end
       assert_includes error.message, "review inventory is incomplete"
     end
+
+    runner = FetchPrReviewData::Runner.new
+    runner.define_singleton_method(:capture_probe) { |*| missing }
+    error = assert_raises(FetchPrReviewData::Error) do
+      runner.send(:team_member?, owner: "owner", slug: "reviewers", login: "dev")
+    end
+    assert_includes error.message, "could not verify visibility"
   end
 
   def test_github_host_falls_back_to_matching_local_remote_when_repo_view_fails

@@ -6,6 +6,12 @@ argument-hint: '[autopilot] <pr-number-or-url> [check all reviews]'
 
 Fetch review comments from a GitHub PR in this repository, triage them, and create a todo list only for items worth addressing.
 
+Before fetching, ensure the resolved trusted-actor config authorizes the current
+GitHub operator through `trusted_users`, `trusted_bots`, or `trusted_teams`.
+Fresh installs fail closed until a repo-local, user-global, or explicitly
+selected config establishes that trust; the fetch error names the resolved
+config and required entry.
+
 Mutating address-review runs assume one active operator per target PR. The
 mutual-exclusion gate below decides that, not the backend configuration:
 classify `coordination_applicability` from trusted repository policy, the
