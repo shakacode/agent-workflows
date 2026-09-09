@@ -52,6 +52,7 @@ echo "== host adapter syntax =="
 bin/validate-host-adapter-syntax
 
 echo "== validator unit tests =="
+ruby bin/installer-copy-test.rb
 ruby bin/agent-workflow-writing-style-test.rb
 ruby bin/agent-workflow-seam-doctor-test.rb
 ruby bin/codex-plugin-manifest-check-test.rb
