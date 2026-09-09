@@ -15,7 +15,7 @@ Triage rules:
 - If a claim appears wrong, classify it as `SKIPPED` and note briefly why.
 - When a reviewer identifies an unexplained sibling-lock version split, platform-precompiled/source-build transition, or new build-time dependency, treat the lockfile dependency drift item as `MUST-FIX`.
   - Verify the lockfile diff and require either alignment or an explicit rationale in PR evidence before classifying the item as resolved.
-- Preserve the original review comment ID and thread ID when available so the command can reply to the correct place and resolve the correct thread later.
+- Preserve the original review comment ID, `in_reply_to_id`, and thread ID when available so the command can reply to the correct place and resolve the correct thread later. A promoted `root_excluded` reply keeps its own comment ID as the tracked item identity while its `in_reply_to_id` supplies the top-level reply target.
 - Treat actionable review summary bodies as normal feedback to classify (`MUST-FIX`/`DISCUSS` as appropriate); skip only boilerplate or status-only summaries.
 
 ## Step 6: Create Todo List

@@ -151,7 +151,7 @@ This single read-only call replaces the per-endpoint `gh api ... | jq` blocks an
 
 - `review_cutoff_at` — the cutoff timestamp described in Step 3 (empty when no prior summary comment exists).
 - `review_summaries` — review bodies with non-empty text: `{id, type: "review_summary", body, state, user, created_at, html_url}`. Treat actionable ones as general comments; like specific review bodies they cannot be replied to via the `/replies` endpoint and must be answered as general PR comments (see Step 8).
-- `inline_comments` — inline review comments: `{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved}`. The `thread_id` and `is_resolved` fields are already joined from the review threads by `node_id`, so no separate GraphQL query is needed for the full-PR path. Comments with no matching thread get `thread_id: null` and `is_resolved: false`.
+- `inline_comments` — inline review comments: `{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved, root_excluded?}`. The `thread_id` and `is_resolved` fields are already joined from the review threads by `node_id`, so no separate GraphQL query is needed for the full-PR path. Comments with no matching thread get `thread_id: null` and `is_resolved: false`. The first retained trusted reply whose root was excluded has `root_excluded: true`; its own `id` remains the item identity and its `in_reply_to_id` is the later reply target.
 - `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, user, created_at, html_url}`. Summary/status/claim/source-reply marker comments are included so you can filter them (see Filtering comments below).
 - `review_threads` — `{thread_id, is_resolved, comments: [{node_id, id}]}` for any thread-level work.
 
@@ -160,7 +160,7 @@ When `REVIEW_CUTOFF_AT` is set for a full-PR scan:
 - The fetcher returns the full datasets, so you keep older context for unresolved threads.
 - Filter issue comments and review summaries to items created after `REVIEW_CUTOFF_AT`.
 - For inline review threads, keep an unresolved thread only when at least one comment in that thread has `created_at > REVIEW_CUTOFF_AT`.
-- Use the thread's top-level comment as the triage item, and use newer replies in that thread as the latest context.
+- Use the thread's top-level comment as the triage item, or the first retained trusted reply marked `root_excluded: true` when the root was excluded. Use newer replies in that thread as the latest context.
 - Do not let older comments with no new activity re-enter triage unless the user asked for `check all reviews`.
 
 **For the specific review path (a single `#pullrequestreview-...` target), the helper is not used.** Fetch review thread metadata and attach `thread_id` by matching each review comment's `node_id`:
@@ -183,7 +183,7 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
   only when their author matches `SOURCE_REVIEW_ACTOR`; a different author
   using that marker remains a source candidate.
 - Skip comments belonging to already-resolved threads (use the `is_resolved` field already joined onto each `inline_comments` entry, or match via `thread_id` against `review_threads`)
-- Do not create standalone triage items from comments where `in_reply_to_id` is set, but use reply text as the latest thread context when it updates or narrows the unresolved concern
+- Do not create standalone triage items from comments where `in_reply_to_id` is set unless `root_excluded` is true. Triage that promoted trusted reply as the standalone item; use other reply text only as the latest thread context when it updates or narrows the unresolved concern
 - When `REVIEW_CUTOFF_AT` is set, evaluate unresolved review threads by their latest activity timestamp, not only by the top-level comment timestamp
 - Do not skip bot-generated comments by default. Many actionable review comments in this repository come from bots.
 - Deduplicate repeated bot comments and skip bot status posts, summaries, and acknowledgments that do not require a code or documentation change

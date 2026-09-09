@@ -13,6 +13,7 @@ require "json"
 require "fileutils"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tmpdir"
 
 SCRIPT = File.expand_path("fetch-pr-review-data", __dir__)
@@ -281,6 +282,21 @@ class FetchPrReviewDataTrustTest < Minitest::Test
 
       assert trust.actionable?("dev"), "the reader must match preflight's repo-local team behavior"
     end
+  end
+
+  def test_probe_timeout_terminates_the_process_and_fails_closed
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    result = nil
+    _out, warning = capture_io do
+      result = FetchPrReviewData::Runner.new.send(
+        :capture_probe, RbConfig.ruby, "-e", "sleep 5", timeout_seconds: 0.1
+      )
+    end
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+    assert_operator elapsed, :<, 1.0, "the timed-out child process was not terminated promptly"
+    assert_equal [+"", +"", nil], result
+    assert_includes warning, "timed out after 0.1s"
   end
 
   def test_packet_binds_the_trust_config_and_its_digest

@@ -21,7 +21,6 @@ require "open3"
 # rubocop:disable Lint/RedundantRequireStatement
 require "set"
 # rubocop:enable Lint/RedundantRequireStatement
-require "timeout"
 
 require_relative "../../pr-batch/lib/git_probe_env"
 require_relative "../../pr-batch/lib/github_actor_trust"
@@ -474,13 +473,12 @@ module FetchPrReviewData
 
     # Bounded and environment-sanitized like the preflight's git probe, so a
     # hung credential helper or a GIT_CONFIG_* override cannot stall this tool.
-    def capture_probe(*cmd, chdir: nil)
-      options = chdir ? { chdir: } : {}
-      Timeout.timeout(PROBE_TIMEOUT_SECONDS) do
-        Open3.capture3(PrBatchGitProbeEnv.probe_env, *cmd, **options)
-      end
-    rescue Timeout::Error
-      warn "WARN: #{cmd.first(3).join(' ')} timed out after #{PROBE_TIMEOUT_SECONDS}s"
+    def capture_probe(*cmd, chdir: nil, timeout_seconds: PROBE_TIMEOUT_SECONDS)
+      PrBatchGitProbeEnv.capture3(
+        PrBatchGitProbeEnv.probe_env, *cmd, timeout_seconds:, chdir:
+      )
+    rescue PrBatchGitProbeEnv::TimeoutError
+      warn "WARN: #{cmd.first(3).join(' ')} timed out after #{timeout_seconds}s"
       [+"", +"", nil]
     rescue SystemCallError
       [+"", +"", nil]
