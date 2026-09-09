@@ -3934,7 +3934,8 @@ materialize_stable_release() {
 
   materialized_root="$materialized_temp_root/pack"
   mkdir -p "$materialized_root"
-  if ! git -C "$source_root" archive "$release_commit" | tar -x -C "$materialized_root"; then
+  if ! git -C "$source_root" archive --output="$materialized_temp_root/pack.tar" "$release_commit" ||
+     ! tar -xf "$materialized_temp_root/pack.tar" -C "$materialized_root"; then
     rm -rf "$materialized_temp_root"
     materialized_temp_root=""
     echo "Unable to materialize stable release: $release_ref" >&2
@@ -4066,7 +4067,12 @@ finalize_obsolete_stable_copy_files() {
 
 refuse_implicit_channel_migration() {
   [[ "$channel" = "development" && "$channel_was_explicit" = false ]] || return 0
+  [[ -e "$target/$metadata_name" || -L "$target/$metadata_name" ]] || return 0
   read_installed_metadata_value channel
+  if [[ "$installed_metadata_state" = corrupt ]]; then
+    report_corrupt_install_metadata
+    return 65
+  fi
   if [[ "$installed_metadata_state" = valid && "$installed_metadata_value" = stable ]]; then
     echo "STABLE_CHANNEL_PRESERVED: use upgrade-agent-workflows --release for stable updates; an explicit reinstall is required to change channels." >&2
     return 64

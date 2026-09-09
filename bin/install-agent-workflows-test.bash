@@ -5683,7 +5683,7 @@ RUBY
 
   set +e
   output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$target/.agent-workflows-install.json" \
-    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --channel development --host codex --target "$target" 2>&1)"
   status=$?
   set -e
 
@@ -6042,6 +6042,8 @@ require "json"
 module OverwriteMetadataAfterSecondRead
   def parse(source, *args)
     value = super
+    # Count delivery-mode reads; channel checks must not shift recovery injection.
+    return value unless ARGV.length == 2 && ARGV.fetch(1) == "delivery_mode"
     counter = ENV.fetch("QA_METADATA_READ_COUNTER")
     count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
     File.write(counter, count)
@@ -6088,6 +6090,8 @@ require "json"
 module DeleteMetadataAfterSecondRead
   def parse(source, *args)
     value = super
+    # Count delivery-mode reads; channel checks must not shift recovery injection.
+    return value unless ARGV.length == 2 && ARGV.fetch(1) == "delivery_mode"
     counter = ENV.fetch("QA_METADATA_READ_COUNTER")
     count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
     File.write(counter, count)
