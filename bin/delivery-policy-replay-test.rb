@@ -156,6 +156,7 @@ class DeliveryPolicyReplayTest < Minitest::Test
         docs = File.read(File.join(@repo, ".agents/bin/docs"))
         write(".agents/bin/docs", "#{docs}\nFile.write(\"lib/calculator.rb\", \"# generated change\\n\", mode: \"a\")\n", executable: true)
         commit
+        git("update-index", "--assume-unchanged", "lib/calculator.rb")
         output, status, checks = run_gate("promotion")
         refute status.success?, output
         assert_equal %w[lint docs test], checks
@@ -201,6 +202,31 @@ class DeliveryPolicyReplayTest < Minitest::Test
     end
   end
 
+  def test_hidden_tracked_state_cannot_qualify_clean_promotion
+    %w[low-impact critical].each do |kind|
+      %w[assume-unchanged skip-worktree filemode].each do |hint|
+        with_repository(kind) do
+          path = "lib/calculator.rb"
+          if hint == "filemode"
+            File.chmod(0o755, File.join(@repo, path))
+            commit
+            git("config", "core.filemode", "false")
+            File.chmod(0o645, File.join(@repo, path))
+          else
+            git("update-index", "--#{hint}", path)
+            write(path, "module Calculator\n  def self.value = 2 + 2 # hidden source edit\nend\n")
+          end
+          assert_empty git("status", "--porcelain")
+          output, status, checks = run_gate("promotion")
+          refute status.success?, output
+          assert_equal %w[lint docs test], checks
+          assert_includes output, "working tree: dirty"
+          assert_includes output, "Promotion blocked"
+        end
+      end
+    end
+  end
+
   def test_nested_repositories_require_repository_owned_candidate_capture
     %w[low-impact critical].each do |kind|
       %w[gitlink untracked].each do |mode|
@@ -215,7 +241,7 @@ class DeliveryPolicyReplayTest < Minitest::Test
           write("nested/file", "already dirty")
           output, status, checks = run_gate
           refute status.success?, output
-          expected = mode == "gitlink" ? "Submodules require" : "Non-file untracked entries require"
+          expected = mode == "gitlink" ? "Submodules require" : "Non-file entries require"
           assert_includes output, "#{expected} repository-owned candidate capture"
           assert_empty checks
         end

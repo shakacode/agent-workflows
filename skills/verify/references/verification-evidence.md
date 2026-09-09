@@ -27,7 +27,9 @@ results, and any escalation reason. Preserve the delivery fields reported by
 the wrapper: phase, candidate and relevant base/integration identities,
 selected/full coverage, omitted checks, and selection reason.
 This is ordinary reporting, not a new receipt schema. Exit zero establishes
-only the checks that ran. Existing retry and review stopping rules keep their
+only the checks that ran. Candidate identity must account for tracked file
+content hidden by Git status hints; a clean summary alone is insufficient.
+Existing retry and review stopping rules keep their
 counts and disposition; reaching a budget never waives failed or unresolved
 required checks. Selected evidence cannot qualify omitted promotion checks,
 and merge authority never grants release or deployment permission.

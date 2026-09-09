@@ -12,20 +12,41 @@ def git(*args)
   output
 end
 
+def candidate_file(path)
+  stat = File.lstat(path)
+  return ["120000", File.readlink(path).b] if stat.symlink?
+
+  unless stat.file?
+    abort "Non-file entries require repository-owned candidate capture; example validation blocked"
+  end
+
+  [(stat.mode & 0o100).zero? ? "100644" : "100755", File.binread(path)]
+rescue Errno::ENOENT, Errno::ENOTDIR
+  nil
+end
+
 def candidate_state
   if git("ls-files", "--stage", "-z").split("\0").any? { |entry| entry.start_with?("160000 ") }
     abort "Submodules require repository-owned candidate capture; example validation blocked"
   end
+  head = git("rev-parse", "HEAD")
+  expected = git("ls-tree", "-r", "-z", head.strip).split("\0").map do |entry|
+    metadata, path = entry.split("\t", 2)
+    mode, type, oid = metadata.split
+    abort "Submodules require repository-owned candidate capture; example validation blocked" unless type == "blob"
+
+    [path, [mode, git("cat-file", "blob", oid).b]]
+  end.sort_by(&:first)
+  paths = (git("ls-files", "-z").split("\0") + expected.map(&:first)).uniq.sort
+  tracked = paths.map { |path| [path, candidate_file(path)] }
   untracked = git("ls-files", "--others", "--exclude-standard", "-z").split("\0").map do |path|
-    stat = File.lstat(path)
-    unless stat.file? || stat.symlink?
-      abort "Non-file untracked entries require repository-owned candidate capture; example validation blocked"
-    end
-    [path, stat.mode, stat.symlink? ? File.readlink(path) : File.binread(path)]
+    [path, File.lstat(path).mode, candidate_file(path)]
   end
-  [git("rev-parse", "HEAD"), git("status", "--porcelain", "--untracked-files=all"),
+  dirty = git("status", "--porcelain", "--untracked-files=all")
+  dirty = "tracked filesystem differs from HEAD" if dirty.empty? && tracked != expected
+  [head, dirty,
    git("diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "--"),
-   git("diff", "--binary", "--no-ext-diff", "--no-textconv", "--"), untracked]
+   git("diff", "--binary", "--no-ext-diff", "--no-textconv", "--"), untracked, tracked]
 end
 
 phase = ARGV.shift || "integration"

@@ -20,10 +20,13 @@ their existing validation behavior; no seam setting enables them implicitly.
 The executable example recognizes only its two reviewed overview sentences.
 It does not infer whether arbitrary English is operationally harmless; all
 other content, including plain-English commands, keeps complete coverage.
-The examples capture ordinary files and symlinks. Submodules and other untracked
-entry types, including nested repositories, require an adopter's own candidate
-capture. An unsupported initial candidate blocks before checks; unsupported
-state created by a check also blocks reusable passing evidence.
+The examples compare tracked file bytes, Git executable bits, and symlink
+targets with `HEAD`, independently of Git status hints; they also capture
+untracked ordinary files and symlinks. They require a full, unfiltered worktree:
+sparse checkouts and line-ending filters need adopter-owned capture for exact
+clean promotion. Submodules and non-file entries, including nested repositories,
+require that capture too. An unsupported initial candidate blocks before checks;
+unsupported state created by a check also blocks reusable passing evidence.
 
 `EXAMPLE_BASE_SHA` and the `promotion` argument belong only to these examples.
 Shared skills must use each adopting repository's documented invocation.
