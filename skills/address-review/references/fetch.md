@@ -132,14 +132,17 @@ populates the resolved trust config and reruns the helper. The GitHub host
 selected for repository-local trust verification is bound to the actor, team,
 REST, and GraphQL calls in that same fetch.
 
-After every complete primary or source packet is fetched, count retained items
-across `review_summaries`, `inline_comments`, and `issue_comments`, then count
-`excluded_interactions` whose `trust` is `untrusted`. Zero retained items with
-one or more untrusted interactions is not “no review comments”: set review
-readiness to `UNKNOWN`/blocked, audit those URLs, populate the trust config with
-the intended actionable actors, and rerun. Metadata-only interactions remain
-safe audit evidence and do not create this block, but neither kind can authorize
-triage, mutation, or a checkpoint.
+After every complete primary or source packet is fetched, apply the normal
+marker, reply-context, resolved-thread, and cutoff filters before counting
+retained triage candidates. Count `excluded_interactions` whose `trust` is
+`untrusted` in the same active scan window; trusted workflow bookkeeping such
+as summary, status, source-reply, and claim comments is never a retained triage
+candidate. Zero retained candidates with one or more current untrusted
+interactions is not “no review comments”: set review readiness to
+`UNKNOWN`/blocked, audit those URLs, populate the trust config with the intended
+actionable actors, and rerun. Metadata-only interactions remain safe audit
+evidence and do not create this block, but neither kind can authorize triage,
+mutation, or a checkpoint.
 
 On source-aware reruns, keep the complete source inventory for context and readiness, apply `SOURCE_REVIEW_CUTOFF_AT` from the latest valid source summary as the only global cutoff, then consume the latest summary/status checkpoint's per-item state for remaining candidates.
 Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid `address-review-source-state:v1` block, whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it.
@@ -215,4 +218,4 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 - If the API returns 404, the PR/comment doesn't exist - inform the user
 - If the API returns 403, check authentication with `gh auth status`
 - If the response is empty after cutoff filtering, inform the user no new review comments were found since the last summary comment and mention `check all reviews`
-- If all retained collections are empty without a cutoff and there are no `untrusted` exclusions, inform the user no actionable review comments were found and report any metadata-only interaction count. If any exclusion is `untrusted`, readiness is `UNKNOWN`/blocked until the trust config is audited and populated; never report that packet as no review comments.
+- If no retained triage candidate survives the normal filters and the active scan window has no `untrusted` exclusion, inform the user no actionable review comments were found and report any metadata-only interaction count. If a current exclusion is `untrusted`, readiness is `UNKNOWN`/blocked until the trust config is audited and populated; never let trusted workflow bookkeeping make that packet appear nonempty.
