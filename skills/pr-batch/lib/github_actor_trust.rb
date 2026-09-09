@@ -231,10 +231,19 @@ module GithubActorTrust
     host.to_s.match(/\A(.+):(\d+)\z/)&.then { |match| [match[1], match[2].to_i] }
   end
 
+  def github_api_host(remote)
+    return remote[:host] unless remote[:scheme] == "ssh"
+
+    host_port(remote[:host])&.first || remote[:host]
+  end
+
   def remote_matches_github_host?(remote, github_host)
     github_host = normalized_github_host(github_host)
     github_host_port = host_port(github_host)
-    return remote[:host] == github_host unless github_host_port
+    unless github_host_port
+      remote_base_host = remote[:scheme] == "ssh" ? (host_port(remote[:host])&.first || remote[:host]) : remote[:host]
+      return remote_base_host == github_host
+    end
 
     github_base_host, github_port = github_host_port
     return true if remote[:host] == github_host

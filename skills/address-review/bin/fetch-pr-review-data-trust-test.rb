@@ -444,6 +444,24 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     assert_equal "github.com", runner.send(:github_host_for, root: "/repo", repo: "owner/repo")
   end
 
+  def test_github_host_does_not_treat_an_ssh_transport_port_as_an_api_port
+    runner = FetchPrReviewData::Runner.new
+    runner.define_singleton_method(:capture_probe) do |*cmd, **|
+      case cmd
+      when ["git", "-C", "/repo", "config", "--local", "--null", "--get-regexp", "^remote\\..*\\.url$"]
+        [+"remote.origin.url\nssh://git@ghe.example.com:2222/owner/repo.git\0", "", FakeStatus.new(true)]
+      when ["git", "-C", "/repo", "config", "--worktree", "--null", "--get-regexp", "^remote\\..*\\.url$"]
+        ["", "", FakeStatus.new(false)]
+      when ["ssh", "-G", "ghe.example.com"]
+        ["hostname ghe.example.com\n", "", FakeStatus.new(true)]
+      else
+        flunk "unexpected probe command: #{cmd.inspect}"
+      end
+    end
+
+    assert_equal "ghe.example.com", runner.send(:github_host_for, root: "/repo", repo: "owner/repo")
+  end
+
   def test_cli_binds_checkout_host_before_actor_team_and_data_queries
     Dir.mktmpdir("aw794-enterprise-host") do |root|
       config_path = File.join(root, ".agents", "trusted-github-actors.yml")

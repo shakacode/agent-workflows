@@ -510,7 +510,8 @@ module FetchPrReviewData
         remote = GithubActorTrust.github_remote_from_remote_url(url)
         next unless remote && remote[:repo].casecmp?(repo)
 
-        GithubActorTrust.github_remote_from_remote_url(url, ssh_host_resolver: method(:ssh_hostname))&.fetch(:host)
+        resolved = GithubActorTrust.github_remote_from_remote_url(url, ssh_host_resolver: method(:ssh_hostname))
+        GithubActorTrust.github_api_host(resolved) if resolved
       end.uniq
 
       return matching_hosts.first if matching_hosts.one?

@@ -234,6 +234,15 @@ class GithubActorTrustTest < Minitest::Test
     assert_equal 8443, remote.fetch(:port)
   end
 
+  def test_ssh_transport_port_is_not_inferred_as_the_github_api_port
+    remote = GithubActorTrust.github_remote_from_remote_url(
+      "ssh://git@github.company.example:2222/owner/repo.git"
+    )
+
+    assert_equal "github.company.example", GithubActorTrust.github_api_host(remote)
+    assert GithubActorTrust.remote_matches_github_host?(remote, "github.company.example")
+  end
+
   def test_resolve_path_rejects_a_missing_explicit_config
     error = assert_raises(GithubActorTrust::Error) do
       GithubActorTrust.resolve_path("/nonexistent/trusted-github-actors.yml")
