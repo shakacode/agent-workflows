@@ -5,7 +5,6 @@ require "digest"
 require "fileutils"
 require "fiddle/import"
 require "json"
-require "open3"
 require "optparse"
 require "securerandom"
 require "time"
@@ -23,6 +22,7 @@ module TaskScratchLifecycle
     root_owner run_token scratch_parent scratch_root version worktree_root
   ].freeze
   TASK_REVIEW_HELPER = File.expand_path("task-review-loop", __dir__)
+  DIRECTORY_OPEN_RETRY_COUNT = 3
 
   module CleanupSyscalls
     extend Fiddle::Importer
@@ -257,27 +257,15 @@ module TaskScratchLifecycle
       held_parent_stat = scratch_parent_file.stat
       fail!("scratch-parent-invalid") unless held_parent_stat.directory? &&
                                              same_identity?(held_parent_stat, scratch_parent_stat)
-      root_name = nil
-      begin
-        10.times do
-          candidate = "task-scratch-#{SecureRandom.hex(16)}"
-          result = CleanupSyscalls.mkdirat(scratch_parent_file.fileno, candidate, 0o700)
-          if result.zero?
-            root_name = candidate
-            break
-          end
-          raise SystemCallError.new("mkdirat scratch root", Fiddle.last_error) unless
-            Fiddle.last_error == Errno::EEXIST::Errno
-        end
-        fail!("scratch-parent-invalid") unless root_name
-      rescue SystemCallError
-        fail!("scratch-parent-invalid")
-      end
+      root_name, root_file, created_root_stat = create_private_directory(
+        scratch_parent_file,
+        "task-scratch-",
+        "scratch-parent-invalid",
+        "scratch-initialization-failure"
+      )
       scratch_root = File.join(scratch_parent, root_name)
 
       begin
-        root_file = open_at(scratch_parent_file, root_name)
-        created_root_stat = root_file.stat
         fail!("scratch-initialization-failure") unless created_root_stat.directory?
         root_file.chmod(0o700)
         root_stat = root_file.stat
@@ -611,15 +599,56 @@ module TaskScratchLifecycle
     captured&.close
   end
 
-  def create_cleanup_holder(parent)
-    10.times do
-      name = ".task-scratch-cleanup-#{SecureRandom.hex(16)}"
-      result = CleanupSyscalls.mkdirat(parent.fileno, name, 0o700)
-      return name if result.zero?
-      raise SystemCallError.new("mkdirat cleanup holder", Fiddle.last_error) unless
-        Fiddle.last_error == Errno::EEXIST::Errno
+  def create_private_directory(parent, prefix, create_unavailable_reason, open_unavailable_reason)
+    reserve = begin
+      File.open(File::NULL, File::RDONLY)
+    rescue SystemCallError, ArgumentError
+      fail!(open_unavailable_reason)
     end
-    fail!("cleanup-holder-unavailable")
+    name = nil
+    begin
+      10.times do
+        candidate = "#{prefix}#{SecureRandom.hex(16)}"
+        result = CleanupSyscalls.mkdirat(parent.fileno, candidate, 0o700)
+        if result.zero?
+          name = candidate
+          break
+        end
+        raise SystemCallError.new("mkdirat private directory", Fiddle.last_error) unless
+          Fiddle.last_error == Errno::EEXIST::Errno
+      end
+    rescue SystemCallError, ArgumentError
+      fail!(create_unavailable_reason)
+    end
+    fail!(create_unavailable_reason) unless name
+
+    # Releasing an independent open-file reservation makes both a process fd and
+    # a system open-file-table slot available for binding the created directory.
+    reserve.close
+    DIRECTORY_OPEN_RETRY_COUNT.times do
+      opened = begin
+        open_at(parent, name)
+      rescue Errno::EMFILE, Errno::ENFILE
+        nil
+      rescue SystemCallError, ArgumentError
+        fail!(open_unavailable_reason)
+      end
+      return [name, opened, opened.stat] if opened
+
+      sleep 0.01
+    end
+    fail!(open_unavailable_reason)
+  ensure
+    reserve&.close unless reserve&.closed?
+  end
+
+  def create_cleanup_holder(parent)
+    create_private_directory(
+      parent,
+      ".task-scratch-cleanup-",
+      "cleanup-holder-unavailable",
+      "cleanup-holder-unavailable"
+    )
   end
 
   def remove_empty_matching_entry(directory, name, stat)
@@ -667,14 +696,14 @@ module TaskScratchLifecycle
     fail!("review-identity-mismatch") unless review_input.is_a?(Hash) &&
                                              review_input["identity"] == receipt.fetch("identity")
     stdout, stderr, status = begin
-      Open3.capture3(
+      PrBatchGitProbeEnv.capture3(
         PrBatchGitProbeEnv.probe_env,
         TASK_REVIEW_HELPER,
         "--repository-root",
         receipt.fetch("worktree_root"),
         stdin_data: review_bytes
       )
-    rescue SystemCallError
+    rescue PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError
       fail!("review-validation-unavailable")
     end
     fail!("review-validation-unavailable") unless status.success? && stderr.empty?
@@ -699,9 +728,7 @@ module TaskScratchLifecycle
     intact = true
     parent_file = File.open(parent, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
     fail!("scratch-parent-invalid") unless parent_file.stat.directory?
-    holder_name = create_cleanup_holder(parent_file)
-    holder = open_at(parent_file, holder_name)
-    holder_stat = holder.stat
+    holder_name, holder, holder_stat = create_cleanup_holder(parent_file)
     fail!("cleanup-holder-invalid") unless holder_stat.directory? && holder_stat.uid == Process.euid &&
                                            (holder_stat.mode & 0o077).zero?
     root_name = File.basename(root)
