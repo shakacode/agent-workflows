@@ -122,15 +122,16 @@ module FetchPrReviewData
     end
   end
 
-  # Map each review comment node_id to its thread metadata.
+  # Map each review comment node_id and database id to its thread metadata.
+  # REST replies identify their parent by database id, which also lets a reply
+  # beyond GraphQL's bounded inner comments page inherit the parent's thread.
   def thread_index(review_threads)
     index = {}
     review_threads.each do |thread|
       thread["comments"].each do |comment|
-        node_id = comment["node_id"]
-        next if node_id.nil?
-
-        index[node_id] = { "thread_id" => thread["thread_id"], "is_resolved" => thread["is_resolved"] }
+        meta = { "thread_id" => thread["thread_id"], "is_resolved" => thread["is_resolved"] }
+        index[comment["node_id"]] = meta unless comment["node_id"].nil?
+        index[comment["id"]] = meta unless comment["id"].nil?
       end
     end
     index
@@ -181,7 +182,7 @@ module FetchPrReviewData
     kept = []
     excluded = []
     raw_inline.each do |comment|
-      meta = index[comment["node_id"]]
+      meta = index[comment["node_id"]] || index[comment["in_reply_to_id"]]
       classification = trust.classification(comment.dig("user", "login"))
       if classification != :trusted
         excluded << excluded_record(
@@ -553,9 +554,16 @@ module FetchPrReviewData
     # must not silently promote an actor to actionable.
     def team_member?(owner:, slug:, login:)
       out, _err, status = capture_probe(
-        "gh", "api", "orgs/#{owner}/teams/#{slug}/memberships/#{login}", "-q", ".state"
+        "gh", "api", "--include", "orgs/#{owner}/teams/#{slug}/memberships/#{login}", "-q", ".state"
       )
-      status&.success? ? out.strip == "active" : false
+      http_status = out.scan(%r{^HTTP/\S+\s+(\d{3})}).last&.first
+      body = out.split(/\r?\n\r?\n/).last.to_s.strip
+      return body == "active" if status&.success? && http_status&.start_with?("2")
+      return false if http_status == "404"
+
+      raise Error,
+            "could not verify GitHub team membership for @#{login} in #{owner}/#{slug}; " \
+            "review inventory is incomplete"
     end
 
     def fetch(repo, pr_number, trust)

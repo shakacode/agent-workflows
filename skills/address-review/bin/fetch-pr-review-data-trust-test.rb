@@ -233,12 +233,42 @@ class FetchPrReviewDataTrustTest < Minitest::Test
 
       assert_equal([30, 40], out["excluded_interactions"].map { |row| row["id"] })
       assert_equal "T_EXCLUDED", by_id[31]["thread_id"]
-      assert_nil by_id[33]["thread_id"], "the later REST-only reply deliberately lacks GraphQL metadata"
+      assert_equal "T_EXCLUDED", by_id[33]["thread_id"], "a REST-only reply inherits its parent's thread"
       assert_equal true, by_id[31]["root_excluded"], "an orphaned trusted reply must be flagged"
       refute by_id[33].key?("root_excluded"), "later replies must remain context"
       assert_equal true, by_id[41]["root_excluded"], "each excluded root needs one representative"
       refute by_id[32].key?("root_excluded"), "a top-level trusted comment is not orphaned"
       assert_equal "additional trusted context", by_id[33]["body"]
+    end
+  end
+
+  def test_rest_only_reply_inherits_resolved_thread_metadata_from_its_parent
+    with_trust_config do |path|
+      inline = <<~JSON
+        [[
+          {"id":100,"node_id":"RC_100","path":"a.rb","body":#{INJECTION.to_json},"user":{"login":"drive-by"},
+           "created_at":"2026-01-01T00:00:00Z","html_url":"https://gh/rc/100"},
+          {"id":101,"node_id":"RC_101","path":"a.rb","body":"late trusted reply","user":{"login":"justin808"},
+           "in_reply_to_id":100,"created_at":"2026-01-02T00:00:00Z","html_url":"https://gh/rc/101"}
+        ]]
+      JSON
+      threads = <<~JSON
+        [{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+          {"id":"T_RESOLVED","isResolved":true,"comments":{"nodes":[
+            {"id":"RC_100","databaseId":100}
+          ]}}
+        ]}}}}}]
+      JSON
+      trust = FetchPrReviewData::TrustBoundary.for(repo: "owner/repo", trust_config_path: path)
+      out = FetchPrReviewData.assemble(
+        repo: "owner/repo", pr_number: 1, issue_raw: "[]", reviews_raw: "[]",
+        inline_raw: inline, threads_raw: threads, trust:
+      )
+      reply = out["inline_comments"].find { |row| row["id"] == 101 }
+
+      assert_equal "T_RESOLVED", reply["thread_id"]
+      assert_equal true, reply["is_resolved"]
+      assert_equal true, reply["root_excluded"]
     end
   end
 
@@ -338,6 +368,30 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     end
   end
 
+  def test_team_membership_distinguishes_nonmember_from_incomplete_verification
+    runner = FetchPrReviewData::Runner.new
+    cases = {
+      active: ["HTTP/2.0 200 OK\r\ncontent-type: application/json\r\n\r\nactive\n", "", FakeStatus.new(true)],
+      missing: ["HTTP/2.0 404 Not Found\r\n\r\n", "gh: Not Found", FakeStatus.new(false)],
+      unavailable: ["HTTP/2.0 503 Service Unavailable\r\n\r\n", "gh: unavailable", FakeStatus.new(false)],
+      timeout: ["", "", nil]
+    }
+
+    runner.define_singleton_method(:capture_probe) { |*| cases.fetch(:active) }
+    assert runner.send(:team_member?, owner: "owner", slug: "reviewers", login: "dev")
+
+    runner.define_singleton_method(:capture_probe) { |*| cases.fetch(:missing) }
+    refute runner.send(:team_member?, owner: "owner", slug: "reviewers", login: "dev")
+
+    %i[unavailable timeout].each do |failure|
+      runner.define_singleton_method(:capture_probe) { |*| cases.fetch(failure) }
+      error = assert_raises(FetchPrReviewData::Error) do
+        runner.send(:team_member?, owner: "owner", slug: "reviewers", login: "dev")
+      end
+      assert_includes error.message, "review inventory is incomplete"
+    end
+  end
+
   def test_github_host_falls_back_to_matching_local_remote_when_repo_view_fails
     runner = FetchPrReviewData::Runner.new
     runner.define_singleton_method(:capture_probe) do |*cmd, **|
@@ -376,9 +430,9 @@ class FetchPrReviewDataTrustTest < Minitest::Test
         when ["gh", "api", "user", "--jq", ".login"]
           observed_hosts << ENV["GH_HOST"]
           ["dev\n", "", FakeStatus.new(true)]
-        when ["gh", "api", "orgs/owner/teams/reviewers/memberships/dev", "-q", ".state"]
+        when ["gh", "api", "--include", "orgs/owner/teams/reviewers/memberships/dev", "-q", ".state"]
           observed_hosts << ENV["GH_HOST"]
-          ["active\n", "", FakeStatus.new(true)]
+          ["HTTP/2.0 200 OK\r\n\r\nactive\n", "", FakeStatus.new(true)]
         else
           flunk "unexpected probe command: #{cmd.inspect}"
         end
