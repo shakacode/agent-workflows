@@ -23,6 +23,10 @@ REAL_GIT = ENV.fetch("PATH").split(File::PATH_SEPARATOR).filter_map do |director
   candidate = File.join(directory, "git")
   candidate if File.file?(candidate) && File.executable?(candidate)
 end.first || raise("git executable not found")
+REAL_MKFIFO = ENV.fetch("PATH").split(File::PATH_SEPARATOR).filter_map do |directory|
+  candidate = File.join(directory, "mkfifo")
+  candidate if File.file?(candidate) && File.executable?(candidate)
+end.first || raise("mkfifo executable not found")
 load SCRIPT
 
 TestCommandStatus = Struct.new(:exitstatus) do
@@ -3321,15 +3325,14 @@ class PrSecurityPreflightTest < Minitest::Test
       replace_with_fifo = lambda do |path|
         stat = original_lstat.call(path)
         FileUtils.rm_f(path)
-        raise "could not create FIFO fixture" unless system("/usr/bin/mkfifo", path)
+        raise "could not create FIFO fixture" unless system(REAL_MKFIFO, path)
 
         stat
       end
       file_singleton = File.singleton_class
       file_singleton.send(:define_method, :lstat, &replace_with_fifo)
-      result = Queue.new
       worker = Thread.new do
-        result << bootstrap_trusted_base_policy(repo_root, repo: "owner/repo")
+        bootstrap_trusted_base_policy(repo_root, repo: "owner/repo")
       end
 
       unless worker.join(1)
@@ -3338,7 +3341,7 @@ class PrSecurityPreflightTest < Minitest::Test
         flunk "bootstrap policy blocked while opening a raced FIFO"
       end
 
-      policy, error = result.pop
+      policy, error = worker.value
       assert_nil policy
       assert_equal "#{WORKFLOW_CONFIG_PATH} is not a regular file in the current worktree", error
     ensure
