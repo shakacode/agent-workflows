@@ -86,21 +86,11 @@ default.
 
 ## Quick Start
 
-Bootstrap copy mode from the exact stable release before executing any installer:
-
-```bash
-release=vX.Y.Z
-source="$HOME/src/agent-workflows"
-git clone --no-checkout --filter=blob:none https://github.com/shakacode/agent-workflows "$source"
-git -C "$source" fetch --force origin "refs/tags/$release:refs/tags/$release"
-git -C "$source" checkout --detach "$release"
-"$source/bin/install-agent-workflows" --host codex --source "$source" --release "$release"
-```
-
+For a stable first install, follow the [authenticated release bootstrap](docs/release-channel.md#install-update-and-roll-back).
+It checks a verifier against an independently trusted SHA-256 pin, verifies the
+exact tag and protected release evidence, and only then executes the installer.
 Use `--host claude` for Claude Code, or `--target "$HOME/.agents"` for an
-explicit shared agent home. Stable installation also downloads the protected
-GitHub Release receipt for that exact ref and fails closed if its tag object,
-peeled commit, or required approval facts do not match.
+explicit shared agent home. Do not execute an installer from an unverified tag.
 
 New to the pack? Follow [Getting Started](docs/getting-started.md) for
 prerequisites with versions, one host install, one repo adoption, and a first

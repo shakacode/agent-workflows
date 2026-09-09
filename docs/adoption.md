@@ -145,20 +145,14 @@ libraries provides no guarantee of token or cost savings, quality, or security.
    locally versus reserved for hosted CI.
 
 2. **Install or enable the shared skills for the user/agent.** For a stable
-   first install, materialize the exact release before executing any repository
-   script, then install into a durable agent home:
+   first install, follow the
+   [authenticated bootstrap](release-channel.md#install-update-and-roll-back)
+   into a durable agent home. It authenticates verifier bytes against an
+   independently trusted pin and verifies release provenance before executing
+   any code from the selected tag. Set the installer's `--target` to
+   `${CODEX_HOME:-$HOME/.codex}` or another intended agent home.
 
-   ```bash
-   release=vX.Y.Z
-   source="$HOME/src/agent-workflows"
-   target="${CODEX_HOME:-$HOME/.codex}"
-   git clone --no-checkout --filter=blob:none https://github.com/shakacode/agent-workflows "$source"
-   git -C "$source" fetch --force origin "refs/tags/$release:refs/tags/$release"
-   git -C "$source" checkout --detach "$release"
-   "$source/bin/install-agent-workflows" --host codex --target "$target" --source "$source" --release "$release"
-   ```
-
-   Use `--host claude` with `target="${CLAUDE_HOME:-$HOME/.claude}"` for
+   Use `--host claude --target "${CLAUDE_HOME:-$HOME/.claude}"` for
    Claude Code. The installer binds the exact tag and candidate bytes to the
    public GitHub release asset, successful exact-head release workflow run, and
    protected-environment approval before copying candidate content. The

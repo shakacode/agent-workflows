@@ -8856,22 +8856,18 @@ test_stable_install_accepts_linked_worktree_and_rejects_non_git_source() {
   assert_contains "$output" "requires a Git source clone"
 }
 
-test_stable_copy_bootstrap_materializes_exact_ref_before_installer_execution() {
-  # Ruby checks literal shell variables in the documentation, without expansion.
-  # shellcheck disable=SC2016
+test_stable_copy_guidance_uses_authenticated_bootstrap() {
+  # The release-helper tests execute the canonical bootstrap, including its negative controls.
   ruby -e '
     ARGV.each do |path|
       text = File.read(path)
-      clone = text.index("git clone --no-checkout") or abort "#{path}: missing no-checkout copy bootstrap"
-      checkout = text.index(%q[git -C "$source" checkout --detach "$release"]) or
-        abort "#{path}: missing exact detached release checkout"
-      # Inline references to the final command are not installer execution.
-      install = text.index(/^[ \t]*"\$source\/bin\/install-agent-workflows"/) or
-        abort "#{path}: missing source-qualified stable installer"
-      abort "#{path}: mutable installer runs before exact release checkout" unless clone < checkout && checkout < install
+      unless text.match?(/\]\((?:docs\/)?release-channel\.md#install-update-and-roll-back\)/)
+        abort "#{path}: missing canonical authenticated bootstrap link"
+      end
+      abort "#{path}: duplicate cold bootstrap bypasses the canonical flow" if text.include?("git clone --no-checkout")
     end
-  ' "$ROOT/README.md" "$ROOT/docs/adoption.md" "$ROOT/docs/installation-and-upgrades.md" "$ROOT/docs/release-channel.md" || \
-    fail "stable copy bootstrap does not lead with exact-ref materialization"
+  ' "$ROOT/README.md" "$ROOT/docs/adoption.md" "$ROOT/docs/installation-and-upgrades.md" || \
+    fail "stable copy guidance does not use the authenticated bootstrap"
   # Ruby checks the literal bound installer path used in the companion guidance.
   # shellcheck disable=SC2016
   ruby -e '
@@ -9195,7 +9191,7 @@ main() {
     test_stable_install_rejects_forged_github_workflow_provenance
     test_stable_install_rejects_local_annotated_tag_without_protected_release_receipt
     test_stable_install_accepts_linked_worktree_and_rejects_non_git_source
-    test_stable_copy_bootstrap_materializes_exact_ref_before_installer_execution
+    test_stable_copy_guidance_uses_authenticated_bootstrap
     test_stable_install_rejects_malformed_missing_lightweight_and_version_mismatched_refs
   )
 

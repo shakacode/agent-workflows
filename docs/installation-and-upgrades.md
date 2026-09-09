@@ -213,26 +213,19 @@ ruby bin/codex-plugin-manifest-check
 
 ## Install
 
-Bootstrap copy mode from the exact stable ref before the first installer
-execution:
-
-```bash
-release=vX.Y.Z
-source="$HOME/src/agent-workflows"
-git clone --no-checkout --filter=blob:none https://github.com/shakacode/agent-workflows "$source"
-git -C "$source" fetch --force origin "refs/tags/$release:refs/tags/$release"
-git -C "$source" checkout --detach "$release"
-"$source/bin/install-agent-workflows" --host codex --source "$source" --release "$release"
-```
+For a first stable installation, use the
+[authenticated bootstrap](release-channel.md#install-update-and-roll-back).
+Obtain the verifier pin from an independently trusted copy of that guide;
+verify the pin and release provenance before executing any selected-tag code.
 
 The stable installer retrieves the fixed
 `agent-workflows-release-receipt.json` asset for the exact release from GitHub
-and verifies it with bootstrap verifier bytes, never the candidate's archived
-release helper. Public GitHub release metadata binds the receipt's server-side
+and verifies it again after the independently authenticated bootstrap. Public
+GitHub release metadata binds the receipt's server-side
 SHA-256, size, GitHub Actions publisher, and exact tag; workflow-run and approval-history
 metadata bind the canonical repository, exact tagged head, release workflow,
 successful run ID/attempt, actor, protected environment, and independent
-reviewer. Candidate content is materialized only after these checks pass. The
+reviewer. The installer materializes the pack only after these checks pass. The
 public API requires no installer credential; unavailable, rate-limited,
 malformed, or mismatched evidence and a local self-asserted receipt fail closed.
 

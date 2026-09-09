@@ -79,20 +79,42 @@ upstream `main` remains an explicit development choice.
 
 ## Install, Update, And Roll Back
 
-Bootstrap copy mode from the exact stable ref before executing any installer:
+Authenticate the bootstrap verifier before executing any selected-release code.
+Use the SHA-256 pin below from an independently trusted copy of this guide;
+never obtain its expected value from the unverified tag, its files, or its
+release metadata. If that trusted pin is unavailable, stop. A verifier change
+requires review and a new pin in the trusted guide; a mismatch must not be
+bypassed. This authenticates the verifier, which then authenticates the release
+receipt and protected workflow before the installer can run.
 
 ```bash
 release=vX.Y.Z
 source="$HOME/src/agent-workflows"
-git clone --no-checkout --filter=blob:none https://github.com/shakacode/agent-workflows "$source"
-git -C "$source" fetch --force origin "refs/tags/$release:refs/tags/$release"
-git -C "$source" checkout --detach "$release"
-"$source/bin/install-agent-workflows" --host codex --source "$source" --release "$release"
+(
+  set -euo pipefail
+  bootstrap_tmp="$(mktemp -d)"
+  trap 'rm -rf -- "$bootstrap_tmp"' EXIT
+  expected_verifier_sha256="9c15e93e693b3bdeec100ea05355cbd3548c785cd8337183d83656243710dfda"
+  git clone --no-checkout --filter=blob:none https://github.com/shakacode/agent-workflows "$source"
+  git -C "$source" fetch origin "refs/tags/$release:refs/tags/$release"
+  tag_object="$(git -C "$source" rev-parse --verify "refs/tags/$release")"
+  candidate="$(git -C "$source" rev-parse --verify "refs/tags/$release^{commit}")"
+  git -C "$source" show "$candidate:bin/agent-workflows-release" > "$bootstrap_tmp/verifier.rb"
+  ruby -rdigest -e '
+    abort "Untrusted bootstrap verifier; stop" unless
+      Digest::SHA256.file(ARGV.fetch(1)).hexdigest == ARGV.fetch(0)
+  ' "$expected_verifier_sha256" "$bootstrap_tmp/verifier.rb"
+  ruby "$bootstrap_tmp/verifier.rb" verify-published \
+    --root "$source" --release "$release" --approved-commit "$candidate" \
+    --expected-tag-object "$tag_object" --repository shakacode/agent-workflows
+  git -C "$source" checkout --detach "$candidate"
+  "$source/bin/install-agent-workflows" --host codex --source "$source" --release "$release"
+)
 ```
 
 Use `--host claude` for Claude Code. Before materializing candidate content, the
-stable bootstrap uses its own regular-file verifier rather than executing the
-candidate's release helper. It verifies the annotated tag, downloads the fixed
+bootstrap executes only verifier bytes authenticated by the independent pin.
+The verified installer then repeats release verification before copying files. It verifies the annotated tag, downloads the fixed
 receipt asset, and reads the public GitHub REST metadata for the release,
 workflow run, and environment approval history. Verification binds the
 server-reported asset SHA-256 and GitHub Actions publisher, canonical repository, exact release

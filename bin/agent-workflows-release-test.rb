@@ -7,6 +7,7 @@ require "json"
 require "minitest/autorun"
 require "open3"
 require "tmpdir"
+require "shellwords"
 
 SCRIPT = File.expand_path("agent-workflows-release", __dir__)
 
@@ -441,7 +442,90 @@ class AgentWorkflowsReleaseTest < Minitest::Test
     end
   end
 
+  def test_documented_bootstrap_accepts_authenticated_release_before_installing
+    run_documented_bootstrap("approved") do |output, status, sentinel|
+      assert status.success?, output
+      assert_path_exists sentinel
+      assert_includes output, "PUBLISHED_RELEASE_VERIFIED"
+    end
+  end
+
+  def test_documented_bootstrap_rejects_unapproved_installer_before_execution
+    run_documented_bootstrap("missing-receipt") do |output, status, sentinel|
+      refute status.success?, output
+      refute_path_exists sentinel
+    end
+  end
+
+  def test_documented_bootstrap_rejects_replaced_verifier_before_execution
+    run_documented_bootstrap("replaced-verifier") do |output, status, sentinel|
+      refute status.success?, output
+      refute_path_exists sentinel
+      assert_includes output, "Untrusted bootstrap verifier"
+    end
+  end
+
   private
+
+  def run_documented_bootstrap(scenario)
+    with_release_repository("1.2.3") do |root, _initial_commit|
+      Dir.mktmpdir("release-bootstrap") do |temp|
+        FileUtils.mkdir_p(File.join(root, "bin"))
+        verifier = File.binread(SCRIPT)
+        verifier = 'File.write(ENV.fetch("QA_BOOTSTRAP_SENTINEL"), "untrusted verifier")' if scenario == "replaced-verifier"
+        File.write(File.join(root, "bin/agent-workflows-release"), verifier)
+        installer = File.join(root, "bin/install-agent-workflows")
+        File.write(installer, "#!/usr/bin/env bash\nset -euo pipefail\ntouch \"$QA_BOOTSTRAP_SENTINEL\"\n")
+        File.chmod(0o755, installer)
+        git(root, "add", ".")
+        git(root, "commit", "--quiet", "-m", "bootstrap fixture")
+        commit = git(root, "rev-parse", "HEAD")
+        git(root, "tag", "-a", "v1.2.3", "-m", "bootstrap fixture")
+        receipt = File.join(temp, "receipt.json")
+        record_receipt(root, commit, git(root, "rev-parse", "refs/tags/v1.2.3"), receipt)
+        write_github_release(File.join(temp, "release.json"), receipt)
+        write_github_workflow_run(File.join(temp, "run.json"), commit)
+        write_github_approvals(File.join(temp, "approvals.json"))
+        File.unlink(receipt) if scenario == "missing-receipt"
+        fake_bin = File.join(temp, "fake-bin")
+        FileUtils.mkdir_p(fake_bin)
+        curl = File.join(fake_bin, "curl")
+        File.write(curl, <<~'RUBY')
+          #!/usr/bin/env ruby
+          require "fileutils"
+          url = ARGV.last
+          name = if url.include?("/releases/download/")
+                   "receipt.json"
+                 elsif url.include?("/releases/tags/")
+                   "release.json"
+                 elsif url.include?("/attempts/")
+                   "run.json"
+                 elsif url.end_with?("/approvals")
+                   "approvals.json"
+                 else
+                   abort "unexpected fixture URL"
+                 end
+          source = File.join(ENV.fetch("QA_BOOTSTRAP_EVIDENCE"), name)
+          exit 22 unless File.file?(source)
+          FileUtils.cp(source, ARGV.fetch(ARGV.index("--output") + 1))
+        RUBY
+        File.chmod(0o755, curl)
+        guide = File.read(File.expand_path("../docs/release-channel.md", __dir__))
+        commands = guide.match(/```bash\n(.*?)```/m).captures.first
+        commands = commands.sub("release=vX.Y.Z", "release=v1.2.3")
+                           .sub('source="$HOME/src/agent-workflows"', "source=#{Shellwords.escape(File.join(temp, 'fresh source'))}")
+                           .sub("https://github.com/shakacode/agent-workflows", Shellwords.escape(root))
+        sentinel = File.join(temp, "candidate-executed")
+        env = {
+          "PATH" => "#{fake_bin}:#{ENV.fetch('PATH')}", "QA_BOOTSTRAP_SENTINEL" => sentinel,
+          "QA_BOOTSTRAP_EVIDENCE" => temp, "GH_TOKEN" => nil, "GITHUB_TOKEN" => nil,
+          "BASH_ENV" => nil, "ENV" => nil, "RUBYOPT" => nil
+        }
+        output, status = Open3.capture2e(env, "bash", "--noprofile", "--norc", "-c", commands)
+        yield output, status, sentinel
+      end
+    end
+  end
 
   def with_release_root
     Dir.mktmpdir("agent-workflows-release-test") do |root|
