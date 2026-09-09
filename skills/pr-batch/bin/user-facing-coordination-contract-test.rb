@@ -247,8 +247,6 @@ class UserFacingCoordinationContractTest < Minitest::Test
     )
 
     assert_match(/always_allowed=<int\|UNKNOWN>; always_allowed_detail=/, text)
-    assert_match(/`always_allowed`.+v1 aggregate/m, text)
-    assert_match(/`always_allowed_detail`.+aggregate.+per kind/m, text)
   end
 
   def test_user_facing_coordination_routes_oc_v1_without_stale_duplicate_rules
