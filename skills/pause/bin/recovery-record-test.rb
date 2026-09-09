@@ -37,6 +37,19 @@ class RecoveryRecordTest < Minitest::Test
     refute_path_exists @state
   end
 
+  def test_empty_task_identity_is_rejected_before_writes_or_execution
+    @command[-1] = ""
+    marker = File.join(@root, "must-not-exist")
+    commands = [["checkpoint"], ["inspect"],
+                ["run", "--label", "test", "--", RbConfig.ruby, "-e", 'File.write(ARGV[0], "")', marker]]
+    commands.each do |args|
+      _, _, status = call(*args, data: "{}")
+      assert_equal 2, status.exitstatus
+      refute_path_exists @state
+      refute_path_exists marker
+    end
+  end
+
   def test_newer_operation_preserved_after_stale_checkpoint
     assert call("checkpoint", data: '{"next":"create result"}').last.success?
     out, _, status = call("run", "--label", "create result", "--", RbConfig.ruby, "-e", 'puts "private output"; exit 7')

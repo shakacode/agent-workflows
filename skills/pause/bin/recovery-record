@@ -80,7 +80,7 @@ module RecoveryRecord
       opts.on("--task TASK_ID", "Stable task identity; never a credential") { |task| options[:task] = task }
     end
     parser.order!(argv)
-    raise ArgumentError, "--task is required" unless options[:task]
+    raise ArgumentError, "--task must be nonempty" if !options[:task] || options[:task].empty?
 
     action = argv.shift
     raise ArgumentError, "expected checkpoint, inspect, or run" unless %w[checkpoint inspect run].include?(action)
