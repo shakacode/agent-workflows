@@ -2073,7 +2073,6 @@ recover from available checkpoints, newer relevant logs and live state. Never
 replace a surviving writer or replay an uncertain external operation without
 reconciliation. Preserve goals, authority, deliberate pauses, windows and budgets.
 
-
 Use this when the operator needs to restart an agent app, runner, or session host
 but expects the same coordinator and worker lanes to resume afterward. This is a
 pause, not cancellation: workers preserve their claims, worktrees, branches, and
