@@ -44,7 +44,7 @@ module RecoveryRecord
     directory
   end
 
-  def inspect_records(directory)
+  def inspect_records(directory, task)
     records = []
     unreadable = []
     Dir.glob("*.json", base: directory).sort.each do |name|
@@ -56,7 +56,7 @@ module RecoveryRecord
       raise EncodingError, "record must be UTF-8" unless source.valid_encoding?
 
       record = JSON.parse(source)
-      unless record.is_a?(Hash) && %w[checkpoint operation].include?(record["kind"]) &&
+      unless record.is_a?(Hash) && record["task"] == task && %w[checkpoint operation].include?(record["kind"]) &&
              %w[id recorded_at].all? { |key| record[key].is_a?(String) }
         raise ArgumentError, "invalid record"
       end
@@ -104,7 +104,7 @@ module RecoveryRecord
 
     directory = task_directory(File.expand_path(options[:root]), options[:task], create: action != "inspect")
     if action == "inspect"
-      result = inspect_records(directory)
+      result = inspect_records(directory, options[:task])
       puts JSON.pretty_generate(result)
       return result["unreadable"].empty? ? 0 : 2
     end

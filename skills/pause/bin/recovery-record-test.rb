@@ -135,6 +135,21 @@ class RecoveryRecordTest < Minitest::Test
     assert_equal legacy, evidence["records"].first(2)
   end
 
+  def test_misrouted_or_unidentified_records_do_not_mix_with_task_evidence
+    path, _, status = call("checkpoint", data: '{"next":"reconcile this task"}')
+    assert status.success?
+    record = JSON.parse(File.read(path.strip))
+    directory = File.dirname(path.strip)
+    File.write(File.join(directory, "wrong-task.json"), JSON.generate(record.merge("task" => "another-task")))
+    File.write(File.join(directory, "missing-task.json"), JSON.generate(record.reject { |key, _| key == "task" }))
+
+    out, _, status = call("inspect")
+    assert_equal 2, status.exitstatus
+    result = JSON.parse(out)
+    assert_equal [record], result["records"]
+    assert_equal %w[missing-task.json wrong-task.json], result["unreadable"]
+  end
+
   def test_single_command_string_never_uses_shell_fallback
     marker = File.join(@root, "must-not-exist")
     _, _, status = call("run", "--label", "literal command", "--", "true; touch #{marker}")
