@@ -29,7 +29,6 @@ require_relative "../../pr-batch/lib/github_actor_trust"
 # raw `gh --paginate --slurp` output strings so they can be unit-tested directly.
 module FetchPrReviewData
   SUMMARY_MARKER = "<!-- address-review-summary -->"
-  PROBE_TIMEOUT_SECONDS = 10
 
   REVIEW_THREADS_QUERY = <<~GRAPHQL
     query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) {
@@ -344,6 +343,9 @@ module FetchPrReviewData
     in excluded_interactions with actor, kind, timestamp, and URL but no body, so
     contributor text can never reach an agent as instructions. The resolved trust
     source, path, and sha256 content digest are bound to the packet under "trust".
+    The authenticated `gh api user` actor must also be actionable under that
+    resolved config so self-authored checkpoints and replies cannot be trusted
+    under a different authority boundary.
 
     review_cutoff_at is the created_at of the most recent trusted issue comment
     whose body starts with "#{SUMMARY_MARKER}", or "" when none
@@ -367,7 +369,9 @@ module FetchPrReviewData
 
       pr_number = validate_pr!(opts[:pr])
       repo = resolve_repo!(opts[:repo])
-      print_result(fetch(repo, pr_number, trust_boundary(repo, opts[:trust_config])), opts[:format])
+      trust = trust_boundary(repo, opts[:trust_config])
+      verify_authenticated_actor!(trust)
+      print_result(fetch(repo, pr_number, trust), opts[:format])
       0
     rescue Error => e
       warn "Error: #{e.message}"
@@ -442,6 +446,33 @@ module FetchPrReviewData
       GithubActorTrust.git_toplevel(git_capture: method(:capture_probe))
     end
 
+    def verify_authenticated_actor!(trust)
+      out, _err, status = capture_probe("gh", "api", "user", "--jq", ".login")
+      unless status&.success?
+        raise Error, "could not verify the authenticated GitHub actor with gh api user; " \
+                     "review mutation/checkpoint workflows require an actionable actor under " \
+                     "#{trust_config_label(trust)}"
+      end
+
+      login = out.dup.force_encoding("UTF-8").scrub.strip
+      if login.empty?
+        raise Error, "gh api user returned no authenticated actor login; review mutation/checkpoint " \
+                     "workflows require an actionable actor under #{trust_config_label(trust)}"
+      end
+
+      classification = trust.classification(login)
+      return login if classification == :trusted
+
+      raise Error, "authenticated GitHub actor @#{login} is #{classification.to_s.tr('_', '-')} under " \
+                   "#{trust_config_label(trust)}; add the actor to trusted_users, trusted_bots, or an " \
+                   "applicable trusted_teams entry before using review mutation/checkpoint workflows"
+    end
+
+    def trust_config_label(trust)
+      provenance = trust.provenance
+      "the #{provenance.fetch('source')} trust config #{provenance.fetch('config_path')}"
+    end
+
     # Resolve the API host independently of the checkout remote before the
     # shared verifier compares them. This prevents a same-named repository on
     # another host from making a config appear local.
@@ -452,28 +483,44 @@ module FetchPrReviewData
       out, err, status = capture_probe(
         "gh", "repo", "view", repo, "--json", "nameWithOwner,url", chdir: root
       )
-      unless status&.success?
+      if status&.success?
+        payload = JSON.parse(out)
+        resolved_repo = payload["nameWithOwner"].to_s
+        if resolved_repo.casecmp?(repo)
+          remote = GithubActorTrust.github_remote_from_remote_url(payload["url"])
+          return remote.fetch(:host) if remote
+
+          warn "WARN: gh repo view returned an unrecognized GitHub URL for #{repo.inspect}; " \
+               "falling back to local remotes"
+        else
+          warn "WARN: gh repo view resolved #{resolved_repo.inspect}, expected #{repo.inspect}; " \
+               "falling back to local remotes"
+        end
+      else
         warn "WARN: could not resolve GitHub host for #{repo.inspect}: #{err.lines.first&.strip}"
-        return
       end
 
-      payload = JSON.parse(out)
-      resolved_repo = payload["nameWithOwner"].to_s
-      unless resolved_repo.casecmp?(repo)
-        warn "WARN: gh repo view resolved #{resolved_repo.inspect}, expected #{repo.inspect}; " \
-             "treating trust config as global"
-        return
-      end
-
-      GithubActorTrust.github_remote_from_remote_url(payload["url"])&.fetch(:host)
+      fallback_github_host(root:, repo:)
     rescue JSON::ParserError => e
       warn "WARN: could not resolve GitHub host for #{repo.inspect}: #{e.message.lines.first&.strip}"
-      nil
+      fallback_github_host(root:, repo:)
+    end
+
+    def fallback_github_host(root:, repo:)
+      matching_hosts = GithubActorTrust.git_remote_urls(root, git_capture: method(:capture_probe)).filter_map do |url|
+        remote = GithubActorTrust.github_remote_from_remote_url(url)
+        remote[:host] if remote && remote[:repo].casecmp?(repo)
+      end.uniq
+      matching_hosts.one? ? matching_hosts.first : expected_github_host
+    end
+
+    def expected_github_host
+      GithubActorTrust.normalized_github_host(ENV.fetch("GH_HOST", "github.com"))
     end
 
     # Bounded and environment-sanitized like the preflight's git probe, so a
     # hung credential helper or a GIT_CONFIG_* override cannot stall this tool.
-    def capture_probe(*cmd, chdir: nil, timeout_seconds: PROBE_TIMEOUT_SECONDS)
+    def capture_probe(*cmd, chdir: nil, timeout_seconds: PrBatchGitProbeEnv::GIT_TIMEOUT_SECONDS)
       PrBatchGitProbeEnv.capture3(
         PrBatchGitProbeEnv.probe_env, *cmd, timeout_seconds:, chdir:
       )

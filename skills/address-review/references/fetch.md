@@ -123,6 +123,21 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
 fi
 ```
 
+The helper verifies that `gh api user` resolves to an actor marked actionable
+by the same trust config before fetching. A missing/unavailable actor, an empty
+or default trust config that does not authorize that actor, or a metadata-only
+or untrusted classification is a blocking trust-config error; do not consume
+self-authored comments, mutate the PR, or write checkpoints until the operator
+populates the resolved trust config and reruns the helper.
+
+After every complete primary or source packet is fetched, count retained items
+across `review_summaries`, `inline_comments`, and `issue_comments`. Zero retained
+items with a nonzero `excluded_interactions` count is not “no review comments”:
+set review readiness to `UNKNOWN`/blocked, audit the excluded interaction URLs,
+populate the trust config with the intended actionable actors, and rerun. The
+excluded metadata remains safe audit evidence, but it cannot authorize triage,
+mutation, or a checkpoint.
+
 On source-aware reruns, keep the complete source inventory for context and readiness, apply `SOURCE_REVIEW_CUTOFF_AT` from the latest valid source summary as the only global cutoff, then consume the latest summary/status checkpoint's per-item state for remaining candidates.
 Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid `address-review-source-state:v1` block, whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it.
 Use `SOURCE_STATE_CHECKPOINT_BODY` only from the newest authenticated, schema-valid summary/status checkpoint. A marker-only, wrong-author, malformed, duplicate, or incomplete checkpoint supplies neither restart state nor a cutoff.
@@ -151,7 +166,7 @@ This single read-only call replaces the per-endpoint `gh api ... | jq` blocks an
 
 - `review_cutoff_at` — the cutoff timestamp described in Step 3 (empty when no prior summary comment exists).
 - `review_summaries` — review bodies with non-empty text: `{id, type: "review_summary", body, state, user, created_at, html_url}`. Treat actionable ones as general comments; like specific review bodies they cannot be replied to via the `/replies` endpoint and must be answered as general PR comments (see Step 8).
-- `inline_comments` — inline review comments: `{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved, root_excluded?}`. The `thread_id` and `is_resolved` fields are already joined from the review threads by `node_id`, so no separate GraphQL query is needed for the full-PR path. Comments with no matching thread get `thread_id: null` and `is_resolved: false`. The first retained trusted reply whose root was excluded has `root_excluded: true`; its own `id` remains the item identity and its `in_reply_to_id` is the later reply target.
+- `inline_comments` — inline review comments: `{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved, root_excluded?}`. The `thread_id` and `is_resolved` fields are already joined from the review threads by `node_id`, so no separate GraphQL query is needed for the full-PR path. Comments with no matching thread get `thread_id: null` and `is_resolved: false`. The first retained trusted reply whose root was excluded has `root_excluded: true`; its own `id` remains the item identity and its `in_reply_to_id` is the top-level reply target. Selecting the first retained reply is a deliberate non-blocking representative heuristic: it may be an acknowledgment, so later trusted replies remain required context for classification.
 - `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, user, created_at, html_url}`. Summary/status/claim/source-reply marker comments are included so you can filter them (see Filtering comments below).
 - `review_threads` — `{thread_id, is_resolved, comments: [{node_id, id}]}` for any thread-level work.
 
@@ -160,7 +175,7 @@ When `REVIEW_CUTOFF_AT` is set for a full-PR scan:
 - The fetcher returns the full datasets, so you keep older context for unresolved threads.
 - Filter issue comments and review summaries to items created after `REVIEW_CUTOFF_AT`.
 - For inline review threads, keep an unresolved thread only when at least one comment in that thread has `created_at > REVIEW_CUTOFF_AT`.
-- Use the thread's top-level comment as the triage item, or the first retained trusted reply marked `root_excluded: true` when the root was excluded. Use newer replies in that thread as the latest context.
+- Use the thread's top-level comment as the triage item, or the first retained trusted reply marked `root_excluded: true` when the root was excluded. The promoted representative may be an acknowledgment; use newer trusted replies in that thread as required context before classifying it.
 - Do not let older comments with no new activity re-enter triage unless the user asked for `check all reviews`.
 
 **For the specific review path (a single `#pullrequestreview-...` target), the helper is not used.** Fetch review thread metadata and attach `thread_id` by matching each review comment's `node_id`:
@@ -197,4 +212,4 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 - If the API returns 404, the PR/comment doesn't exist - inform the user
 - If the API returns 403, check authentication with `gh auth status`
 - If the response is empty after cutoff filtering, inform the user no new review comments were found since the last summary comment and mention `check all reviews`
-- If the response is empty without a cutoff, inform the user no review comments were found
+- If all retained collections are empty without a cutoff and `excluded_interactions` is also empty, inform the user no review comments were found. If excluded interactions are nonempty, readiness is `UNKNOWN`/blocked until the trust config is audited and populated; never report that packet as no review comments.
