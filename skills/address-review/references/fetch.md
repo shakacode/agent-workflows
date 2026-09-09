@@ -128,7 +128,9 @@ by the same trust config before fetching. A missing/unavailable actor, an empty
 or default trust config that does not authorize that actor, or a metadata-only
 or untrusted classification is a blocking trust-config error; do not consume
 self-authored comments, mutate the PR, or write checkpoints until the operator
-populates the resolved trust config and reruns the helper.
+populates the resolved trust config and reruns the helper. The GitHub host
+selected for repository-local trust verification is bound to the actor, team,
+REST, and GraphQL calls in that same fetch.
 
 After every complete primary or source packet is fetched, count retained items
 across `review_summaries`, `inline_comments`, and `issue_comments`. Zero retained

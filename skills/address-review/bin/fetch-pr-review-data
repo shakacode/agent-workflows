@@ -369,9 +369,12 @@ module FetchPrReviewData
 
       pr_number = validate_pr!(opts[:pr])
       repo = resolve_repo!(opts[:repo])
-      trust = trust_boundary(repo, opts[:trust_config])
-      verify_authenticated_actor!(trust)
-      print_result(fetch(repo, pr_number, trust), opts[:format])
+      github_host = github_host_for(root: git_toplevel || Dir.pwd, repo:)
+      with_github_host(github_host) do
+        trust = trust_boundary(repo, opts[:trust_config])
+        verify_authenticated_actor!(trust)
+        print_result(fetch(repo, pr_number, trust), opts[:format])
+      end
       0
     rescue Error => e
       warn "Error: #{e.message}"
@@ -516,6 +519,21 @@ module FetchPrReviewData
 
     def expected_github_host
       GithubActorTrust.normalized_github_host(ENV.fetch("GH_HOST", "github.com"))
+    end
+
+    def with_github_host(github_host)
+      raise Error, "could not bind a GitHub API host for this review fetch" if github_host.to_s.empty?
+
+      prior_host = ENV["GH_HOST"]
+      host_was_set = ENV.key?("GH_HOST")
+      ENV["GH_HOST"] = github_host
+      yield
+    ensure
+      if host_was_set
+        ENV["GH_HOST"] = prior_host
+      else
+        ENV.delete("GH_HOST")
+      end
     end
 
     # Bounded and environment-sanitized like the preflight's git probe, so a

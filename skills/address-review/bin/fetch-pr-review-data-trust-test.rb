@@ -354,6 +354,53 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     assert_includes warning, "could not resolve GitHub host"
   end
 
+  def test_cli_binds_fallback_host_before_actor_team_and_data_queries
+    Dir.mktmpdir("aw794-enterprise-host") do |root|
+      config_path = File.join(root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(File.dirname(config_path))
+      File.write(config_path, "trusted_teams:\n  - reviewers\n")
+      observed_hosts = []
+
+      runner = FetchPrReviewData::Runner.new
+      runner.define_singleton_method(:git_toplevel) { root }
+      runner.define_singleton_method(:capture_probe) do |*cmd, **|
+        case cmd
+        when ["gh", "repo", "view", "owner/repo", "--json", "nameWithOwner,url"]
+          ["", "offline", FakeStatus.new(false)]
+        when ["git", "-C", File.dirname(config_path), "rev-parse", "--show-toplevel"]
+          ["#{root}\n", "", FakeStatus.new(true)]
+        when ["git", "-C", root, "config", "--local", "--null", "--get-regexp", "^remote\\..*\\.url$"]
+          [+"remote.origin.url\nhttps://ghe.example.com/owner/repo.git\0", "", FakeStatus.new(true)]
+        when ["git", "-C", root, "config", "--worktree", "--null", "--get-regexp", "^remote\\..*\\.url$"]
+          ["", "", FakeStatus.new(false)]
+        when ["gh", "api", "user", "--jq", ".login"]
+          observed_hosts << ENV["GH_HOST"]
+          ["dev\n", "", FakeStatus.new(true)]
+        when ["gh", "api", "orgs/owner/teams/reviewers/memberships/dev", "-q", ".state"]
+          observed_hosts << ENV["GH_HOST"]
+          ["active\n", "", FakeStatus.new(true)]
+        else
+          flunk "unexpected probe command: #{cmd.inspect}"
+        end
+      end
+      runner.define_singleton_method(:fetch) do |*|
+        observed_hosts << ENV["GH_HOST"]
+        {}
+      end
+      runner.define_singleton_method(:print_result) { |*| nil }
+
+      previous_host = ENV.delete("GH_HOST")
+      _out, warning = capture_io do
+        assert_equal 0, Dir.chdir(root) { runner.run(["12", "--repo", "owner/repo"]) }
+      end
+      assert_equal ["ghe.example.com"] * 3, observed_hosts
+      assert_nil ENV["GH_HOST"], "the in-process test runner must restore an initially absent GH_HOST"
+      assert_includes warning, "could not resolve GitHub host"
+    ensure
+      ENV["GH_HOST"] = previous_host if previous_host
+    end
+  end
+
   def test_github_host_falls_back_to_matching_local_remote_on_repo_mismatch
     runner = FetchPrReviewData::Runner.new
     runner.define_singleton_method(:capture_probe) do |*cmd, **|
