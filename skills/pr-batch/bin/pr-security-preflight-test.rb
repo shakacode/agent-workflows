@@ -2078,6 +2078,93 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_oversized_pr_diff_fails_closed_with_github_api_coverage_finding
+    with_fake_gh("oversized-pr-diff") do |env, trust_config_path, _log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus, out
+      assert_includes out, "pull request diff unavailable: HTTP 406; diff exceeds GitHub's 20,000-line limit"
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "- #123: GitHub API coverage truncated"
+    end
+  end
+
+  def test_exact_target_coverage_acknowledgement_accepts_oversized_pr_diff
+    with_fake_gh("oversized-pr-diff") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--acknowledge-risk",
+        "123:github-api-coverage",
+        "123"
+      )
+
+      assert status.success?, out
+      assert_includes out, "Acknowledged security preflight findings:\n- #123: GitHub API coverage truncated"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_oversized_pr_diff_acknowledgement_does_not_clear_high_risk_file_blocker
+    with_fake_gh("oversized-pr-diff") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--fail-on-high-risk-files",
+        "--acknowledge-risk",
+        "123:github-api-coverage",
+        "123"
+      )
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus, out
+      assert_includes out, "Acknowledged security preflight findings:\n- #123: GitHub API coverage truncated"
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "- #123: high-risk files changed"
+    end
+  end
+
+  def test_oversized_pr_diff_acknowledgement_does_not_clear_strict_trust_blocker
+    with_fake_gh("oversized-pr-diff-untrusted") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "--acknowledge-risk",
+        "123:github-api-coverage",
+        "123"
+      )
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus, out
+      assert_includes out, "Acknowledged security preflight findings:\n- #123: GitHub API coverage truncated"
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "- #123: untrusted, hidden, or unidentifiable participant(s)"
+    end
+  end
+
+  def test_unrelated_pr_diff_http_406_still_raises
+    with_fake_gh("unrelated-pr-diff-406") do |env, trust_config_path, _log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      refute status.success?, out
+      assert_equal 1, status.exitstatus, out
+      assert_includes out, "gh pr diff 123 --repo owner/repo failed"
+      assert_includes out, "HTTP 406: simulated unrelated content negotiation failure"
+      refute_includes out, "GitHub API coverage truncated"
+    end
+  end
+
   def test_suspicious_terms_in_untrusted_pr_diff_still_block
     with_fake_gh("untrusted-warning-diff") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
@@ -6032,6 +6119,19 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_pins_gh_before_fresh_security_and_provenance_reads
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      refute_empty File.readlines(provenance.fetch(:path_gh_marker), chomp: true)
+      trusted_calls = File.readlines(provenance.fetch(:trusted_gh_marker), chomp: true)
+      refute_empty trusted_calls
+      assert trusted_calls.any? { |call| call.start_with?("api ") }, trusted_calls.inspect
+    end
+  end
+
   def test_trusted_base_rejects_path_git_lie_about_explicit_config_scope
     with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
       path_git = File.join(env.fetch("PATH").split(File::PATH_SEPARATOR).first, "git")
@@ -6102,6 +6202,42 @@ class PrSecurityPreflightTest < Minitest::Test
       end
 
       assert_equal File.realpath(executable), resolved
+    end
+  end
+
+  def test_trusted_gh_path_resolution_canonicalizes_nonstandard_external_installation
+    Dir.mktmpdir("trusted-gh-installation", Dir.home) do |dir|
+      executable = File.join(dir, "gh-real")
+      configured = File.join(dir, "gh")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, executable)
+      File.symlink(executable, configured)
+
+      resolved = with_env(
+        "PATH" => dir,
+        "PR_SECURITY_PREFLIGHT_TRUSTED_GH_EXECUTABLE" => nil
+      ) { resolve_trusted_gh_executable }
+
+      assert_equal File.realpath(executable), resolved
+    end
+  end
+
+  def test_trusted_gh_resolution_rejects_repository_controlled_path
+    Dir.mktmpdir("trusted-gh-repository", Dir.home) do |repository|
+      bin = File.join(repository, "bin")
+      FileUtils.mkdir_p(bin)
+      executable = File.join(bin, "gh")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, executable)
+
+      error = with_trusted_git_repository_root(repository) do
+        with_env(
+          "PATH" => bin,
+          "PR_SECURITY_PREFLIGHT_TRUSTED_GH_EXECUTABLE" => nil
+        ) { assert_raises(RuntimeError) { resolve_trusted_gh_executable } }
+      end
+
+      assert_includes error.message, "no trusted GitHub CLI executable is available"
     end
   end
 
@@ -8416,7 +8552,8 @@ class PrSecurityPreflightTest < Minitest::Test
                                   trusted_ref: "refs/heads/main", during_fetch: nil)
     with_fake_gh("trusted-base-high-risk") do |env, trust_config_path, log_path, dir|
       repo_root = File.join(dir, "consumer")
-      FileUtils.mkdir_p(repo_root)
+      repo_bin = File.join(repo_root, "bin")
+      FileUtils.mkdir_p(repo_bin)
       head_sha = "a" * 40
       merge_sha = "b" * 40
       base_sha = "c" * 40
@@ -8425,7 +8562,27 @@ class PrSecurityPreflightTest < Minitest::Test
       git! "-C", repo_root, "remote", "add", "origin", remote_url
       write_workflow_policy(repo_root, policy)
       path_git_marker = File.join(dir, "path-git.log")
+      path_gh_marker = File.join(dir, "path-gh.log")
+      trusted_gh_marker = File.join(dir, "trusted-gh.log")
       File.write(path_git_marker, "")
+      File.write(path_gh_marker, "")
+      File.write(trusted_gh_marker, "")
+      fixture_gh = File.join(env.fetch("PATH").split(File::PATH_SEPARATOR).first, "gh")
+      path_gh = File.join(repo_bin, "gh")
+      File.write(path_gh, <<~SH)
+        #!/bin/sh
+        printf '%s\n' "$*" >> #{Shellwords.shellescape(path_gh_marker)}
+        exec #{Shellwords.shellescape(fixture_gh)} "$@"
+      SH
+      FileUtils.chmod(0o755, path_gh)
+      trusted_gh_dir = Dir.mktmpdir("pr-security-preflight-trusted-gh", Dir.home)
+      trusted_gh = File.join(trusted_gh_dir, "gh")
+      File.write(trusted_gh, <<~SH)
+        #!/bin/sh
+        printf '%s\n' "$*" >> #{Shellwords.shellescape(trusted_gh_marker)}
+        exec #{Shellwords.shellescape(fixture_gh)} "$@"
+      SH
+      FileUtils.chmod(0o755, trusted_gh)
       operations = TestTrustedBaseHighRiskOperations.new(
         base_sha:,
         fetched_policy:,
@@ -8439,9 +8596,13 @@ class PrSecurityPreflightTest < Minitest::Test
       @trusted_base_operations ||= {}
       @trusted_base_operations[repo_root] = operations
 
-      provenance = { base_sha:, head_sha:, merge_sha:, operations:, path_git_marker:, log_path: }
+      provenance = {
+        base_sha:, head_sha:, merge_sha:, operations:, path_git_marker:, path_gh_marker:, trusted_gh_marker:, log_path:
+      }
       fixture_env = env.merge(
+        "PATH" => "#{repo_bin}#{File::PATH_SEPARATOR}#{env.fetch('PATH')}",
         "GH_HOST" => "github.com",
+        "PR_SECURITY_PREFLIGHT_TRUSTED_GH_EXECUTABLE" => trusted_gh,
         "PREFLIGHT_TEST_REPO_URL" => remote_url,
         "PREFLIGHT_TEST_HEAD_SHA" => head_sha,
         "PREFLIGHT_TEST_MERGE_SHA" => merge_sha
@@ -8452,9 +8613,18 @@ class PrSecurityPreflightTest < Minitest::Test
           ].include?(key)
         end
       )
+      previous_gh_executable = TrustedGhState.executable if defined?(TrustedGhState)
+      previous_gh_active = TrustedGhState.active if defined?(TrustedGhState)
+      TrustedGhState.executable = nil if defined?(TrustedGhState)
+      TrustedGhState.active = false if defined?(TrustedGhState)
       yield fixture_env, trust_config_path, repo_root, provenance
     ensure
       @trusted_base_operations&.delete(repo_root)
+      if defined?(TrustedGhState)
+        TrustedGhState.executable = previous_gh_executable
+        TrustedGhState.active = previous_gh_active
+      end
+      FileUtils.remove_entry_secure(trusted_gh_dir) if trusted_gh_dir && File.exist?(trusted_gh_dir)
     end
   end
 
@@ -8957,7 +9127,7 @@ class PrSecurityPreflightTest < Minitest::Test
           printf 'simulated post-fetch rescan failure\n' >&2
           exit 1
         fi
-        if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ] || [ "$mode" = "trusted-base-high-risk" ]; then
+        if [ "$mode" = "warning-diff" ] || [ "$mode" = "oversized-pr-diff" ] || [ "$mode" = "oversized-pr-diff-untrusted" ] || [ "$mode" = "unrelated-pr-diff-406" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ] || [ "$mode" = "trusted-base-high-risk" ]; then
           pr_body="${PREFLIGHT_TEST_PR_BODY:-}"
           cat <<JSON
       {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"${pr_body}","user":{"login":"justin808"},"pull_request":{}}
@@ -9155,7 +9325,7 @@ class PrSecurityPreflightTest < Minitest::Test
           cat <<JSON
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","state":"${state}","mergedAt":"2026-08-28T00:00:00Z","isCrossRepository":${cross_repository},"baseRefName":"${graph_base_ref}","headRefOid":"${head_sha}","headRepository":{"nameWithOwner":"${head_repo}"},"mergeCommit":{"oid":"${merge_sha}"},"author":${author_json},"participants":{${participant_count_field}"pageInfo":{"hasNextPage":${participant_has_next},"endCursor":${participant_end_cursor}},"nodes":${participant_nodes}},"timelineItems":{"totalCount":${timeline_total},"pageInfo":{"hasNextPage":${timeline_has_next},"endCursor":${timeline_end_cursor}},"nodes":${timeline_nodes}}}}}}
       JSON
-        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "oversized-pr-diff" ] || [ "$mode" = "unrelated-pr-diff-406" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}}]}}}}}
       JSON
@@ -9175,7 +9345,7 @@ class PrSecurityPreflightTest < Minitest::Test
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":null,"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}}]}}}}}
       JSON
-        elif [ "$mode" = "untrusted-warning-diff" ]; then
+        elif [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "oversized-pr-diff-untrusted" ]; then
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"unknown-user"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-unknown","login":"unknown-user","url":"https://github.com/unknown-user","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-unknown","login":"unknown-user","__typename":"User"}}]}}}]}}}}}
       JSON
@@ -9515,6 +9685,14 @@ class PrSecurityPreflightTest < Minitest::Test
             exit 0
           fi
         done
+        if [ "$mode" = "oversized-pr-diff" ] || [ "$mode" = "oversized-pr-diff-untrusted" ]; then
+          printf "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000) (https://api.github.com/repos/owner/repo/pulls/123)\nPullRequest.diff too_large\n" >&2
+          exit 1
+        fi
+        if [ "$mode" = "unrelated-pr-diff-406" ]; then
+          printf "HTTP 406: simulated unrelated content negotiation failure\n" >&2
+          exit 1
+        fi
         if [ "$mode" = "trusted-base-high-risk" ]; then
           if [ "${PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED:-}" = "previous" ]; then
             cat <<'DIFF'

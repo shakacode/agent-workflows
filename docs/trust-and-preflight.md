@@ -6,6 +6,10 @@ trusted reason to interpret it. This protects agents from deleted comments,
 malicious prompt-style content, compromised automation, and public text that
 tries to widen scope or override repo policy.
 
+For a plain-language explanation of provenance, fail-closed behavior, realistic
+failure examples, and the boundary against over-engineering, read
+[Trusted Provenance And Fail-Closed Decisions](trusted-provenance-and-fail-closed.md).
+
 That safety boundary became hard to use when every actor-trust finding was a
 blocking finding. Repos with normal review automation, GitHub Actions comments,
 or maintainer review comments could block every batch until a human hand-wrote
@@ -222,6 +226,14 @@ repository and temporary directories. It must never come from repository
 configuration; the helper does not search arbitrary `PATH` entries. Known
 platform temporary roots remain prohibited even when ambient temp-directory
 variables are redirected; canonical ambient temp roots are additive.
+Before the post-fetch GitHub rescan and exact PR-provenance reads, the helper
+also resolves and canonicalizes one GitHub CLI executable from `PATH`, rejects
+candidates inside the repository or temporary directories, and reuses that
+exact executable for the remainder of the trusted-base decision. An operator
+with a nonstandard installation may set
+`PR_SECURITY_PREFLIGHT_TRUSTED_GH_EXECUTABLE` to its absolute executable path.
+If no trusted candidate can be resolved, acceptance fails closed; the helper
+does not fall back to a repository-controlled `gh`.
 HTTPS trusted-base verification is deliberately credential-free and therefore
 supports public repositories only. Private repositories must configure the
 validated trusted remote with GitHub SSH; the isolated fetch may use the

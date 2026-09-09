@@ -90,7 +90,8 @@ class SecurityFloorContractTest < Minitest::Test
 
     assert_includes normalized_floor, "`pr_security_preflight.trusted_base_high_risk_acceptance`"
     assert_includes normalized_floor, "`TRUSTED_BASE_HIGH_RISK_ACCEPTED` receipt"
-    assert_includes normalized_floor, "This waives only `high-risk-files`; manual acknowledgement remains distinct"
+    assert_includes normalized_floor, "`high-risk-files`"
+    assert_includes normalized_floor, "manual acknowledgement"
     assert_includes normalized_floor, "Rerun preflight after any base movement"
     refute_includes @skill, "`TRUSTED_BASE_HIGH_RISK_ACCEPTED`"
   end

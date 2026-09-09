@@ -19,6 +19,7 @@ require "yaml"
 require_relative "../lib/git_probe_env"
 
 TRUSTED_GIT_EXECUTABLE_ENV = "PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE"
+TRUSTED_GH_EXECUTABLE_ENV = "PR_SECURITY_PREFLIGHT_TRUSTED_GH_EXECUTABLE"
 TRUSTED_SSH_EXECUTABLE_ENV = "PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE"
 TRUSTED_BASE_REF_ENV = "PR_SECURITY_PREFLIGHT_TRUSTED_BASE_REF"
 TRUSTED_GIT_FIXED_TEMP_ROOTS = %w[
@@ -120,6 +121,35 @@ def resolve_trusted_git_executable
   raise "no pinned system Git executable is available"
 end
 
+def resolve_trusted_gh_executable
+  prohibited_roots = trusted_executable_prohibited_roots
+  configured = ENV.fetch(TRUSTED_GH_EXECUTABLE_ENV, nil)
+  candidates = if configured
+                 [configured]
+               else
+                 ENV.fetch("PATH", "").split(File::PATH_SEPARATOR, -1).map do |directory|
+                   File.expand_path(File.join(directory.empty? ? "." : directory, "gh"))
+                 end
+               end
+  candidates.uniq.each do |candidate|
+    next unless File.absolute_path(candidate) == candidate
+    next unless File.file?(candidate) && File.executable?(candidate)
+
+    canonical = File.realpath(candidate)
+    next if prohibited_roots.any? { |root| trusted_path_within_root?(canonical, root) }
+
+    return canonical
+  rescue SystemCallError
+    next
+  end
+
+  if configured
+    raise "#{TRUSTED_GH_EXECUTABLE_ENV} must name an absolute executable outside the repository and temporary directories"
+  end
+
+  raise "no trusted GitHub CLI executable is available"
+end
+
 def resolve_trusted_ssh_executable
   prohibited_roots = trusted_executable_prohibited_roots
   configured = ENV.fetch(TRUSTED_SSH_EXECUTABLE_ENV, nil)
@@ -149,6 +179,12 @@ module TrustedGitState
   end
 end
 
+module TrustedGhState
+  class << self
+    attr_accessor :active, :executable
+  end
+end
+
 def trusted_git_executable
   TrustedGitState.executable ||= resolve_trusted_git_executable.freeze
 end
@@ -162,6 +198,10 @@ end
 
 def trusted_ssh_executable
   TrustedGitState.ssh_executable ||= resolve_trusted_ssh_executable.freeze
+end
+
+def trusted_gh_executable
+  TrustedGhState.executable ||= resolve_trusted_gh_executable.freeze
 end
 
 GH_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GH_TIMEOUT_SECONDS", "60"))
@@ -333,9 +373,10 @@ def run_gh(*args)
   stdout = nil
   stderr = nil
   status = nil
+  executable = TrustedGhState.active ? trusted_gh_executable : "gh"
 
   Timeout.timeout(GH_TIMEOUT_SECONDS) do
-    stdout, stderr, status = Open3.capture3(git_probe_env, "gh", *args)
+    stdout, stderr, status = Open3.capture3(git_probe_env, executable, *args)
   end
 
   # Force UTF-8 so non-ASCII gh output (issue bodies, author names) survives LANG=C.
@@ -1466,7 +1507,27 @@ def suspicious_findings_for_target(repo:, number:, rest:, target_is_pr:, trusted
     pattern: WARNING_SUSPICIOUS_PATTERN
   )
 
-  diff = target_is_pr ? run_gh("pr", "diff", number.to_s, "--repo", repo) : nil
+  diff_coverage_findings = []
+  diff = nil
+  if target_is_pr
+    begin
+      diff = run_gh("pr", "diff", number.to_s, "--repo", repo)
+    rescue RuntimeError => e
+      message = e.message
+      raise unless message.include?("gh pr diff ") && message.match?(/HTTP 406/i) &&
+                   (message.include?("diff exceeded the maximum number of lines") ||
+                    message.include?("PullRequest.diff too_large"))
+
+      diff_coverage_findings = [
+        {
+          connection: "pull request diff",
+          fetched_count: 0,
+          reason: "HTTP 406; diff exceeds GitHub's 20,000-line limit",
+          total_count: 1
+        }
+      ]
+    end
+  end
   if diff
     blocking_diff_findings = suspicious_added_lines(diff, pattern: BLOCKING_SUSPICIOUS_PATTERN)
     warning_diff_findings = suspicious_added_lines(diff, pattern: WARNING_SUSPICIOUS_PATTERN)
@@ -1481,6 +1542,7 @@ def suspicious_findings_for_target(repo:, number:, rest:, target_is_pr:, trusted
   suspicious_warnings = warnings_not_already_blocking(suspicious_warnings, suspicious)
 
   {
+    diff_coverage_findings:,
     suspicious:,
     suspicious_warnings:,
     diff_digest: diff && "sha256:#{Digest::SHA256.hexdigest(diff.b)}"
@@ -2886,6 +2948,7 @@ end
 
 def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, trust_config_resolution:,
                                    operations: TrustedBaseHighRiskOperations.new, post_fetch_rescan: nil)
+  previous_trusted_gh_active = TrustedGhState.active
   return [nil, "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"] unless clean_for_trusted_base_high_risk_acceptance?(result)
   if trust_config_resolution.fetch(:implicit, false) &&
      all_changed_paths(result.fetch(:file_records)).include?(DEFAULT_TRUST_CONFIG)
@@ -2909,6 +2972,13 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
     trusted_git_local_env_vars
   rescue StandardError => e
     return [nil, "could not pin trusted Git: #{e.message.lines.first&.strip}"]
+  end
+
+  begin
+    trusted_gh_executable
+    TrustedGhState.active = true
+  rescue StandardError => e
+    return [nil, "could not pin trusted GitHub CLI: #{e.message.lines.first&.strip}"]
   end
 
   invocation_root, invocation_error = operations.invocation_repository_root
@@ -3055,6 +3125,8 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
     receipt[:policy_ref_anchor_sha] = ref_anchor.fetch(:sha) if ref_anchor[:sha]
     [receipt, nil]
   end
+ensure
+  TrustedGhState.active = previous_trusted_gh_active
 end
 
 PARTICIPANT_NODES_FRAGMENT = <<~GRAPHQL
@@ -3994,6 +4066,7 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
 
   findings = {
     changed_file_count: diff_snapshot&.fetch(:changed_file_count),
+    diff_coverage_findings: suspicious_findings.fetch(:diff_coverage_findings),
     diff_identity:,
     file_records:,
     files:,
@@ -4040,7 +4113,9 @@ def print_graph_coverage_findings(findings)
   puts "  GitHub API coverage findings:"
   findings.each do |finding|
     reason = finding.fetch(:reason)
-    if reason == "nodes unavailable"
+    if finding.fetch(:connection) == "pull request diff"
+      puts "    - pull request diff unavailable: #{reason}"
+    elsif reason == "nodes unavailable"
       puts "    - #{finding.fetch(:connection)} nodes unavailable; " \
            "reported total_count=#{finding.fetch(:total_count)}"
     elsif reason.include?("node id") || reason == "node identity unavailable"
@@ -4223,7 +4298,8 @@ end
 def record_blockers(result, overall_blockers, acknowledged_findings:, acknowledged_risks:, fail_on_high_risk_files:,
                     strict_trust:, trusted_base_receipts:)
   number = result.fetch(:number)
-  if result.fetch(:graph_coverage_findings).any?
+  coverage_findings = result.fetch(:graph_coverage_findings) + result.fetch(:diff_coverage_findings)
+  if coverage_findings.any?
     record_blocker(
       number,
       "github-api-coverage",
@@ -4311,7 +4387,7 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
     puts "  Diff base/head identity: #{JSON.generate(result.fetch(:diff_identity))}"
     puts "  Authoritative changed-file count: #{result.fetch(:changed_file_count)}"
   end
-  print_graph_coverage_findings(result.fetch(:graph_coverage_findings))
+  print_graph_coverage_findings(result.fetch(:graph_coverage_findings) + result.fetch(:diff_coverage_findings))
   print_participant_findings(result.fetch(:participant_findings))
   print_untrusted_interactions(result.fetch(:untrusted_interactions))
   print_metadata_only_interactions(result.fetch(:metadata_only_interactions))

@@ -481,7 +481,9 @@ events, and commit authors. Duplicate, unavailable, or conflicting identities
 are ordinary operator-visible GitHub API coverage findings. Remote
 inspection, fetch, object inspection, and ancestry checks use one system Git
 executable pinned before task-scoped inputs, never a later inherited-`PATH`
-selection. Nonstandard Git and SSH installations use the explicit
+selection. The post-fetch security scan and exact PR-provenance reads likewise
+use one canonical GitHub CLI executable outside the repository and temporary
+directories. Nonstandard Git, GitHub CLI, and SSH installations use the explicit
 operator-owned absolute executable seams documented in
 `docs/trust-and-preflight.md`. The JSON receipt binds repository, PR, head, merge, base,
 policy source, remote/ref, its independent ref-anchor source and any advertised
