@@ -80,6 +80,7 @@ module MergeAssurance
     helper
     closeout-helper
     decision-library
+    comment-envelope-library
     evidence-library
     integration-evidence-library
     policy-library

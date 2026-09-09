@@ -79,17 +79,17 @@ Memorable invocation: `$verify-pr-fix <PR>` or "manually verify this fix and rep
    Confirm nothing leaked (`pgrep -fl <marker>` should report none).
 8. **Report to the PR.** Post a comment with the structured format below. Before posting to GitHub (an
    outward-facing action), confirm with the user unless they already told you to post. Write the body to a
-   temp file and use `gh pr comment <n> --body-file`. With GitHub CLI 2.99.0+ on
-   GitHub.com or GitHub Enterprise Cloud, repository write access, and an OAuth,
-   classic PAT, or fine-grained PAT credential, reference each local image/video
-   in that body and add a repeatable `--attach 'path#alt text'` for images (omit
-   `#alt text` for video). Read the posted comment back and retain the rewritten
-   durable URLs. This also avoids inline-formatting issues; see global Git
-   workflow rules. GitHub Actions and App tokens are unsupported; fall back to
-   the Durable Visual Evidence Gate's browser or human path when CLI attachment
-   upload is unavailable.
+   temp file and pass it to the shared `pr-batch/bin/github-comment-envelope post-issue` helper with the
+   repository, PR number, runner, host, and task-or-run identity. For local evidence, add a repeatable
+   `--attach 'path#alt text'` to that helper command for images (omit `#alt text` for video). The helper
+   preserves the envelope while routing the upload through the GitHub CLI attachment path. Attachments
+   require GitHub CLI 2.99.0+, GitHub.com or GitHub
+   Enterprise Cloud, repository write access, and an OAuth, classic PAT, or fine-grained PAT credential;
+   GitHub Actions and App tokens are unsupported. Read the posted comment back and retain rewritten durable
+   URLs. Fall back to the Durable Visual Evidence Gate's browser or human path when upload is unavailable.
 9. **Cross-link the issue (optional).** If asked, comment on the linked issue with a 2-3 sentence summary
-   and a link to the PR comment URL returned by step 8: `gh issue comment <n> --body-file`.
+   and a link to the PR comment URL returned by step 8 through the same `github-comment-envelope
+   post-issue` helper.
 
 ## Reproduction tactics by change type
 

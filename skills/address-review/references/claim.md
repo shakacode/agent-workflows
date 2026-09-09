@@ -29,6 +29,23 @@ rollback, heartbeat, and fail-closed behavior below.
 Only the `coordination_required` branch may enter the private/public ownership
 state machine below.
 
+Resolve the shared `pr-batch` skill directory before selecting either
+applicability branch because standalone review replies and checkpoint comments
+also use its comment-envelope helper:
+
+```bash
+if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
+  if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
+    PR_BATCH_SKILL_DIR="$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch"
+  elif [ -d ".agents/skills/pr-batch" ]; then
+    PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
+  else
+    echo "Refusing to continue: set PR_BATCH_SKILL_DIR or install/pin the pr-batch skill." >&2
+    exit 1
+  fi
+fi
+```
+
 Do not create todos, present an unattended
 `autopilot` action, commit, push, post replies, resolve threads, or post a
 summary checkpoint until the required ownership gate passes. If Steps 3-4
@@ -52,16 +69,6 @@ against the fresh data before mutating GitHub or the branch.
   concurrent sessions against the same PR:
 
   ```bash
-  if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
-    if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
-      PR_BATCH_SKILL_DIR="$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch"
-    elif [ -d ".agents/skills/pr-batch" ]; then
-      PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
-    else
-      echo "Refusing to continue: set PR_BATCH_SKILL_DIR or install/pin the pr-batch skill." >&2
-      exit 1
-    fi
-  fi
   machine_id="${MACHINE_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf machine)}"
   AGENT_ID="${AGENT_ID:-address-review-${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${USER:-agent}-${machine_id}-pr-${PR_NUMBER}}}}"
   coord_read_degraded=0

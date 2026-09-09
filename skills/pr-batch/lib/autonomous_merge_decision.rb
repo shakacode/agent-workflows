@@ -3,6 +3,7 @@
 require "time"
 require "yaml"
 require_relative "../../../bin/agent_doctor/autonomous_merge_policy"
+require_relative "github_comment_envelope"
 
 module AutonomousMergeDecision
   MARKER = "<!-- autonomous-merge-risk-decision:v1 -->"
@@ -39,6 +40,8 @@ module AutonomousMergeDecision
       result[entry["comment_id"].to_s] = entry
     end
     candidates = comments.filter_map do |comment|
+      next if GitHubCommentEnvelope.agent_authored?(comment["body"])
+
       payload = parse(comment["body"])
       next unless payload
       next unless valid_payload?(payload, comment:, head_sha:, triggered_gates:)

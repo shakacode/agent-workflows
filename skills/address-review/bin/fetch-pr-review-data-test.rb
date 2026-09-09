@@ -6,6 +6,7 @@
 
 require "minitest/autorun"
 require "open3"
+require_relative "../../pr-batch/lib/github_comment_envelope"
 
 SCRIPT = File.expand_path("fetch-pr-review-data", __dir__)
 load SCRIPT
@@ -54,6 +55,21 @@ class FetchPrReviewDataTest < Minitest::Test
     assert_equal "2026-01-03T00:00:00Z", assembled["review_cutoff_at"]
   end
 
+  def test_cutoff_accepts_summary_as_first_payload_line_after_agent_envelope
+    body = GitHubCommentEnvelope.render(
+      body: "<!-- address-review-summary -->\ncurrent",
+      runner: "codex",
+      host: "M5",
+      task_or_run: "task-7"
+    )
+    comments = [{ "body" => body, "created_at" => "2026-01-05T00:00:00Z" }]
+
+    assert_equal "2026-01-05T00:00:00Z", FetchPrReviewData.compute_cutoff(comments)
+    normalized = FetchPrReviewData.build_issue_comments([{ "body" => body }]).first
+    assert_equal "<!-- address-review-summary -->\ncurrent", normalized.fetch("payload_body")
+    assert_equal body, normalized.fetch("body")
+  end
+
   def test_drops_empty_review_summaries
     assert_equal([10], assembled["review_summaries"].map { |r| r["id"] })
   end
@@ -86,6 +102,24 @@ class FetchPrReviewDataTest < Minitest::Test
     text = FetchPrReviewData.text_summary(assembled)
     assert_includes text, "inline_comments: 3 (1 in resolved threads)"
     assert_includes text, "review_threads: 2 (1 resolved)"
+  end
+
+  def test_issue_comments_only_fetch_avoids_unrelated_review_endpoints
+    runner = FetchPrReviewData::Runner.new
+    calls = []
+    runner.define_singleton_method(:rest) do |endpoint|
+      calls << endpoint
+      FetchPrReviewDataTest::ISSUE_RAW
+    end
+    runner.define_singleton_method(:capture!) { |*| raise "unexpected GraphQL fetch" }
+
+    out = runner.send(:fetch, "owner/repo", 1234, issue_comments_only: true)
+
+    assert_equal ["repos/owner/repo/issues/1234/comments"], calls
+    assert_equal 4, out.fetch("issue_comments").length
+    assert_empty out.fetch("review_summaries")
+    assert_empty out.fetch("inline_comments")
+    assert_empty out.fetch("review_threads")
   end
 
   def test_self_check_passes

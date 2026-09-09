@@ -542,8 +542,10 @@ assert(address_review_workflow.scan(/def valid_body(?:\(|:)/).length >= 2, "addr
 summary_terminal_guard = '(($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))'
 assert(address_review.scan(summary_terminal_guard).length >= 2, "address-review summaries must require terminal-only source rows")
 assert(address_review_workflow.scan(summary_terminal_guard).length >= 2, "address-review workflow summaries must require terminal-only source rows")
-assert(address_review.include?('select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase))'), "source wait must authenticate the checkpoint author")
-assert(address_review_workflow.include?('select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase))'), "workflow source wait must authenticate the checkpoint author")
+normalized_source_actor = 'select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase))'
+assert(address_review.include?(normalized_source_actor), "source wait must authenticate the normalized checkpoint author")
+assert(address_review_workflow.include?(normalized_source_actor),
+       "workflow source wait must authenticate the normalized checkpoint author")
 assert(address_review.include?("for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do"), "address-review must implement the dual-PR review wait")
 assert(address_review_workflow.include?("for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do"), "address-review workflow mirror must implement the dual-PR review wait")
 specific_source_rejection = "A specific review/comment target remains immediate; reject its combination with `SOURCE_PR_NUMBER` and require a full replacement-PR invocation instead of starting broad source carryover."
@@ -560,8 +562,14 @@ assert(address_review_templates.include?('SOURCE_CUTOFF_SAFE="${SOURCE_CUTOFF_SA
 assert(address_review_templates.include?("SOURCE_OUTCOMES"), "address-review templates must render explicit source outcomes")
 assert(address_review_templates.include?("REPLACEMENT_PR_URL"), "address-review templates must render the replacement link")
 assert(address_review_templates.include?('[ -n "${source_summary_body_file:-}" ] && rm -f "${source_summary_body_file}"'), "address-review templates must clean the source checkpoint file")
-source_template_post = 'gh api repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments -X POST -F body=@"${source_summary_body_file}"'
-assert(address_review_templates.include?(source_template_post), "address-review templates must post the source checkpoint before cleanup")
+source_template_post = [
+  '"${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \\',
+  '    --repo "${REPO}" --number "${SOURCE_PR_NUMBER}" \\',
+  '    --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \\',
+  '    --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" < "${source_summary_body_file}"'
+].join("\n")
+assert(address_review_templates.scan(source_template_post).length == 1,
+       "address-review templates must post the source checkpoint exactly once before cleanup")
 assert(!address_review_actions.include?(source_template_post), "address-review actions must not duplicate the template source post")
 assert(!address_review_workflow.include?(source_template_post), "address-review workflow mirror must not duplicate the template source post")
 source_post_ownership = "The Step 10 template constructs and posts the primary checkpoint and, when source carryover is active, the source checkpoint exactly once before its cleanup trap runs."
@@ -859,11 +867,11 @@ assert(valid_checkpoints.empty?, "source checkpoint validator must reject a row 
 wait_checkpoint_comments = checkpoint_fixture.fetch("issue_comments").reject do |comment|
   [incomplete_summary_body, invalid_missing_forged_marker_body].include?(comment["body"])
 end
-wait_checkpoint_fixture = [
-  wait_checkpoint_comments.map do |comment|
-    comment.merge("user" => { "login" => comment.fetch("user") })
+wait_checkpoint_fixture = {
+  "issue_comments" => wait_checkpoint_comments.map do |comment|
+    comment.merge("payload_body" => comment.fetch("body"))
   end
-]
+}
 stdout, stderr, status = Open3.capture3(
   "jq", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_wait_checkpoint_filter,
   stdin_data: JSON.generate(wait_checkpoint_fixture)

@@ -13,6 +13,7 @@
 
 require "json"
 require "open3"
+require_relative "../../pr-batch/lib/github_comment_envelope"
 
 # Pure data shaping (no I/O) plus the gh-backed runner. The pure methods take the
 # raw `gh --paginate --slurp` output strings so they can be unit-tested directly.
@@ -92,6 +93,7 @@ module FetchPrReviewData
         "id" => review["id"],
         "type" => "review_summary",
         "body" => review["body"],
+        "payload_body" => GitHubCommentEnvelope.payload(review["body"].to_s),
         "state" => review["state"],
         "user" => review.dig("user", "login"),
         "created_at" => review["submitted_at"],
@@ -109,6 +111,7 @@ module FetchPrReviewData
         "type" => "review",
         "path" => comment["path"],
         "body" => comment["body"],
+        "payload_body" => GitHubCommentEnvelope.payload(comment["body"].to_s),
         "line" => comment["line"],
         "start_line" => comment["start_line"],
         "user" => comment.dig("user", "login"),
@@ -128,6 +131,7 @@ module FetchPrReviewData
         "node_id" => comment["node_id"],
         "type" => "issue",
         "body" => comment["body"],
+        "payload_body" => GitHubCommentEnvelope.payload(comment["body"].to_s),
         "user" => comment.dig("user", "login"),
         "created_at" => comment["created_at"],
         "html_url" => comment["html_url"]
@@ -138,7 +142,7 @@ module FetchPrReviewData
   # Most recent issue comment whose body starts with the summary marker.
   def compute_cutoff(raw_issue)
     raw_issue
-      .select { |comment| comment["body"].to_s.start_with?(SUMMARY_MARKER) }
+      .select { |comment| GitHubCommentEnvelope.payload(comment["body"].to_s).start_with?(SUMMARY_MARKER) }
       .filter_map { |comment| comment["created_at"] }
       .reject(&:empty?)
       .max
@@ -189,6 +193,8 @@ module FetchPrReviewData
 
     Options:
           --repo REPO    GitHub repo in OWNER/REPO form. Defaults to gh repo view.
+          --issue-comments-only
+                         Fetch only issue comments for a narrow checkpoint probe.
           --json         Print JSON (default).
           --text         Print a human-readable count summary instead of JSON.
           --self-check   Run a parser check plus a read-only gh smoke check.
@@ -215,7 +221,7 @@ module FetchPrReviewData
 
       pr_number = validate_pr!(opts[:pr])
       repo = resolve_repo!(opts[:repo])
-      print_result(fetch(repo, pr_number), opts[:format])
+      print_result(fetch(repo, pr_number, issue_comments_only: opts[:issue_comments_only]), opts[:format])
       0
     rescue Error => e
       warn "Error: #{e.message}"
@@ -225,12 +231,13 @@ module FetchPrReviewData
     private
 
     def parse_args(argv)
-      opts = { format: "json", help: false, self_check: false, pr: nil, repo: nil }
+      opts = { format: "json", help: false, self_check: false, issue_comments_only: false, pr: nil, repo: nil }
       args = argv.dup
       until args.empty?
         arg = args.shift
         case arg
         when "--repo" then opts[:repo] = take_value!(args, "--repo")
+        when "--issue-comments-only" then opts[:issue_comments_only] = true
         when "--json" then opts[:format] = "json"
         when "--text" then opts[:format] = "text"
         when "--self-check" then opts[:self_check] = true
@@ -271,12 +278,19 @@ module FetchPrReviewData
       repo
     end
 
-    def fetch(repo, pr_number)
+    def fetch(repo, pr_number, issue_comments_only: false)
+      issue_raw = rest("repos/#{repo}/issues/#{pr_number}/comments")
+      if issue_comments_only
+        return FetchPrReviewData.assemble(
+          repo:, pr_number:, issue_raw:, reviews_raw: "[]", inline_raw: "[]", threads_raw: "[]"
+        )
+      end
+
       owner, name = repo.split("/", 2)
       FetchPrReviewData.assemble(
         repo:,
         pr_number:,
-        issue_raw: rest("repos/#{repo}/issues/#{pr_number}/comments"),
+        issue_raw:,
         reviews_raw: rest("repos/#{repo}/pulls/#{pr_number}/reviews"),
         inline_raw: rest("repos/#{repo}/pulls/#{pr_number}/comments"),
         threads_raw: capture!(
