@@ -67,9 +67,13 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         split("\t") as $fields |
         {key: ($fields[1:5] | join("\t")), activity_at: $fields[5]};
       def inline_latest_activity($thread_id):
-        [ $inventory.inline_comments[]? |
-          select((.thread_id // "") == ($thread_id // "")) |
-          (.created_at // "") ] | max // "";
+        ([ $inventory.inline_comments[]? |
+           select((.thread_id // "") == ($thread_id // "")) |
+           (.created_at // "") ] +
+         [ $inventory.excluded_interactions[]? |
+           select(.kind == "review") |
+           select((.thread_id // "") == ($thread_id // "")) |
+           (.created_at // "") ]) | max // "";
       def source_candidate_states($checkpoint_created_at):
         ([
           $inventory.issue_comments[]? |
@@ -135,7 +139,7 @@ REST, and GraphQL calls in that same fetch.
 After every complete primary or source packet is fetched, apply the normal
 marker, reply-context, resolved-thread, and cutoff filters before counting
 retained triage candidates. Count `excluded_interactions` whose `trust` is
-`untrusted` in the same active scan window; trusted workflow bookkeeping such
+`untrusted` and `body_withheld` is true in the same active scan window; trusted workflow bookkeeping such
 as summary, status, source-reply, and claim comments is never a retained triage
 candidate. Zero retained candidates with one or more current untrusted
 interactions is not “no review comments”: set review readiness to
@@ -175,6 +179,7 @@ This single read-only call replaces the per-endpoint `gh api ... | jq` blocks an
 - `inline_comments` — inline review comments: `{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved, root_excluded?}`. The `thread_id` and `is_resolved` fields are already joined from the review threads by `node_id`, so no separate GraphQL query is needed for the full-PR path. Comments with no matching thread get `thread_id: null` and `is_resolved: false`. The first retained trusted reply whose root was excluded has `root_excluded: true`; its own `id` remains the item identity and its `in_reply_to_id` is the top-level reply target. Selecting the first retained reply is a deliberate non-blocking representative heuristic: it may be an acknowledgment, so later trusted replies remain required context for classification.
 - `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, user, created_at, html_url}`. Summary/status/claim/source-reply marker comments are included so you can filter them (see Filtering comments below).
 - `review_threads` — `{thread_id, is_resolved, comments: [{node_id, id}]}` for any thread-level work.
+- `excluded_interactions` — bounded audit metadata `{kind, id, node_id, user, trust, body_withheld, created_at, html_url, state?, thread_id?}` with no body or path. `body_withheld` is true only when non-empty text was removed; use excluded review timestamps when computing thread activity so checkpoint identities remain stable without exposing text.
 
 When `REVIEW_CUTOFF_AT` is set for a full-PR scan:
 
@@ -218,4 +223,4 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 - If the API returns 404, the PR/comment doesn't exist - inform the user
 - If the API returns 403, check authentication with `gh auth status`
 - If the response is empty after cutoff filtering, inform the user no new review comments were found since the last summary comment and mention `check all reviews`
-- If no retained triage candidate survives the normal filters and the active scan window has no `untrusted` exclusion, inform the user no actionable review comments were found and report any metadata-only interaction count. If a current exclusion is `untrusted`, readiness is `UNKNOWN`/blocked until the trust config is audited and populated; never let trusted workflow bookkeeping make that packet appear nonempty.
+- If no retained triage candidate survives the normal filters and the active scan window has no `untrusted` exclusion with `body_withheld: true`, inform the user no actionable review comments were found and report any metadata-only or bodyless interaction count. If current untrusted text was withheld, readiness is `UNKNOWN`/blocked until the trust config is audited and populated; never let trusted workflow bookkeeping make that packet appear nonempty.

@@ -92,7 +92,8 @@ module GithubActorTrust
   # scanned. Both review-data ingestion boundaries use this verifier so an
   # unqualified trusted_teams slug cannot be rebound by a caller-specific
   # locality probe.
-  def repository_locality_verifier(repo:, git_capture:, github_host: nil, github_host_resolver: nil)
+  def repository_locality_verifier(repo:, git_capture:, github_host: nil, github_host_resolver: nil,
+                                   ssh_host_resolver: nil)
     lambda do |path|
       root = git_toplevel(chdir: File.dirname(path), git_capture:)
       next false unless root && path_inside_git_root?(path, root:)
@@ -100,7 +101,7 @@ module GithubActorTrust
       resolved_host = github_host || github_host_resolver&.call(root:, repo:)
       next false if resolved_host.to_s.empty?
 
-      git_root_matches_repo?(root, repo, github_host: resolved_host, git_capture:)
+      git_root_matches_repo?(root, repo, github_host: resolved_host, git_capture:, ssh_host_resolver:)
     end
   end
 
@@ -183,14 +184,23 @@ module GithubActorTrust
     nil
   end
 
-  def github_remote_from_remote_url(url)
+  def github_remote_from_remote_url(url, ssh_host_resolver: nil)
     normalized = url.to_s.strip.sub(%r{/+\z}, "").sub(/\.git\z/i, "")
-    return uri_remote_from_remote_url(normalized) if normalized.match?(%r{\A(?:https?|ssh)://}i)
+    remote = if normalized.match?(%r{\A(?:https?|ssh)://}i)
+               uri_remote_from_remote_url(normalized)
+             else
+               match = normalized.match(%r{\A[^@/:\s]+@([^:\s]+):([^/\s]+/[^/\s]+)\z}i)
+               if match
+                 { host: normalized_remote_host(normalized_github_host(match[1])), port: 22,
+                   repo: match[2], scheme: "ssh" }
+               end
+             end
+    return remote unless remote && remote[:scheme] == "ssh" && ssh_host_resolver
 
-    match = normalized.match(%r{\A[^@/:\s]+@([^:\s]+):([^/\s]+/[^/\s]+)\z}i)
-    return unless match
+    resolved_host = ssh_host_resolver.call(remote.fetch(:host))
+    return unless resolved_host
 
-    { host: normalized_remote_host(normalized_github_host(match[1])), port: 22, repo: match[2], scheme: "ssh" }
+    remote.merge(host: normalized_remote_host(normalized_github_host(resolved_host)))
   end
 
   def host_port(host)
@@ -214,9 +224,12 @@ module GithubActorTrust
     end
   end
 
-  def git_root_matches_repo?(root, repo, github_host:, git_capture:)
+  def git_root_matches_repo?(root, repo, github_host:, git_capture:, ssh_host_resolver: nil)
     remote_repos = git_remote_urls(root, git_capture:).filter_map do |url|
       remote = github_remote_from_remote_url(url)
+      next unless remote && remote[:repo].casecmp?(repo)
+
+      remote = github_remote_from_remote_url(url, ssh_host_resolver:)
       remote[:repo] if remote && remote_matches_github_host?(remote, github_host)
     end
     if remote_repos.empty?

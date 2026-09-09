@@ -126,6 +126,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       assert_equal([0, 1, 2], excluded.map { |row| row["id"] })
       assert_equal(%w[untrusted metadata_only untrusted], excluded.map { |row| row["trust"] })
       excluded.each do |row|
+        refute row["body_withheld"]
         assert_equal "CHANGES_REQUESTED", row["state"]
         assert_equal "2026-01-01T00:00:00Z", row["created_at"]
         assert_equal "https://gh/rv/#{row['id']}", row["html_url"]
@@ -159,6 +160,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       assert_equal "metadata_only", by_id[3]["trust"]
       assert_equal "review_summary", by_id[11]["kind"]
       assert_equal "review", by_id[21]["kind"]
+      assert(excluded.all? { |row| row["body_withheld"] })
       refute(excluded.any? { |row| row.key?("body") }, "excluded records must not carry bodies")
       # A PR author names their own files, so a path is contributor text too.
       refute(excluded.any? { |row| row.key?("path") }, "excluded records must not carry file paths")
@@ -409,10 +411,37 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     runner.define_singleton_method(:capture_probe) do |*cmd, **|
       flunk "the checkout host must be resolved before gh lookup" if cmd.first == "gh"
 
-      [+"remote.origin.url\nssh://git@ghe.example.com/owner/repo.git\0", "", FakeStatus.new(true)]
+      case cmd
+      when ["git", "-C", "/repo", "config", "--local", "--null", "--get-regexp", "^remote\\..*\\.url$"]
+        [+"remote.origin.url\nssh://git@ghe.example.com/owner/repo.git\0", "", FakeStatus.new(true)]
+      when ["git", "-C", "/repo", "config", "--worktree", "--null", "--get-regexp", "^remote\\..*\\.url$"]
+        ["", "", FakeStatus.new(false)]
+      when ["ssh", "-G", "ghe.example.com"]
+        ["hostname ghe.example.com\n", "", FakeStatus.new(true)]
+      else
+        flunk "unexpected probe command: #{cmd.inspect}"
+      end
     end
 
     assert_equal "ghe.example.com", runner.send(:github_host_for, root: "/repo", repo: "owner/repo")
+  end
+
+  def test_github_host_resolves_an_ssh_alias_for_the_matching_checkout_remote
+    runner = FetchPrReviewData::Runner.new
+    runner.define_singleton_method(:capture_probe) do |*cmd, **|
+      case cmd
+      when ["git", "-C", "/repo", "config", "--local", "--null", "--get-regexp", "^remote\\..*\\.url$"]
+        [+"remote.origin.url\ngit@github.com-work:owner/repo.git\0", "", FakeStatus.new(true)]
+      when ["git", "-C", "/repo", "config", "--worktree", "--null", "--get-regexp", "^remote\\..*\\.url$"]
+        ["", "", FakeStatus.new(false)]
+      when ["ssh", "-G", "github.com-work"]
+        ["hostname github.com\n", "", FakeStatus.new(true)]
+      else
+        flunk "unexpected probe command: #{cmd.inspect}"
+      end
+    end
+
+    assert_equal "github.com", runner.send(:github_host_for, root: "/repo", repo: "owner/repo")
   end
 
   def test_cli_binds_checkout_host_before_actor_team_and_data_queries

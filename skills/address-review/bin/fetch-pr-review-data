@@ -146,6 +146,7 @@ module FetchPrReviewData
       "node_id" => raw["node_id"],
       "user" => raw.dig("user", "login"),
       "trust" => trust.to_s,
+      "body_withheld" => !raw["body"].to_s.empty?,
       "created_at" => created_at,
       "html_url" => raw["html_url"]
     }.merge(extra)
@@ -440,7 +441,8 @@ module FetchPrReviewData
         repo_local_verifier: GithubActorTrust.repository_locality_verifier(
           repo:,
           git_capture: method(:capture_probe),
-          github_host_resolver: method(:github_host_for)
+          github_host_resolver: method(:github_host_for),
+          ssh_host_resolver: method(:ssh_hostname)
         ),
         team_resolver: method(:team_member?)
       )
@@ -506,13 +508,26 @@ module FetchPrReviewData
     def checkout_github_host(root:, repo:)
       matching_hosts = GithubActorTrust.git_remote_urls(root, git_capture: method(:capture_probe)).filter_map do |url|
         remote = GithubActorTrust.github_remote_from_remote_url(url)
-        remote[:host] if remote && remote[:repo].casecmp?(repo)
+        next unless remote && remote[:repo].casecmp?(repo)
+
+        GithubActorTrust.github_remote_from_remote_url(url, ssh_host_resolver: method(:ssh_hostname))&.fetch(:host)
       end.uniq
 
       return matching_hosts.first if matching_hosts.one?
 
       reason = matching_hosts.empty? ? "no matching checkout remote" : "checkout remotes span multiple hosts"
       raise Error, "could not bind #{repo.inspect} to one GitHub host: #{reason}; set GH_HOST explicitly"
+    end
+
+    def ssh_hostname(host)
+      out, _err, status = capture_probe("ssh", "-G", host)
+      hostname = out.each_line.filter_map do |line|
+        key, value = line.strip.split(/\s+/, 2)
+        value if key&.casecmp?("hostname")
+      end.first
+      return GithubActorTrust.normalized_github_host(hostname) if status&.success? && !hostname.to_s.empty?
+
+      raise Error, "could not resolve SSH host #{host.inspect}; set GH_HOST explicitly"
     end
 
     def with_github_host(github_host)

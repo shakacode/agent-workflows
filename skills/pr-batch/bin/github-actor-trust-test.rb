@@ -187,6 +187,28 @@ class GithubActorTrustTest < Minitest::Test
     end
   end
 
+  def test_repository_locality_verifier_resolves_ssh_aliases
+    Dir.mktmpdir("actor-trust-locality-alias") do |root|
+      path = File.join(root, GithubActorTrust::DEFAULT_TRUST_CONFIG)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "trusted_teams: [reviewers]\n")
+      system("git", "-C", root, "init", "--quiet", exception: true)
+      system("git", "-C", root, "remote", "add", "origin", "git@github.com-work:owner/repo.git", exception: true)
+      capture = ->(*command) { Open3.capture3(*command) }
+      resolved_aliases = []
+      resolver = lambda do |host|
+        resolved_aliases << host
+        "github.com"
+      end
+      verifier = GithubActorTrust.repository_locality_verifier(
+        repo: "owner/repo", github_host: "github.com", git_capture: capture, ssh_host_resolver: resolver
+      )
+
+      assert verifier.call(path)
+      assert_equal ["github.com-work"], resolved_aliases
+    end
+  end
+
   def test_resolve_path_rejects_a_missing_explicit_config
     error = assert_raises(GithubActorTrust::Error) do
       GithubActorTrust.resolve_path("/nonexistent/trusted-github-actors.yml")
