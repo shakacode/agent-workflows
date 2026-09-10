@@ -74,6 +74,9 @@ module HumanAttention
     unless values.all? { |repo| repo.is_a?(String) && repo.match?(REPOSITORY_PATTERN) }
       raise Error, "every human-attention repository must use OWNER/REPO form"
     end
+    unless values.map(&:downcase).uniq.length == values.length
+      raise Error, "human-attention repositories must be unique ignoring case"
+    end
 
     values.uniq.sort
   end

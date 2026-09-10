@@ -2,10 +2,27 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require_relative "../lib/human_attention"
 
 ROOT = File.expand_path("../../..", __dir__)
 
 class HumanAttentionContractTest < Minitest::Test
+  # Production break: this repository's shipped tower can invoke the semantic
+  # helper, but the helper fails before GitHub access when its source seam omits
+  # the required labels or repository entry.
+  def test_source_repository_config_supports_human_attention
+    config = HumanAttention.load_config(ROOT)
+
+    assert_equal(
+      {
+        "walkthrough" => "human-attention:walkthrough",
+        "merge" => "human-attention:merge"
+      },
+      HumanAttention.labels_for(config, "shakacode/agent-workflows")
+    )
+    assert_includes HumanAttention.repositories(config), "shakacode/agent-workflows"
+  end
+
   def test_closeout_routes_human_attention_and_attribution_helpers
     closeout = File.read(File.join(ROOT, "workflows/pr-batch-integration-closeout.md"))
     human_attention = closeout[/\n## GitHub Human Attention\n.*?\n## /m]

@@ -199,6 +199,40 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  # Production break: GitHub repository identities are case-insensitive, so
+  # case-only duplicates would query one repository twice and duplicate its
+  # desk cards and decision count.
+  def test_desk_rejects_case_insensitive_duplicate_repositories_before_querying_github
+    config = <<~YAML
+      ---
+      human_attention:
+        labels:
+          walkthrough: human-attention:walkthrough
+          merge: human-attention:merge
+        repositories:
+          - acme/widgets
+          - Acme/Widgets
+    YAML
+    with_repo_config(config) do |root|
+      fake_gh = File.join(root, "gh")
+      calls = File.join(root, "calls")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        File.open(ENV.fetch("CALLS"), "a") { |file| file.puts(ARGV.join("\t")) }
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "desk", "--repo-root", root,
+        env: { "HUMAN_ATTENTION_GH" => fake_gh, "CALLS" => calls }
+      )
+
+      refute_predicate result[:status], :success?
+      assert_includes result[:stderr], "human-attention repositories must be unique ignoring case"
+      refute_path_exists calls
+    end
+  end
+
   def test_desk_degrades_only_the_repository_with_conflicting_labels_and_discards_its_rows
     config = <<~YAML
       ---
