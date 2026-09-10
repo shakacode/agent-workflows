@@ -1,10 +1,10 @@
 # ASD-STE100-Inspired Writing Style
 
-Lead with the outcome, decision, or request.
-Explain why and intent; do not narrate obvious file changes.
-Use plain, direct language and short paragraphs or bullets.
-Remove filler, repeated context, excessive headings, and decorative emphasis.
-Keep detail proportional to the change while preserving required evidence.
+Lead with the outcome, decision, or request, then explain why. Preserve required evidence.
+Write for the reader. Use familiar words and exact domain terms; keep context close.
+Prefer short sentences, active voice, and one main idea per sentence.
+Be brief. Match detail to the work. Use short paragraphs or bullets. Skip obvious changes, filler, repeated context, excess headings, and decorative emphasis.
+Aim for grade 8 in broad prose and grade 12 in technical prose. Scores are rough guides.
 
 ## Scope
 
