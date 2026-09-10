@@ -225,6 +225,9 @@ module HumanAttention
     unless value.values.all? { |label| label == label.strip }
       raise Error, "human-attention label names must not have leading or trailing whitespace"
     end
+    if value.values.any? { |label| label.include?(",") }
+      raise Error, "human-attention label names must not contain commas"
+    end
 
     value
   end

@@ -20,6 +20,23 @@ class HumanAttentionContractTest < Minitest::Test
     assert_includes closeout, "github-comment-envelope"
   end
 
+  # Production break: a shipped tower prompt could bypass consumer label
+  # overrides by applying literal queue labels instead of semantic states.
+  def test_control_tower_prompts_route_attention_through_the_transition_helper
+    prompts = File.read(File.join(ROOT, "docs/control-tower-prompts.md"))
+    attention_blocks = prompts.scan(/Human attention\..*?Snapshot\./m)
+
+    assert_equal 3, attention_blocks.length
+    attention_blocks.each do |block|
+      assert_includes block, "Resolve `PR_BATCH_SKILL_DIR`"
+      assert_includes block, "human-attention transition"
+      assert_includes block, "`walkthrough`"
+      assert_includes block, "`merge`"
+      refute_includes block, "human-attention:walkthrough"
+      refute_includes block, "human-attention:merge"
+    end
+  end
+
   def test_processing_routes_to_the_canonical_contract
     processing = File.read(File.join(ROOT, "workflows/pr-processing.md"))
 

@@ -60,6 +60,25 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  # Production break: gh pr edit treats a comma as a label separator, so one
+  # configured semantic label could mutate multiple unrelated labels.
+  def test_labels_for_rejects_label_names_with_commas
+    config = <<~YAML
+      ---
+      human_attention:
+        labels:
+          walkthrough: "needs,walkthrough"
+          merge: needs-merge
+    YAML
+    with_repo_config(config) do |root|
+      error = assert_raises(HumanAttention::Error) do
+        HumanAttention.labels_for(HumanAttention.load_config(root), "acme/widgets")
+      end
+
+      assert_includes error.message, "must not contain commas"
+    end
+  end
+
   def test_labels_for_accepts_consumer_and_repository_overrides
     config = <<~YAML
       ---
