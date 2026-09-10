@@ -430,3 +430,5 @@ see [docs/agent-runner-restarts.md](docs/agent-runner-restarts.md); for
 `UP_TO_DATE`, `UPGRADE_AVAILABLE`, `NOT_INSTALLED`, and `CHECK_FAILED` status
 semantics and network-use notes, see
 [docs/installation-and-upgrades.md](docs/installation-and-upgrades.md).
+
+This temporary prose note verifies the documentation CI path.
