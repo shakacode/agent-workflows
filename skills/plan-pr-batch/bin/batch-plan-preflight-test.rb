@@ -399,13 +399,17 @@ class BatchPlanPreflightTest < Minitest::Test
       Process.kill("KILL", -wait_thread.pid)
       status = wait_thread.value
     ensure
-      stdout.close unless stdout.closed?
-      stderr.close unless stderr.closed?
+      stdout_text, stderr_text = drain_watchdog_output(stdout, stderr, stdout_reader, stderr_reader)
     end
 
-    stdout_text = stdout_reader.value
-    stderr_text = stderr_reader.value
     [stdout_text.empty? ? nil : JSON.parse(stdout_text), stderr_text, status, timed_out]
+  end
+
+  def drain_watchdog_output(stdout, stderr, stdout_reader, stderr_reader)
+    [stdout_reader.value, stderr_reader.value]
+  ensure
+    stdout.close unless stdout.closed?
+    stderr.close unless stderr.closed?
   end
 
   def evaluate_stage_dependency_gate(plan, lanes:, edges:)
@@ -1027,6 +1031,41 @@ class BatchPlanPreflightTest < Minitest::Test
       assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
                       "token-budget-trusted-plan-unreadable"
     end
+  end
+
+  def test_watchdog_drains_reader_threads_before_closing_streams
+    events = []
+    stdout_reader = Object.new
+    stderr_reader = Object.new
+    stdout = Object.new
+    stderr = Object.new
+
+    stdout_reader.define_singleton_method(:value) do
+      events << :stdout_reader
+      "stdout"
+    end
+    stderr_reader.define_singleton_method(:value) do
+      events << :stderr_reader
+      "stderr"
+    end
+    stdout.define_singleton_method(:closed?) { false }
+    stderr.define_singleton_method(:closed?) { false }
+    stdout.define_singleton_method(:close) do
+      raise "stdout closed before its reader drained" unless events.include?(:stdout_reader)
+
+      events << :stdout_close
+    end
+    stderr.define_singleton_method(:close) do
+      raise "stderr closed before its reader drained" unless events.include?(:stderr_reader)
+
+      events << :stderr_close
+    end
+
+    stdout_text, stderr_text = drain_watchdog_output(stdout, stderr, stdout_reader, stderr_reader)
+
+    assert_equal "stdout", stdout_text
+    assert_equal "stderr", stderr_text
+    assert_equal %i[stdout_reader stderr_reader stdout_close stderr_close], events
   end
 
   def test_token_budget_trusted_plan_fifo_swap_is_rejected_without_blocking
