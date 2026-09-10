@@ -543,11 +543,12 @@ skill or document that implements it.
   merged PRs and fills in missing entries — use it before releases instead
   of reconstructing history later
   ([update-changelog skill](../skills/update-changelog/SKILL.md)).
-- **Audit after parallel work.** After concurrent agent work, before a
-  release candidate, or after a suspected bad merge, the
-  `post-merge-audit` skill checks for missed reviews, missing changelog
-  entries, cross-PR interactions, and release risk
-  ([post-merge-audit skill](../skills/post-merge-audit/SKILL.md)).
+- **Audit when a trigger requires it.** Apply the canonical
+  [audit applicability rules](../workflows/pr-batch-integration-closeout.md#audit-applicability)
+  for release assurance, verified cross-PR integration risk, suspected bad
+  merges, and other required audits. The
+  [post-merge-audit skill](../skills/post-merge-audit/SKILL.md) checks missed
+  reviews, changelog coverage, cross-PR interactions, and release risk.
 - **The habit underneath all of these:** record what you cannot verify as
   `UNKNOWN` instead of guessing, and never present constructed output as a
   real run — the same honesty rule this guide follows for its own output
