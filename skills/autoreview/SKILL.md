@@ -115,6 +115,13 @@ Do not repeat a passing check merely because workflow stages changed; rerun
 affected checks after changes and honor every repository-required repeat.
 This reuses local command results only, not independent review verdicts.
 
+Carry the same reference's delivery coverage report into review: phase,
+candidate/base identity, selected/full checks, required results, omissions,
+and the trusted selection reason. A repository-selected local gate does not
+reduce independent review or current-head CI requirements. Promotion requires
+complete candidate evidence and separate authority. Existing repair limits
+pause for disposition with unresolved findings still blocking.
+
 Formatting that moves line locations will stale the review and the engine's line references.
 Use `AGENTS.md`, `.agents/bin/README.md`, and `/verify` for the actual check set. Before a closeout review:
 

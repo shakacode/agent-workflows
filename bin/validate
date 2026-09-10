@@ -60,6 +60,7 @@ ruby bin/validate-claude-skill-metadata-test.rb
 ruby bin/validate-openai-agent-metadata-test.rb
 ruby bin/host-adapter-syntax-test.rb
 ruby bin/pr-validation-scope-test.rb
+ruby bin/delivery-policy-replay-test.rb
 
 echo "== status unit tests =="
 ruby bin/agent-workflows-refresh-test.rb
