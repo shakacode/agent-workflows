@@ -556,10 +556,24 @@ When a trigger fires, a qualifying decision must:
 - explicitly approve merging despite those risks; and
 - be recorded durably on the PR before merge.
 
-The durable record is a complete PR comment with this exact envelope:
+The durable record is a complete, human-first PR comment. State the approval,
+exact commit, triggered risks, and rollback or forward-recovery plan before the
+receipt. Put the machine-readable receipt in one closed disclosure:
 
-```text
+````markdown
 <!-- autonomous-merge-risk-decision:v1 -->
+Approved this exact revision for merge after reviewing the listed risk and rollback plan.
+
+- Commit: `<40-character SHA>`
+- Risk requiring approval: <canonical readable label> (`<canonical-gate-id>`)
+- Rollback: <the exact concise disposition used in the receipt>
+
+Ordinary merge checks still apply.
+
+<details>
+<summary>Approval receipt</summary>
+
+```yaml
 ---
 head_sha: <40-character SHA>
 triggered_gates:
@@ -572,17 +586,45 @@ evidence: <durable reference>
 ...
 ```
 
-The marker must be the first line. The parser removes exactly that line and its
-following LF, then parses one YAML document beginning with `---` and ending
-with `...`. Only trailing whitespace is permitted after the document end.
-Comments containing the marker later in the body, multiple markers or YAML
-documents, CR-only boundaries, trailing prose, aliases, custom tags, duplicate
-keys, or unknown payload keys are invalid. When multiple valid decision
-comments exist, only the newest valid comment for the exact current head is
-considered; a newer invalid comment does not erase an older valid one.
+</details>
+````
 
-A later code change invalidates the decision. A generic approval, stale
-approval, author-controlled PR-body declaration, branch content, positive AI
+The hidden marker must be the first line. The visible text must be nonempty and
+end with a blank line before the exact `<details>` opening shown above. The
+parser extracts the fenced YAML receipt, which must contain one document that
+begins with `---` and ends with `...`. The disclosure must end the comment;
+only trailing whitespace is permitted. The parser continues to accept the
+legacy marker-plus-YAML envelope so existing approvals remain valid, but new
+comments must use the human-first format.
+
+The external `decision_provenance` attestation must include `body_sha256`, the
+lowercase SHA-256 digest of the exact GitHub comment body that was reviewed.
+Editing any part of the comment invalidates its prior attestation. Reverify the
+current body and record a new digest before treating the decision as approved.
+
+The visible summary is part of the validated record and must use the exact line
+order and blank-line structure in the template, with no additional prose. Its
+first line must equal the approval sentence. Its commit must equal `head_sha`. Its
+risk line must equal the canonical rendering of every sorted `triggered_gates`
+ID. Render a portable gate by replacing hyphens with spaces and capitalizing
+the first word. Render `repo-path:<name>` as `Repository path: <name>`, replacing
+hyphens in `<name>` with spaces. Keep the label in plain text and the unchanged
+gate ID in backticks. For a human-first comment, `rollback_disposition` must be
+one concise line, and the visible
+rollback text must equal it. The summary must also state that ordinary merge
+checks still apply. A mismatch invalidates the comment. Legacy comments retain
+their original YAML and trailing-whitespace rules, including support for
+historical multiline rollback values.
+
+Comments containing the marker later in the body, multiple markers or receipt
+disclosures, multiple YAML documents, CR-only boundaries, trailing prose,
+aliases, custom tags, duplicate keys, or unknown payload keys are invalid. When
+multiple valid decision comments exist, only the newest valid comment for the
+exact current head is considered; a newer invalid comment does not erase an
+older valid one.
+
+A later code change or approval-comment edit invalidates the decision. A generic
+approval, stale approval, author-controlled PR-body declaration, branch content, positive AI
 review, or bot-generated approval does not qualify. If an automated session
 uses a maintainer's GitHub credentials, the GitHub username alone does not prove
 human provenance; use direct task evidence or another policy-approved human
