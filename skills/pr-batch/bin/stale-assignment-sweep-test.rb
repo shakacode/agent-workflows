@@ -107,13 +107,14 @@ class StaleAssignmentSweepTest < Minitest::Test
     assert_includes log, "-X DELETE repos/owner/repo/issues/2/assignees -f assignees[]=bob"
   end
 
-  def test_release_does_not_remove_an_assignee_when_comment_attribution_is_invalid
+  # Production break: a scheduled --apply run without attribution used to exit
+  # successfully after silently skipping every nudge and release.
+  def test_apply_fails_before_any_gh_call_when_comment_attribution_is_invalid
     result, log = run_cli(apply: true, agent_comment_env: { "AGENT_COMMENT_RUNNER" => nil })
 
-    assert_predicate result.fetch(:status), :success?, result.fetch(:stderr)
+    refute_predicate result.fetch(:status), :success?, result.fetch(:stderr)
     assert_includes result.fetch(:stderr), "cannot attribute agent-authored comment"
-    refute_includes log, "-X DELETE repos/owner/repo/issues/2/assignees -f assignees[]=bob"
-    refute_includes log, "repos/owner/repo/issues/2/comments"
+    assert_empty log
   end
 
   def test_release_requires_a_prior_nudge_and_respects_the_grace_window
@@ -423,6 +424,9 @@ class StaleAssignmentSweepTest < Minitest::Test
     assert status.success?
     assert_includes out, "time-to-first-activity"
     assert_includes out, "inactivity-after-start"
+    assert_includes out, "AGENT_COMMENT_RUNNER"
+    assert_includes out, "AGENT_COMMENT_HOST"
+    assert_includes out, "AGENT_COMMENT_TASK_OR_RUN"
   end
 
   # --- #221: the claim label is resolved from the seam, not hardcoded ---

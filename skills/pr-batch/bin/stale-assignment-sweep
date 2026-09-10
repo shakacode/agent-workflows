@@ -68,6 +68,7 @@ module StaleAssignmentSweep
       options = parse_options(argv)
       return print_help(options.fetch(:parser)) if options[:help]
 
+      validate_comment_attribution! if options[:apply]
       @now = resolve_now(options)
       load_trust_config(options)
       options[:agent_claimed_label] = resolve_agent_claimed_label(options)
@@ -178,8 +179,16 @@ module StaleAssignmentSweep
         live item is re-fetched and re-classified, so a reply, an added exempt/agent-claim
         label, or a reassignment between scan and mutation aborts it. Environment:
         STALE_ASSIGNMENT_SWEEP_NOW, STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS.
+        Mutating --apply runs also require AGENT_COMMENT_RUNNER (codex or claude),
+        AGENT_COMMENT_HOST, and AGENT_COMMENT_TASK_OR_RUN so every agent-authored
+        comment is attributable. Invalid or missing attribution fails before any
+        GitHub call.
       HELP
       0
+    end
+
+    def validate_comment_attribution!
+      render_comment("")
     end
 
     def resolve_now(options)
