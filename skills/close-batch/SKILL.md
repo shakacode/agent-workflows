@@ -27,6 +27,9 @@ close or archive this stale batch authorizes routine, in-scope recovery and
 closeout plus archiving this current task after the gate passes. It does not
 authorize a merge, release, deployment, destructive cleanup, new external
 tracker, or broader target set. Invoking this skill is not merge approval.
+Already-authorized execution includes routine exact-owned lifecycle cleanup
+without another approval under
+[Ordinary PR Closeout](../../workflows/pr-batch-integration-closeout.md#ordinary-pr-closeout).
 Preserve the batch's recorded `merge_authority`; require fresh authority
 wherever the canonical workflow requires it.
 
@@ -57,9 +60,8 @@ wherever the canonical workflow requires it.
 
 For informational archive-readiness assessments, all roles perform read-only
 inspection only and report proposed remediation, audit, durable-capture, and
-archival work. Resume coordinator remediation, publish audits, write durable
-evidence, or archive only when the user explicitly requests closeout or
-archival.
+archival work. During authorized execution, resume required closeout within existing authority;
+archive only when requested. An informational assessment adds no mutation authority.
 
 - A lane-worker task may recover and close only its assigned lane. Finish its
   canonical lane handoff, return control to its recorded batch coordinator, and
@@ -74,15 +76,11 @@ archival.
   `$pr-batch`, including runnable review remediation, verification, current-head
   readiness, terminal claim handling, and durable handoff work within existing
   authority. Do not stop at a status report while safe required work remains.
-- Only a `batch-coordinator` task runs `$post-merge-audit` in completed-batch
-  mode once every batch target has a final state, including a legacy batch
-  missing qualifying audit evidence or a durable receipt. Start the audit scope
-  gate even when coordination or other evidence is `UNKNOWN`; record the gap as
-  a follow-up rather than omitting the audit. All other roles hand off or
-  reconcile the coordinator-owned audit evidence. Use coverage catch-up only
-  when the maintainer explicitly requests an unaudited PR or commit range. Do
-  not invent evidence or silently waive an `UNKNOWN`; name the exact gap and
-  narrowest valid remedy.
+- Apply [Audit applicability](../../workflows/pr-batch-integration-closeout.md#audit-applicability)
+  before adding an audit. Only a `batch-coordinator` runs a required
+  `$post-merge-audit` in completed-batch mode; other roles reconcile its handoff.
+  Preserve required audit failures and safety-critical `UNKNOWN` facts. A
+  legacy batch or missing optional receipt alone does not require an audit.
 
 ## Route Maintainer Attention
 
@@ -129,14 +127,13 @@ after its lane handoff is durable and no lane-owned action, question, or
 An open PR may remain outside this task when either the classified planning
 lifecycle permits it or a lane-worker has durably handed it off, and a named
 batch coordinator durably owns its closeout.
-A batch-coordinator task follows the stricter canonical closeout and
-completed-batch audit result. Never archive while an action, required audit,
-unresolved decision, or `UNKNOWN` fact owned by the classified lifecycle
-remains.
+A batch-coordinator task follows canonical ordinary closeout and any required
+completed-batch audit result. Never archive while substantive work, a required
+gate, material decision, unsafe ownership or safety-critical `UNKNOWN` remains.
 
 For prompt-only, parent-orchestrator, and batch-coordinator tasks, use
 `$close-session` for the final live-state, durable-capture, and user-facing
-ownership gate. Its general closeout must not weaken a valid `$pr-batch`
+ownership gate. Its general closeout must not weaken a required `$pr-batch`
 completed-batch audit blocker union or archive verdict.
 
 When the gate passes and the user requested archival, use the host's supported
@@ -149,19 +146,20 @@ Keep the final closeout compact. Prompt-only and parent-orchestrator tasks follo
 `$close-session`'s current response envelope and handoff. For a
 batch-coordinator task, compose `$close-session` only as the surrounding archive
 and user-ownership gate; never replace the canonical `$pr-batch` final handoff.
-Preserve its per-target final states and Batch Handoff Format sections, then
-mechanically validate its `coordination:` declaration through the resolved
-`$pr-batch` helper before emitting the final message. A nonzero result is `NOT
-COMPLETE`. Emit the compact `Completed-batch audit:` line before the closing
+Preserve its per-target final states and Batch Handoff Format sections. Apply
+[Coordinator Closeout Lane](../../workflows/pr-batch-integration-closeout.md#coordinator-closeout-lane)
+to the final coordination declaration: validate it for `coordination_required`
+and skip the helper for `coordination_not_applicable`. A nonzero result when
+required is `NOT COMPLETE`. When an audit receipt is required, emit the compact
+`Completed-batch audit:` line before the closing
 stack — or, when the compact terminal structure seam applies to single-repo
 batches at or below `compact_terminal_structure_max_lanes`, inside that compact
 terminal structure — then keep the required receipt, the Unblock Block when
 the status is not clean, followed by the final `Conversation status:` line,
 only from an existing verified receipt. If explicit closeout authority permits
 publication, publish and verify the receipt first. During a read-only
-assessment with no verified receipt, emit no receipt line; list the missing
-receipt as an exact blocker and matching Unblock entry, and do not publish or
-invent one. Except for a lane-worker handoff, end with exactly one canonical
+assessment, if a required receipt is missing, emit no receipt line; list it as
+an exact blocker and matching Unblock entry, and do not publish or invent one. Except for a lane-worker handoff, end with exactly one canonical
 line:
 
 ```text
