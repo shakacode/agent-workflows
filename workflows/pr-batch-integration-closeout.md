@@ -1354,8 +1354,11 @@ Use `human-attention transition` with the expected full head SHA to apply or
 clear a state. It fails closed if the PR is not open, its head moved, or both
 semantic labels are present. `human-attention desk` queries the configured
 repository set and renders a numbered mirror with the requested action,
-repository, PR title and link, reason, exact head, refresh time, and any
-degraded repository. Zero human decisions does not imply zero agent-owned work.
+repository, PR title and link, reason, current head, refresh time, and any
+degraded repository. A label alone does not prove that its transition applied to
+the current head, so the desk keeps exact-head readiness unverified until the
+label-lifecycle cleanup removes stale states. Zero human decisions does not
+imply zero agent-owned work.
 
 Publish a walkthrough in full before applying the walkthrough state. Questions
 and answers may continue asynchronously in GitHub comments; do not make the

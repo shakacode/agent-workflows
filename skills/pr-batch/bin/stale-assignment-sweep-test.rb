@@ -107,6 +107,15 @@ class StaleAssignmentSweepTest < Minitest::Test
     assert_includes log, "-X DELETE repos/owner/repo/issues/2/assignees -f assignees[]=bob"
   end
 
+  def test_release_does_not_remove_an_assignee_when_comment_attribution_is_invalid
+    result, log = run_cli(apply: true, agent_comment_env: { "AGENT_COMMENT_RUNNER" => nil })
+
+    assert_predicate result.fetch(:status), :success?, result.fetch(:stderr)
+    assert_includes result.fetch(:stderr), "cannot attribute agent-authored comment"
+    refute_includes log, "-X DELETE repos/owner/repo/issues/2/assignees -f assignees[]=bob"
+    refute_includes log, "repos/owner/repo/issues/2/comments"
+  end
+
   def test_release_requires_a_prior_nudge_and_respects_the_grace_window
     _result, log = run_cli(apply: true)
 
@@ -681,7 +690,7 @@ class StaleAssignmentSweepTest < Minitest::Test
 
   def run_cli(apply: false, trust_config: nil, trust_file: "trust.yml", repo: "owner/repo", repos: nil,
               identity: IDENTITY, gh_fail_user: false, extra_args: [], fail_delete: nil,
-              agent_claimed_label: nil, workflow_label: nil, workflow_raw: nil)
+              agent_claimed_label: nil, workflow_label: nil, workflow_raw: nil, agent_comment_env: {})
     Dir.mktmpdir("stale-assignment-sweep-test") do |dir|
       build_fixtures(dir, fail_delete:)
       log_path = File.join(dir, "gh.log")
@@ -698,7 +707,8 @@ class StaleAssignmentSweepTest < Minitest::Test
         write_workflow_seam(dir, workflow_raw || "agent_claimed_label: #{workflow_label}\n")
         spawn_opts[:chdir] = dir
       end
-      stdout, stderr, status = Open3.capture3(cli_env(dir, log_path, gh_fail_user), *args, **spawn_opts)
+      environment = cli_env(dir, log_path, gh_fail_user).merge(agent_comment_env)
+      stdout, stderr, status = Open3.capture3(environment, *args, **spawn_opts)
       stdout = stdout.force_encoding("UTF-8")
       stderr = stderr.force_encoding("UTF-8")
       log = File.exist?(log_path) ? File.read(log_path, encoding: "UTF-8") : ""

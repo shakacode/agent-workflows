@@ -43,6 +43,9 @@ class HumanAttentionContractTest < Minitest::Test
     assert_includes stale_sweep, "GitHubCommentEnvelope.render"
     assert_includes audit_receipt, "GitHubCommentEnvelope.render"
     assert_includes verify_fix, "github-comment-envelope post-issue"
+    assert_includes verify_fix, "PR_BATCH_SKILL_DIR"
+    assert_includes verify_fix, "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope"
+    assert_equal 2, verify_fix.scan("${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope").length
     refute_includes verify_fix, "gh pr comment"
     refute_includes verify_fix, "gh issue comment"
   end

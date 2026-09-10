@@ -123,6 +123,56 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  def test_desk_degrades_a_malformed_repository_override_without_hiding_healthy_repositories
+    config = <<~YAML
+      ---
+      human_attention:
+        repositories:
+          acme/broken:
+            labels: invalid
+          acme/healthy: {}
+    YAML
+    with_repo_config(config) do |root|
+      fake_gh = File.join(root, "gh")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        repo = ARGV.fetch(ARGV.index("--repo") + 1)
+        puts JSON.generate([{
+          "number" => 7,
+          "title" => repo,
+          "url" => "https://example.test/7",
+          "headRefOid" => "#{'a' * 40}",
+          "labels" => [{"name" => "human-attention:merge"}]
+        }])
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli("desk", "--repo-root", root, env: { "HUMAN_ATTENTION_GH" => fake_gh })
+
+      assert_predicate result[:status], :success?, result[:stderr]
+      assert_includes result[:stdout], "MERGE — acme/healthy"
+      refute_includes result[:stdout], "MERGE — acme/broken"
+      assert_includes result[:stdout], "Degraded repositories: acme/broken"
+    end
+  end
+
+  def test_desk_rejects_a_malformed_global_label_policy
+    config = <<~YAML
+      ---
+      human_attention:
+        labels: invalid
+        repositories:
+          acme/widgets: {}
+    YAML
+    with_repo_config(config) do |root|
+      result = run_cli("desk", "--repo-root", root)
+
+      refute_predicate result[:status], :success?
+      assert_includes result[:stderr], "human_attention labels must be a mapping"
+    end
+  end
+
   def test_desk_requests_more_than_the_default_thirty_open_pull_requests
     config = <<~YAML
       ---
@@ -148,6 +198,37 @@ class HumanAttentionTest < Minitest::Test
 
       assert_predicate result[:status], :success?, result[:stderr]
       assert_includes result[:stdout], "MERGE — acme/widgets — Needs attention"
+    end
+  end
+
+  def test_desk_does_not_treat_a_label_as_exact_head_readiness_evidence
+    config = <<~YAML
+      ---
+      human_attention:
+        repositories:
+          acme/widgets: {}
+    YAML
+    with_repo_config(config) do |root|
+      fake_gh = File.join(root, "gh")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        puts JSON.generate([{
+          "number" => 7,
+          "title" => "Labeled before a later push",
+          "url" => "https://example.test/7",
+          "headRefOid" => "#{'b' * 40}",
+          "labels" => [{"name" => "human-attention:merge"}]
+        }])
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli("desk", "--repo-root", root, env: { "HUMAN_ATTENTION_GH" => fake_gh })
+
+      assert_predicate result[:status], :success?, result[:stderr]
+      assert_includes result[:stdout], "Current head: `#{'b' * 40}`"
+      assert_includes result[:stdout], "Exact-head readiness is unverified"
+      refute_includes result[:stdout], "all ordinary gates passed"
     end
   end
 

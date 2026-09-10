@@ -31,10 +31,17 @@ module HumanAttention
     raise Error, "cannot load agent workflow policy: #{e.message}"
   end
 
-  def labels_for(config, repo)
+  def global_labels(config)
+    labels = DEFAULT_LABELS.merge(validate_labels(config.fetch("labels", {})))
+    raise Error, "human-attention labels must be distinct" if labels.values.uniq.length != labels.length
+
+    labels
+  end
+
+  def labels_for(config, repo, base_labels: global_labels(config))
     raise Error, "repository must use OWNER/REPO form" unless repo.match?(REPOSITORY_PATTERN)
 
-    labels = DEFAULT_LABELS.merge(validate_labels(config.fetch("labels", {})))
+    labels = base_labels.dup
     repositories = config.fetch("repositories", {})
     if repositories.is_a?(Hash) && repositories.key?(repo)
       entry = repositories.fetch(repo) || {}
@@ -71,8 +78,10 @@ module HumanAttention
   def desk(config:, github_cli: ENV.fetch("HUMAN_ATTENTION_GH", "gh"), refreshed_at: Time.now.utc.iso8601)
     entries = []
     degraded = []
-    repositories(config).each do |repo|
-      labels = labels_for(config, repo)
+    configured_repositories = repositories(config)
+    base_labels = global_labels(config)
+    configured_repositories.each do |repo|
+      labels = labels_for(config, repo, base_labels:)
       stdout, _stderr, status = Open3.capture3(
         github_cli, "pr", "list", "--repo", repo, "--state", "open",
         "--limit", PR_LIST_LIMIT.to_s, "--json", "number,title,url,updatedAt,headRefOid,labels"
@@ -81,21 +90,20 @@ module HumanAttention
         degraded << repo
         next
       end
-      begin
-        rows = JSON.parse(stdout)
-        raise Error, "query result is not a list" unless rows.is_a?(Array)
 
-        repo_entries = rows.filter_map do |row|
-          row_labels = Array(row["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
-          state = classify(labels: row_labels, configured_labels: labels)
-          next if state == "none"
+      rows = JSON.parse(stdout)
+      raise Error, "query result is not a list" unless rows.is_a?(Array)
 
-          normalize_entry(row, repo:, state:, refreshed_at:)
-        end
-        entries.concat(repo_entries)
-      rescue JSON::ParserError, Error, KeyError
-        degraded << repo
+      repo_entries = rows.filter_map do |row|
+        row_labels = Array(row["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
+        state = classify(labels: row_labels, configured_labels: labels)
+        next if state == "none"
+
+        normalize_entry(row, repo:, state:, refreshed_at:)
       end
+      entries.concat(repo_entries)
+    rescue JSON::ParserError, Error, KeyError
+      degraded << repo
     end
 
     [entries.sort_by { |entry| [entry.fetch("repo"), entry.fetch("number"), entry.fetch("state")] }, degraded.uniq.sort]
@@ -108,14 +116,16 @@ module HumanAttention
     entries.each_with_index do |entry, index|
       action = entry.fetch("state").upcase
       reason = if action == "WALKTHROUGH"
-                 "Review the complete exact-head walkthrough."
+                 "Confirm the walkthrough matches the current head before review."
                else
-                 "Choose whether to merge after all ordinary gates passed."
+                 "Revalidate ordinary gates for the current head before deciding whether to merge."
                end
       lines.concat([
                      "## #{index + 1} of #{entries.length} — #{action} — #{entry.fetch('repo')} — #{entry.fetch('title')}",
                      "", "- PR: #{entry.fetch('url')}", "- Reason: #{reason}",
-                     "- Exact head: `#{entry.fetch('head_sha')}`", "- Refreshed: #{entry.fetch('refreshed_at')}", ""
+                     "- Current head: `#{entry.fetch('head_sha')}`",
+                     "- Readiness: Exact-head readiness is unverified from the label alone.",
+                     "- Refreshed: #{entry.fetch('refreshed_at')}", ""
                    ])
     end
     lines << "Degraded repositories: #{degraded.join(', ')}" unless degraded.empty?

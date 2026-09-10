@@ -79,8 +79,11 @@ Memorable invocation: `$verify-pr-fix <PR>` or "manually verify this fix and rep
    Confirm nothing leaked (`pgrep -fl <marker>` should report none).
 8. **Report to the PR.** Post a comment with the structured format below. Before posting to GitHub (an
    outward-facing action), confirm with the user unless they already told you to post. Write the body to a
-   temp file and pass it to the shared `pr-batch/bin/github-comment-envelope post-issue` helper with the
-   repository, PR number, runner, host, and task-or-run identity. For local evidence, add a repeatable
+   temp file. Resolve `PR_BATCH_SKILL_DIR` from an explicit environment value, the `pr-batch` sibling of
+   the exact loaded skill directory, or repo-local `.agents/skills/pr-batch`, in that order; stop with a
+   precise blocker if none exists. Pass the file to
+   `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue` with the repository, PR number, runner,
+   host, and task-or-run identity. For local evidence, add a repeatable
    `--attach 'path#alt text'` to that helper command for images (omit `#alt text` for video). The helper
    preserves the envelope while routing the upload through the GitHub CLI attachment path. Attachments
    require GitHub CLI 2.99.0+, GitHub.com or GitHub
@@ -88,8 +91,8 @@ Memorable invocation: `$verify-pr-fix <PR>` or "manually verify this fix and rep
    GitHub Actions and App tokens are unsupported. Read the posted comment back and retain rewritten durable
    URLs. Fall back to the Durable Visual Evidence Gate's browser or human path when upload is unavailable.
 9. **Cross-link the issue (optional).** If asked, comment on the linked issue with a 2-3 sentence summary
-   and a link to the PR comment URL returned by step 8 through the same `github-comment-envelope
-   post-issue` helper.
+   and a link to the PR comment URL returned by step 8 through the same
+   `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue` helper.
 
 ## Reproduction tactics by change type
 

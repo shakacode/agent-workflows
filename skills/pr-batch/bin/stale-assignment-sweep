@@ -733,10 +733,11 @@ module StaleAssignmentSweep
         return
       end
 
-      # Remove first, then post the audit comment only if removal succeeded, so a
-      # failed DELETE never leaves a misleading "released" comment behind.
+      # Validate attribution before the destructive change, then post only after
+      # removal succeeds so neither failure mode leaves a misleading state.
+      comment = render_comment(release_body(recheck))
       Array(recheck[:human]).each { |login| remove_assignee(repo, number, login) }
-      post_comment(repo, number, release_body(recheck))
+      post_enveloped_comment(repo, number, comment)
       puts "APPLIED release ##{number} (removed #{mentions(recheck)})"
     end
 
@@ -756,15 +757,22 @@ module StaleAssignmentSweep
     end
 
     def post_comment(repo, number, body)
-      enveloped = GitHubCommentEnvelope.render(
+      post_enveloped_comment(repo, number, render_comment(body))
+    end
+
+    def render_comment(body)
+      GitHubCommentEnvelope.render(
         body:,
         runner: ENV.fetch("AGENT_COMMENT_RUNNER"),
         host: ENV.fetch("AGENT_COMMENT_HOST"),
         task_or_run: ENV.fetch("AGENT_COMMENT_TASK_OR_RUN")
       )
-      run_gh("api", "repos/#{repo}/issues/#{number}/comments", "-f", "body=#{enveloped}")
     rescue KeyError, ArgumentError => e
       raise Error, "cannot attribute agent-authored comment: #{e.message}"
+    end
+
+    def post_enveloped_comment(repo, number, enveloped)
+      run_gh("api", "repos/#{repo}/issues/#{number}/comments", "-f", "body=#{enveloped}")
     end
 
     def remove_assignee(repo, number, login)
