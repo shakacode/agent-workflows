@@ -1335,8 +1335,8 @@ finished all agent-owned work and the next action genuinely belongs to a human:
 These are queue states, not permanent PR classifications. Remove them when the
 human responds, the head changes, a gate fails, the PR merges or closes, or an
 agent resumes ownership. A PR must never carry both labels. Resolve the labels
-from the consumer's `.agents/agent-workflow.yml`; the portable defaults and
-optional overrides are:
+from the consumer's `.agents/agent-workflow.yml`; both semantic labels are
+required, and repository-specific overrides are optional:
 
 ```yaml
 human_attention:

@@ -8,13 +8,38 @@ require "tmpdir"
 require_relative "../lib/human_attention"
 
 SCRIPT = File.expand_path("human-attention", __dir__)
+LABEL_POLICY = <<~YAML
+  ---
+  human_attention:
+    labels:
+      walkthrough: human-attention:walkthrough
+      merge: human-attention:merge
+YAML
 
 class HumanAttentionTest < Minitest::Test
-  def test_labels_for_uses_portable_default_labels
+  def test_labels_for_requires_consumer_label_policy
     with_repo_config("---\nbase_branch: main\n") do |root|
-      labels = HumanAttention.labels_for(HumanAttention.load_config(root), "acme/widgets")
-      assert_equal "human-attention:walkthrough", labels.fetch("walkthrough")
-      assert_equal "human-attention:merge", labels.fetch("merge")
+      error = assert_raises(HumanAttention::Error) do
+        HumanAttention.labels_for(HumanAttention.load_config(root), "acme/widgets")
+      end
+
+      assert_includes error.message, "must define walkthrough and merge"
+    end
+  end
+
+  def test_labels_for_requires_both_consumer_labels
+    config = <<~YAML
+      ---
+      human_attention:
+        labels:
+          walkthrough: human-attention:walkthrough
+    YAML
+    with_repo_config(config) do |root|
+      error = assert_raises(HumanAttention::Error) do
+        HumanAttention.labels_for(HumanAttention.load_config(root), "acme/widgets")
+      end
+
+      assert_includes error.message, "must define walkthrough and merge"
     end
   end
 
@@ -43,7 +68,7 @@ class HumanAttentionTest < Minitest::Test
   end
 
   def test_library_classify_rejects_both_semantic_labels
-    with_repo_config("---\n") do |root|
+    with_repo_config(LABEL_POLICY) do |root|
       labels = HumanAttention.labels_for(HumanAttention.load_config(root), "acme/widgets")
       error = assert_raises(HumanAttention::Error) do
         HumanAttention.classify(
@@ -59,6 +84,9 @@ class HumanAttentionTest < Minitest::Test
     config = <<~YAML
       ---
       human_attention:
+        labels:
+          walkthrough: human-attention:walkthrough
+          merge: human-attention:merge
         repositories:
           acme/widgets: {}
           acme/broken: {}
@@ -99,6 +127,9 @@ class HumanAttentionTest < Minitest::Test
     config = <<~YAML
       ---
       human_attention:
+        labels:
+          walkthrough: human-attention:walkthrough
+          merge: human-attention:merge
         repositories:
           acme/conflicted: {}
           acme/healthy: {}
@@ -127,6 +158,9 @@ class HumanAttentionTest < Minitest::Test
     config = <<~YAML
       ---
       human_attention:
+        labels:
+          walkthrough: human-attention:walkthrough
+          merge: human-attention:merge
         repositories:
           acme/broken:
             labels: invalid
@@ -177,6 +211,9 @@ class HumanAttentionTest < Minitest::Test
     config = <<~YAML
       ---
       human_attention:
+        labels:
+          walkthrough: human-attention:walkthrough
+          merge: human-attention:merge
         repositories:
           acme/widgets: {}
     YAML
@@ -205,6 +242,9 @@ class HumanAttentionTest < Minitest::Test
     config = <<~YAML
       ---
       human_attention:
+        labels:
+          walkthrough: human-attention:walkthrough
+          merge: human-attention:merge
         repositories:
           acme/widgets: {}
     YAML
@@ -233,7 +273,7 @@ class HumanAttentionTest < Minitest::Test
   end
 
   def test_transition_replaces_the_other_semantic_label_at_the_expected_head
-    with_repo_config("---\n") do |root|
+    with_repo_config(LABEL_POLICY) do |root|
       fake_gh = File.join(root, "gh")
       calls = File.join(root, "calls")
       File.write(fake_gh, <<~RUBY)
@@ -264,7 +304,7 @@ class HumanAttentionTest < Minitest::Test
   end
 
   def test_transition_clears_attention_state_when_head_changes_during_edit
-    with_repo_config("---\n") do |root|
+    with_repo_config(LABEL_POLICY) do |root|
       fake_gh = File.join(root, "gh")
       calls = File.join(root, "calls")
       File.write(fake_gh, <<~RUBY)

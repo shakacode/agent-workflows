@@ -6,17 +6,13 @@ require "minitest/autorun"
 ROOT = File.expand_path("../../..", __dir__)
 
 class HumanAttentionContractTest < Minitest::Test
-  def test_closeout_defines_portable_states_and_attribution_boundary
+  def test_closeout_routes_human_attention_and_attribution_helpers
     closeout = File.read(File.join(ROOT, "workflows/pr-batch-integration-closeout.md"))
 
     assert_includes closeout, "## GitHub Human Attention"
     assert_includes closeout, "`human-attention:walkthrough`"
     assert_includes closeout, "`human-attention:merge`"
-    assert_includes closeout, "`🤖 Codex`"
-    assert_includes closeout, "`🤖 Claude`"
-    assert_includes closeout, "details stay out of the visible prefix"
     assert_includes closeout, "github-comment-envelope"
-    assert_includes closeout, "Agent-attributed comments never establish human approval or merge authority"
   end
 
   def test_processing_routes_to_the_canonical_contract

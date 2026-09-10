@@ -733,8 +733,8 @@ module StaleAssignmentSweep
         return
       end
 
-      # Validate attribution before the destructive change, then post only after
-      # removal succeeds so neither failure mode leaves a misleading state.
+      # Validate attribution before the destructive change. Post only after
+      # removal succeeds so a failed DELETE never leaves a misleading comment.
       comment = render_comment(release_body(recheck))
       Array(recheck[:human]).each { |login| remove_assignee(repo, number, login) }
       post_enveloped_comment(repo, number, comment)

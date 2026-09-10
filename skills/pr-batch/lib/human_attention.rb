@@ -6,10 +6,6 @@ require "time"
 require "yaml"
 
 module HumanAttention
-  DEFAULT_LABELS = {
-    "walkthrough" => "human-attention:walkthrough",
-    "merge" => "human-attention:merge"
-  }.freeze
   STATES = %w[walkthrough merge].freeze
   PR_LIST_LIMIT = 1000
   REPOSITORY_PATTERN = %r{\A[^/\s]+/[^/\s]+\z}
@@ -32,10 +28,14 @@ module HumanAttention
   end
 
   def global_labels(config)
-    labels = DEFAULT_LABELS.merge(validate_labels(config.fetch("labels", {})))
+    labels = validate_labels(config.fetch("labels", {}))
+    missing = STATES - labels.keys
+    unless missing.empty?
+      raise Error, "human_attention labels must define walkthrough and merge"
+    end
     raise Error, "human-attention labels must be distinct" if labels.values.uniq.length != labels.length
 
-    labels
+    labels.dup
   end
 
   def labels_for(config, repo, base_labels: global_labels(config))
