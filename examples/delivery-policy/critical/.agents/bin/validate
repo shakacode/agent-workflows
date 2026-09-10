@@ -52,6 +52,10 @@ end
 phase = ARGV.shift || "integration"
 abort "Unsupported example invocation" unless %w[integration promotion].include?(phase) && ARGV.empty?
 initial_state = candidate_state
+policy = initial_state.last.to_h[".agents/bin/validate"]
+unless policy && %w[100644 100755].include?(policy.first) && policy.last == File.binread(__FILE__)
+  abort "Validator policy changed; independently verify the complete current policy before claiming coverage"
+end
 head, dirty = initial_state
 base = ENV.fetch("EXAMPLE_BASE_SHA", "")
 puts "phase: #{phase}\nhead: #{head.strip}\nbase: #{base.empty? ? 'UNKNOWN' : base}"

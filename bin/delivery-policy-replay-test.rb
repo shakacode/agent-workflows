@@ -100,7 +100,7 @@ class DeliveryPolicyReplayTest < Minitest::Test
   def test_risky_unknown_operational_and_policy_changes_escalate
     %w[low-impact critical].each do |kind|
       with_repository(kind) do
-        ["security/access.rb", "unknown.txt", ".agents/agent-workflow.yml", ".agents/bin/validate"].each do |path|
+        ["security/access.rb", "unknown.txt", ".agents/agent-workflow.yml"].each do |path|
           git("reset", "--hard", @base)
           git("clean", "-fd")
           write(path, "puts 'coverage: selected'\n")
@@ -116,6 +116,25 @@ class DeliveryPolicyReplayTest < Minitest::Test
           output, status, checks = run_gate
           assert status.success?, output
           assert_equal %w[lint docs test], checks
+        end
+      end
+    end
+  end
+
+  def test_changed_validator_policy_cannot_claim_complete_candidate_coverage
+    %w[low-impact critical].each do |kind|
+      %w[integration promotion].each do |phase|
+        with_repository(kind) do
+          wrapper = File.read(File.join(@repo, ".agents/bin/validate"))
+          write(".agents/bin/security", "#!/usr/bin/env ruby\nabort 'required security failure'\n", executable: true)
+          write(".agents/bin/validate", wrapper.gsub("%w[lint docs test]", "%w[lint docs test security]"), executable: true)
+          commit
+          output, status, checks = run_gate(phase)
+          refute status.success?, output
+          assert_empty checks
+          assert_includes output, "Validator policy changed"
+          refute_includes output, "coverage: full"
+          refute_includes output, "omitted: none"
         end
       end
     end

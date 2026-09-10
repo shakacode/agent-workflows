@@ -13,8 +13,10 @@ commands supplied by their repository. A missing or failing command fails the ga
 Only the low-impact wrapper selects lint and documentation checks for edits
 to its non-operational `docs/overview.md`, using a reviewed pair of sample
 sentences. Operational instructions belong elsewhere. Code examples, unknown
-files, policy or test changes, missing base evidence, and dirty trees run all
-three checks. The critical wrapper always runs all three. Neither project
+files, test changes, missing base evidence, and dirty trees run all three
+checks. Changes to the validator itself block both phases until the complete
+current policy is independently reviewed and verified. The critical wrapper
+always runs all three when its policy matches. Neither project
 label alone grants a gate exemption. Repositories without these wrappers keep
 their existing validation behavior; no seam setting enables them implicitly.
 The executable example recognizes only its two reviewed overview sentences.
@@ -44,7 +46,11 @@ exit "$result"
 
 Use the documented `promotion` argument on the Ruby invocation for complete
 candidate validation. Do not load a candidate's changed selector to qualify
-itself. On first adoption, use the repository's existing complete gate until
+itself. Each wrapper compares the captured candidate validator with its own
+trusted source before reporting coverage. A mismatch blocks: the old checklist
+cannot establish that it covers newly required checks. Use an independently
+reviewed complete invocation to qualify a policy change. On first adoption,
+use the repository's existing complete gate until
 the policy is reviewed and lands. Unknown invocations block; malformed or
 unavailable base identity cannot select reduced coverage. Full local results
 from a dirty tree remain diagnostic evidence, and promotion requires a clean
