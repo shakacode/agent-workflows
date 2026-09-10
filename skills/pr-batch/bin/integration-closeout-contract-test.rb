@@ -93,6 +93,47 @@ class IntegrationCloseoutContractTest < Minitest::Test
     refute_includes route, "Later content."
   end
 
+  def test_ordinary_closeout_has_one_policy_owner_and_resolvable_dependent_routes
+    headings = ["Ordinary PR Closeout", "Live reconciliation", "Audit applicability",
+                "Lifecycle cleanup and archive readiness"]
+    headings.each do |heading|
+      assert_equal 1, @component.scan(/^\#{3,4} #{Regexp.escape(heading)}$/).length, heading
+    end
+    policy = route_after(@component, "Ordinary PR Closeout")
+    assert_equal headings.drop(1), policy.scan(/^\#{4} (.+)$/).flatten
+
+    routes = {
+      "skills/pr-batch/SKILL.md" => "ordinary-pr-closeout",
+      "skills/close-session/SKILL.md" => "ordinary-pr-closeout",
+      "skills/close-batch/SKILL.md" => "ordinary-pr-closeout",
+      "skills/batch-status/SKILL.md" => "ordinary-pr-closeout",
+      "skills/post-merge-audit/SKILL.md" => "audit-applicability",
+      "skills/post-merge-audit/references/output.md" => "audit-applicability",
+      "workflows/post-merge-audit.md" => "audit-applicability",
+      "workflows/pr-processing.md" => "audit-applicability"
+    }
+    routes.each do |path, anchor|
+      source = File.read(File.join(ROOT, path))
+      links = source.scan(/\]\(([^)]+##{anchor})\)/).flatten
+      refute_empty links, "#{path} must route closeout applicability to the owner"
+      links.each do |link|
+        target, fragment = link.split("#", 2)
+        assert_equal COMPONENT_PATH, File.expand_path(target, File.dirname(File.join(ROOT, path)))
+        assert_includes headings.map { |heading| heading.downcase.tr(" ", "-") }, fragment
+      end
+      headings.each { |heading| refute_match(/^\#{2,4} #{Regexp.escape(heading)}$/, source) }
+    end
+  end
+
+  def test_coordinator_and_receipt_replay_route_through_audit_applicability
+    coordinator = route_after(@component, "Coordinator Closeout Lane")
+    receipt = route_after(@component, "Completed-Batch Audit Receipt And Archive Replay")
+    assert_match(/\]\(\#ordinary-pr-closeout\)/, coordinator)
+    assert_match(/\]\(\#audit-applicability\)/, coordinator)
+    assert_match(/\]\(\#lifecycle-cleanup-and-archive-readiness\)/, coordinator)
+    assert_match(/\]\(\#audit-applicability\)/, receipt)
+  end
+
   def test_component_owns_the_full_closeout_interface
     [
       "Boundary",

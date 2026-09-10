@@ -21,6 +21,9 @@ receipts, and the exact archive-readiness verdict.
   needed?”, or “should we archive this task?” authorize read-only closeout
   verification only. Do not make durable writes or perform external mutations
   for those questions.
+- Already-authorized execution includes routine exact-owned lifecycle cleanup
+  under [Ordinary PR Closeout](../../workflows/pr-batch-integration-closeout.md#ordinary-pr-closeout),
+  without another approval. Informational prompts remain read-only.
 - When the user explicitly asks to close or archive the task, hand it off,
   preserve context, or perform bookkeeping, treat that request as authority for
   routine closeout updates only to destinations already configured by the user,
@@ -43,7 +46,7 @@ and treat automations only as wake-up mechanisms.
 
 Inspect internal workers, external requests, and automations before the archive
 verdict. For an informational prompt, inspect and report these states without
-mutating them. Only under the explicit mutation authority above may the task
+mutating them. Under the applicable existing mutation authority above, the task may
 stop or hand off unfinished internal workers, release resources it verifies as
 safe to release, or delete obsolete heartbeat automations after their gate
 clears or becomes durably terminal. A no-change wake remains silent.
@@ -81,7 +84,10 @@ completion. Do not restart completed work.
 
 Verify time-sensitive claims against the live source when tools are available.
 
-For engineering work, check the relevant subset of:
+For engineering work, apply
+[Ordinary PR Closeout](../../workflows/pr-batch-integration-closeout.md#ordinary-pr-closeout)
+for evidence reuse, audit applicability, cleanup and archive readiness. Check
+the relevant subset of:
 
 - worktree cleanliness and intended commits;
 - local, remote, and PR head alignment;
@@ -164,10 +170,11 @@ Declare the task ready for archiving only when all of these are true:
 - the requested work is complete or has reached an explicitly accepted stopping
   point;
 - required deliverables are published, handed off, or durably recorded;
-- no task-owned uncommitted or unpushed work remains;
+- no task-owned source work remains unpublished or unpreserved at the accepted
+  stopping point;
 - no required review, verification, agent, monitor, or external action is still
   pending;
-- no user decision is required;
+- no material user decision or safety-critical `UNKNOWN` remains;
 - every remaining follow-up has a durable reference and owner;
 - durable captures are complete or explicitly unnecessary.
 
@@ -182,12 +189,13 @@ Use a more specific available skill when it governs part of closeout:
 - use `continue` when resuming the resulting handoff;
 - use `napkin` or a repository solution/compound workflow only for recurring
   durable learning;
-- preserve any valid `pr-batch` completed-batch audit instead of weakening its
-  blocker union or archive verdict.
-- For a `pr-batch` completed-batch reconciliation, preserve the canonical
+- use [Audit applicability](../../workflows/pr-batch-integration-closeout.md#audit-applicability)
+  before invoking an additional audit. Preserve the blocker union and archive
+  verdict of a required audit; never downgrade its failure to optional.
+- When a completed-batch receipt is required, preserve the canonical
   receipt-to-Unblock-to-status closing order. If no existing verified receipt is
   available, emit no receipt line and carry the missing receipt only as a
-  blocker and matching Unblock entry.
+  blocker and matching Unblock entry. Optional duplicate receipts do not block.
 
 ## Final response
 
