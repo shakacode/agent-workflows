@@ -78,9 +78,13 @@ cd "$root"
 "$root/.agents/bin/test"
 ```
 
-`validate` is the authoritative comprehensive pre-push gate. `test`, `lint`,
-`build`, `docs`, and `ci-detect` are convenience subsets. An absent optional
-script means that capability is n/a in that repo.
+`validate` is the authoritative pre-push gate and retains each repository's
+existing coverage by default. A repository can explicitly define selected
+integration checks and a complete promotion invocation through its wrappers;
+[Delivery Policy](delivery-policy.md) describes the coverage, trust, and failure
+reporting contract. A selected success does not establish complete coverage.
+`test`, `lint`, `build`, `docs`, and `ci-detect` are convenience entry points. An
+absent optional script means that capability is n/a in that repo.
 
 ## Policy Contract
 

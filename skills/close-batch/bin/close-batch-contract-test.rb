@@ -84,20 +84,15 @@ class CloseBatchContractTest < Minitest::Test
     refute_includes @normalized, "A visible request to close or archive"
     assert_ordered_phrases([
                              "For informational archive-readiness assessments, all roles perform read-only inspection only and report proposed remediation, audit, durable-capture, and archival work.",
-                             "Resume coordinator remediation, publish audits, write durable evidence, or archive only when the user explicitly requests closeout or archival.",
                              "A batch coordinator must resume the canonical Coordinator Closeout Lane"
                            ])
   end
 
-  def test_final_targets_start_the_completed_batch_audit_scope_gate
-    assert_includes @normalized, "Only a `batch-coordinator` task runs `$post-merge-audit` in completed-batch mode once every batch target has a final state"
-    assert_includes @normalized, "including a legacy batch missing qualifying audit evidence or a durable receipt"
-    assert_includes @normalized, "Start the audit scope gate even when coordination or other evidence is `UNKNOWN`; record the gap as a follow-up rather than omitting the audit."
-    assert_includes @normalized, "All other roles hand off or reconcile the coordinator-owned audit evidence."
-    assert_includes @normalized, "Use coverage catch-up only when the maintainer explicitly requests an unaudited PR or commit range."
-    refute_includes @normalized, "terminal coordinated batch"
-    refute_includes @normalized, "coverage catch-up for a legacy batch"
-    assert_includes @normalized, "For a `batch-coordinator` task, run the completed-batch audit when the canonical workflow requires it."
+  def test_resume_closeout_routes_audit_applicability_to_the_canonical_owner
+    resume = @skill.split("## Resume Closeout\n", 2).last.split("\n## ", 2).first
+    assert_match(/\]\([^)]*#audit-applicability\)/, resume)
+    assert_match(/\]\([^)]*#ordinary-pr-closeout\)/, @skill)
+    assert_includes resume, "`$post-merge-audit`"
   end
 
   def test_attention_is_github_native_and_does_not_grant_merge_authority
@@ -128,7 +123,6 @@ class CloseBatchContractTest < Minitest::Test
   def test_archive_action_requires_the_canonical_gate
     phrases = [
       "For a `batch-coordinator` task, run the completed-batch audit when the canonical workflow requires it.",
-      "Never archive while an action, required audit, unresolved decision, or `UNKNOWN` fact owned by the classified lifecycle remains.",
       "archive the current task without another confirmation",
       "Conversation status: Ready for archiving.",
       "Conversation status: Follow-ups remain — <each exact action or blocker>."
@@ -136,7 +130,7 @@ class CloseBatchContractTest < Minitest::Test
 
     assert_ordered_phrases(phrases)
     assert_includes @normalized, "use `$close-session` for the final live-state, durable-capture, and user-facing ownership gate"
-    assert_includes @normalized, "must not weaken a valid `$pr-batch` completed-batch audit blocker union or archive verdict"
+    assert_match(/\]\([^)]*#audit-applicability\)/, @skill)
     assert_includes @normalized, "A lane worker never runs the completed-batch audit or emits a batch-level archive-readiness status line."
     assert_includes @normalized, "archive its own worker task after its lane handoff is durable"
     assert_includes @normalized, "An open PR may remain outside this task when either the classified planning lifecycle permits it or a lane-worker has durably handed it off, and a named batch coordinator durably owns its closeout."
@@ -147,10 +141,12 @@ class CloseBatchContractTest < Minitest::Test
     assert_includes @normalized, "For a batch-coordinator task, compose `$close-session` only as the surrounding archive and user-ownership gate"
     assert_includes @normalized, "never replace the canonical `$pr-batch` final handoff"
     assert_includes @normalized, "per-target final states and Batch Handoff Format sections"
-    assert_includes @normalized, "mechanically validate its `coordination:` declaration through the resolved `$pr-batch` helper before emitting the final message"
-    assert_includes @normalized, "A nonzero result is `NOT COMPLETE`"
+    archive = @skill.split("## Apply Archive Gate\n", 2).last
+    assert_match(/\]\([^)]*#coordinator-closeout-lane\)/, archive)
+    assert_includes archive, "`coordination_required`"
+    assert_includes archive, "`coordination_not_applicable`"
     assert_ordered_phrases([
-                             "Emit the compact `Completed-batch audit:` line before the closing stack",
+                             "`Completed-batch audit:` line before the closing stack",
                              "when the compact terminal structure seam applies to single-repo batches at or below `compact_terminal_structure_max_lanes`",
                              "inside that compact terminal structure",
                              "then keep the required receipt",
@@ -159,7 +155,8 @@ class CloseBatchContractTest < Minitest::Test
                              "only from an existing verified receipt."
                            ])
     assert_includes @normalized, "If explicit closeout authority permits publication, publish and verify the receipt first."
-    assert_includes @normalized, "During a read-only assessment with no verified receipt, emit no receipt line; list the missing receipt as an exact blocker and matching Unblock entry, and do not publish or invent one."
+    assert_includes @skill, "## Authority"
+    assert_includes @skill, "## Apply Archive Gate"
   end
 
   def test_canonical_workflow_still_owns_lifecycle_and_closeout_details

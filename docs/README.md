@@ -24,6 +24,7 @@ and implementation plans are collected in the final reference section.
 | --- | --- |
 | Understand the team-scale problems this stack solves | [Problems Agent Workflows Solves](problems-solved.md) |
 | Understand how portable workflows meet repository-owned policy | [Seam Design](seam-design.md) |
+| Choose integration checks and qualify an exact promotion candidate | [Delivery Policy](delivery-policy.md) |
 | Look up source-pack, seam, readiness, and review terminology | [Source Pack Glossary](source-pack-glossary.md) |
 
 ## Install and adopt

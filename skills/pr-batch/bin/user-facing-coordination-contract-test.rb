@@ -651,7 +651,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes authority, "explicitly asks to close or archive the task, hand it off, preserve context"
     refute_includes authority, "Treat invocation as authority to perform routine closeout checks and update"
     assert_includes coordination, "For an informational prompt, inspect and report these states without mutating them"
-    assert_includes coordination, "Only under the explicit mutation authority above"
+    assert_match(%r{\]\(\.\./\.\./workflows/pr-batch-integration-closeout\.md#ordinary-pr-closeout\)}, authority)
   end
 
   def test_close_session_preserves_hst_v1_closeout_envelope
