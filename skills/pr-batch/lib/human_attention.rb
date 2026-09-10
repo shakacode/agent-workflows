@@ -212,6 +212,9 @@ module HumanAttention
     unless value.values.all? { |label| label.is_a?(String) && !label.strip.empty? && !label.include?("\n") }
       raise Error, "human-attention label names must be nonempty single-line strings"
     end
+    unless value.values.all? { |label| label == label.strip }
+      raise Error, "human-attention label names must not have leading or trailing whitespace"
+    end
 
     value
   end

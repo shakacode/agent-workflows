@@ -43,6 +43,23 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  def test_labels_for_rejects_padded_label_names
+    config = <<~YAML
+      ---
+      human_attention:
+        labels:
+          walkthrough: human-attention:walkthrough
+          merge: " needs-merge"
+    YAML
+    with_repo_config(config) do |root|
+      error = assert_raises(HumanAttention::Error) do
+        HumanAttention.labels_for(HumanAttention.load_config(root), "acme/widgets")
+      end
+
+      assert_includes error.message, "must not have leading or trailing whitespace"
+    end
+  end
+
   def test_labels_for_accepts_consumer_and_repository_overrides
     config = <<~YAML
       ---
