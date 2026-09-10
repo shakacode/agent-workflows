@@ -45,7 +45,7 @@ def candidate_state
   dirty = "tracked filesystem differs from HEAD" if dirty.empty? && tracked != expected
   [head, dirty,
    git("diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "--"),
-   git("diff", "--binary", "--no-ext-diff", "--no-textconv", "--"), untracked, tracked]
+   git("diff", "--binary", "--no-ext-diff", "--no-textconv", "--"), untracked, expected.to_h[".agents/bin/validate"], tracked]
 end
 
 phase = ARGV.shift || "integration"
@@ -53,8 +53,15 @@ abort "Unsupported example invocation" unless %w[integration promotion].include?
 base = ENV.fetch("EXAMPLE_BASE_SHA", "")
 initial_state = candidate_state
 head = initial_state.first.strip
-policy = initial_state.last.to_h[".agents/bin/validate"]
-unless policy && %w[100644 100755].include?(policy.first) && policy.last == File.binread(__FILE__)
+head_policy = initial_state[-2]
+worktree_policy = initial_state.last.to_h[".agents/bin/validate"]
+staged_policy_changes = git("diff", "--cached", "--name-only", "--no-ext-diff", "--no-textconv",
+                            initial_state.first.strip, "--", ".agents/bin/validate")
+trusted_policy = File.binread(__FILE__)
+policy_matches = [head_policy, worktree_policy].all? do |policy|
+  policy && %w[100644 100755].include?(policy.first) && policy.last == trusted_policy
+end
+unless staged_policy_changes.empty? && policy_matches
   abort "Validator policy changed; independently verify the complete current policy before claiming coverage"
 end
 clean = initial_state[1].empty?

@@ -177,6 +177,29 @@ class DeliveryPolicyReplayTest < Minitest::Test
     end
   end
 
+  def test_policy_changes_hidden_by_restored_worktree_block_before_coverage
+    %w[low-impact critical].each do |kind|
+      %w[staged committed].each do |state|
+        %w[integration promotion].each do |phase|
+          with_repository(kind) do
+            wrapper = File.read(File.join(@repo, ".agents/bin/validate"))
+            write(".agents/bin/security", "#!/usr/bin/env ruby\nabort 'required security failure'\n", executable: true)
+            write(".agents/bin/validate", wrapper.gsub("%w[lint docs test]", "%w[lint docs test security]"), executable: true)
+            git("add", ".agents/bin/validate", ".agents/bin/security")
+            git("commit", "-qm", "changed policy") if state == "committed"
+            write(".agents/bin/validate", wrapper, executable: true)
+            output, status, checks = run_gate(phase)
+            refute status.success?, output
+            assert_empty checks
+            assert_includes output, "Validator policy changed"
+            refute_includes output, "coverage: full"
+            refute_includes output, "omitted: none"
+          end
+        end
+      end
+    end
+  end
+
   def test_missing_base_and_dirty_tree_cannot_select_reduced_coverage
     with_repository("low-impact") do
       change_prose
