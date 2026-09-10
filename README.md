@@ -391,6 +391,17 @@ Run the full local validation gate before publishing changes:
 bin/validate
 ```
 
+PR CI has a narrow fast path for the four ordinary documentation files listed
+in `bin/pr-validation-scope`, including this README. It runs Markdown and link
+checks plus the applicable README contracts, and reports selected and omitted
+coverage with the tested SHA and base SHA in the Validate job summary. The
+policy comes from the PR base commit. Instruction Markdown, code, configuration,
+unknown paths, renames, deletions, changed embedded code or commands, or missing
+diff evidence run the full suite. README prose changes can use the fast path;
+edits to its installation commands retain full coverage.
+Draft PRs test their head; ready PRs test the current-base integration. Main
+pushes and the local `bin/validate` command always use full validation.
+
 The gate checks skill frontmatter, helper script tests, prompt-size invariants,
 the GitHub Actions policy scanner, and the seam doctor against a fixture
 consumer repo while scanning this shared repo as an installed pack. A clean

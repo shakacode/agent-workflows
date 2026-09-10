@@ -3299,15 +3299,33 @@ validate_scanner_companion_ancestors() {
 copy_children_preserving_unrelated() {
   local source_dir="$1"
   local target_dir="$2"
-  local source_path destination
+  local source_path destination staging copy_status
+  local sources=()
   ensure_real_directory "$target_dir"
 
   for source_path in "$source_dir"/*; do
     [[ -e "$source_path" ]] || continue
-    destination="$target_dir/$(basename "$source_path")"
-    rm -rf "$destination"
-    rsync -a "$source_path" "$target_dir/"
+    sources+=("$source_path")
   done
+  # Finish the batch before replacing any installed child. Stage on the target
+  # filesystem so each completed child can move into place without recopying.
+  if (( ${#sources[@]} )); then
+    staging="$(mktemp -d "$target_dir/.agent-workflows-copy.XXXXXX")" || return 1
+    if rsync -a "${sources[@]}" "$staging/"; then
+      for source_path in "${sources[@]}"; do
+        destination="$target_dir/$(basename "$source_path")"
+        if ! rm -rf "$destination" || ! mv "$staging/$(basename "$source_path")" "$destination"; then
+          rm -rf "$staging"
+          return 1
+        fi
+      done
+    else
+      copy_status=$?
+      rm -rf "$staging"
+      return "$copy_status"
+    fi
+    rmdir "$staging"
+  fi
 }
 
 workflow_doctor_copy_matches_source() {

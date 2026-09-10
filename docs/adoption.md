@@ -17,6 +17,35 @@ See [seam-design.md](seam-design.md) for the design rationale. See
 paths, upgrade commands, status states, rollback behavior, and Codex/Claude
 notes.
 
+## Choose Integration And Promotion Checks
+
+Start with the existing `.agents/bin/validate` wrapper and its command table.
+The [delivery policy](delivery-policy.md) supports repository-owned selection
+and consistent reporting across verify, run-ci, autoreview preparation, and
+closeout. It introduces no YAML key, shared effort preset, or universal flag.
+Repositories that omit this customization keep their existing validation.
+
+Document project type, collaborator impact, required integration checks,
+the complete promotion invocation, and who repairs full-mainline failures.
+Wrappers control checks; existing `review_gate` notes control required review,
+`hosted_qa_gate` controls configured runtime QA, and `ci_change_detector` notes
+can point to the routing contract. Review depth and repair stopping limits
+remain governed by repository requirements and the existing review workflow.
+
+The [two executable examples](../examples/delivery-policy/README.md) show an
+internal tool selecting lint and docs for narrow prose changes while a
+critical service runs all checks for the same change. Policy comes from the
+trusted base; risky, unknown, or malformed selection inputs cannot reduce
+coverage. Report phase, candidate/base identity, required results,
+selected/full coverage, omissions, and the reason. A failed required check
+remains blocking when an existing repair budget stops automatic work.
+
+Require complete feedback after integration and complete checks for the exact
+promotion candidate. Current-head CI, independent review, security, and any
+configured hosted QA remain required. Merge permission does not authorize a
+release or deployment. Named fast/balanced/strict presets and a unified effort
+resolver remain proposals, not supported configuration.
+
 ## Configure Project Writing Style
 
 To give a project its own writing guidance, create

@@ -229,6 +229,16 @@ _Avoid_: force kill (without the cleanup steps it names)
 
 ### Integration
 
+**Selected integration coverage / Complete promotion coverage**:
+A repository may select documented checks for a recognized integration change;
+promotion requires its complete configured suite for the exact candidate.
+Selected success does not prove omitted checks passed. Project type and
+collaborator impact inform repository policy; unknown or risky changes broaden
+coverage, and failed required checks stay failed. Task merge authority remains
+separate from release/deployment permission. See
+[Delivery Policy](docs/delivery-policy.md) for the design and adoption contract.
+_Avoid_: fast means safe, green means full, merge permission means deploy permission
+
 These terms define the intended integration contract. Label automation and
 comment-envelope enforcement are follow-up work, not implemented by this ADR.
 
