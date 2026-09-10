@@ -466,10 +466,11 @@ nondefault base), fetches the exact ref, and requires the same complete mapping
 from the fetched base commit. A remote-default advertisement/fetch mismatch
 fails closed. The invoking checkout must be attached to that anchored ref at the
 exact fetched commit, or detached at that exact commit; a stale base or
-self-selected PR-branch checkout remains blocked. An automatically selected
-repo-local `.agents/trusted-github-actors.yml` must also be tracked at that path
-and byte-identical in the fetched base; untracked or locally modified actor
-policy cannot authorize the receipt. `GH_HOST`, plaintext HTTP,
+self-selected PR-branch checkout remains blocked. A repo-local trust config
+selected automatically or through explicit `--trust-config PATH` must not be
+changed by the PR and must exist as a regular, byte-identical blob at the same
+repository-relative path in the fetched base; untracked or locally modified
+actor policy cannot authorize the receipt. `GH_HOST`, plaintext HTTP,
 non-GitHub hosts, and test
 selection cannot create an acceptance exception. It emits
 `TRUSTED_BASE_HIGH_RISK_ACCEPTED` only for an exact closed merged
@@ -488,8 +489,8 @@ operator-owned absolute executable seams documented in
 `docs/trust-and-preflight.md`. The JSON receipt binds repository, PR, head, merge, base,
 policy source, remote/ref, its independent ref-anchor source and any advertised
 remote-default object ID, and every high-risk path. When repo-local actor policy
-is selected automatically, the receipt also binds its fetched source and
-content digest. This is not manual
+is selected automatically or explicitly, the receipt also binds its fetched
+source, content digest, and file mode. This is not manual
 acknowledgement and cannot be inferred from PR text or green checks; every other
 blocker remains in force.
 

@@ -6259,6 +6259,65 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_pinned_env_ruby_gh_scrubs_checkout_ruby_startup_injection
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      startup_marker = File.join(repo_root, "ruby-startup.log")
+      File.write(
+        File.join(repo_root, "checkout_startup.rb"),
+        "File.write(#{startup_marker.inspect}, \"checkout startup executed\\n\")\n"
+      )
+      File.write(provenance.fetch(:trusted_gh), <<~RUBY)
+        #!/usr/bin/env ruby
+        File.open(#{provenance.fetch(:trusted_gh_marker).inspect}, "a") { |file| file.puts(ARGV.join(" ")) }
+        exec(#{provenance.fetch(:fixture_gh).inspect}, *ARGV)
+      RUBY
+      FileUtils.chmod(0o755, provenance.fetch(:trusted_gh))
+
+      out, status = run_trusted_base_preflight(
+        env.merge("RUBYLIB" => ".", "RUBYOPT" => "-rcheckout_startup"),
+        trust_config_path,
+        repo_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      refute_path_exists startup_marker
+    end
+  end
+
+  def test_trusted_gh_environment_preserves_required_state_and_scrubs_startup_loaders_and_ambient_path
+    with_trusted_base_preflight do |env, _trust_config_path, _repo_root, provenance|
+      ambient_shim_dir = Dir.mktmpdir("ambient-gh-shims", Dir.home)
+      gh_config_dir = Dir.mktmpdir("trusted-gh-config", Dir.home)
+      preserved = {
+        "GH_TOKEN" => "test-token",
+        "HTTPS_PROXY" => "https://proxy.example",
+        "LANG" => "en_US.UTF-8",
+        "LC_CTYPE" => "en_US.UTF-8"
+      }
+      startup_loaders = %w[
+        BASH_ENV BUNDLE_GEMFILE DYLD_INSERT_LIBRARIES ENV LD_PRELOAD NODE_OPTIONS PERL5OPT
+        PYTHONPATH RUBYLIB RUBYOPT GITHUB_API_URL GITHUB_GRAPHQL_URL SSL_CERT_DIR SSL_CERT_FILE
+      ].to_h { |name| [name, "checkout-controlled"] }
+
+      actual = with_env(
+        env.merge(preserved).merge(startup_loaders).merge("GH_CONFIG_DIR" => gh_config_dir, "PATH" => ambient_shim_dir)
+      ) do
+        trusted_gh_environment
+      end
+
+      preserved.each { |name, value| assert_equal value, actual[name], name }
+      assert_equal File.realpath(gh_config_dir), actual["GH_CONFIG_DIR"]
+      startup_loaders.each_key { |name| refute actual.key?(name), name }
+      refute_includes actual.fetch("PATH").split(File::PATH_SEPARATOR), File.realpath(ambient_shim_dir)
+      assert_includes actual.fetch("PATH").split(File::PATH_SEPARATOR), File.dirname(File.realpath(RbConfig.ruby))
+      refute_includes actual.fetch("PATH").split(File::PATH_SEPARATOR), File.dirname(provenance.fetch(:trusted_gh))
+    ensure
+      FileUtils.remove_entry_secure(ambient_shim_dir) if ambient_shim_dir && File.exist?(ambient_shim_dir)
+      FileUtils.remove_entry_secure(gh_config_dir) if gh_config_dir && File.exist?(gh_config_dir)
+    end
+  end
+
   def test_trusted_base_rejects_path_git_lie_about_explicit_config_scope
     with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
       path_git = File.join(env.fetch("PATH").split(File::PATH_SEPARATOR).first, "git")
@@ -8803,7 +8862,9 @@ class PrSecurityPreflightTest < Minitest::Test
       previous_gh_active = TrustedGhState.active if defined?(TrustedGhState)
       TrustedGhState.executable = nil if defined?(TrustedGhState)
       TrustedGhState.active = false if defined?(TrustedGhState)
-      yield fixture_env, trust_config_path, repo_root, provenance
+      with_trusted_gh_fixture_environment do
+        yield fixture_env, trust_config_path, repo_root, provenance
+      end
     ensure
       @trusted_base_operations&.delete(repo_root)
       if defined?(TrustedGhState)
@@ -8832,6 +8893,19 @@ class PrSecurityPreflightTest < Minitest::Test
       end
     end
     [stdout + stderr, TestCommandStatus.new(status)]
+  end
+
+  def with_trusted_gh_fixture_environment
+    original = Object.instance_method(:trusted_gh_environment)
+    Object.send(:define_method, :trusted_gh_environment) do
+      fixture_environment = ENV.to_h.select { |name, _value| name.start_with?("PREFLIGHT_TEST_") }
+      original.bind_call(self).merge(fixture_environment)
+    end
+    Object.send(:private, :trusted_gh_environment)
+    yield
+  ensure
+    Object.send(:define_method, :trusted_gh_environment, original) if original
+    Object.send(:private, :trusted_gh_environment)
   end
 
   def with_trusted_git_probe_fault(matcher, response)

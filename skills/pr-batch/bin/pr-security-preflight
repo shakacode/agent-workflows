@@ -5,6 +5,7 @@ require "digest"
 require "json"
 require "open3"
 require "optparse"
+require "rbconfig"
 require "shellwords"
 # Ruby versions before 3.2 do not load Set by default.
 # rubocop:disable Lint/RedundantRequireStatement
@@ -213,20 +214,53 @@ def trusted_gh_executable
   TrustedGhState.executable ||= resolve_trusted_gh_executable.freeze
 end
 
+TRUSTED_GH_FIXED_PATH_DIRECTORIES = %w[
+  /usr/bin /bin /usr/sbin /sbin
+].freeze
+TRUSTED_GH_PRESERVED_ENV_NAMES = %w[
+  ALL_PROXY GH_ENTERPRISE_TOKEN GH_HOST GH_HTTP_TIMEOUT GH_NO_EXTENSION_UPDATE_NOTIFIER
+  GH_NO_UPDATE_NOTIFIER GH_PROMPT_DISABLED GH_REPO GH_TOKEN GITHUB_ENTERPRISE_TOKEN
+  GITHUB_TOKEN HTTPS_PROXY HTTP_PROXY LANG LANGUAGE NO_PROXY all_proxy http_proxy https_proxy no_proxy
+].freeze
+TRUSTED_GH_CONFIG_DIRECTORY_ENV_NAMES = %w[GH_CONFIG_DIR HOME XDG_CONFIG_HOME].freeze
+
+def canonical_trusted_gh_directory(directory, prohibited_roots: trusted_executable_prohibited_roots)
+  return if directory.to_s.empty? || File.absolute_path(directory) != directory
+  return unless File.directory?(directory)
+
+  canonical = File.realpath(directory)
+  return if prohibited_roots.any? { |root| trusted_path_within_root?(canonical, root) }
+
+  canonical
+rescue ArgumentError, SystemCallError
+  nil
+end
+
 def trusted_gh_path
   prohibited_roots = trusted_executable_prohibited_roots
-  directories = [File.dirname(trusted_gh_executable), *ENV.fetch("PATH", "").split(File::PATH_SEPARATOR, -1)]
+  directories = [
+    File.dirname(File.realpath(RbConfig.ruby)),
+    *TRUSTED_GH_FIXED_PATH_DIRECTORIES
+  ]
   directories.filter_map do |directory|
-    next if directory.empty? || File.absolute_path(directory) != directory
-    next unless File.directory?(directory)
-
-    canonical = File.realpath(directory)
-    next if prohibited_roots.any? { |root| trusted_path_within_root?(canonical, root) }
-
-    canonical
-  rescue ArgumentError, SystemCallError
-    nil
+    canonical_trusted_gh_directory(directory, prohibited_roots:)
   end.uniq.join(File::PATH_SEPARATOR)
+end
+
+def trusted_gh_environment
+  environment = TRUSTED_GH_PRESERVED_ENV_NAMES.filter_map do |name|
+    [name, ENV.fetch(name)] if ENV.key?(name)
+  end.to_h
+  ENV.each do |name, value|
+    environment[name] = value if name.match?(/\ALC_[A-Z0-9_]+\z/)
+  end
+
+  prohibited_roots = trusted_executable_prohibited_roots
+  TRUSTED_GH_CONFIG_DIRECTORY_ENV_NAMES.each do |name|
+    directory = canonical_trusted_gh_directory(ENV.fetch(name, nil), prohibited_roots:)
+    environment[name] = directory if directory
+  end
+  environment.merge("PATH" => trusted_gh_path)
 end
 
 GH_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GH_TIMEOUT_SECONDS", "60"))
@@ -400,11 +434,11 @@ def run_gh(*args)
   status = nil
   trusted = TrustedGhState.active
   executable = trusted ? trusted_gh_executable : "gh"
-  environment = git_probe_env
-  environment = environment.merge("PATH" => trusted_gh_path) if trusted
+  environment = trusted ? trusted_gh_environment : git_probe_env
+  spawn_options = trusted ? { unsetenv_others: true } : {}
 
   Timeout.timeout(GH_TIMEOUT_SECONDS) do
-    stdout, stderr, status = Open3.capture3(environment, executable, *args)
+    stdout, stderr, status = Open3.capture3(environment, executable, *args, **spawn_options)
   end
 
   # Force UTF-8 so non-ASCII gh output (issue bodies, author names) survives LANG=C.
