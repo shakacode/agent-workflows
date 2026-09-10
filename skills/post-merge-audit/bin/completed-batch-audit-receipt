@@ -2198,7 +2198,9 @@ module CompletedBatchAuditReceipt
     "Usage: completed-batch-audit-receipt <publish|replay|supersede> --expected-batch-id ID " \
       "--targets-json PATH --workflow-config PATH (--receipt PATH | --reference-file PATH|-) " \
       "--applicability-proof PATH --applicability-proof-sha256 sha256:... " \
-      "[--publication-preflight PATH] [--accepted-deferral PATH] [--other-blocker TEXT ...]"
+      "[--publication-preflight PATH] [--accepted-deferral PATH] [--other-blocker TEXT ...]. " \
+      "Before publish or supersede, export AGENT_COMMENT_RUNNER, AGENT_COMMENT_HOST, and " \
+      "AGENT_COMMENT_TASK_OR_RUN."
   end
 end
 

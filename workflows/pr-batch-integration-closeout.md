@@ -1327,9 +1327,9 @@ accounting ledger or readiness gate.
 Use two mutually exclusive semantic states when an Agent Workflows run has
 finished all agent-owned work and the next action genuinely belongs to a human:
 
-- `human-attention:walkthrough` — the complete exact-head walkthrough is ready
+- `walkthrough` — the complete exact-head walkthrough is ready
   for human review.
-- `human-attention:merge` — every ordinary exact-head gate has passed and the
+- `merge` — every ordinary exact-head gate has passed and the
   remaining decision is whether to merge.
 
 These are queue states, not permanent PR classifications. Remove them when the
@@ -1341,13 +1341,13 @@ required, and repository-specific overrides are optional:
 ```yaml
 human_attention:
   labels:
-    walkthrough: human-attention:walkthrough
-    merge: human-attention:merge
+    walkthrough: <consumer-defined walkthrough label>
+    merge: <consumer-defined merge label>
   repositories:
     OWNER/REPO:
       labels:
-        walkthrough: custom-walkthrough-label
-        merge: custom-merge-label
+        walkthrough: <optional repository walkthrough label>
+        merge: <optional repository merge label>
 ```
 
 Resolve `PR_BATCH_SKILL_DIR` through the normal installed/shared or repo-pinned

@@ -43,8 +43,18 @@ module HumanAttention
 
     labels = base_labels.dup
     repositories = config.fetch("repositories", {})
-    if repositories.is_a?(Hash) && repositories.key?(repo)
-      entry = repositories.fetch(repo) || {}
+    if repositories.is_a?(Hash)
+      matching_repositories = repositories.keys.select do |configured_repo|
+        configured_repo.is_a?(String) && configured_repo.casecmp?(repo)
+      end
+      if matching_repositories.length > 1
+        raise Error, "repository configuration for #{repo} is ambiguous"
+      end
+
+      repository_key = matching_repositories.first
+    end
+    if repository_key
+      entry = repositories.fetch(repository_key) || {}
       raise Error, "repository configuration for #{repo} must be a mapping" unless entry.is_a?(Hash)
 
       labels.merge!(validate_labels(entry.fetch("labels", {})))

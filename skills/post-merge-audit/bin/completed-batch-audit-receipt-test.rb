@@ -2088,6 +2088,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_equal 64, status.exitstatus
   end
 
+  def test_cli_usage_documents_required_comment_attribution_context
+    usage = CompletedBatchAuditReceipt.usage
+
+    %w[AGENT_COMMENT_RUNNER AGENT_COMMENT_HOST AGENT_COMMENT_TASK_OR_RUN].each do |variable|
+      assert_includes usage, variable
+    end
+  end
+
   def test_complete_publish_cli_requires_explicit_workflow_config
     with_fake_gh do |env, directory|
       targets_path = write_json(

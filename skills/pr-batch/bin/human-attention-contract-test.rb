@@ -8,10 +8,13 @@ ROOT = File.expand_path("../../..", __dir__)
 class HumanAttentionContractTest < Minitest::Test
   def test_closeout_routes_human_attention_and_attribution_helpers
     closeout = File.read(File.join(ROOT, "workflows/pr-batch-integration-closeout.md"))
+    human_attention = closeout[/\n## GitHub Human Attention\n.*?\n## /m]
 
-    assert_includes closeout, "## GitHub Human Attention"
-    assert_includes closeout, "`human-attention:walkthrough`"
-    assert_includes closeout, "`human-attention:merge`"
+    refute_nil human_attention
+    assert_includes human_attention, "`walkthrough`"
+    assert_includes human_attention, "`merge`"
+    refute_includes human_attention, "`human-attention:walkthrough`"
+    refute_includes human_attention, "`human-attention:merge`"
     assert_includes closeout, "${PR_BATCH_SKILL_DIR}/bin/human-attention"
     assert_includes closeout, "--repo-root"
     assert_includes closeout, "github-comment-envelope"
@@ -54,6 +57,16 @@ class HumanAttentionContractTest < Minitest::Test
     assert_equal 2, verify_fix.scan("${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope").length
     refute_includes verify_fix, "gh pr comment"
     refute_includes verify_fix, "gh issue comment"
+  end
+
+  def test_post_merge_audit_documents_comment_attribution_context
+    skill = File.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"))
+    workflow = File.read(File.join(ROOT, "workflows/post-merge-audit.md"))
+
+    %w[AGENT_COMMENT_RUNNER AGENT_COMMENT_HOST AGENT_COMMENT_TASK_OR_RUN].each do |variable|
+      assert_includes skill, variable
+      assert_includes workflow, variable
+    end
   end
 
   def test_repository_validation_runs_the_new_helper_tests

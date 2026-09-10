@@ -84,6 +84,46 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  def test_labels_for_matches_repository_overrides_case_insensitively
+    config = <<~YAML
+      ---
+      human_attention:
+        labels:
+          walkthrough: needs-walkthrough
+          merge: needs-merge
+        repositories:
+          Acme/Widgets:
+            labels:
+              merge: repository-merge
+    YAML
+    with_repo_config(config) do |root|
+      labels = HumanAttention.labels_for(HumanAttention.load_config(root), "acme/widgets")
+
+      assert_equal "needs-walkthrough", labels.fetch("walkthrough")
+      assert_equal "repository-merge", labels.fetch("merge")
+    end
+  end
+
+  def test_labels_for_rejects_case_insensitive_duplicate_repository_overrides
+    config = <<~YAML
+      ---
+      human_attention:
+        labels:
+          walkthrough: needs-walkthrough
+          merge: needs-merge
+        repositories:
+          Acme/Widgets: {}
+          acme/widgets: {}
+    YAML
+    with_repo_config(config) do |root|
+      error = assert_raises(HumanAttention::Error) do
+        HumanAttention.labels_for(HumanAttention.load_config(root), "ACME/WIDGETS")
+      end
+
+      assert_includes error.message, "is ambiguous"
+    end
+  end
+
   def test_library_classify_rejects_both_semantic_labels
     with_repo_config(LABEL_POLICY) do |root|
       labels = HumanAttention.labels_for(HumanAttention.load_config(root), "acme/widgets")
