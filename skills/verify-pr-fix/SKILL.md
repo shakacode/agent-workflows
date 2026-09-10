@@ -82,12 +82,14 @@ Memorable invocation: `$verify-pr-fix <PR>` or "manually verify this fix and rep
    temp file and store its path in `comment_body_file`. Resolve `PR_BATCH_SKILL_DIR` from an explicit environment value, the `pr-batch` sibling of
    the exact loaded skill directory, or repo-local `.agents/skills/pr-batch`, in that order; stop with a
    precise blocker if none exists. Send the file through the helper's stdin explicitly:
+
    ```bash
    "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
      --repo "${REPO}" --number "${PR_NUMBER}" \
      --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
      --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" < "${comment_body_file}"
    ```
+
    For local evidence, add a repeatable
    `--attach 'path#alt text'` to that helper command for images (omit `#alt text` for video). The helper
    preserves the envelope while routing the upload through the GitHub CLI attachment path. Attachments
