@@ -1555,6 +1555,20 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_equal "approve", payload.fetch("decision")
   end
 
+  def test_decision_marker_parser_binds_multiple_and_repo_path_gates_to_visible_summary
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    gates = ["changed-files-limit", "repo-path:checkout-hot-path"]
+    body = human_first_decision_body(head_sha: HEAD_SHA, gates:, evidence: url)
+
+    payload = AutonomousMergeDecision.parse(body)
+
+    refute_nil payload
+    assert_equal gates, payload.fetch("triggered_gates")
+    assert_nil AutonomousMergeDecision.parse(
+      body.sub("Repository path: checkout hot path", "Repository path: checkout path")
+    )
+  end
+
   def test_decision_marker_parser_rejects_malformed_human_first_receipts
     url = "https://github.com/example/repo/pull/1#issuecomment-1"
     valid = human_first_decision_body(
