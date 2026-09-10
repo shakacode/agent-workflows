@@ -84,6 +84,7 @@ class HumanAttentionContractTest < Minitest::Test
     stale_sweep = File.read(File.join(ROOT, "skills/pr-batch/bin/stale-assignment-sweep"))
     audit_receipt = File.read(File.join(ROOT, "skills/post-merge-audit/bin/completed-batch-audit-receipt"))
     verify_fix = File.read(File.join(ROOT, "skills/verify-pr-fix/SKILL.md"))
+    manual_testing = File.read(File.join(ROOT, "skills/manual-testing/SKILL.md"))
 
     assert_includes stale_sweep, "GitHubCommentEnvelope.render"
     assert_includes audit_receipt, "GitHubCommentEnvelope.render"
@@ -94,6 +95,10 @@ class HumanAttentionContractTest < Minitest::Test
     assert_equal 2, verify_fix.scan("${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope").length
     refute_includes verify_fix, "gh pr comment"
     refute_includes verify_fix, "gh issue comment"
+    assert_includes manual_testing, "PR_BATCH_SKILL_DIR"
+    assert_includes manual_testing, "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope"
+    refute_includes manual_testing, "gh pr comment"
+    refute_includes manual_testing, "gh issue comment"
   end
 
   def test_post_merge_audit_documents_comment_attribution_context
