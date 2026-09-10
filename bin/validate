@@ -59,6 +59,7 @@ ruby bin/codex-plugin-manifest-check-test.rb
 ruby bin/validate-claude-skill-metadata-test.rb
 ruby bin/validate-openai-agent-metadata-test.rb
 ruby bin/host-adapter-syntax-test.rb
+ruby bin/pr-validation-scope-test.rb
 
 echo "== status unit tests =="
 ruby bin/agent-workflows-refresh-test.rb
