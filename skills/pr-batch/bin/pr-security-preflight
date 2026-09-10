@@ -45,16 +45,26 @@ def trusted_git_repository_root
 end
 
 def trusted_structural_git_repository_root(chdir)
+  roots, error = trusted_structural_git_repository_roots(chdir)
+  return [nil, error] if error
+  return [roots.first, nil] unless roots.empty?
+
+  [nil, TRUSTED_NO_STRUCTURAL_REPOSITORY]
+end
+
+def trusted_structural_git_repository_roots(chdir)
   current = File.realpath(chdir)
+  roots = []
   loop do
     git_marker = File.join(current, ".git")
-    return [nil, "trusted checkout .git marker is symlinked"] if File.symlink?(git_marker)
-    return [current, nil] if File.file?(git_marker) || File.directory?(git_marker)
+    if File.symlink?(git_marker)
+      return [nil, "trusted checkout .git marker is symlinked"] if roots.empty?
+    elsif File.file?(git_marker) || File.directory?(git_marker)
+      roots << current
+    end
 
     parent = File.dirname(current)
-    if parent == current
-      return [nil, TRUSTED_NO_STRUCTURAL_REPOSITORY]
-    end
+    return [roots, nil] if parent == current
 
     current = parent
   end
@@ -79,7 +89,13 @@ def trusted_git_temporary_roots
 end
 
 def trusted_executable_prohibited_roots
-  [trusted_git_repository_root, *trusted_git_temporary_roots].filter_map do |path|
+  repository_roots, = trusted_structural_git_repository_roots(Dir.pwd)
+  prohibited_roots = [
+    trusted_git_repository_root,
+    *repository_roots.to_a,
+    *trusted_git_temporary_roots
+  ]
+  prohibited_roots.filter_map do |path|
     File.realpath(path)
   rescue SystemCallError
     nil

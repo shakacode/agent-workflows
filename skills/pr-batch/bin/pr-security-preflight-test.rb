@@ -6281,6 +6281,32 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_gh_resolution_excludes_enclosing_repository_past_gitfile
+    Dir.mktmpdir("trusted-gh-gitfile-repository", Dir.home) do |dir|
+      repository = File.join(dir, "repo")
+      nested = File.join(repository, "nested")
+      bin = File.join(repository, "bin")
+      FileUtils.mkdir_p([nested, bin])
+      init_git_root(repository)
+      File.write(File.join(nested, ".git"), "gitdir: ../.git\n")
+      assert_equal File.realpath(File.join(repository, ".git")),
+                   git_output!("-C", nested, "rev-parse", "--absolute-git-dir")
+
+      executable = File.join(bin, "gh")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, executable)
+
+      error = Dir.chdir(nested) do
+        with_env(
+          "PATH" => bin,
+          "PR_SECURITY_PREFLIGHT_TRUSTED_GH_EXECUTABLE" => nil
+        ) { assert_raises(RuntimeError) { resolve_trusted_gh_executable } }
+      end
+
+      assert_includes error.message, "no trusted GitHub CLI executable is available"
+    end
+  end
+
   def test_trusted_ssh_operator_executable_override_is_canonicalized
     Dir.mktmpdir("trusted-ssh-installation", Dir.home) do |dir|
       executable = File.join(dir, "ssh-real")
