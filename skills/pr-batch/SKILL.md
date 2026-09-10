@@ -40,7 +40,8 @@ The completed-batch closeout validation contract requires `pr-batch` and
 test intentionally loads the production receipt parser from the sibling
 `post-merge-audit` skill; an isolated pinned copy must include that companion
 or stop with a precise missing-companion blocker.
-Execute the receipt and archive replay through the canonical
+Apply [Ordinary PR Closeout](../../workflows/pr-batch-integration-closeout.md#ordinary-pr-closeout)
+first. Only for a required audit, execute receipt and archive replay through the canonical
 [Completed-Batch Audit Receipt And Archive Replay](../../workflows/pr-batch-integration-closeout.md#completed-batch-audit-receipt-and-archive-replay)
 component; do not mirror that policy here.
 
