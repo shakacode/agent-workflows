@@ -2210,7 +2210,8 @@ end
 def clean_for_trusted_base_high_risk_acceptance?(result)
   result.fetch(:target_is_pr) && result.fetch(:trusted_source) &&
     result.fetch(:all_participants_visible) &&
-    result.fetch(:graph_coverage_findings).empty? && result.fetch(:participant_findings).empty? &&
+    result.fetch(:graph_coverage_findings).empty? && result.fetch(:diff_coverage_findings).empty? &&
+    result.fetch(:participant_findings).empty? &&
     result.fetch(:untrusted_interactions).empty? && result.fetch(:suspicious).empty? &&
     result.fetch(:suspicious_warnings).empty?
 end

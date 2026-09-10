@@ -2430,6 +2430,22 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_rejects_acknowledged_oversized_diff_coverage_gap
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_OVERSIZED_DIFF" => "1" }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(
+        env,
+        trust_config_path,
+        repo_root,
+        extra_args: ["--acknowledge-risk", "123:github-api-coverage"]
+      )
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "Acknowledged security preflight findings:\n- #123: GitHub API coverage truncated"
+    end
+  end
+
   def test_trusted_base_rejects_automatically_selected_untracked_repo_local_trust_config
     with_trusted_base_preflight do |env, _trust_config_path, repo_root, provenance|
       repo_config = File.join(repo_root, DEFAULT_TRUST_CONFIG)
@@ -8628,14 +8644,16 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
-  def run_trusted_base_preflight(env, trust_config_path, repo_root, chdir: repo_root)
+  def run_trusted_base_preflight(env, trust_config_path, repo_root, chdir: repo_root, extra_args: [])
     status = nil
     stdout, stderr = with_env(env.merge(clean_git_env)) do
       Dir.chdir(chdir) do
         capture_io do
           args = ["--repo", "owner/repo"]
           args.concat(["--trust-config", trust_config_path]) if trust_config_path
-          args.concat(["--strict-trust", "--fail-on-high-risk-files", "123"])
+          args.concat(["--strict-trust", "--fail-on-high-risk-files"])
+          args.concat(extra_args)
+          args << "123"
           status = run_preflight(
             args,
             trusted_base_operations: @trusted_base_operations.fetch(repo_root)
@@ -9694,6 +9712,10 @@ class PrSecurityPreflightTest < Minitest::Test
           exit 1
         fi
         if [ "$mode" = "trusted-base-high-risk" ]; then
+          if [ "${PREFLIGHT_TEST_OVERSIZED_DIFF:-}" = "1" ]; then
+            printf "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000) (https://api.github.com/repos/owner/repo/pulls/123)\nPullRequest.diff too_large\n" >&2
+            exit 1
+          fi
           if [ "${PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED:-}" = "previous" ]; then
             cat <<'DIFF'
       diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
