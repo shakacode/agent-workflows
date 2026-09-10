@@ -6257,6 +6257,30 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_gh_resolution_uses_structural_root_past_special_git_marker
+    Dir.mktmpdir("trusted-gh-structural-repository", Dir.home) do |dir|
+      repository = File.join(dir, "repo")
+      nested = File.join(repository, "nested")
+      bin = File.join(repository, "bin")
+      FileUtils.mkdir_p([nested, bin])
+      init_git_root(repository)
+      raise "could not create FIFO fixture" unless system(REAL_MKFIFO, File.join(nested, ".git"))
+
+      executable = File.join(bin, "gh")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, executable)
+
+      error = Dir.chdir(nested) do
+        with_env(
+          "PATH" => bin,
+          "PR_SECURITY_PREFLIGHT_TRUSTED_GH_EXECUTABLE" => nil
+        ) { assert_raises(RuntimeError) { resolve_trusted_gh_executable } }
+      end
+
+      assert_includes error.message, "no trusted GitHub CLI executable is available"
+    end
+  end
+
   def test_trusted_ssh_operator_executable_override_is_canonicalized
     Dir.mktmpdir("trusted-ssh-installation", Dir.home) do |dir|
       executable = File.join(dir, "ssh-real")

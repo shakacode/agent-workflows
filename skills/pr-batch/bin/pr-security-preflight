@@ -40,15 +40,8 @@ TRUSTED_CHECKOUT_CONFIG_ARGS = %w[
 ].freeze
 
 def trusted_git_repository_root
-  current = File.realpath(Dir.pwd)
-  loop do
-    return current if File.exist?(File.join(current, ".git"))
-
-    parent = File.dirname(current)
-    return File.realpath(Dir.pwd) if parent == current
-
-    current = parent
-  end
+  root, = trusted_structural_git_repository_root(Dir.pwd)
+  root || File.realpath(Dir.pwd)
 end
 
 def trusted_structural_git_repository_root(chdir)
