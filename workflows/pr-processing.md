@@ -2703,6 +2703,43 @@ Canonical rules: [Hosted CI Backpressure](pr-batch-integration-closeout.md#hoste
 
 Canonical rules: [CI Polling And Live State](pr-batch-integration-closeout.md#ci-polling-and-live-state). This heading remains as a compatibility route and must not mirror the component.
 
+## Initial-Pass Optional-Nit Cutoff
+
+During the initial review of the accepted work, consider inexpensive, useful,
+in-scope optional improvements and select any worth doing for one consolidated
+fix pass. Optional naming, wording, formatting, and cleanup suggestions are
+opportunities, never mandatory merely because a reviewer listed them. Record
+the selection and its completion in the existing review/task history.
+
+After that initial selection, later passes verify accepted fixes, unresolved
+substantive findings, and demonstrated consequential defects. A new optional
+suggestion cannot reopen implementation, start another repair pass, or block
+completion. Triage it without a code change under the existing disposition and
+follow-up admission rules; recording it grants no implementation authority.
+Do not promote optional polish to a blocking tier just to bypass this cutoff.
+
+A consequential defect remains actionable at every phase: establish a concrete
+failure scenario and impact on correctness, security, compatibility, data,
+required behavior, or release safety. Severity labels alone are insufficient.
+Preserve independent validation, required review, CI, security, and unresolved
+genuine-defect gates. The cutoff does not waive a broken accepted fix or change
+any existing repair-round cap or automatic-continuation brake.
+
+Recover the phase and accepted selection from existing task, review, and PR
+history before triage or executable-work construction. When trusted task
+context or history establishes this is the first review of the accepted work,
+establish and record the initial phase; absence of a phase record alone does
+not establish a first review. Pushes, resumed threads,
+replacement reviewers, replacement PRs carrying the same work, and final
+whole-branch reviews retain that phase; they do not start a fresh initial pass.
+If unavailable or ambiguous history prevents establishing the phase, allow no
+fresh optional fix allowance;
+continue substantive review and recover evidence for any claimed accepted fix.
+Explicit later human scope decisions remain authoritative for the selected
+work. Broad continue, autofix, autopilot, or apply-all actions alone do not reset
+the phase. Apply this rule before entry-point action defaults and finding
+admission, including task-local re-review; keep their existing scope limits.
+
 ## Review Comment Handling
 
 Canonical rules: [Review Comment Handling](pr-batch-integration-closeout.md#review-comment-handling). This heading remains as a compatibility route and must not mirror the component.
