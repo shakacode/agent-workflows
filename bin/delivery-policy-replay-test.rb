@@ -121,6 +121,43 @@ class DeliveryPolicyReplayTest < Minitest::Test
     end
   end
 
+  def test_concurrent_code_commit_cannot_reuse_an_earlier_prose_selection
+    with_repository("low-impact") do
+      prior_head = change_prose
+      write("lib/calculator.rb", "module Calculator\n  def self.value = 2 + 3\nend\n")
+      git("add", "lib/calculator.rb")
+      shim_dir = File.join(File.dirname(@repo), "git-shim")
+      FileUtils.mkdir_p(shim_dir)
+      marker = File.join(shim_dir, "committed")
+      search_paths = ENV.fetch("PATH").split(File::PATH_SEPARATOR)
+      real_git = search_paths.map { |dir| File.join(dir, "git") }.find { |path| File.file?(path) && File.executable?(path) }
+      assert real_git
+      shim = <<~RUBY
+        #!/usr/bin/env ruby
+        require "open3"
+        real_git = #{real_git.inspect}
+        marker = #{marker.inspect}
+        if ARGV == ["rev-parse", "HEAD"] && !File.exist?(marker)
+          output, status = Open3.capture2(real_git, *ARGV)
+          abort "head read failed" unless status.success?
+          File.write(marker, "once")
+          abort "concurrent commit failed" unless system(real_git, "commit", "-qm", "concurrent staged code change")
+          print output
+        else
+          exec(real_git, *ARGV)
+        end
+      RUBY
+      File.write(File.join(shim_dir, "git"), shim)
+      File.chmod(0o755, File.join(shim_dir, "git"))
+      output, status, checks = run_gate(extra_env: { "PATH" => "#{shim_dir}:#{ENV.fetch('PATH')}" })
+      refute_equal prior_head, git("rev-parse", "HEAD")
+      refute status.success?, output
+      assert_equal %w[lint docs test], checks
+      assert_includes output, "required test: FAIL"
+      assert_includes output, "Candidate changed during validation"
+    end
+  end
+
   def test_changed_validator_policy_cannot_claim_complete_candidate_coverage
     %w[low-impact critical].each do |kind|
       %w[integration promotion].each do |phase|
