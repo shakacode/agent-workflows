@@ -41,17 +41,14 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
       /\A\s*if \[ "\$\{CUTOFF_SAFE:-0\}" = "1" \]; then\n    printf '<!-- address-review-summary -->\\n'/,
       primary
     )
-    assert_match(
-      /else\n    printf '<!-- address-review-status -->\\n'\n  fi\n  printf '🤖 \*\*%s · %s\*\*\\n\\n'/,
-      primary
-    )
+    assert_match(/else\n    printf '<!-- address-review-status -->\\n'\n  fi\n  if /, primary)
     assert_in_order(
       primary,
-      "printf '🤖 **%s · %s**\\n\\n'",
       "printf '## Review follow-up complete\\n\\n'",
       "printf '## Review follow-up needs another pass\\n\\n'",
       "printf '<details>\\n'",
       "printf '<summary>Agent details</summary>\\n\\n'",
+      "printf '**Posting runtime:** %s · %s\\n\\n' \"${POSTING_CLIENT}\" \"${POSTING_MODEL_FAMILY}\"",
       "printf '**Scan scope:** %s\\n\\n' \"${SCAN_SCOPE}\"",
       "printf '### Findings that mattered\\n'",
       "printf '### Optional suggestions\\n'",
@@ -71,7 +68,8 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     assert_includes template, 'POSTING_MODEL_FAMILY="${POSTING_MODEL_FAMILY:-UNKNOWN}"'
     refute_includes template, "\${POSTING_CLIENT:?"
     refute_includes template, "\${POSTING_MODEL_FAMILY:?"
-    assert_equal 2, template.scan("printf '🤖 **%s · %s**\\n\\n'").length
+    assert_equal 2, template.scan("printf '**Posting runtime:** %s · %s\\n\\n'").length
+    refute_includes template, "printf '🤖 **%s · %s**\\n\\n'"
   end
 
   def test_source_checkpoint_keeps_auditable_details_and_source_state
@@ -81,17 +79,17 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     )
 
     assert_match(
-      /if \[ "\$\{SOURCE_CUTOFF_SAFE\}" = "1" \]; then\n      printf '<!-- address-review-summary -->\\n'\n    else\n      printf '<!-- address-review-status -->\\n'\n    fi\n    printf '🤖 \*\*%s · %s\*\*\\n\\n'/,
+      /if \[ "\$\{SOURCE_CUTOFF_SAFE\}" = "1" \]; then\n      printf '<!-- address-review-summary -->\\n'\n    else\n      printf '<!-- address-review-status -->\\n'\n    fi\n    if /,
       source
     )
     assert_in_order(
       source,
       "printf '<!-- address-review-summary -->\\n'",
-      "printf '🤖 **%s · %s**\\n\\n'",
       "printf '## Original review follow-up complete\\n\\n'",
       "printf '## Original review follow-up needs another pass\\n\\n'",
       "printf '<details>\\n'",
       "printf '<summary>Agent details</summary>\\n\\n'",
+      "printf '**Posting runtime:** %s · %s\\n\\n' \"${POSTING_CLIENT}\" \"${POSTING_MODEL_FAMILY}\"",
       "printf '**Replacement PR:** %s\\n\\n' \"${REPLACEMENT_PR_URL}\"",
       "printf '### Carried-over review outcomes\\n'",
       "printf '%s\\n\\n' \"${SOURCE_OUTCOMES}\"",

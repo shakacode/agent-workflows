@@ -199,11 +199,11 @@ Rules for the summary comment:
   pending/unselected without a thread-level outcome, use
   `<!-- address-review-status -->` as the first line, call the comment a
   non-cutoff status, and tell the next run to use `check all reviews`.
-- Make the first visible line `🤖 **<client> · <model family>**`, using the
-  posting runtime's real client and model family (for example, `Codex · Astra`
-  or `Claude · Opus 5`). Use `UNKNOWN` for any runtime field the host does not
-  expose; never guess either value or block the workflow only because it is
-  unavailable.
+- Let `github-comment-envelope` provide the sole visible agent header. Record
+  the posting runtime's real client and model family (for example,
+  `Codex · Astra` or `Claude · Opus 5`) inside `Agent details`. Use `UNKNOWN`
+  for any runtime field the host does not expose; never guess either value or
+  block the workflow only because it is unavailable.
 - Keep the visible checkpoint human-ready: state the useful result in simple,
   concise language and say plainly when another pass is needed. Put scan
   metadata, itemized outcomes, tracking receipts, and rescan instructions in
@@ -269,7 +269,6 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
   else
     printf '<!-- address-review-status -->\n'
   fi
-  printf '🤖 **%s · %s**\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
   if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
     printf '## Review follow-up complete\n\n'
     printf 'Every review item in the selected scan has a recorded outcome, so the next routine check can start after this comment.\n\n'
@@ -279,6 +278,7 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
   fi
   printf '<details>\n'
   printf '<summary>Agent details</summary>\n\n'
+  printf '**Posting runtime:** %s · %s\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
   printf '**Scan scope:** %s\n\n' "${SCAN_SCOPE}"
   printf '### Findings that mattered\n'
   printf '%s\n\n' "<bullets for must-fix/discuss outcomes, or - None.>"
@@ -364,7 +364,6 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
     else
       printf '<!-- address-review-status -->\n'
     fi
-    printf '🤖 **%s · %s**\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
     if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
       printf '## Original review follow-up complete\n\n'
       printf 'Every carried-over review item has a recorded outcome. Future checks of the original PR can start after this comment.\n\n'
@@ -374,6 +373,7 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
     fi
     printf '<details>\n'
     printf '<summary>Agent details</summary>\n\n'
+    printf '**Posting runtime:** %s · %s\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
     printf '**Replacement PR:** %s\n\n' "${REPLACEMENT_PR_URL}"
     printf '### Carried-over review outcomes\n'
     printf '%s\n\n' "${SOURCE_OUTCOMES}"
