@@ -167,7 +167,7 @@ class HostedQaGateContractTest < Minitest::Test
     refute_match(%r{^"\$\{TRUSTED_PR_BATCH_SKILL_DIR\}/bin/hosted-qa-readiness"}, section)
   end
 
-  def test_runtime_trust_manifest_covers_the_exact_loaded_eight_file_closure
+  def test_runtime_trust_manifest_covers_the_exact_loaded_nine_file_closure
     expected_tree_paths = {
       "helper" => %w[skills/pr-batch/bin/hosted-qa-readiness .agents/skills/pr-batch/bin/hosted-qa-readiness],
       "runtime-trust-library" => %w[skills/pr-batch/lib/hosted_qa_runtime_trust.rb .agents/skills/pr-batch/lib/hosted_qa_runtime_trust.rb],
@@ -176,7 +176,8 @@ class HostedQaGateContractTest < Minitest::Test
       "autonomous-policy-glob-library" => %w[bin/agent_doctor/autonomous_merge_policy_globs.rb .agents/bin/agent_doctor/autonomous_merge_policy_globs.rb],
       "autonomous-policy-yaml-library" => %w[bin/agent_doctor/autonomous_merge_policy_yaml.rb .agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb],
       "closeout-replay-helper" => %w[skills/post-merge-audit/bin/closeout-evidence-replay .agents/skills/post-merge-audit/bin/closeout-evidence-replay],
-      "completed-publication-preflight-helper" => %w[skills/post-merge-audit/bin/completed-batch-publication-preflight .agents/skills/post-merge-audit/bin/completed-batch-publication-preflight]
+      "completed-publication-preflight-helper" => %w[skills/post-merge-audit/bin/completed-batch-publication-preflight .agents/skills/post-merge-audit/bin/completed-batch-publication-preflight],
+      "comment-envelope-library" => %w[skills/pr-batch/lib/github_comment_envelope.rb .agents/skills/pr-batch/lib/github_comment_envelope.rb]
     }
     actual_tree_paths = HostedQaRuntimeTrust::RUNTIME_SOURCES.transform_values do |source|
       source.fetch(:tree_paths)

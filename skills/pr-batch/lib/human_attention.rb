@@ -217,8 +217,19 @@ module HumanAttention
       raise Error, "PR changed while updating human-attention labels; attention state cleared"
     end
 
-    verified_state = classify(labels: verified_labels, configured_labels: labels)
-    raise Error, "human-attention label update did not reach the requested state" unless verified_state == state
+    verification_error = begin
+      verified_state = classify(labels: verified_labels, configured_labels: labels)
+      "label update did not reach the requested state" unless verified_state == state
+    rescue Error => e
+      e.message
+    end
+    if verification_error
+      clear_attention_state!(
+        github_cli:, repo:, pr_number:, labels:, current_labels: verified_labels,
+        error_prefix: "human-attention label verification mismatch"
+      )
+      raise Error, "human-attention label verification mismatch; attention state cleared: #{verification_error}"
+    end
 
     { "repo" => repo, "pr" => pr_number, "head_sha" => expected_head, "state" => state, "labels" => labels }
   rescue JSON::ParserError

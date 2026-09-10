@@ -61,6 +61,13 @@ module HostedQaRuntimeTrust
         skills/post-merge-audit/bin/completed-batch-publication-preflight
         .agents/skills/post-merge-audit/bin/completed-batch-publication-preflight
       ]
+    },
+    "comment-envelope-library" => {
+      path: File.expand_path("github_comment_envelope.rb", __dir__),
+      tree_paths: %w[
+        skills/pr-batch/lib/github_comment_envelope.rb
+        .agents/skills/pr-batch/lib/github_comment_envelope.rb
+      ]
     }
   }.freeze
 

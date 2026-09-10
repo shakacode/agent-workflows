@@ -482,9 +482,19 @@ assert(address_review_workflow.include?(public_dual_target_claim), "address-revi
 public_claim_per_target = "post or refresh one separate\n  claim comment on each PR before any non-claim mutation"
 assert(address_review.include?(public_claim_per_target), "address-review public fallback must claim both carryover targets")
 assert(address_review_workflow.include?(public_claim_per_target), "address-review workflow public fallback must claim both carryover targets")
-public_claim_edit_route = "Route every refresh and terminal fallback-claim update through `github-comment-envelope edit-issue`"
-assert(address_review.gsub(/\s+/, " ").include?(public_claim_edit_route), "address-review must route fallback claim edits through the envelope")
-assert(address_review_workflow.gsub(/\s+/, " ").include?(public_claim_edit_route), "address-review workflow must route fallback claim edits through the envelope")
+[address_review, address_review_workflow].each do |text|
+  edit_invocations = text.scan(/```bash\n(.*?)```/m).flatten.select do |block|
+    block.include?('github-comment-envelope" edit-issue')
+  end
+  assert(edit_invocations.length == 1, "address-review must define one fallback claim edit invocation")
+  invocation = edit_invocations.first
+  assert(invocation.match?(%r{printf .*\|\s+"\$\{PR_BATCH_SKILL_DIR\}/bin/github-comment-envelope" edit-issue}m),
+         "fallback claim edits must pipe the replacement body to the envelope")
+  ['--repo "${REPO}"', '--comment-id "${CLAIM_COMMENT_ID}"', '--runner "${AGENT_COMMENT_RUNNER:?}"',
+   '--host "${AGENT_COMMENT_HOST:?}"', '--task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}"'].each do |argument|
+    assert(invocation.include?(argument), "fallback claim edit invocation must include #{argument}")
+  end
+end
 all_claim_cleanup = "At a stable stop, update every acquired private heartbeat or advisory claim"
 assert(address_review.include?(all_claim_cleanup), "address-review must clean up every carryover claim")
 assert(address_review_workflow.include?(all_claim_cleanup), "address-review workflow must clean up every carryover claim")

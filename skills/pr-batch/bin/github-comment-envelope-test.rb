@@ -46,7 +46,29 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       )
     end
 
-    assert_equal "host must be a non-empty single-line value", error.message
+    assert_equal "host must be a safe non-empty single-line value", error.message
+  end
+
+  # Production break: an HTML comment terminator in the host closes the hidden
+  # envelope early while the parser still treats the attribution as valid.
+  def test_host_rejects_html_comment_terminators
+    error = assert_raises(ArgumentError) do
+      GitHubCommentEnvelope.render(
+        body: "Done.", runner: "codex", host: "Codex --> desktop", task_or_run: "task-7"
+      )
+    end
+
+    assert_equal "host must be a safe non-empty single-line value", error.message
+    refute GitHubCommentEnvelope.parse(<<~BODY)
+      🤖 Codex
+      <!-- agent-comment-attribution:v1
+      runner: codex
+      host: Codex --> desktop
+      task_or_run: task-7
+      -->
+
+      Done.
+    BODY
   end
 
   def test_classify_reports_agent_for_a_complete_envelope_or_visible_prefix

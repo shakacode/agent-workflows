@@ -216,7 +216,32 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
-  def test_trusted_base_claim_reports_all_eight_byte_identical_runtime_sources
+  # Production break: the publication preflight loads the comment-envelope
+  # library, so a trusted-base claim must reject different envelope bytes.
+  def test_trusted_base_claim_binds_the_comment_envelope_library
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
+      copy_runtime_sources(root)
+      write(root, "skills/pr-batch/lib/github_comment_envelope.rb", "# different envelope authority\n")
+      base_sha = commit!(root, "base with different comment envelope")
+      write(root, "README.md", "documentation only\n")
+      head_sha = commit!(root, "head")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        helper_provenance: "trusted-base:#{base_sha}"
+      )
+
+      refute status.success?
+      assert_equal "UNKNOWN", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "comment-envelope-library is not byte-identical to any required source in trusted base #{base_sha}"
+    end
+  end
+
+  def test_trusted_base_claim_reports_all_nine_byte_identical_runtime_sources
     with_repo do |root|
       write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
       copy_runtime_sources(root)
@@ -234,7 +259,7 @@ class HostedQaReadinessTest < Minitest::Test
       assert status.success?, result
       assert_equal "NOT_APPLICABLE", result.fetch("verdict")
       assert_equal "trusted-base:#{base_sha}", result.fetch("helper_provenance")
-      assert_equal 8, result.dig("helper_trust", "manifest").length
+      assert_equal 9, result.dig("helper_trust", "manifest").length
       assert_equal HostedQaRuntimeTrust::RUNTIME_SOURCES.transform_values { |source| source.fetch(:tree_paths).first },
                    result.dig("helper_trust", "manifest")
     end
@@ -260,7 +285,7 @@ class HostedQaReadinessTest < Minitest::Test
       assert_equal "mechanically-verified", result.dig("helper_trust", "status")
       assert_equal HostedQaRuntimeTrust::RUNTIME_SOURCES.keys.sort,
                    result.dig("helper_trust", "manifest").keys.sort
-      assert_equal 8, result.dig("helper_trust", "manifest").length
+      assert_equal 9, result.dig("helper_trust", "manifest").length
     end
   end
 

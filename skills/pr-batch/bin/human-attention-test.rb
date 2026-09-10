@@ -557,6 +557,17 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  # Production break: a successful edit can read back both semantic labels or
+  # the wrong single label, and returning immediately would leave stale human
+  # attention state on the PR.
+  def test_transition_clears_both_semantic_labels_after_verification
+    assert_verification_mismatch_cleared("both")
+  end
+
+  def test_transition_clears_the_wrong_semantic_label_after_verification
+    assert_verification_mismatch_cleared("wrong")
+  end
+
   # Production break: GitHub can partially apply a combined remove/add edit
   # before returning failure, leaving a PR with both semantic labels.
   def test_transition_clears_semantic_labels_after_a_partially_failed_edit
@@ -615,6 +626,49 @@ class HumanAttentionTest < Minitest::Test
   end
 
   private
+
+  def assert_verification_mismatch_cleared(mismatch)
+    with_repo_config(LABEL_POLICY) do |root|
+      fake_gh = File.join(root, "gh")
+      calls = File.join(root, "calls")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        calls = ENV.fetch("CALLS")
+        File.open(calls, "a") { |file| file.puts(ARGV.join("\t")) }
+        if ARGV[0, 2] == ["pr", "view"]
+          view_count = File.readlines(calls).count { |line| line.start_with?("pr\tview") }
+          labels = case view_count
+                   when 1 then ["human-attention:walkthrough"]
+                   when 2
+                     ENV.fetch("MISMATCH") == "both" ?
+                       ["human-attention:walkthrough", "human-attention:merge"] :
+                       ["human-attention:walkthrough"]
+                   else []
+                   end
+          puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}", "labels" => labels.map { |name| {"name" => name} }})
+        end
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "transition", "--repo-root", root, "--repo", "acme/widgets", "--pr", "7",
+        "--state", "merge", "--expected-head", ("a" * 40).to_s,
+        env: { "HUMAN_ATTENTION_GH" => fake_gh, "CALLS" => calls, "MISMATCH" => mismatch }
+      )
+
+      refute_predicate result[:status], :success?, mismatch
+      assert_includes result[:stderr], "verification mismatch; attention state cleared"
+      edits = File.readlines(calls, chomp: true).select { |line| line.start_with?("pr\tedit") }
+      assert_equal 2, edits.length, mismatch
+      assert_includes edits.last, "--remove-label\thuman-attention:walkthrough"
+      if mismatch == "both"
+        assert_includes edits.last, "--remove-label\thuman-attention:merge"
+      end
+      view_count = File.readlines(calls).count { |line| line.start_with?("pr\tview") }
+      assert_equal 3, view_count, mismatch
+    end
+  end
 
   def with_repo_config(contents)
     Dir.mktmpdir("human-attention-test") do |root|

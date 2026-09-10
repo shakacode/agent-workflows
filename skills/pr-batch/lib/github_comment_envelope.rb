@@ -8,7 +8,7 @@ module GitHubCommentEnvelope
     "claude" => "Claude"
   }.freeze
   VALUE_PATTERN = %r{\A[A-Za-z0-9][A-Za-z0-9._:/-]*\z}
-  HOST_PATTERN = /\A[^\r\n]+\z/
+  HOST_PATTERN = /\A(?!.*-->)[^\r\n]+\z/
 
   module_function
 
@@ -70,7 +70,7 @@ module GitHubCommentEnvelope
   def normalized_value(value, name, pattern: VALUE_PATTERN)
     value = value.to_s.strip
     unless value.match?(pattern)
-      message = name == "host" ? "host must be a non-empty single-line value" : "#{name} is invalid"
+      message = name == "host" ? "host must be a safe non-empty single-line value" : "#{name} is invalid"
       raise ArgumentError, message
     end
 
