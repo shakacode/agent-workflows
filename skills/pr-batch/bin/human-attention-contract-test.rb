@@ -12,6 +12,8 @@ class HumanAttentionContractTest < Minitest::Test
     assert_includes closeout, "## GitHub Human Attention"
     assert_includes closeout, "`human-attention:walkthrough`"
     assert_includes closeout, "`human-attention:merge`"
+    assert_includes closeout, "${PR_BATCH_SKILL_DIR}/bin/human-attention"
+    assert_includes closeout, "--repo-root"
     assert_includes closeout, "github-comment-envelope"
   end
 
@@ -29,6 +31,14 @@ class HumanAttentionContractTest < Minitest::Test
     assert_includes actions, "github-comment-envelope post-issue"
     assert_includes actions, "github-comment-envelope post-reply"
     assert_includes templates, "github-comment-envelope post-issue"
+  end
+
+  def test_address_review_filters_primary_checkpoints_through_unwrapped_payloads
+    workflow = File.read(File.join(ROOT, "workflows/address-review.md"))
+    filter_step = workflow[/\n5\. Filter comments:\n.*?\n6\./m]
+
+    refute_nil filter_step
+    assert_includes filter_step, ".payload_body // .body // \"\""
   end
 
   def test_other_shared_comment_producers_use_the_envelope

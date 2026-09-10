@@ -765,7 +765,7 @@ before mutating GitHub or the branch.
   not be the only cleanup step.
 
 5. Filter comments:
-   - Never triage prior workflow summary/status/claim comments. Skip any issue comment whose body starts with `<!-- address-review-summary -->`, `<!-- address-review-status -->`, or `<!-- codex-claim v1` on its very first line; only the summary marker is a cutoff checkpoint.
+   - Never triage prior workflow summary/status/claim comments. For normalized issue comments, inspect `.payload_body // .body // ""` so an attribution envelope cannot hide the workflow marker. Skip any issue comment whose unwrapped payload starts with `<!-- address-review-summary -->`, `<!-- address-review-status -->`, or `<!-- codex-claim v1` on its very first line; only the summary marker is a cutoff checkpoint.
    - On a source PR, also skip `<!-- address-review-source-reply -->` comments only when their author matches `SOURCE_REVIEW_ACTOR`; a different author using that marker remains a source candidate.
    - Skip resolved threads.
    - Do not create standalone triage items from comments where `in_reply_to_id` is set, but use reply text as the latest thread context when it updates or narrows the unresolved concern.

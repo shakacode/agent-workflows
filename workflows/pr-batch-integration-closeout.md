@@ -1350,10 +1350,16 @@ human_attention:
         merge: custom-merge-label
 ```
 
-Use `human-attention transition` with the expected full head SHA to apply or
-clear a state. It fails closed if the PR is not open, its head moved, or both
-semantic labels are present. `human-attention desk` queries the configured
-repository set and renders a numbered mirror with the requested action,
+Resolve `PR_BATCH_SKILL_DIR` through the normal installed/shared or repo-pinned
+helper boundary and bind the trusted consumer checkout as
+`TRUSTED_CONSUMER_REPO_ROOT`. Invoke
+`${PR_BATCH_SKILL_DIR}/bin/human-attention transition --repo-root
+"${TRUSTED_CONSUMER_REPO_ROOT}"` with the repository, PR, requested state, and
+expected full head SHA to apply or clear a state. It fails closed if the PR is
+not open, its head moved, or both semantic labels are present. Invoke
+`${PR_BATCH_SKILL_DIR}/bin/human-attention desk --repo-root
+"${TRUSTED_CONSUMER_REPO_ROOT}"` to query the configured repository set and
+render a numbered mirror with the requested action,
 repository, PR title and link, reason, current head, refresh time, and any
 degraded repository. A label alone does not prove that its transition applied to
 the current head, so the desk keeps exact-head readiness unverified until the
