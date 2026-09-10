@@ -166,6 +166,19 @@ against the fresh data before mutating GitHub or the branch.
   -->
   ```
 
+  Post a new fallback claim through `github-comment-envelope post-issue` and
+  retain the returned issue-comment ID. Route every refresh and terminal
+  fallback-claim update through `github-comment-envelope edit-issue`; pipe the
+  complete replacement claim body on stdin and pass the retained ID:
+
+  ```bash
+  printf '%s' "${CLAIM_BODY}" |
+    "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" edit-issue \
+      --repo "${REPO}" --comment-id "${CLAIM_COMMENT_ID}" \
+      --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+      --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}"
+  ```
+
   Use any stable session, thread, or machine identifier available; if none is
   available, use `thread: unavailable`. Set a short bounded advisory lease,
   usually 2-4 hours for an active review run, and refresh the same comment if

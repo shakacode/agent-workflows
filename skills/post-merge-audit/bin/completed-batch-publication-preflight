@@ -1174,6 +1174,7 @@ module CompletedBatchPublicationPreflight
 
     body = comment["body"]
     return unless body.is_a?(String) && !body.empty?
+    return if GitHubCommentEnvelope.agent_authored?(body)
 
     fields = exact_marker_fields(
       body,

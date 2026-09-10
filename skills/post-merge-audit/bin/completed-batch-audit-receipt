@@ -245,6 +245,7 @@ module CompletedBatchAuditReceipt
     trusted_applicability: nil,
     trusted_applicability_digest: nil
   )
+    validate_comment_attribution!
     comment_body = canonical_comment_body(receipt)
     raise Error, "local completed-batch audit receipt is invalid" unless comment_body
 
@@ -301,16 +302,7 @@ module CompletedBatchAuditReceipt
 
     target, actor = select_verified_anchor(targets)
     endpoint = "repos/#{target.fetch('repo')}/issues/#{target.fetch('number')}/comments"
-    begin
-      comment_body = GitHubCommentEnvelope.render(
-        body: comment_body,
-        runner: ENV.fetch("AGENT_COMMENT_RUNNER"),
-        host: ENV.fetch("AGENT_COMMENT_HOST"),
-        task_or_run: ENV.fetch("AGENT_COMMENT_TASK_OR_RUN")
-      )
-    rescue KeyError, ArgumentError => e
-      raise Error, "cannot attribute agent-authored comment: #{e.message}"
-    end
+    comment_body = attributed_agent_comment(comment_body)
     begin
       posted = gh_api(
         target.fetch("host"),
@@ -380,6 +372,7 @@ module CompletedBatchAuditReceipt
     trusted_applicability_digest: nil,
     other_blockers: []
   )
+    validate_comment_attribution!
     predecessor = verified_reference_receipt(
       expected_batch_id:,
       targets:,
@@ -1496,6 +1489,8 @@ module CompletedBatchAuditReceipt
     return unless same_target_identity?(verified_reference.fetch("target"), authenticated_anchor)
 
     verify_issue_url!(comment.fetch("issue_url", ""), authenticated_anchor)
+    return if GitHubCommentEnvelope.agent_authored?(comment["body"])
+
     author = verified_human_login!(comment["user"], context: "accepted-deferral decision author")
     return unless TRUSTED_ASSOCIATIONS.include?(comment["author_association"])
     return unless comment["created_at"].to_s != "" && comment["created_at"] == comment["updated_at"]
@@ -1626,6 +1621,22 @@ module CompletedBatchAuditReceipt
     backend
   rescue Psych::Exception, SystemCallError => e
     raise Error, "workflow config could not be read: #{e.message}"
+  end
+
+  def attributed_agent_comment(body)
+    GitHubCommentEnvelope.render(
+      body:,
+      runner: ENV.fetch("AGENT_COMMENT_RUNNER"),
+      host: ENV.fetch("AGENT_COMMENT_HOST"),
+      task_or_run: ENV.fetch("AGENT_COMMENT_TASK_OR_RUN")
+    )
+  rescue KeyError, ArgumentError => e
+    raise Error, "cannot attribute agent-authored comment: #{e.message}"
+  end
+
+  def validate_comment_attribution!
+    attributed_agent_comment("Agent comment attribution preflight.")
+    true
   end
 
   def bot_login?(login)

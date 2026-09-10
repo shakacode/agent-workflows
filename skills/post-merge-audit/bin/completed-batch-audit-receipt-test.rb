@@ -1040,6 +1040,51 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  # Production break: a valid agent-attribution envelope posted through a
+  # human account could be mistaken for a human accepted-deferral decision.
+  def test_accepted_deferral_rejects_an_agent_attributed_decision
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"),
+      encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    calls = []
+    base_api = accepted_deferral_api(
+      preflight,
+      mutate_decision: lambda do |body|
+        GitHubCommentEnvelope.render(
+          body:,
+          runner: "codex",
+          host: "test-host",
+          task_or_run: "accepted-deferral-test"
+        )
+      end
+    )
+    api = lambda do |host, endpoint, **options|
+      calls << endpoint
+      base_api.call(host, endpoint, **options)
+    end
+
+    with_accepted_deferral_api(preflight, api) do
+      assert_raises(CompletedBatchAuditReceipt::Error) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
+        )
+      end
+    end
+    refute_includes calls, "repos/shakacode/react_on_rails/collaborators/justin808/permission"
+  end
+
   def test_accepted_deferral_rejects_substantive_or_unknown_product_blockers
     blocked = File.read(
       File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
@@ -2093,6 +2138,48 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
     %w[AGENT_COMMENT_RUNNER AGENT_COMMENT_HOST AGENT_COMMENT_TASK_OR_RUN].each do |variable|
       assert_includes usage, variable
+    end
+  end
+
+  # Production break: publish could authenticate targets through GitHub before
+  # discovering that its outbound agent comment lacked valid attribution.
+  def test_publish_cli_rejects_missing_or_invalid_comment_attribution_before_github
+    with_fake_gh do |env, directory|
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
+      command = [
+        "ruby", SCRIPT, "publish", "--expected-batch-id", "batch-184",
+        "--targets-json", targets_path, "--receipt", receipt_path,
+        "--workflow-config", env.fetch("FAKE_WORKFLOW_CONFIG"),
+        "--applicability-proof", env.fetch("FAKE_APPLICABILITY_PROOF"),
+        "--applicability-proof-sha256", env.fetch("FAKE_APPLICABILITY_PROOF_DIGEST")
+      ]
+      cases = {
+        "missing" => {
+          "AGENT_COMMENT_RUNNER" => nil,
+          "AGENT_COMMENT_HOST" => nil,
+          "AGENT_COMMENT_TASK_OR_RUN" => nil
+        },
+        "invalid" => {
+          "AGENT_COMMENT_RUNNER" => "automation",
+          "AGENT_COMMENT_HOST" => "test-host",
+          "AGENT_COMMENT_TASK_OR_RUN" => "test-receipt"
+        }
+      }
+
+      cases.each do |label, attribution|
+        File.delete(env.fetch("FAKE_GH_LOG")) if File.exist?(env.fetch("FAKE_GH_LOG"))
+        out, _err, status = Open3.capture3(env.merge(attribution), *command)
+
+        assert_equal 1, status.exitstatus, label
+        assert_includes JSON.parse(out).fetch("errors").join("\n"), "cannot attribute agent-authored comment", label
+        refute File.exist?(env.fetch("FAKE_GH_LOG")), label
+      end
     end
   end
 

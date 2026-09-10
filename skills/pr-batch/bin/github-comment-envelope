@@ -8,9 +8,10 @@ require_relative "../lib/github_comment_envelope"
 
 command = ARGV.shift
 options = {}
+usage = "Usage: github-comment-envelope <post-issue|edit-issue|post-reply> [options]"
 begin
   OptionParser.new do |parser|
-    parser.banner = "Usage: github-comment-envelope <post-issue|post-reply> [options]"
+    parser.banner = usage
     parser.on("--runner RUNNER") { |value| options[:runner] = value }
     parser.on("--host HOST") { |value| options[:host] = value }
     parser.on("--task-or-run ID") { |value| options[:task_or_run] = value }
@@ -20,50 +21,53 @@ begin
     parser.on("--attach ATTACHMENT") { |value| (options[:attachments] ||= []) << value }
   end.parse!
 
-  body = $stdin.read
-  case command
-  when "post-issue", "post-reply"
-    repo = options.fetch(:repo)
-    number = options.fetch(:number)
-    raise ArgumentError, "repository must use OWNER/REPO form" unless repo.match?(%r{\A[^/\s]+/[^/\s]+\z})
-    raise ArgumentError, "number must be positive" unless number.positive?
+  raise ArgumentError, usage unless %w[post-issue edit-issue post-reply].include?(command)
 
-    enveloped = GitHubCommentEnvelope.render(
-      body:,
-      runner: options.fetch(:runner),
-      host: options.fetch(:host),
-      task_or_run: options.fetch(:task_or_run)
-    )
-    endpoint = if command == "post-issue"
-                 "repos/#{repo}/issues/#{number}/comments"
-               else
-                 comment_id = options.fetch(:comment_id)
-                 raise ArgumentError, "comment-id must be positive" unless comment_id.positive?
+  repo = options.fetch(:repo)
+  runner = options.fetch(:runner)
+  host = options.fetch(:host)
+  task_or_run = options.fetch(:task_or_run)
+  raise ArgumentError, "repository must use OWNER/REPO form" unless repo.match?(%r{\A[^/\s]+/[^/\s]+\z})
 
-                 "repos/#{repo}/pulls/#{number}/comments/#{comment_id}/replies"
-               end
-    attachments = options.fetch(:attachments, [])
-    raise ArgumentError, "attachments are supported only for PR issue comments" if command == "post-reply" && !attachments.empty?
+  endpoint = if command == "post-issue"
+               number = options.fetch(:number)
+               raise ArgumentError, "number must be positive" unless number.positive?
 
-    Tempfile.create(["github-comment-envelope", ".md"], encoding: "UTF-8") do |file|
-      file.chmod(0o600)
-      file.write(enveloped)
-      file.flush
-      gh = ENV.fetch("GITHUB_COMMENT_GH", "gh")
-      arguments = if attachments.empty?
-                    [gh, "api", endpoint, "-X", "POST", "-F", "body=@#{file.path}"]
-                  else
-                    [gh, "pr", "comment", number.to_s, "--repo", repo, "--body-file", file.path] +
-                      attachments.flat_map { |attachment| ["--attach", attachment] }
-                  end
-      stdout, stderr, status = Open3.capture3(*arguments)
-      raise ArgumentError, "GitHub comment post failed: #{stderr.lines.first.to_s.strip}" unless status.success?
+               "repos/#{repo}/issues/#{number}/comments"
+             elsif command == "post-reply"
+               number = options.fetch(:number)
+               raise ArgumentError, "number must be positive" unless number.positive?
 
-      print stdout
-    end
-  else
-    warn "Usage: github-comment-envelope <post-issue|post-reply> [options]"
-    exit 1
+               comment_id = options.fetch(:comment_id)
+               raise ArgumentError, "comment-id must be positive" unless comment_id.positive?
+
+               "repos/#{repo}/pulls/#{number}/comments/#{comment_id}/replies"
+             else
+               comment_id = options.fetch(:comment_id)
+               raise ArgumentError, "comment-id must be positive" unless comment_id.positive?
+
+               "repos/#{repo}/issues/comments/#{comment_id}"
+             end
+  attachments = options.fetch(:attachments, [])
+  raise ArgumentError, "attachments are supported only for PR issue comments" if command != "post-issue" && !attachments.empty?
+
+  enveloped = GitHubCommentEnvelope.render(body: $stdin.read, runner:, host:, task_or_run:)
+  Tempfile.create(["github-comment-envelope", ".md"], encoding: "UTF-8") do |file|
+    file.chmod(0o600)
+    file.write(enveloped)
+    file.flush
+    gh = ENV.fetch("GITHUB_COMMENT_GH", "gh")
+    arguments = if attachments.empty?
+                  method = command == "edit-issue" ? "PATCH" : "POST"
+                  [gh, "api", endpoint, "-X", method, "-F", "body=@#{file.path}"]
+                else
+                  [gh, "pr", "comment", number.to_s, "--repo", repo, "--body-file", file.path] +
+                    attachments.flat_map { |attachment| ["--attach", attachment] }
+                end
+    stdout, stderr, status = Open3.capture3(*arguments)
+    raise ArgumentError, "GitHub comment post failed: #{stderr.lines.first.to_s.strip}" unless status.success?
+
+    print stdout
   end
 rescue KeyError, ArgumentError, OptionParser::ParseError => e
   warn e.message

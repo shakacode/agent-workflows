@@ -145,7 +145,7 @@ This single read-only call replaces the per-endpoint `gh api ... | jq` blocks an
 - `review_cutoff_at` — the cutoff timestamp described in Step 3 (empty when no prior summary comment exists).
 - `review_summaries` — review bodies with non-empty text: `{id, type: "review_summary", body, state, user, created_at, html_url}`. Treat actionable ones as general comments; like specific review bodies they cannot be replied to via the `/replies` endpoint and must be answered as general PR comments (see Step 8).
 - `inline_comments` — inline review comments: `{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved}`. The `thread_id` and `is_resolved` fields are already joined from the review threads by `node_id`, so no separate GraphQL query is needed for the full-PR path. Comments with no matching thread get `thread_id: null` and `is_resolved: false`.
-- `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, user, created_at, html_url}`. Summary/status/claim/source-reply marker comments are included so you can filter them (see Filtering comments below).
+- `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, payload_body, user, created_at, html_url}`. `payload_body` contains the unwrapped body for a valid agent-attribution envelope and otherwise matches `body`. Summary/status/claim/source-reply marker comments are included so you can filter them (see Filtering comments below).
 - `review_threads` — `{thread_id, is_resolved, comments: [{node_id, id}]}` for any thread-level work.
 
 When `REVIEW_CUTOFF_AT` is set for a full-PR scan:
@@ -168,8 +168,10 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 
 **Filtering comments:**
 
-- Never triage prior workflow summary/status/claim comments. Skip any issue comment
-  whose body starts with `<!-- address-review-summary -->` or
+- Never triage prior workflow summary/status/claim comments. For normalized issue
+  comments, inspect `.payload_body // .body // ""` so an attribution envelope cannot
+  hide the workflow marker. Skip any issue comment whose unwrapped payload starts
+  with `<!-- address-review-summary -->` or
   `<!-- address-review-status -->` or `<!-- codex-claim v1`; only the summary
   marker is a cutoff checkpoint.
 - On a source PR, also skip `<!-- address-review-source-reply -->` comments

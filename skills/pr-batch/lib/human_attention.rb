@@ -33,7 +33,9 @@ module HumanAttention
     unless missing.empty?
       raise Error, "human_attention labels must define walkthrough and merge"
     end
-    raise Error, "human-attention labels must be distinct" if labels.values.uniq.length != labels.length
+    if labels.values.map(&:downcase).uniq.length != labels.length
+      raise Error, "human-attention labels must be distinct"
+    end
 
     labels.dup
   end
@@ -59,7 +61,9 @@ module HumanAttention
 
       labels.merge!(validate_labels(entry.fetch("labels", {})))
     end
-    raise Error, "human-attention labels must be distinct" if labels.values.uniq.length != labels.length
+    if labels.values.map(&:downcase).uniq.length != labels.length
+      raise Error, "human-attention labels must be distinct"
+    end
 
     labels
   end
@@ -82,10 +86,14 @@ module HumanAttention
   end
 
   def classify(labels:, configured_labels:)
-    matches = STATES.select { |state| labels.include?(configured_labels.fetch(state)) }
+    matches = STATES.select { |state| label_present?(labels, configured_labels.fetch(state)) }
     raise Error, "a PR must not carry both human-attention labels" if matches.length > 1
 
     matches.first || "none"
+  end
+
+  def label_present?(labels, configured_label)
+    labels.any? { |label| label.is_a?(String) && label.casecmp?(configured_label) }
   end
 
   def desk(config:, github_cli: ENV.fetch("HUMAN_ATTENTION_GH", "gh"), refreshed_at: Time.now.utc.iso8601)
@@ -158,7 +166,8 @@ module HumanAttention
     raise Error, "cannot read PR state: #{stderr.lines.first.to_s.strip}" unless status.success?
 
     detail = JSON.parse(stdout)
-    raise Error, "PR is not open" unless detail["state"] == "OPEN"
+    allowed_pr_states = state == "none" ? %w[OPEN CLOSED MERGED] : ["OPEN"]
+    raise Error, "PR is not open" unless allowed_pr_states.include?(detail["state"])
     raise Error, "PR head changed" unless detail["headRefOid"] == expected_head
 
     current = Array(detail["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
@@ -166,12 +175,30 @@ module HumanAttention
     arguments = [github_cli, "pr", "edit", pr_number.to_s, "--repo", repo]
     labels.each do |semantic, label|
       desired = semantic == state
-      arguments.concat(["--remove-label", label]) if !desired && current.include?(label)
-      arguments.concat(["--add-label", label]) if desired && !current.include?(label)
+      arguments.concat(["--remove-label", label]) if !desired && label_present?(current, label)
+      arguments.concat(["--add-label", label]) if desired && !label_present?(current, label)
     end
     if arguments.length > 6
       _edit_stdout, edit_stderr, edit_status = Open3.capture3(*arguments)
-      raise Error, "cannot update human-attention labels: #{edit_stderr.lines.first.to_s.strip}" unless edit_status.success?
+      unless edit_status.success?
+        reconcile_stdout, reconcile_stderr, reconcile_status = Open3.capture3(
+          github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels"
+        )
+        unless reconcile_status.success?
+          raise Error, "cannot reconcile failed human-attention update: #{reconcile_stderr.lines.first.to_s.strip}"
+        end
+
+        reconciled = JSON.parse(reconcile_stdout)
+        reconciled_labels = Array(reconciled["labels"]).filter_map do |label|
+          label["name"] if label.is_a?(Hash)
+        end
+        clear_attention_state!(
+          github_cli:, repo:, pr_number:, labels:, current_labels: reconciled_labels,
+          error_prefix: "human-attention label update failed"
+        )
+        raise Error,
+              "human-attention label update failed; attention state cleared: #{edit_stderr.lines.first.to_s.strip}"
+      end
     end
 
     verify_stdout, verify_stderr, verify_status = Open3.capture3(
@@ -180,32 +207,13 @@ module HumanAttention
     raise Error, "cannot verify human-attention labels: #{verify_stderr.lines.first.to_s.strip}" unless verify_status.success?
 
     verified = JSON.parse(verify_stdout)
-    unchanged = verified["state"] == "OPEN" && verified["headRefOid"] == expected_head
+    unchanged = verified["state"] == detail["state"] && verified["headRefOid"] == expected_head
     verified_labels = Array(verified["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
     unless unchanged
-      cleanup = [github_cli, "pr", "edit", pr_number.to_s, "--repo", repo]
-      labels.each_value do |label|
-        cleanup.concat(["--remove-label", label]) if verified_labels.include?(label)
-      end
-      if cleanup.length > 6
-        _cleanup_stdout, cleanup_stderr, cleanup_status = Open3.capture3(*cleanup)
-        unless cleanup_status.success?
-          raise Error, "PR changed while updating human-attention labels; cleanup failed: #{cleanup_stderr.lines.first.to_s.strip}"
-        end
-      end
-      cleanup_stdout, cleanup_stderr, cleanup_status = Open3.capture3(
-        github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels"
+      clear_attention_state!(
+        github_cli:, repo:, pr_number:, labels:, current_labels: verified_labels,
+        error_prefix: "PR changed while updating human-attention labels"
       )
-      unless cleanup_status.success?
-        raise Error, "PR changed while updating human-attention labels; cleanup verification failed: #{cleanup_stderr.lines.first.to_s.strip}"
-      end
-
-      cleaned = JSON.parse(cleanup_stdout)
-      cleaned_labels = Array(cleaned["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
-      unless classify(labels: cleaned_labels, configured_labels: labels) == "none"
-        raise Error, "PR changed while updating human-attention labels; cleanup did not clear the attention state"
-      end
-
       raise Error, "PR changed while updating human-attention labels; attention state cleared"
     end
 
@@ -215,6 +223,32 @@ module HumanAttention
     { "repo" => repo, "pr" => pr_number, "head_sha" => expected_head, "state" => state, "labels" => labels }
   rescue JSON::ParserError
     raise Error, "PR state response is malformed"
+  end
+
+  def clear_attention_state!(github_cli:, repo:, pr_number:, labels:, current_labels:, error_prefix:)
+    cleanup = [github_cli, "pr", "edit", pr_number.to_s, "--repo", repo]
+    labels.each_value do |label|
+      cleanup.concat(["--remove-label", label]) if label_present?(current_labels, label)
+    end
+    if cleanup.length > 6
+      _cleanup_stdout, cleanup_stderr, cleanup_status = Open3.capture3(*cleanup)
+      unless cleanup_status.success?
+        raise Error, "#{error_prefix}; cleanup failed: #{cleanup_stderr.lines.first.to_s.strip}"
+      end
+    end
+
+    cleanup_stdout, cleanup_stderr, cleanup_status = Open3.capture3(
+      github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels"
+    )
+    unless cleanup_status.success?
+      raise Error, "#{error_prefix}; cleanup verification failed: #{cleanup_stderr.lines.first.to_s.strip}"
+    end
+
+    cleaned = JSON.parse(cleanup_stdout)
+    cleaned_labels = Array(cleaned["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
+    return if classify(labels: cleaned_labels, configured_labels: labels) == "none"
+
+    raise Error, "#{error_prefix}; cleanup did not clear the attention state"
   end
 
   def validate_labels(value)

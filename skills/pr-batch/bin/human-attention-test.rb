@@ -79,6 +79,25 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  # Production break: GitHub label names are case-insensitive, so labels that
+  # differ only by case would assign both semantic states to one label.
+  def test_labels_for_rejects_case_insensitive_duplicate_label_names
+    config = <<~YAML
+      ---
+      human_attention:
+        labels:
+          walkthrough: Human-Attention
+          merge: human-attention
+    YAML
+    with_repo_config(config) do |root|
+      error = assert_raises(HumanAttention::Error) do
+        HumanAttention.labels_for(HumanAttention.load_config(root), "acme/widgets")
+      end
+
+      assert_includes error.message, "labels must be distinct"
+    end
+  end
+
   def test_labels_for_accepts_consumer_and_repository_overrides
     config = <<~YAML
       ---
@@ -413,6 +432,95 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  # Production break: GitHub returns canonical label casing, which can differ
+  # from policy casing; exact comparisons would miss the active state and try
+  # to add the same label again.
+  def test_transition_classifies_current_labels_case_insensitively
+    with_repo_config(LABEL_POLICY) do |root|
+      fake_gh = File.join(root, "gh")
+      calls = File.join(root, "calls")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        File.open(ENV.fetch("CALLS"), "a") { |file| file.puts(ARGV.join("\t")) }
+        if ARGV[0, 2] == ["pr", "view"]
+          puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}", "labels" => [{"name" => "Human-Attention:Merge"}]})
+        end
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "transition", "--repo-root", root, "--repo", "acme/widgets", "--pr", "7",
+        "--state", "merge", "--expected-head", ("a" * 40).to_s,
+        env: { "HUMAN_ATTENTION_GH" => fake_gh, "CALLS" => calls }
+      )
+
+      assert_predicate result[:status], :success?, result[:stderr]
+      edits = File.readlines(calls, chomp: true).select { |line| line.start_with?("pr\tedit") }
+      assert_empty edits
+    end
+  end
+
+  # Production break: a merged or manually closed PR can retain an attention
+  # label forever because clearing the semantic state required the PR to be open.
+  def test_transition_clears_attention_labels_on_closed_and_merged_prs
+    %w[CLOSED MERGED].each do |pr_state|
+      with_repo_config(LABEL_POLICY) do |root|
+        fake_gh = File.join(root, "gh")
+        calls = File.join(root, "calls")
+        File.write(fake_gh, <<~RUBY)
+          #!/usr/bin/env ruby
+          require "json"
+          File.open(ENV.fetch("CALLS"), "a") { |file| file.puts(ARGV.join("\t")) }
+          if ARGV[0, 2] == ["pr", "view"]
+            edited = File.read(ENV.fetch("CALLS")).include?("--remove-label\thuman-attention:merge")
+            labels = edited ? [] : [{"name" => "human-attention:merge"}]
+            puts JSON.generate({"state" => ENV.fetch("PR_STATE"), "headRefOid" => "#{'a' * 40}", "labels" => labels})
+          end
+        RUBY
+        File.chmod(0o755, fake_gh)
+
+        result = run_cli(
+          "transition", "--repo-root", root, "--repo", "acme/widgets", "--pr", "7",
+          "--state", "none", "--expected-head", ("a" * 40).to_s,
+          env: { "HUMAN_ATTENTION_GH" => fake_gh, "CALLS" => calls, "PR_STATE" => pr_state }
+        )
+
+        assert_predicate result[:status], :success?, "#{pr_state}: #{result[:stderr]}"
+        edits = File.readlines(calls, chomp: true).select { |line| line.start_with?("pr\tedit") }
+        assert_equal 1, edits.length, pr_state
+        assert_includes edits.first, "--remove-label\thuman-attention:merge"
+      end
+    end
+  end
+
+  def test_transition_does_not_assign_attention_labels_on_a_closed_pr
+    with_repo_config(LABEL_POLICY) do |root|
+      fake_gh = File.join(root, "gh")
+      calls = File.join(root, "calls")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        File.open(ENV.fetch("CALLS"), "a") { |file| file.puts(ARGV.join("\t")) }
+        if ARGV[0, 2] == ["pr", "view"]
+          puts JSON.generate({"state" => "CLOSED", "headRefOid" => "#{'a' * 40}", "labels" => []})
+        end
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "transition", "--repo-root", root, "--repo", "acme/widgets", "--pr", "7",
+        "--state", "merge", "--expected-head", ("a" * 40).to_s,
+        env: { "HUMAN_ATTENTION_GH" => fake_gh, "CALLS" => calls }
+      )
+
+      refute_predicate result[:status], :success?
+      assert_includes result[:stderr], "PR is not open"
+      edits = File.readlines(calls, chomp: true).select { |line| line.start_with?("pr\tedit") }
+      assert_empty edits
+    end
+  end
+
   def test_transition_clears_attention_state_when_head_changes_during_edit
     with_repo_config(LABEL_POLICY) do |root|
       fake_gh = File.join(root, "gh")
@@ -446,6 +554,53 @@ class HumanAttentionTest < Minitest::Test
       edits = File.readlines(calls, chomp: true).select { |line| line.start_with?("pr\tedit") }
       assert_equal 2, edits.length
       assert_includes edits.last, "--remove-label\thuman-attention:merge"
+    end
+  end
+
+  # Production break: GitHub can partially apply a combined remove/add edit
+  # before returning failure, leaving a PR with both semantic labels.
+  def test_transition_clears_semantic_labels_after_a_partially_failed_edit
+    with_repo_config(LABEL_POLICY) do |root|
+      fake_gh = File.join(root, "gh")
+      calls = File.join(root, "calls")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        calls = ENV.fetch("CALLS")
+        File.open(calls, "a") { |file| file.puts(ARGV.join("\t")) }
+        lines = File.readlines(calls)
+        if ARGV[0, 2] == ["pr", "view"]
+          view_count = lines.count { |line| line.start_with?("pr\tview") }
+          labels = case view_count
+                   when 1 then ["human-attention:walkthrough"]
+                   when 2 then ["human-attention:walkthrough", "human-attention:merge"]
+                   else []
+                   end
+          puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}", "labels" => labels.map { |name| {"name" => name} }})
+        elsif ARGV[0, 2] == ["pr", "edit"]
+          edit_count = lines.count { |line| line.start_with?("pr\tedit") }
+          if edit_count == 1
+            warn "partial label update"
+            exit 1
+          end
+        end
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "transition", "--repo-root", root, "--repo", "acme/widgets", "--pr", "7",
+        "--state", "merge", "--expected-head", ("a" * 40).to_s,
+        env: { "HUMAN_ATTENTION_GH" => fake_gh, "CALLS" => calls }
+      )
+
+      refute_predicate result[:status], :success?
+      assert_includes result[:stderr], "update failed; attention state cleared"
+      edits = File.readlines(calls, chomp: true).select { |line| line.start_with?("pr\tedit") }
+      assert_equal 2, edits.length
+      assert_includes edits.last, "--remove-label\thuman-attention:walkthrough"
+      assert_includes edits.last, "--remove-label\thuman-attention:merge"
+      view_count = File.readlines(calls).count { |line| line.start_with?("pr\tview") }
+      assert_equal 3, view_count
     end
   end
 

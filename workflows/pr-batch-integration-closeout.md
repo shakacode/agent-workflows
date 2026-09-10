@@ -1381,8 +1381,9 @@ top-level PR or issue comment and `post-reply` for an inline review reply.
 Consumer code must not bypass this boundary.
 
 Before any posting path, export all three execution-context values:
-`AGENT_COMMENT_RUNNER` (`codex` or `claude`), `AGENT_COMMENT_HOST` (the actual
-runner host), and `AGENT_COMMENT_TASK_OR_RUN` (a stable task or run identifier).
+`AGENT_COMMENT_RUNNER` (`codex` or `claude`), `AGENT_COMMENT_HOST` (a non-empty
+single-line host label such as `Codex desktop`), and
+`AGENT_COMMENT_TASK_OR_RUN` (a stable task or run identifier).
 Unattended publishers must fail closed when any value is absent or invalid;
 they must not invent an `agent-workflows` runner or reuse an arbitrary batch ID.
 

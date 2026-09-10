@@ -8,12 +8,13 @@ module GitHubCommentEnvelope
     "claude" => "Claude"
   }.freeze
   VALUE_PATTERN = %r{\A[A-Za-z0-9][A-Za-z0-9._:/-]*\z}
+  HOST_PATTERN = /\A[^\r\n]+\z/
 
   module_function
 
   def render(body:, runner:, host:, task_or_run:)
     runner = normalized_value(runner, "runner").downcase
-    host = normalized_value(host, "host")
+    host = normalized_value(host, "host", pattern: HOST_PATTERN)
     task_or_run = normalized_value(task_or_run, "task-or-run")
     raise ArgumentError, "body already has an attribution envelope" if parse(body)
 
@@ -28,7 +29,7 @@ module GitHubCommentEnvelope
       task_or_run: #{task_or_run}
       -->
     MARKER
-    "#{visible}\n#{marker}\n\n#{body.sub(/\A\n+/, '')}"
+    "#{visible}\n#{marker}\n\n#{body.sub(/\A[\r\n]+/, '')}"
   end
 
   def agent_authored?(body)
@@ -57,7 +58,7 @@ module GitHubCommentEnvelope
     runner = lines[2].delete_prefix("runner: ")
     host = lines[3].delete_prefix("host: ")
     task_or_run = lines[4].delete_prefix("task_or_run: ")
-    return unless [runner, host, task_or_run].all? { |value| value.match?(VALUE_PATTERN) }
+    return unless runner.match?(VALUE_PATTERN) && host.match?(HOST_PATTERN) && task_or_run.match?(VALUE_PATTERN)
 
     display_runner = RUNNER_DISPLAY[runner.downcase]
     return unless display_runner
@@ -66,9 +67,12 @@ module GitHubCommentEnvelope
     { "version" => VERSION, "runner" => runner.downcase, "host" => host, "task_or_run" => task_or_run }
   end
 
-  def normalized_value(value, name)
+  def normalized_value(value, name, pattern: VALUE_PATTERN)
     value = value.to_s.strip
-    raise ArgumentError, "#{name} is invalid" unless value.match?(VALUE_PATTERN)
+    unless value.match?(pattern)
+      message = name == "host" ? "host must be a non-empty single-line value" : "#{name} is invalid"
+      raise ArgumentError, message
+    end
 
     value
   end

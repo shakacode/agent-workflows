@@ -2593,6 +2593,32 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  # Production break: a valid agent-attribution envelope posted through a
+  # human account could be mistaken for human supporting-artifact authority.
+  def test_verification_artifact_rejects_an_agent_attributed_comment
+    input = verification_artifact_input
+    comment = valid_supporting_artifact_comment(input)
+    comment["body"] = GitHubCommentEnvelope.render(
+      body: comment.fetch("body"),
+      runner: "codex",
+      host: "test-host",
+      task_or_run: "supporting-artifact-test"
+    )
+    verifier = lambda do |host:, repo:, comment_id:| # rubocop:disable Lint/UnusedBlockArgument
+      comment
+    end
+
+    result = assess_input(
+      input,
+      waiver_verifier: verifier,
+      artifact_verifier: valid_artifact_verifier(input)
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/agent-coordination#issue:296 supporting artifact is not authenticated or fresh"
+  end
+
   def test_verification_artifact_rejects_open_merged_missing_or_stale_pr_authentication
     cases = {
       "open" => { "state" => "open" },

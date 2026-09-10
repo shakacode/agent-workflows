@@ -482,6 +482,9 @@ assert(address_review_workflow.include?(public_dual_target_claim), "address-revi
 public_claim_per_target = "post or refresh one separate\n  claim comment on each PR before any non-claim mutation"
 assert(address_review.include?(public_claim_per_target), "address-review public fallback must claim both carryover targets")
 assert(address_review_workflow.include?(public_claim_per_target), "address-review workflow public fallback must claim both carryover targets")
+public_claim_edit_route = "Route every refresh and terminal fallback-claim update through `github-comment-envelope edit-issue`"
+assert(address_review.gsub(/\s+/, " ").include?(public_claim_edit_route), "address-review must route fallback claim edits through the envelope")
+assert(address_review_workflow.gsub(/\s+/, " ").include?(public_claim_edit_route), "address-review workflow must route fallback claim edits through the envelope")
 all_claim_cleanup = "At a stable stop, update every acquired private heartbeat or advisory claim"
 assert(address_review.include?(all_claim_cleanup), "address-review must clean up every carryover claim")
 assert(address_review_workflow.include?(all_claim_cleanup), "address-review workflow must clean up every carryover claim")
