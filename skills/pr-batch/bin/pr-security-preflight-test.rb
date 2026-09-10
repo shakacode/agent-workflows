@@ -4731,6 +4731,47 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_checkout_binding_rejects_symlink_ancestor_of_nested_instruction_seam
+    {
+      "tracked" => :tracked,
+      "untracked" => :untracked,
+      "ignored" => :ignored
+    }.each do |label, state|
+      with_clean_real_git_checkout(
+        "trusted-base-symlinked-instruction-seam-ancestor"
+      ) do |dir, repo_root, base_sha, operations|
+        external_docs = File.join(dir, "external-docs")
+        FileUtils.mkdir_p(external_docs)
+        File.write(File.join(external_docs, "AGENTS.md"), "untrusted instructions\n")
+        File.symlink(external_docs, File.join(repo_root, "docs"))
+
+        if state == :tracked
+          git! "-C", repo_root, "add", "--", "docs"
+          git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+               "commit", "--quiet", "-m", "track symlinked instruction-seam ancestor"
+          base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+        elsif state == :ignored
+          git_dir = git_output!("-C", repo_root, "rev-parse", "--absolute-git-dir")
+          File.open(File.join(git_dir, "info", "exclude"), "a") { |file| file.puts("/docs") }
+        end
+
+        matches, error = operations.checkout_matches_fetched_base?(
+          repo_root,
+          base_sha,
+          "refs/heads/main"
+        )
+
+        refute matches, label
+        expected_error = if state == :tracked
+                           "trusted checkout command/instruction seams cannot be symlinks"
+                         else
+                           "trusted checkout has untracked or ignored command/instruction seams"
+                         end
+        assert_equal expected_error, error, label
+      end
+    end
+  end
+
   def test_checkout_binding_rejects_tracked_symlink_case_aliases_on_case_insensitive_filesystems
     [".AGENTS", ".agents/BIN", ".agentſ/bin", "nested/agents.md", "nested/AGENTſ.md"].each do |relative_path|
       with_clean_real_git_checkout("trusted-base-case-insensitive-symlinked-seam") do |dir, repo_root, _base_sha, operations|
@@ -6419,6 +6460,29 @@ class PrSecurityPreflightTest < Minitest::Test
       error = with_trusted_git_repository_root(repository) do
         with_env(
           "PATH" => bin,
+          "PR_SECURITY_PREFLIGHT_TRUSTED_GH_EXECUTABLE" => nil
+        ) { assert_raises(RuntimeError) { resolve_trusted_gh_executable } }
+      end
+
+      assert_includes error.message, "no trusted GitHub CLI executable is available"
+    end
+  end
+
+  def test_trusted_gh_resolution_rejects_checkout_path_symlink_to_external_executable
+    Dir.mktmpdir("trusted-gh-checkout-symlink", Dir.home) do |dir|
+      repository = File.join(dir, "repo")
+      external = File.join(dir, "external")
+      FileUtils.mkdir_p([repository, external])
+      init_git_root(repository)
+      executable = File.join(external, "gh")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, executable)
+      checkout_tools = File.join(repository, "tools")
+      File.symlink(external, checkout_tools)
+
+      error = Dir.chdir(repository) do
+        with_env(
+          "PATH" => checkout_tools,
           "PR_SECURITY_PREFLIGHT_TRUSTED_GH_EXECUTABLE" => nil
         ) { assert_raises(RuntimeError) { resolve_trusted_gh_executable } }
       end

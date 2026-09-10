@@ -143,6 +143,7 @@ def resolve_trusted_gh_executable
                end
   candidates.uniq.each do |candidate|
     next unless File.absolute_path(candidate) == candidate
+    next if prohibited_roots.any? { |root| trusted_path_within_root?(candidate, root) }
     next unless File.file?(candidate) && File.executable?(candidate)
 
     canonical = File.realpath(candidate)
@@ -2869,6 +2870,10 @@ class TrustedBaseHighRiskOperations
   def command_or_instruction_seam_path?(root, path)
     return [true, nil] if exact_command_or_instruction_seam_path?(path)
 
+    directory_symlink, directory_symlink_error = reachable_directory_symlink?(root, path)
+    return [nil, directory_symlink_error] if directory_symlink_error
+    return [true, nil] if directory_symlink
+
     policy_alias, policy_alias_error = same_checkout_entry?(root, path, WORKFLOW_POLICY_SEAM_PATH)
     return [nil, policy_alias_error] if policy_alias_error
     return [true, nil] if policy_alias
@@ -2897,6 +2902,17 @@ class TrustedBaseHighRiskOperations
     end
 
     [false, nil]
+  end
+
+  def reachable_directory_symlink?(root, path)
+    checkout_path = File.join(root.b, path)
+    return [false, nil] unless File.lstat(checkout_path).symlink?
+
+    [File.stat(checkout_path).directory?, nil]
+  rescue Errno::ENOENT, Errno::ENOTDIR
+    [false, nil]
+  rescue ArgumentError, SystemCallError, TypeError => e
+    [nil, "trusted checkout symlink target type could not be verified: #{e.message.lines.first&.strip}"]
   end
 
   def exact_command_or_instruction_seam_path?(path)
