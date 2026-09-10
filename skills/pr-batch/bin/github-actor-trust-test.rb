@@ -283,6 +283,25 @@ class GithubActorTrustTest < Minitest::Test
     assert_equal "owner/repo", remote.fetch(:repo)
   end
 
+  def test_unresolved_ssh_alias_is_rejected
+    remote = GithubActorTrust.github_remote_from_remote_url(
+      "git@github.com-work:owner/repo.git",
+      ssh_host_resolver: ->(_host) {}
+    )
+
+    assert_nil remote
+  end
+
+  def test_expected_enterprise_ssh_host_survives_an_unavailable_probe
+    remote = GithubActorTrust.github_remote_from_remote_url(
+      "git@ghe.example.com:owner/repo.git",
+      ssh_host_resolver: ->(_host) {},
+      expected_github_host: "ghe.example.com"
+    )
+
+    assert_equal "ghe.example.com", remote.fetch(:host)
+  end
+
   def test_ssh_transport_port_is_not_inferred_as_the_github_api_port
     remote = GithubActorTrust.github_remote_from_remote_url(
       "ssh://git@github.company.example:2222/owner/repo.git"

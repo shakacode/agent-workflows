@@ -631,6 +631,28 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     assert_equal "github.com", runner.send(:github_host_for, root: "/repo", repo: "owner/repo")
   end
 
+  def test_github_host_rejects_an_unresolved_ssh_alias
+    runner = FetchPrReviewData::Runner.new
+    runner.define_singleton_method(:capture_probe) do |*cmd, **|
+      case cmd
+      when ["git", "-C", "/repo", "config", "--local", "--null", "--get-regexp", "^remote\\..*\\.url$"]
+        [+"remote.origin.url\ngit@github.com-work:owner/repo.git\0", "", FakeStatus.new(true)]
+      when ["git", "-C", "/repo", "config", "--worktree", "--null", "--get-regexp", "^remote\\..*\\.url$"]
+        ["", "", FakeStatus.new(false)]
+      when ["ssh", "-G", "github.com-work"]
+        ["", "ssh unavailable", FakeStatus.new(false)]
+      else
+        flunk "unexpected probe command: #{cmd.inspect}"
+      end
+    end
+
+    error = assert_raises(FetchPrReviewData::Error) do
+      runner.send(:github_host_for, root: "/repo", repo: "owner/repo")
+    end
+    assert_includes error.message, "no matching checkout remote"
+    assert_includes error.message, "set GH_HOST explicitly"
+  end
+
   def test_github_host_does_not_treat_an_ssh_transport_port_as_an_api_port
     runner = FetchPrReviewData::Runner.new
     runner.define_singleton_method(:capture_probe) do |*cmd, **|

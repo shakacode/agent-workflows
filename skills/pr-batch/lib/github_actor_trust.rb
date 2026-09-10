@@ -202,7 +202,7 @@ module GithubActorTrust
     nil
   end
 
-  def github_remote_from_remote_url(url, ssh_host_resolver: nil)
+  def github_remote_from_remote_url(url, ssh_host_resolver: nil, expected_github_host: nil)
     normalized = url.to_s.strip.sub(%r{/+\z}, "").sub(/\.git\z/i, "")
     ssh_config_host = nil
     remote = if normalized.match?(%r{\A(?:https?|ssh)://}i)
@@ -220,7 +220,14 @@ module GithubActorTrust
     return remote unless remote && remote[:scheme] == "ssh" && ssh_host_resolver
 
     resolved_host = ssh_host_resolver.call(ssh_config_host)
-    return remote unless resolved_host
+    unless resolved_host
+      parsed_host = normalized_github_host(ssh_config_host)
+      expected_host = normalized_github_host(expected_github_host || "github.com")
+      expected_host = host_port(expected_host)&.first || expected_host
+      return remote if parsed_host == expected_host
+
+      return
+    end
 
     normalized_resolved_host = normalized_github_host(resolved_host)
     return remote if normalized_resolved_host == normalized_github_host(ssh_config_host)
@@ -265,7 +272,7 @@ module GithubActorTrust
       remote = github_remote_from_remote_url(url)
       next unless remote && remote[:repo].casecmp?(repo)
 
-      remote = github_remote_from_remote_url(url, ssh_host_resolver:)
+      remote = github_remote_from_remote_url(url, ssh_host_resolver:, expected_github_host: github_host)
       remote[:repo] if remote && remote_matches_github_host?(remote, github_host)
     end
     if remote_repos.empty?
