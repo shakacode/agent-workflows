@@ -79,8 +79,7 @@ lie.
 The required control is small and direct: resolve the trusted executable before
 the security-sensitive read, canonicalize its path, reject candidates inside
 the repository or temporary directories, and reuse that exact executable for
-the full decision. This is the executable-provenance finding raised during PR
-#523 review.
+the full decision. PR #523 review raised this executable-provenance finding.
 
 ### Example 2: approval belongs to an older head
 
