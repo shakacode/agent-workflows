@@ -23,6 +23,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.draft == true && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Report validation target
@@ -35,20 +36,61 @@ jobs:
         with:
           ruby-version: "3.4"
 
+      - name: Select coverage using trusted base policy
+        id: scope
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          policy="${RUNNER_TEMP}/pr-validation-scope"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]] &&
+             git show "${PR_BASE_SHA}:bin/pr-validation-scope" > "$policy"; then
+            ruby "$policy"
+          else
+            echo "scope=full" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Validation coverage: full"
+              echo "Reason: main push or trusted base policy unavailable."
+              echo "Tested SHA: $(git rev-parse HEAD); base SHA: ${PR_BASE_SHA:-n/a}."
+              echo "Selected suites: all bin/validate suites. Omitted suites: none."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Set up Node.js for selected documentation checks
+        if: steps.scope.outputs.scope == 'docs'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Install Markdown linter
+        if: steps.scope.outputs.scope == 'docs'
+        run: npm install --global --ignore-scripts "markdownlint-cli2@$(bin/lint --version markdownlint-cli2)"
+
+      - name: Run selected documentation validation
+        if: steps.scope.outputs.scope == 'docs'
+        run: bin/validate-docs
+
       - name: Resolve gem cache path
+        if: steps.scope.outputs.scope != 'docs'
         id: gem-cache
         run: echo "dir=$(gem env gemdir)" >> "$GITHUB_OUTPUT"
 
       - name: Cache validation gems
+        if: steps.scope.outputs.scope != 'docs'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.gem-cache.outputs.dir }}
-          key: ${{ runner.os }}-ruby-3.4-validation-${{ hashFiles('.rubocop-version', '.json-schemer-version') }}
+          key: ${{ runner.os }}-ruby-3.4-validation-v2-json-2.21.2-${{ hashFiles('.rubocop-version', '.json-schemer-version') }}
 
       - name: Install validation gems
+        if: steps.scope.outputs.scope != 'docs'
         run: |
+          gem install json -v 2.21.2 --no-document
           gem install rubocop -v "$(tr -d '[:space:]' < .rubocop-version)" --no-document
           gem install json_schemer -v "$(tr -d '[:space:]' < .json-schemer-version)" --no-document
+          ruby -rjson -e 'abort "Expected JSON 2.21.2, got #{JSON::VERSION}" unless JSON::VERSION == "2.21.2"; puts "JSON #{JSON::VERSION}"'
 
       - name: Run pack validation (bin/validate)
+        if: steps.scope.outputs.scope != 'docs'
         run: bin/validate

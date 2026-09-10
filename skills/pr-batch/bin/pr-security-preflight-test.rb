@@ -1618,6 +1618,93 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_oversized_pr_diff_fails_closed_with_github_api_coverage_finding
+    with_fake_gh("oversized-pr-diff") do |env, trust_config_path, _log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus, out
+      assert_includes out, "pull request diff unavailable: HTTP 406; diff exceeds GitHub's 20,000-line limit"
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "- #123: GitHub API coverage truncated"
+    end
+  end
+
+  def test_exact_target_coverage_acknowledgement_accepts_oversized_pr_diff
+    with_fake_gh("oversized-pr-diff") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--acknowledge-risk",
+        "123:github-api-coverage",
+        "123"
+      )
+
+      assert status.success?, out
+      assert_includes out, "Acknowledged security preflight findings:\n- #123: GitHub API coverage truncated"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_oversized_pr_diff_acknowledgement_does_not_clear_high_risk_file_blocker
+    with_fake_gh("oversized-pr-diff") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--fail-on-high-risk-files",
+        "--acknowledge-risk",
+        "123:github-api-coverage",
+        "123"
+      )
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus, out
+      assert_includes out, "Acknowledged security preflight findings:\n- #123: GitHub API coverage truncated"
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "- #123: high-risk files changed"
+    end
+  end
+
+  def test_oversized_pr_diff_acknowledgement_does_not_clear_strict_trust_blocker
+    with_fake_gh("oversized-pr-diff-untrusted") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "--acknowledge-risk",
+        "123:github-api-coverage",
+        "123"
+      )
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus, out
+      assert_includes out, "Acknowledged security preflight findings:\n- #123: GitHub API coverage truncated"
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "- #123: untrusted, hidden, or unidentifiable participant(s)"
+    end
+  end
+
+  def test_unrelated_pr_diff_http_406_still_raises
+    with_fake_gh("unrelated-pr-diff-406") do |env, trust_config_path, _log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      refute status.success?, out
+      assert_equal 1, status.exitstatus, out
+      assert_includes out, "gh pr diff 123 --repo owner/repo failed"
+      assert_includes out, "HTTP 406: simulated unrelated content negotiation failure"
+      refute_includes out, "GitHub API coverage truncated"
+    end
+  end
+
   def test_suspicious_terms_in_untrusted_pr_diff_still_block
     with_fake_gh("untrusted-warning-diff") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
@@ -3239,7 +3326,7 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
-        if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        if [ "$mode" = "warning-diff" ] || [ "$mode" = "oversized-pr-diff" ] || [ "$mode" = "oversized-pr-diff-untrusted" ] || [ "$mode" = "unrelated-pr-diff-406" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"","user":{"login":"justin808"},"pull_request":{}}
       JSON
@@ -3335,7 +3422,7 @@ class PrSecurityPreflightTest < Minitest::Test
       {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}
       JSON
           fi
-        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "oversized-pr-diff" ] || [ "$mode" = "unrelated-pr-diff-406" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
       JSON
@@ -3355,7 +3442,7 @@ class PrSecurityPreflightTest < Minitest::Test
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":null,"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
       JSON
-        elif [ "$mode" = "untrusted-warning-diff" ]; then
+        elif [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "oversized-pr-diff-untrusted" ]; then
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"unknown-user"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"unknown-user","url":"https://github.com/unknown-user","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"unknown-user"}}]}}}]}}}}}
       JSON
@@ -3622,6 +3709,14 @@ class PrSecurityPreflightTest < Minitest::Test
             exit 0
           fi
         done
+        if [ "$mode" = "oversized-pr-diff" ] || [ "$mode" = "oversized-pr-diff-untrusted" ]; then
+          printf "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000) (https://api.github.com/repos/owner/repo/pulls/123)\nPullRequest.diff too_large\n" >&2
+          exit 1
+        fi
+        if [ "$mode" = "unrelated-pr-diff-406" ]; then
+          printf "HTTP 406: simulated unrelated content negotiation failure\n" >&2
+          exit 1
+        fi
         if [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ]; then
           cat <<'DIFF'
       diff --git a/docs/safe.md b/docs/safe.md
