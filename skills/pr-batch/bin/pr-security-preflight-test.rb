@@ -2324,6 +2324,40 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_rechecks_reaction_only_canonical_bot_identity_after_fetch
+    participant = [{
+      "id" => "BOT_kgDOCnlnWA",
+      "login" => "Copilot",
+      "url" => "https://github.com/apps/github-copilot-code-review",
+      "__typename" => "User"
+    }]
+    with_trusted_base_preflight(
+      fixture_env_overrides: {
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" => JSON.generate(participant),
+        "PREFLIGHT_TEST_PATH_GH_CANONICAL_BOT" => "1",
+        "PREFLIGHT_TEST_TRUSTED_GH_CANONICAL_BOT_MISMATCH" => "1",
+        "PREFLIGHT_TEST_REACTION_LOGIN" => "Copilot"
+      }
+    ) do |env, trust_config_path, repo_root, provenance|
+      write_trust_config(
+        trust_config_path,
+        users: ["justin808"],
+        bots: %w[copilot copilot-pull-request-reviewer]
+      )
+
+      out, status = run_trusted_base_preflight(
+        env,
+        trust_config_path,
+        repo_root,
+        extra_args: ["--include-reactions"]
+      )
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "security-sensitive PR snapshot changed during trusted-base verification"
+      assert_equal 1, File.read(provenance.fetch(:trusted_gh_marker)).scan("query CanonicalBot").size
+    end
+  end
+
   def test_trusted_base_rejects_trusted_comment_inserted_during_isolated_fetch
     with_trusted_base_preflight(
       during_fetch: -> { ENV["PREFLIGHT_TEST_TRUSTED_COMMENT"] = "1" }
@@ -2648,6 +2682,58 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_includes out, "Trust config source: explicit"
       assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
       assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_trusted_base_rejects_pr_that_changes_explicit_repo_local_trust_config
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED" => "1" }
+    ) do |env, _trust_config_path, repo_root, provenance|
+      repo_config = File.join(repo_root, DEFAULT_TRUST_CONFIG)
+      write_trust_config(repo_config, users: ["justin808"])
+      provenance.fetch(:operations).fetched_files[DEFAULT_TRUST_CONFIG] = File.binread(repo_config)
+
+      out, status = run_trusted_base_preflight(env, repo_config, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "PR changes selected repo-local trust config"
+    end
+  end
+
+  def test_trusted_base_rejects_pr_that_changes_explicit_repo_local_trust_config_symlink
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_REPO_LOCAL_TRUST_CONFIG_CHANGED" => "1" }
+    ) do |env, _trust_config_path, repo_root, provenance|
+      target_path = ".agents/permissive-trusted-github-actors.yml"
+      target = File.join(repo_root, target_path)
+      repo_config = File.join(repo_root, DEFAULT_TRUST_CONFIG)
+      write_trust_config(target, users: ["justin808"])
+      File.symlink(File.basename(target), repo_config)
+      provenance.fetch(:operations).fetched_files[target_path] = File.binread(target)
+
+      out, status = run_trusted_base_preflight(env, repo_config, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "PR changes selected repo-local trust config"
+    end
+  end
+
+  def test_trusted_base_rejects_explicit_repo_local_trust_config_changed_from_base
+    with_trusted_base_preflight do |env, _trust_config_path, repo_root, provenance|
+      repo_config_path = ".agents/explicit-trusted-github-actors.yml"
+      repo_config = File.join(repo_root, repo_config_path)
+      write_trust_config(repo_config, users: ["justin808"])
+      provenance.fetch(:operations).fetched_files[repo_config_path] = <<~YAML
+        trusted_users: []
+        trusted_bots: []
+        trusted_metadata_bots: []
+        trusted_teams: []
+      YAML
+
+      out, status = run_trusted_base_preflight(env, repo_config, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "repo-local trust config does not match fetched trusted base"
     end
   end
 
@@ -6148,6 +6234,31 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_pinned_env_ruby_gh_ignores_repository_path_interpreter
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      repo_ruby_marker = File.join(repo_root, "repo-ruby.log")
+      repo_ruby = File.join(repo_root, "bin", "ruby")
+      File.write(repo_ruby, <<~SH)
+        #!/bin/sh
+        printf 'repository ruby executed\n' > #{Shellwords.shellescape(repo_ruby_marker)}
+        exit 86
+      SH
+      FileUtils.chmod(0o755, repo_ruby)
+      File.write(provenance.fetch(:trusted_gh), <<~RUBY)
+        #!/usr/bin/env ruby
+        File.open(#{provenance.fetch(:trusted_gh_marker).inspect}, "a") { |file| file.puts(ARGV.join(" ")) }
+        exec(#{provenance.fetch(:fixture_gh).inspect}, *ARGV)
+      RUBY
+      FileUtils.chmod(0o755, provenance.fetch(:trusted_gh))
+
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      refute_path_exists repo_ruby_marker
+    end
+  end
+
   def test_trusted_base_rejects_path_git_lie_about_explicit_config_scope
     with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
       path_git = File.join(env.fetch("PATH").split(File::PATH_SEPARATOR).first, "git")
@@ -8638,6 +8749,14 @@ class PrSecurityPreflightTest < Minitest::Test
       File.write(path_gh, <<~SH)
         #!/bin/sh
         printf '%s\n' "$*" >> #{Shellwords.shellescape(path_gh_marker)}
+        if [ "${PREFLIGHT_TEST_PATH_GH_CANONICAL_BOT:-}" = "1" ]; then
+          case "$*" in
+            *"query CanonicalBot"*)
+              printf '%s\n' '{"data":{"node":{"id":"BOT_kgDOCnlnWA","__typename":"Bot","login":"copilot-pull-request-reviewer"}}}'
+              exit 0
+              ;;
+          esac
+        fi
         exec #{Shellwords.shellescape(fixture_gh)} "$@"
       SH
       FileUtils.chmod(0o755, path_gh)
@@ -8663,7 +8782,8 @@ class PrSecurityPreflightTest < Minitest::Test
       @trusted_base_operations[repo_root] = operations
 
       provenance = {
-        base_sha:, head_sha:, merge_sha:, operations:, path_git_marker:, path_gh_marker:, trusted_gh_marker:, log_path:
+        base_sha:, head_sha:, merge_sha:, operations:, path_git_marker:, path_gh_marker:, trusted_gh_marker:,
+        trusted_gh:, fixture_gh:, log_path:
       }
       fixture_env = env.merge(
         "PATH" => "#{repo_bin}#{File::PATH_SEPARATOR}#{env.fetch('PATH')}",
@@ -9299,6 +9419,11 @@ class PrSecurityPreflightTest < Minitest::Test
             cat <<'JSON'
       {"data":{"node":{"id":"U_kgDOCnlnWA","__typename":"User"}}}
       JSON
+          elif [ "$mode" = "trusted-base-high-risk" ] &&
+               [ "${PREFLIGHT_TEST_TRUSTED_GH_CANONICAL_BOT_MISMATCH:-}" = "1" ]; then
+            cat <<'JSON'
+      {"data":{"node":{"id":"BOT_kgDOCnlnWA","__typename":"User"}}}
+      JSON
           else
             printf 'unexpected canonical bot lookup for mode: %s\\n' "$mode" >&2
             exit 1
@@ -9663,7 +9788,8 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "-H" ] && [ "$3" = "Accept: application/vnd.github+json" ] && [ "$4" = "repos/owner/repo/issues/123/reactions?per_page=100" ]; then
-        printf '[[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]]'
+        reaction_login="${PREFLIGHT_TEST_REACTION_LOGIN:-justin808}"
+        printf '[[{"user":{"id":"actor-1","login":"%s","__typename":"User"}}]]' "$reaction_login"
         exit 0
       fi
 

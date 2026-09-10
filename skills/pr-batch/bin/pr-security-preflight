@@ -213,6 +213,22 @@ def trusted_gh_executable
   TrustedGhState.executable ||= resolve_trusted_gh_executable.freeze
 end
 
+def trusted_gh_path
+  prohibited_roots = trusted_executable_prohibited_roots
+  directories = [File.dirname(trusted_gh_executable), *ENV.fetch("PATH", "").split(File::PATH_SEPARATOR, -1)]
+  directories.filter_map do |directory|
+    next if directory.empty? || File.absolute_path(directory) != directory
+    next unless File.directory?(directory)
+
+    canonical = File.realpath(directory)
+    next if prohibited_roots.any? { |root| trusted_path_within_root?(canonical, root) }
+
+    canonical
+  rescue ArgumentError, SystemCallError
+    nil
+  end.uniq.join(File::PATH_SEPARATOR)
+end
+
 GH_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GH_TIMEOUT_SECONDS", "60"))
 GIT_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GIT_TIMEOUT_SECONDS", "10"))
 TRUSTED_BASE_FETCH_TIMEOUT_SECONDS = Integer(
@@ -382,10 +398,13 @@ def run_gh(*args)
   stdout = nil
   stderr = nil
   status = nil
-  executable = TrustedGhState.active ? trusted_gh_executable : "gh"
+  trusted = TrustedGhState.active
+  executable = trusted ? trusted_gh_executable : "gh"
+  environment = git_probe_env
+  environment = environment.merge("PATH" => trusted_gh_path) if trusted
 
   Timeout.timeout(GH_TIMEOUT_SECONDS) do
-    stdout, stderr, status = Open3.capture3(git_probe_env, executable, *args)
+    stdout, stderr, status = Open3.capture3(environment, executable, *args)
   end
 
   # Force UTF-8 so non-ASCII gh output (issue bodies, author names) survives LANG=C.
@@ -883,6 +902,26 @@ end
 
 def trust_config_global?(path, repo, github_host:, trusted: false)
   !trust_config_repo_local?(path, repo, github_host:, trusted:)
+end
+
+def trusted_repo_local_trust_config_path(trust_config_resolution)
+  return [DEFAULT_TRUST_CONFIG, nil] if trust_config_resolution.fetch(:source) == "repo-local"
+  return [nil, nil] unless trust_config_resolution.fetch(:source) == "explicit" &&
+                           !trust_config_resolution.fetch(:global)
+
+  configured_path = File.expand_path(trust_config_resolution.fetch(:path))
+  root, root_error = authoritative_trusted_repository_root(chdir: File.dirname(configured_path))
+  return [nil, root_error] if root_error
+  return [nil, "explicit repo-local trust config has no authoritative repository root"] unless root
+  return [nil, "explicit repo-local trust config is outside its authoritative repository root"] unless path_inside_git_root?(configured_path, root:)
+
+  path = File.join(File.realpath(File.dirname(configured_path)), File.basename(configured_path))
+  root_prefix = root.end_with?(File::SEPARATOR) ? root : "#{root}#{File::SEPARATOR}"
+  return [nil, "explicit repo-local trust config path is outside its repository root"] unless path.start_with?(root_prefix)
+
+  [path.delete_prefix(root_prefix), nil]
+rescue ArgumentError, SystemCallError => e
+  [nil, "explicit repo-local trust config path could not be resolved: #{e.message.lines.first&.strip}"]
 end
 
 def path_inside_git_root?(path, root:)
@@ -3026,12 +3065,19 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
       revalidate_trust_config_for_trusted_base(trust_config_resolution, trust_config, repo:, github_host:)
     next [nil, trust_config_revalidation_error] if trust_config_revalidation_error
 
+    repo_local_trust_config_path, repo_local_path_error =
+      trusted_repo_local_trust_config_path(post_fetch_trust_config_resolution)
+    next [nil, repo_local_path_error] if repo_local_path_error
+    if repo_local_trust_config_path && all_changed_paths(result.fetch(:file_records)).include?(repo_local_trust_config_path)
+      next [nil, "PR changes selected repo-local trust config"]
+    end
+
     repo_local_trust_config_binding = {}
-    if trust_config_resolution.fetch(:source) == "repo-local"
+    if repo_local_trust_config_path
       fetched_trust_config, fetched_trust_config_error = operations.fetched_file(
         fetch_root,
         base_sha,
-        DEFAULT_TRUST_CONFIG
+        repo_local_trust_config_path
       )
       next [nil, fetched_trust_config_error] unless fetched_trust_config
 
@@ -3047,7 +3093,7 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
       end
 
       repo_local_trust_config_binding = {
-        trust_config_source: "#{base_sha}:#{DEFAULT_TRUST_CONFIG}",
+        trust_config_source: "#{base_sha}:#{repo_local_trust_config_path}",
         trust_config_content_digest: fetched_trust_config_digest,
         trust_config_file_mode: fetched_trust_config.fetch(:mode)
       }
@@ -4550,6 +4596,7 @@ def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.n
         trust_config_resolution:,
         operations: trusted_base_operations,
         post_fetch_rescan: lambda do |post_fetch_team_cache|
+          post_fetch_canonical_bot_cache = {}
           scan_target(
             repo:,
             owner:,
@@ -4561,7 +4608,7 @@ def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.n
             permission_cache:,
             trust_config:,
             team_cache: post_fetch_team_cache,
-            canonical_bot_cache:
+            canonical_bot_cache: post_fetch_canonical_bot_cache
           )
         end
       )
