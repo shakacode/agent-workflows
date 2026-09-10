@@ -8,18 +8,18 @@ require_relative "../lib/github_comment_envelope"
 
 command = ARGV.shift
 options = {}
-OptionParser.new do |parser|
-  parser.banner = "Usage: github-comment-envelope <post-issue|post-reply> [options]"
-  parser.on("--runner RUNNER") { |value| options[:runner] = value }
-  parser.on("--host HOST") { |value| options[:host] = value }
-  parser.on("--task-or-run ID") { |value| options[:task_or_run] = value }
-  parser.on("--repo OWNER/REPO") { |value| options[:repo] = value }
-  parser.on("--number NUMBER", Integer) { |value| options[:number] = value }
-  parser.on("--comment-id ID", Integer) { |value| options[:comment_id] = value }
-  parser.on("--attach ATTACHMENT") { |value| (options[:attachments] ||= []) << value }
-end.parse!
-
 begin
+  OptionParser.new do |parser|
+    parser.banner = "Usage: github-comment-envelope <post-issue|post-reply> [options]"
+    parser.on("--runner RUNNER") { |value| options[:runner] = value }
+    parser.on("--host HOST") { |value| options[:host] = value }
+    parser.on("--task-or-run ID") { |value| options[:task_or_run] = value }
+    parser.on("--repo OWNER/REPO") { |value| options[:repo] = value }
+    parser.on("--number NUMBER", Integer) { |value| options[:number] = value }
+    parser.on("--comment-id ID", Integer) { |value| options[:comment_id] = value }
+    parser.on("--attach ATTACHMENT") { |value| (options[:attachments] ||= []) << value }
+  end.parse!
+
   body = $stdin.read
   case command
   when "post-issue", "post-reply"
@@ -65,7 +65,7 @@ begin
     warn "Usage: github-comment-envelope <post-issue|post-reply> [options]"
     exit 1
   end
-rescue KeyError, ArgumentError => e
+rescue KeyError, ArgumentError, OptionParser::ParseError => e
   warn e.message
   exit 1
 end

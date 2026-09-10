@@ -148,6 +148,16 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     end
   end
 
+  # Production break: malformed CLI values escape the error boundary and expose
+  # a Ruby backtrace instead of one actionable parser message.
+  def test_invalid_numeric_option_fails_without_a_backtrace
+    result = run_cli("post-issue", "--number", "not-a-number")
+
+    refute_predicate result[:status], :success?
+    assert_empty result[:stdout]
+    assert_equal "invalid argument: --number not-a-number\n", result[:stderr]
+  end
+
   private
 
   def run_cli(*arguments, stdin: "", env: {})

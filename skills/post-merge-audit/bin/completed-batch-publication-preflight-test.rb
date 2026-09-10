@@ -2914,6 +2914,24 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_agent_attributed_comment_cannot_grant_a_maintainer_qa_waiver
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    row = input.fetch("qa_evidence").find { |candidate| candidate.key?("maintainer_waiver") }
+    comment = valid_waiver_comment(row, input)
+    comment["body"] = GitHubCommentEnvelope.render(
+      body: comment.fetch("body"),
+      runner: "codex",
+      host: "M5",
+      task_or_run: "waiver-review"
+    )
+
+    result = assess_input(input, waiver_verifier: ->(**_keywords) { comment })
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable"
+  end
+
   def test_eligible_waiver_receipt_requires_an_authenticated_comment_refresh
     input = fixture("completed-batch-publication-hichee-terminal.json")
     receipt = assess_input(input)

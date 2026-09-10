@@ -7,16 +7,16 @@ require_relative "../lib/human_attention"
 
 command = ARGV.shift
 options = {}
-OptionParser.new do |parser|
-  parser.banner = "Usage: human-attention <desk|transition> [options]"
-  parser.on("--repo-root PATH") { |value| options[:repo_root] = value }
-  parser.on("--repo OWNER/REPO") { |value| options[:repo] = value }
-  parser.on("--pr NUMBER", Integer) { |value| options[:pr] = value }
-  parser.on("--state STATE") { |value| options[:state] = value }
-  parser.on("--expected-head SHA") { |value| options[:expected_head] = value }
-end.parse!
-
 begin
+  OptionParser.new do |parser|
+    parser.banner = "Usage: human-attention <desk|transition> [options]"
+    parser.on("--repo-root PATH") { |value| options[:repo_root] = value }
+    parser.on("--repo OWNER/REPO") { |value| options[:repo] = value }
+    parser.on("--pr NUMBER", Integer) { |value| options[:pr] = value }
+    parser.on("--state STATE") { |value| options[:state] = value }
+    parser.on("--expected-head SHA") { |value| options[:expected_head] = value }
+  end.parse!
+
   config = HumanAttention.load_config(options.fetch(:repo_root))
   case command
   when "desk"
@@ -35,7 +35,7 @@ begin
   else
     raise HumanAttention::Error, "Usage: human-attention <desk|transition> [options]"
   end
-rescue KeyError, HumanAttention::Error => e
+rescue KeyError, HumanAttention::Error, OptionParser::ParseError => e
   warn e.message
   exit 1
 end

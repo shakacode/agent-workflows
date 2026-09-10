@@ -1702,6 +1702,56 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
+  def test_agent_attributed_comment_cannot_grant_a_hosted_qa_waiver
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", hosted_policy(waiver_mode: "maintainer"))
+      write(root, ".agents/bin/verify-hosted-deployment", "#!/usr/bin/env ruby\n", executable: true)
+      write(root, "app/model.rb", "base\n")
+      base_sha = commit!(root, "base with maintainer waivers")
+      write(root, "app/model.rb", "runtime change\n")
+      head_sha = commit!(root, "runtime change")
+      review_target_url = "https://github.com/example/repo/pull/123"
+      waiver_url = "#{review_target_url}#issuecomment-456"
+      waiver_marker = <<~MARKDOWN.chomp
+        <!-- hosted-qa-maintainer-waiver v1
+        target: #{review_target_url}
+        head_sha: #{head_sha}
+        hosted_target: production
+        decision: waived
+        -->
+      MARKDOWN
+      authenticated_comment = {
+        "id" => 456,
+        "html_url" => waiver_url,
+        "issue_url" => "https://api.github.com/repos/example/repo/issues/123",
+        "created_at" => "2026-08-08T12:00:00Z",
+        "updated_at" => "2026-08-08T12:00:00Z",
+        "author_association" => "MEMBER",
+        "user" => { "login" => "maintainer", "type" => "User" },
+        "body" => GitHubCommentEnvelope.render(
+          body: waiver_marker,
+          runner: "codex",
+          host: "M5",
+          task_or_run: "hosted-waiver-review"
+        )
+      }
+
+      result = HostedQaReadiness.assess(
+        repo: root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_waiver_evidence(head_sha:, waiver_url:),
+        review_target_url:,
+        waiver_verifier: ->(**_keywords) { authenticated_comment }
+      )
+
+      refute result.fetch("eligible"), result
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "maintainer hosted QA waiver is not authenticated and replayable for the exact current head"
+    end
+  end
+
   def test_malformed_or_duplicate_trusted_base_policy_blocks_even_when_paths_do_not_apply
     with_repo do |root|
       duplicate_policy = hosted_policy.sub(
