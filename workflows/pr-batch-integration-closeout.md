@@ -1966,6 +1966,13 @@ merge-authority attestation is missing or uncertain yields `UNKNOWN`. Re-run
 the evaluator immediately before `pr-merge-submit`; any head or base movement
 restarts ordinary readiness and eligibility evaluation.
 
+Keep the decision comment human-first. Show the approval result, exact commit,
+triggered risks, and rollback or forward-recovery plan in the visible text.
+Put the complete YAML receipt in the closed `Approval receipt` disclosure from
+ADR 0003. Do not post the raw receipt as the visible comment.
+Bind the human-provenance attestation to the SHA-256 digest of the exact posted
+comment body. Any later edit requires renewed review and a new body digest.
+
 For either blocking verdict, render the user-facing closeout before displaying
 technical identifiers:
 

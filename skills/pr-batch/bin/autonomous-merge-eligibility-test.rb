@@ -3,6 +3,7 @@
 
 require "json"
 require "fileutils"
+require "digest"
 require "minitest/autorun"
 require "open3"
 require "tmpdir"
@@ -1537,6 +1538,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       "marker later in body" => "preface\n#{valid}",
       "multiple markers" => "#{valid}\n<!-- autonomous-merge-risk-decision:v1 -->",
       "CRLF boundary" => valid.gsub("\n", "\r\n"),
+      "multiple trailing blank lines" => "#{valid}\n\n",
       "trailing prose" => "#{valid}\ntrailing",
       "alias" => valid.sub("head_sha: #{HEAD_SHA}", "head_sha: &head #{HEAD_SHA}")
                       .sub("approved_by: maintainer", "approved_by: *head"),
@@ -1550,6 +1552,154 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     invalid.each do |name, body|
       assert_nil AutonomousMergeDecision.parse(body), name
     end
+  end
+
+  def test_decision_marker_parser_accepts_human_first_comment_with_collapsed_receipt
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    body = human_first_decision_body(
+      head_sha: HEAD_SHA,
+      gates: ["changed-files-limit"],
+      evidence: url
+    )
+
+    payload = AutonomousMergeDecision.parse(body)
+
+    refute_nil payload
+    assert_equal HEAD_SHA, payload.fetch("head_sha")
+    assert_equal ["changed-files-limit"], payload.fetch("triggered_gates")
+    assert_equal "approve", payload.fetch("decision")
+  end
+
+  def test_decision_marker_parser_binds_multiple_and_repo_path_gates_to_visible_summary
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    gates = ["changed-files-limit", "repo-path:checkout-hot-path"]
+    body = human_first_decision_body(head_sha: HEAD_SHA, gates:, evidence: url)
+
+    payload = AutonomousMergeDecision.parse(body)
+
+    refute_nil payload
+    assert_equal gates, payload.fetch("triggered_gates")
+    assert_nil AutonomousMergeDecision.parse(
+      body.sub("Repository path: checkout hot path", "Repository path: checkout path")
+    )
+  end
+
+  def test_decision_marker_parser_rejects_malformed_human_first_receipts
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    valid = human_first_decision_body(
+      head_sha: HEAD_SHA,
+      gates: ["changed-files-limit"],
+      evidence: url
+    )
+    invalid = {
+      "wrong disclosure label" => valid.sub("Approval receipt", "Decision receipt"),
+      "open disclosure" => valid.sub("<details>", "<details open>"),
+      "missing YAML fence" => valid.gsub(/```yaml\n|\n```/, ""),
+      "missing disclosure close" => valid.delete_suffix("\n</details>"),
+      "scalar gate list" => valid.sub("triggered_gates:\n  - changed-files-limit", "triggered_gates: changed-files-limit"),
+      "non-string gate" => valid.sub("  - changed-files-limit", "  - 1"),
+      "duplicate receipt disclosure" => valid.sub(
+        "\n</details>",
+        "\n</details>\n\n<details>\n<summary>Approval receipt</summary>\n\n```yaml\n---\n...\n```\n\n</details>"
+      ),
+      "trailing prose" => "#{valid}\ntrailing"
+    }
+
+    invalid.each do |name, body|
+      assert_nil AutonomousMergeDecision.parse(body), name
+    end
+  end
+
+  def test_decision_marker_parser_rejects_visible_summary_that_disagrees_with_receipt
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    valid = human_first_decision_body(
+      head_sha: HEAD_SHA,
+      gates: ["changed-files-limit"],
+      evidence: url
+    )
+    invalid = {
+      "non-approval result" => valid.sub("Approved this", "Recorded this"),
+      "hedged approval result" => valid.sub(
+        "Approved this exact revision for merge after reviewing the listed risk and rollback plan.",
+        "Approved for review only, not confirmed; do not merge yet."
+      ),
+      "contradictory approval prose" => valid.sub(
+        "\n\n<details>",
+        "\n\nApproval revoked. Do not merge this revision.\n\n<details>"
+      ),
+      "different visible head" => valid.sub("`#{HEAD_SHA}`", "`#{'b' * 40}`"),
+      "pluralized risk label" => valid.sub("- Risk requiring approval:", "- Risks requiring approval:"),
+      "contradictory risk label" => valid.sub(
+        "- Risk requiring approval: Changed files limit (`changed-files-limit`)",
+        "- Risk requiring approval: Approval revoked; do not merge (`changed-files-limit`)"
+      ),
+      "different visible gate" => valid.sub("`changed-files-limit`", "`commit-count-limit`"),
+      "different visible rollback" => valid.sub(
+        "Code rollback and forward recovery were reviewed.",
+        "Delete the stored data."
+      ),
+      "contradictory visible rollback" => valid.sub(
+        "- Rollback: Code rollback and forward recovery were reviewed.",
+        "- Rollback: Delete the stored data.\n" \
+        "- Rollback: Code rollback and forward recovery were reviewed."
+      )
+    }
+
+    invalid.each do |name, body|
+      assert_nil AutonomousMergeDecision.parse(body), name
+    end
+  end
+
+  def test_decision_marker_parser_allows_harmless_whitespace_and_details_text_inside_receipt
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    valid = human_first_decision_body(
+      head_sha: HEAD_SHA,
+      gates: ["changed-files-limit"],
+      evidence: "See the <details> block at #{url}."
+    )
+    formatted = "#{valid.sub("\n\n<details>", "\n \t\n<details>")}\n\n"
+
+    payload = AutonomousMergeDecision.parse(formatted)
+
+    refute_nil payload
+    assert_equal "See the <details> block at #{url}.", payload.fetch("evidence")
+  end
+
+  def test_decision_attestation_is_bound_to_the_exact_comment_body
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    original = human_first_decision_body(
+      head_sha: HEAD_SHA,
+      gates: ["changed-files-limit"],
+      evidence: url
+    )
+    edited = original.gsub(
+      "Code rollback and forward recovery were reviewed.",
+      "Approval revoked; do not merge this revision."
+    )
+    attestation = decision_provenance("1", body: original)
+
+    accepted = AutonomousMergeDecision.select(
+      comments: [decision_comment(id: "1", url:, body: original)],
+      provenance: [attestation],
+      head_sha: HEAD_SHA,
+      triggered_gates: ["changed-files-limit"]
+    )
+    edited_result = AutonomousMergeDecision.select(
+      comments: [decision_comment(id: "1", url:, body: edited)],
+      provenance: [attestation],
+      head_sha: HEAD_SHA,
+      triggered_gates: ["changed-files-limit"]
+    )
+    unbound_result = AutonomousMergeDecision.select(
+      comments: [decision_comment(id: "1", url:, body: original)],
+      provenance: [attestation.reject { |key, _value| key == "body_sha256" }],
+      head_sha: HEAD_SHA,
+      triggered_gates: ["changed-files-limit"]
+    )
+
+    assert_equal "accepted", accepted.fetch("status")
+    assert_equal "uncertain", edited_result.fetch("status")
+    assert_equal "uncertain", unbound_result.fetch("status")
   end
 
   private
@@ -1972,10 +2122,13 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     }
   end
 
-  def decision_provenance(comment_id)
+  def decision_provenance(comment_id, body: nil)
+    url = "https://github.com/example/repo/pull/1#issuecomment-#{comment_id}"
+    body ||= decision_body(head_sha: HEAD_SHA, gates: ["changed-files-limit"], evidence: url)
     {
       "comment_id" => comment_id,
       "source" => "direct-user-task",
+      "body_sha256" => Digest::SHA256.hexdigest(body),
       "human_provenance_verified" => true,
       "merge_authority_verified" => true
     }
@@ -1995,5 +2148,45 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       evidence: #{evidence}
       ...
     YAML
+  end
+
+  def human_first_decision_body(head_sha:, gates:, evidence:)
+    rollback = "Code rollback and forward recovery were reviewed."
+    risks = gates.map do |gate|
+      label = if gate.start_with?("repo-path:")
+                "Repository path: #{gate.delete_prefix('repo-path:').tr('-', ' ')}"
+              else
+                gate.tr("-", " ").capitalize
+              end
+      "#{label} (`#{gate}`)"
+    end
+    <<~MARKDOWN.chomp
+      <!-- autonomous-merge-risk-decision:v1 -->
+      Approved this exact revision for merge after reviewing the listed risk and rollback plan.
+
+      - Commit: `#{head_sha}`
+      - Risk requiring approval: #{risks.join(', ')}
+      - Rollback: #{rollback}
+
+      Ordinary merge checks still apply.
+
+      <details>
+      <summary>Approval receipt</summary>
+
+      ```yaml
+      ---
+      head_sha: #{head_sha}
+      triggered_gates:
+      #{gates.map { |gate| "  - #{gate}" }.join("\n")}
+      rollback_disposition: #{rollback}
+      decision: approve
+      approved_by: maintainer
+      source: direct-user-task
+      evidence: #{evidence}
+      ...
+      ```
+
+      </details>
+    MARKDOWN
   end
 end
