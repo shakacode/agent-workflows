@@ -2638,10 +2638,14 @@ genuine-defect gates. The cutoff does not waive a broken accepted fix or change
 any existing repair-round cap or automatic-continuation brake.
 
 Recover the phase and accepted selection from existing task, review, and PR
-history before triage or executable-work construction. Pushes, resumed threads,
+history before triage or executable-work construction. When trusted task
+context or history establishes this is the first review of the accepted work,
+establish and record the initial phase; absence of a phase record alone does
+not establish a first review. Pushes, resumed threads,
 replacement reviewers, replacement PRs carrying the same work, and final
 whole-branch reviews retain that phase; they do not start a fresh initial pass.
-If history is missing or ambiguous, allow no fresh optional fix allowance;
+If unavailable or ambiguous history prevents establishing the phase, allow no
+fresh optional fix allowance;
 continue substantive review and recover evidence for any claimed accepted fix.
 Explicit later human scope decisions remain authoritative for the selected
 work. Broad continue, autofix, autopilot, or apply-all actions alone do not reset
