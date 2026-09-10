@@ -1177,6 +1177,11 @@ If self-review finds a real issue, fix it locally before pushing. Do not post se
 
 ## Pre-Push AI Review And Simplify Gate
 
+Apply [Initial-Pass Optional-Nit Cutoff](pr-processing.md#initial-pass-optional-nit-cutoff)
+to all review and simplify steps below, including final whole-branch review.
+Reuse the task's existing phase; a new reviewer or integration stage does not
+reopen optional work.
+
 <!-- host-branch: available-tool start -->
 
 For non-trivial, high-risk, or repeatedly churny changes, do more local review before
@@ -1508,6 +1513,10 @@ Before final handoff, kill or explicitly confirm no stray GitHub polling process
 still running.
 
 ## Review Comment Handling
+
+Apply [Initial-Pass Optional-Nit Cutoff](pr-processing.md#initial-pass-optional-nit-cutoff)
+before the defaults and coordinated worklist construction below, preserving
+the phase through review carryover and continuation.
 
 Use `.agents/skills/address-review/SKILL.md` when skills are available; Claude Code exposes the same workflow as `/address-review`. For assistants without skill support, use `.agents/workflows/address-review.md`. The default stance is:
 
@@ -2026,6 +2035,13 @@ gate. Absence of an exact current-head marker remains
 merge-authority attestation is missing or uncertain yields `UNKNOWN`. Re-run
 the evaluator immediately before `pr-merge-submit`; any head or base movement
 restarts ordinary readiness and eligibility evaluation.
+
+Keep the decision comment human-first. Show the approval result, exact commit,
+triggered risks, and rollback or forward-recovery plan in the visible text.
+Put the complete YAML receipt in the closed `Approval receipt` disclosure from
+ADR 0003. Do not post the raw receipt as the visible comment.
+Bind the human-provenance attestation to the SHA-256 digest of the exact posted
+comment body. Any later edit requires renewed review and a new body digest.
 
 For either blocking verdict, render the user-facing closeout before displaying
 technical identifiers:

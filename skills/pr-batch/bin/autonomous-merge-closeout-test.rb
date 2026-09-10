@@ -127,6 +127,7 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     assert_equal 1, output.scan("Next action:").length
     assert_includes output, "human identity and merge authority are verified"
     assert_includes output, "complete autonomous-merge-risk-decision:v1 comment on this PR"
+    assert_includes output, "closed `Approval receipt` disclosure"
     assert_includes output, "Durable means"
     assert_includes output, "Current-head means"
     assert_includes output, HEAD_SHA

@@ -41,6 +41,10 @@ Behavior rules:
   `AGENT_COMMENT_HOST` as the actual runner host, and
   `AGENT_COMMENT_TASK_OR_RUN` as the stable task/run identifier. Missing or
   invalid context blocks posting; never invent a generic runner identity.
+- Apply `workflows/pr-processing.md` → **Initial-Pass Optional-Nit Cutoff**
+  before triage, menus, worklists, and every Step 8 action below. Its phase and
+  authority rules take precedence over optional action defaults, including
+  autopilot and replacement carryover. A full-history scan does not reset phase.
 - Do not claim you fetched comments unless you actually have terminal or API access and used it.
 - If you do not have shell access with `gh`, say so immediately and ask me to provide either:
   - the PR URL plus exported comment data, or
