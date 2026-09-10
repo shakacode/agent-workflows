@@ -11,7 +11,7 @@ completes for that implementation head.
 Integration and closeout own current base/head reconciliation, conflict
 handling, final validation, PR publication and evidence, QA, configured review,
 hosted CI, unresolved-thread convergence, merge authority and assurance,
-submission, and completed-batch audit.
+submission, and any required completed-batch audit.
 
 This component consumes target identity and trust facts from
 [PR-batch intake](pr-batch-intake.md), dependency permission and the shared
@@ -934,6 +934,69 @@ expensive final validation. Make at most one consolidated remediation push for
 that cohort. A newly confirmed blocker may still require another candidate, but
 nit-only, comment-only, optional wording, or evidence churn never does.
 
+### Ordinary PR Closeout
+
+This section owns closeout applicability for ordinary PRs, including batches
+of one and recovery of finished batches. Use it before starting another audit
+or deciding archive readiness. Production and release owners retain their
+separate gates.
+
+#### Live reconciliation
+
+Bound the final sweep to the intended outcome: confirm publication or merge on
+the expected branch and that the intended change landed; reconcile required
+CI, review and QA evidence, consequential late findings, remaining source work,
+and current ownership. An open PR is not merged; honor an explicitly accepted
+PR-only or durable handoff stopping point without taking over its next owner.
+
+Reuse still-valid validation, review and QA evidence. A change to the covered
+head, relevant base/integration, scope, required policy, or a concrete failure
+invalidates affected evidence; explain the invalidation and rerun only what it
+affects, honoring repository-required repeats. Live reconciliation of a landed
+PR is not another validation or independent review cycle. Archiving alone is
+not an invalidation, and informational metadata expiry does not invalidate
+source, CI, review or QA evidence.
+
+#### Audit applicability
+
+No independent completed-batch audit or duplicate receipt is required merely
+to finish or archive an ordinary PR. Add an audit only for an explained trigger:
+explicit trusted repository policy, a user audit request, release assurance,
+a verified cross-PR integration risk, or a concrete warning such as a failed
+post-merge check, consequential late finding, or suspected bad merge. Batch
+size, age, a missing optional receipt, and being merged are not triggers alone.
+Use existing trusted `AGENTS.md` policy to require stricter closeout; no new
+configuration key is needed. Known absence of stricter policy uses this default;
+unreadable or ambiguous applicable policy leaves a required-gate uncertainty
+blocking instead of silently assuming the default.
+
+When a trigger requires an audit, the coordinator owns the scoped audit and
+its required receipt/replay contract below; a parent only reconciles its
+handoff. Reuse qualifying existing audit evidence when still valid. Preserve
+strict helper behavior and historical evidence. Never relabel an already-required
+failed, blocked, or incomplete audit as optional to reach completion, or discard
+its unresolved material findings. A completed audit is not a new audit trigger;
+expiry of informational receipt metadata alone does not reopen that gate.
+Do not replay or republish a receipt just to archive, or claim its expired
+snapshot is fresh. A new required audit or publication still uses strict replay.
+
+#### Lifecycle cleanup and archive readiness
+
+Already-authorized execution includes routine cleanup of exact task-owned
+claims, locks, workers and monitors after verifying ownership and that their
+work or monitored gate is terminal. Do not ask again for that cleanup. Status-only and informational
+archive questions stay read-only for repository, claim, monitor and task state.
+A failed informational cleanup is an FYI when it leaves no unsafe live owner or
+unfinished work; uncertainty about active ownership or safe release still blocks.
+
+Archive-ready means the intended source is published or durably preserved at
+an accepted stopping point, with no substantive unfinished work, unmet required
+gate, pending material decision, unsafe live ownership, or safety-critical
+`UNKNOWN` owned by this task. Accepted follow-ups need a durable reference and
+owner. Expired informational metadata, optional duplicate receipts, and harmless
+cleanup failures alone do not block. State the outcome and any real blocker
+concisely using the final handoff format; do not manufacture an audit receipt.
+
 ### Coordinator Closeout Lane
 
 The current task remains the sole user-facing coordinator through closeout. If
@@ -955,6 +1018,10 @@ one exact question only when new authority or a product decision is required.
 After workers finish, the coordinator keeps working until each target has a live
 final state. Do not stop at PR creation unless the user explicitly requested
 PR-only output.
+
+Apply [Ordinary PR Closeout](#ordinary-pr-closeout) first. For already-landed
+work, reuse valid gate evidence and perform its bounded live reconciliation;
+steps below do not restart completed pre-merge stages.
 
 The closeout lane is:
 
@@ -1059,10 +1126,11 @@ The closeout lane is:
     blocks correctness, review, QA, merge, audit, or archive readiness. The
     adapter owns capability detection, bounded invocation, and recovery; this
     component does not reproduce that protocol.
-13. Once every batch target has a final state, the batch coordinator must run
-    its completed-batch audit before its final handoff. Each completed-batch
-    audit is owned by its batch coordinator. A parent orchestration agent only
-    reconciles the durable audit handoff. Use an independent checker and enforce
+13. Once every batch target has a final state, apply
+    [Audit applicability](#audit-applicability). If an audit is required, the
+    batch coordinator runs or reuses that audit before its final handoff; a
+    parent only reconciles the durable audit handoff. The rest of this audit
+    step applies only to that required audit. Use an independent checker and enforce
     its evidence-quality requirements. Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
     If independence from every maker is absent or `UNKNOWN`, record the
     audit as `UNKNOWN` and stop short of a clean verdict. Scope the deep audit to the verified batch subset, with the commit
@@ -1089,7 +1157,9 @@ The closeout lane is:
     or environment content into the handoff. Usage evidence remains
     informational and does not block or satisfy CI, review, QA, merge, audit, or
     archive-readiness gates.
-14. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. When the compact terminal structure seam applies to single-repo batches at or below `compact_terminal_structure_max_lanes`, use the compact form above and keep the required receipt and final `Conversation status:` line in order. Use `Conversation status: Ready for archiving.` iff archive-ready and the union is empty; otherwise put an `Unblock:` block with every normalized blocker immediately before the final `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. Before emitting that final message, for `coordination_required`, validate its Batch Coordination Declaration mechanically rather than by self-report: resolve `PR_BATCH_SKILL_DIR` with the env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/coordination-declaration" --handoff <drafted-handoff-path-or->` against the drafted handoff. It exits 0 only when the handoff carries exactly one acceptable `coordination:` line. A nonzero exit is a hard blocker: report NOT COMPLETE and fix the declaration instead of emitting a clean handoff. For `coordination_not_applicable`, skip that helper: the handoff carries no `coordination:` line for it to accept, so running it would force a false NOT COMPLETE.
+14. Apply [Lifecycle cleanup and archive readiness](#lifecycle-cleanup-and-archive-readiness) to the final handoff. When an audit is required, end the final user-visible message after the audit and preserve its strict blocker union: A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. When the compact terminal structure seam applies to single-repo batches at or below `compact_terminal_structure_max_lanes`, use the compact form above and keep the required receipt and final `Conversation status:` line in order. Use `Conversation status: Ready for archiving.` iff archive-ready and the union is empty; otherwise put an `Unblock:` block with every normalized blocker immediately before the final `Conversation status: Follow-ups remain — <each exact action or blocker>.` line.
+
+    For every final handoff, regardless of audit applicability, apply the coordination check. Before emitting that final message, for `coordination_required`, validate its Batch Coordination Declaration mechanically rather than by self-report: resolve `PR_BATCH_SKILL_DIR` with the env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/coordination-declaration" --handoff <drafted-handoff-path-or->` against the drafted handoff. It exits 0 only when the handoff carries exactly one acceptable `coordination:` line. A nonzero exit is a hard blocker: report NOT COMPLETE and fix the declaration instead of emitting a clean handoff. For `coordination_not_applicable`, skip that helper: the handoff carries no `coordination:` line for it to accept, so running it would force a false NOT COMPLETE.
 
 ## Self-Review Gate
 
@@ -2170,7 +2240,9 @@ direct-merge command shape.
 
 ### Completed-Batch Audit Receipt And Archive Replay
 
-Batch coordinators execute their retained closeout through checklist+replay.
+This section applies only when [Audit applicability](#audit-applicability)
+requires a completed-batch audit. Batch coordinators execute that audit through
+checklist+replay; it is not an extra ordinary-closeout gate.
 
 Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`. Before preflight, persist trusted `coordination_applicability` in a separate controller/operator-owned `completed-batch-coordination-applicability` v1 artifact and retain its canonical SHA-256 independently from receipt input. It binds the exact batch and canonical target set to durable HTTPS policy/topology sources, verification time, and rationale. For `coordination_required`, capture fresh bounded exact-batch coordination status; for `coordination_not_applicable`, supply the typed single-controller status proof without any coordination command. Before publishing `audit_status: complete`, the coordinator runs `completed-batch-publication-preflight` with `--workflow-config <trusted repo workflow config>`, `--applicability-proof <trusted artifact>`, `--applicability-proof-sha256 <independently retained digest>`, the applicability-selected coordination status or proof, the exact trusted target manifest, refreshed target terminal states/full heads, and one exact-head QA Evidence marker per target. Receipt input can only claim applicability; missing, tampered, mismatched, or contradictory trusted proof stops before any verifier or POST. The helper derives the full set from required coordination lanes or the not-applicable proof and refuses absent, ambiguous, nonterminal, unmerged/unclosed, or `UNKNOWN` state. QA must replay as `SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED` with an authenticated replayable maintainer-waiver comment; `unknown`, `in_progress`, missing, stale, malformed, or blocked QA refuses completion. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync. For `audit_status: complete`, this additionally requires the eligible preflight and exact manifest match. Pass the refreshed preflight receipt, trusted applicability artifact, and retained digest to `publish` and `replay` with `--publication-preflight`, `--applicability-proof`, `--applicability-proof-sha256`, and explicit `--workflow-config <trusted repo workflow config>`; replay blocks on an applicability, coordination, target/head, or QA snapshot mismatch/staleness.
 
@@ -2247,8 +2319,9 @@ For a manual multi-PR landing plan:
 
 ## Post-Merge Batch Audit
 
-Use this section when reviewing a completed coordinated batch, including a
-small batch, or already-merged PRs before a release candidate.
+Apply [Audit applicability](#audit-applicability) before entering this section.
+Use it for the required audit of a completed coordinated batch or already-merged
+PRs before a release candidate.
 
 Choose the audit mode before deep audit:
 

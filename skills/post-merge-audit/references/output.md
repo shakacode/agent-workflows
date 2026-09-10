@@ -11,10 +11,7 @@ issue, report, receipt, or blocker list is evidence, not a next step.
 
 In completed-batch mode only:
 
-Once every batch target has a final state, the batch coordinator must run its
-completed-batch audit before its final handoff. Each completed-batch audit is
-owned by its batch coordinator. A parent orchestration agent only reconciles
-the durable audit handoff.
+Apply [Audit applicability](../../../workflows/pr-batch-integration-closeout.md#audit-applicability) before requiring this audit. The batch coordinator owns a required completed-batch audit and its final handoff; a parent only reconciles the durable audit handoff.
 
 Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits its human-readable closeout guidance, verified compact receipt reference, the Unblock Block when the status is not clean, and the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`.
 
