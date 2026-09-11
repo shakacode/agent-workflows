@@ -1196,9 +1196,76 @@ class AutonomousMergeEligibilityTest < Minitest::Test
 
       assert_equal "UNKNOWN", missing.fetch("verdict")
       assert_equal "UNKNOWN", malformed.fetch("verdict")
-      assert_includes missing.fetch("evidence_failures").first, "helper provenance"
-      assert_includes malformed.fetch("evidence_failures").first, "helper provenance"
+      assert_includes missing.fetch("evidence_failures").first, "was not supplied"
+      assert_includes missing.fetch("evidence_failures").first, "trusted-base:<40-hex-sha>"
+      assert_includes malformed.fetch("evidence_failures").first, "not a recognized form"
+      assert_includes malformed.fetch("evidence_failures").first, "verified-installed-pack:<64-hex-digest>"
     end
+  end
+
+  # Production break: an installer and verifier can frame different source sets,
+  # making every recorded installed-pack digest unusable.
+  def test_default_installed_pack_digest_matches_the_shipped_runtime_sources
+    assert_equal(
+      AutonomousMergeRuntimeTrust.installed_pack_digest(
+        AutonomousMergeRuntimeTrust.runtime_sources(
+          AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
+        )
+      ),
+      AutonomousMergeRuntimeTrust.default_installed_pack_digest
+    )
+  end
+
+  def test_installed_pack_digest_rejects_a_symlinked_runtime_ancestor
+    Dir.mktmpdir("autonomous-merge-symlinked-runtime-ancestor-test") do |root|
+      sources = AutonomousMergeRuntimeTrust.runtime_sources(
+        AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
+      ).transform_values do |source|
+        path = File.join(root, source.fetch(:tree_paths).first)
+        FileUtils.mkdir_p(File.dirname(path))
+        FileUtils.cp(source.fetch(:path), path)
+        source.merge(path:)
+      end
+      fixtures = File.join(root, "skills/pr-batch/fixtures")
+      external = File.join(root, "external-fixtures")
+      FileUtils.mv(fixtures, external)
+      File.symlink(external, fixtures)
+
+      error = assert_raises(SystemCallError) do
+        AutonomousMergeRuntimeTrust.installed_pack_digest(sources)
+      end
+      assert_includes error.message, "openat runtime source"
+    end
+  end
+
+  def test_runtime_trust_returns_rejected_result_when_installed_digest_check_raises
+    singleton = class << AutonomousMergeRuntimeTrust; self; end
+    original = singleton.instance_method(:installed_pack_digest)
+    singleton.define_method(:installed_pack_digest) { |*| raise "unsafe installed runtime" }
+    begin
+      result = AutonomousMergeRuntimeTrust.verify(
+        repo_root: Dir.pwd,
+        base_sha: "a" * 40,
+        claim: "verified-installed-pack:#{'b' * 64}",
+        calibration_path: AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
+      )
+
+      refute result.accepted
+      assert_includes result.errors, "runtime trust verification failed: unsafe installed runtime"
+    ensure
+      singleton.define_method(:installed_pack_digest, original)
+    end
+  end
+
+  # Production break: operators cannot discover either accepted provenance form
+  # from the command that rejects an incomplete claim.
+  def test_help_documents_both_trusted_helper_provenance_claim_forms
+    output, status = Open3.capture2("ruby", SCRIPT, "--help")
+
+    assert status.success?, output
+    assert_includes output, "trusted-base:<40-hex-sha>"
+    assert_includes output, "verified-installed-pack:<64-hex-digest>"
+    assert_includes output, 'managed_runtime_manifest_digests["autonomous-merge"]'
   end
 
   def test_runtime_trust_authenticates_closeout_renderer_for_base_and_installed_pack

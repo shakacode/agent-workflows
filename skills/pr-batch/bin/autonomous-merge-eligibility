@@ -12,16 +12,32 @@ require_relative "../lib/autonomous_merge_evidence"
 require_relative "../lib/autonomous_merge_runtime_trust"
 require_relative "../lib/current_integration_evidence"
 
-default_calibration = File.expand_path("../fixtures/autonomous-merge-reviewed-heads-calibration.json", __dir__)
+default_calibration = AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
 options = { calibration_decision: default_calibration }
 OptionParser.new do |parser|
-  parser.on("--repo-root PATH") { |value| options[:repo_root] = value }
-  parser.on("--trusted-base REV") { |value| options[:trusted_base] = value }
-  parser.on("--trusted-helper-provenance PROVENANCE") { |value| options[:trusted_helper_provenance] = value }
-  parser.on("--calibration-decision PATH") { |value| options[:calibration_decision] = value }
+  parser.banner = "Usage: autonomous-merge-eligibility [options]"
+  parser.on("--repo-root PATH", "Evaluated repository checkout") { |value| options[:repo_root] = value }
+  parser.on("--trusted-base REV", "Trusted base revision to evaluate against") { |value| options[:trusted_base] = value }
+  parser.on(
+    "--trusted-helper-provenance PROVENANCE",
+    "Expected identity of this runtime, established independently of the evaluated repository.",
+    "Accepted forms:",
+    "  trusted-base:<40-hex-sha>              runtime sources match that commit tree",
+    "  verified-installed-pack:<64-hex-digest>  digest recorded by the installer under",
+    '                                           managed_runtime_manifest_digests["autonomous-merge"]',
+    "Never derive the expected digest from the runtime being evaluated."
+  ) { |value| options[:trusted_helper_provenance] = value }
+  parser.on(
+    "--calibration-decision PATH",
+    "Calibration decision (default: the shipped fixture covered by the installed-pack digest)"
+  ) { |value| options[:calibration_decision] = value }
   parser.on("--repo OWNER/REPO") { |value| options[:repo] = value }
   parser.on("--pr NUMBER", Integer) { |value| options[:pr] = value }
   parser.on("--semantic-assessment PATH") { |value| options[:semantic_assessment] = value }
+  parser.on("-h", "--help", "Show help") do
+    puts parser
+    exit 0
+  end
 end.parse!
 
 @verified_runtime_trust = nil
