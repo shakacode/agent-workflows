@@ -579,7 +579,14 @@ module PushDownstream
   def normalize_trust_config(trust)
     trust = stringify_keys(trust || {})
     TRUST_KEYS.to_h do |key|
-      values = Array(trust[key]).map { |value| normalize_trust_value(key, value) }.reject(&:empty?)
+      raw_values =
+        case key
+        when "trusted_bots", "trusted_metadata_bots"
+          TrustConfigShape.strict_string_list(trust[key], name: key)
+        else
+          Array(trust[key])
+        end
+      values = raw_values.map { |value| normalize_trust_value(key, value) }.reject(&:empty?)
       [key, values.uniq]
     end
   end

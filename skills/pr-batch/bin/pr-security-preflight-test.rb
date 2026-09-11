@@ -1260,6 +1260,26 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trust_config_rejects_malformed_bot_roles_before_normalization
+    with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
+      File.write(trust_config_path, <<~YAML)
+        trusted_users: []
+        trusted_bots:
+          - coderabbitai
+        trusted_metadata_bots:
+          - github-actions
+          - 42
+        trusted_teams: []
+      YAML
+
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      refute status.success?, out
+      assert_equal 1, status.exitstatus
+      assert_includes out, "Invalid trust config #{trust_config_path}: trusted_metadata_bots must be a nonempty string or an array of nonempty strings"
+    end
+  end
+
   def test_trust_config_rejects_non_mapping_yaml
     with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
       File.write(trust_config_path, "[]\n")
