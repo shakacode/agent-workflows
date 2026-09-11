@@ -661,10 +661,11 @@ module MergeAssurance
     integration = autonomous_result["current_integration"]
     integration_failures = []
     validate_current_integration(integration, context, integration_failures)
-    return false unless integration_failures.empty? && integration.dig("reuse", "decision") == "reuse-exact-head"
+    return false unless integration_failures.empty? &&
+                        %w[reuse-exact-head current-head-integrated].include?(integration.dig("reuse", "decision"))
 
-    # CI keeps the provider's recorded PR base. Only validated exact-head reuse
-    # bridges that base to the current candidate; policy authentication is unchanged.
+    # CI keeps the provider's recorded PR base. Validated reuse or an already-
+    # integrated head bridges that metadata to the current candidate, not old policy.
     ci_base == { "ref" => context.dig("base", "ref"), "sha" => integration["recorded_base_sha"] }
   end
 
@@ -961,7 +962,7 @@ module MergeAssurance
               integration["base_delta"] == { "paths" => [] } &&
               telemetry["validator_replays_avoided"].zero? && telemetry["review_replays_avoided"].zero?
       failures << "autonomous_result base-unchanged integration evidence is invalid" unless valid
-    when "reuse-exact-head"
+    when "reuse-exact-head", "current-head-integrated"
       validate_reused_current_integration(integration, context, failures)
     else
       failures << "autonomous_result current integration is not reusable"
@@ -986,15 +987,22 @@ module MergeAssurance
     valid_paths = exact_keys?(integration["base_delta"], ["paths"]) &&
                   paths.is_a?(Array) && paths == paths.uniq.sort &&
                   paths.all? { |path| valid_repository_path?(path) }
-    valid_reasons = reasons.is_a?(Array) && !reasons.empty? &&
-                    (reasons - %w[base-delta-reuse-safe pr-delta-reuse-safe]).empty?
-    path_reason_consistent = !paths.empty? || reasons == ["pr-delta-reuse-safe"]
+    integrated = integration.dig("reuse", "decision") == "current-head-integrated"
+    valid_reasons = if integrated
+                      reasons == %w[current-base-ancestor head-tree-matches-candidate]
+                    else
+                      reasons.is_a?(Array) && !reasons.empty? &&
+                        (reasons - %w[base-delta-reuse-safe pr-delta-reuse-safe]).empty?
+                    end
+    path_reason_consistent = integrated || !paths.empty? || reasons == ["pr-delta-reuse-safe"]
     valid = full_sha?(recorded_base) && recorded_base != context.dig("base", "sha") &&
             integration["patch_identity"].to_s.match?(/\A[0-9a-f]{64}\z/) &&
             valid_paths && valid_reasons && path_reason_consistent &&
             valid_current_integration_candidate?(candidate, context)
     telemetry = integration["telemetry"]
-    valid &&= telemetry["validator_replays_avoided"] == 1 && telemetry["review_replays_avoided"] == 1
+    avoided = integrated ? 0 : 1
+    valid &&= telemetry["validator_replays_avoided"] == avoided && telemetry["review_replays_avoided"] == avoided
+    valid &&= telemetry["elapsed_seconds_saved"].nil? if integrated
     failures << "autonomous_result reused current integration evidence is invalid" unless valid
   end
 

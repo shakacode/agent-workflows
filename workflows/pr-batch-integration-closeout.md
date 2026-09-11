@@ -1864,13 +1864,28 @@ patch identity, and clean integration candidate. It prefers GitHub's
 system directories under a closed environment and computes an isolated
 `git merge-tree`. Malformed identity or live-ref movement fails closed.
 
-Reuse requires disjoint PR/base paths, no built-in or configured
+For a stale recorded PR base whose exact head already contains the trusted live
+base, `current-head-integrated` establishes a different identity: Git proves
+current-base ancestry, the head tree equals the integration candidate tree,
+and candidate parents are ordered current-base/head. Complete GitHub changed
+paths must match the effective merge-base-to-head diff; stable initial/final
+snapshots remain required. This is Git identity, **not** local full validation,
+QA, review, or hosted CI PASS. Those ordinary exact-candidate gates still run
+separately; the helper does not authenticate local validation receipts.
+
+Old-head reuse requires disjoint PR/base paths, no built-in or configured
 high-risk path, and one whole side limited to trusted-safe documentation,
 changelog, or generated paths. Code-to-code changes, overlap, conflicts,
 incomplete evidence, or policy/workflow/security/release risk require branch
 update and fresh evidence. No gate is waived. Results distinguish
-`base-unchanged`, `reuse-exact-head`, and fail-closed reasons; replay counts are
-exact, while elapsed time saved is measured or `null`.
+`base-unchanged`, `current-head-integrated`, `reuse-exact-head`, and fail-closed
+reasons. Fresh integrated identity reports zero avoided validator/review
+replays and `null` elapsed savings. Fresh `pr-ci-readiness --diff-base-sha`
+evidence must bind the actual reviewed diff base/head and current trusted
+policy, even when GitHub retains an older recorded PR base. Never edit supplied
+CI receipts or rebind old policy provenance. Submission replays the same
+candidate tree and ordered parents; merge-shaped evidence remains unsuitable
+for rebase or new merge-queue submission.
 
 The semantic assessment must be an external coordinator-owned file derived
 from the trusted task and inspected diff; a path lexically or physically

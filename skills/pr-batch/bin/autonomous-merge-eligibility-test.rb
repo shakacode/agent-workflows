@@ -58,6 +58,21 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_includes result.fetch("evidence_failures").first, "neither-delta-reuse-safe"
   end
 
+  def test_already_integrated_head_with_stale_recorded_base_preserves_policy_gates
+    result = evaluate do |recorded_base, root|
+      stale_evaluation(
+        root:, recorded_base:, integrated: true,
+        head_path: "AGENTS.md", base_delta_path: ".github/workflows/ci.yml"
+      )
+    end
+
+    assert_equal "human-approval-required", result.fetch("verdict")
+    assert_includes result.fetch("triggered_gates"), "autonomous-merge-policy-change"
+    assert_equal "current-head-integrated", result.dig("current_integration", "reuse", "decision")
+    assert_equal 0, result.dig("current_integration", "telemetry", "validator_replays_avoided")
+    assert_empty result.fetch("evidence_failures")
+  end
+
   def test_copied_file_source_is_not_mistaken_for_a_changed_path
     result = evaluate do |recorded_base, root|
       copied_stale_evaluation(
@@ -1958,7 +1973,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     { files:, commits: }
   end
 
-  def stale_evaluation(root:, recorded_base:, head_path:, base_delta_path:)
+  def stale_evaluation(root:, recorded_base:, head_path:, base_delta_path:, integrated: false)
     git!(root, "switch", "--quiet", "--detach", recorded_base)
     git!(root, "switch", "--quiet", "-c", "feature")
     FileUtils.mkdir_p(File.join(root, File.dirname(head_path)))
@@ -1974,6 +1989,11 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     git!(root, "commit", "--quiet", "-m", "advance base")
     current_base = git!(root, "rev-parse", "HEAD").strip
     git!(root, "update-ref", "refs/heads/trusted-base", current_base)
+    if integrated
+      git!(root, "switch", "--quiet", "feature")
+      git!(root, "merge", "--quiet", "--no-edit", current_base)
+      head_sha = git!(root, "rev-parse", "HEAD").strip
+    end
     candidate_tree = git!(root, "merge-tree", "--write-tree", current_base, head_sha).lines.first.strip
 
     evidence(base_sha: recorded_base, files: [file(head_path)]).tap do |input|
