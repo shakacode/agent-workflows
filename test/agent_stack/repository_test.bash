@@ -25,13 +25,14 @@ fixture_clone_writer_start() {
   AGENT_STACK_FIXTURE_RACE_WRITER_PID=$!
   AGENT_STACK_FIXTURE_RACE_TEMPORARY_PACK="$temporary_pack"
 
-  local attempt
-  for ((attempt = 0; attempt < 100; attempt++)); do
-    [[ -f "$ready" ]] && return
+  local deadline=$((SECONDS + 10))
+  until [[ -f "$ready" ]]; do
+    if (( SECONDS >= deadline )); then
+      wait "$AGENT_STACK_FIXTURE_RACE_WRITER_PID" || true
+      fail "temporary-pack writer did not start"
+    fi
     sleep 0.01
   done
-  wait "$AGENT_STACK_FIXTURE_RACE_WRITER_PID" || true
-  fail "temporary-pack writer did not start"
 }
 
 fixture_clone_writer_finish() {
@@ -46,11 +47,33 @@ fixture_clone_writer_finish() {
   [[ "$status" -eq 0 ]] || fail "temporary-pack writer failed"
 }
 
-git() {
-  if [[ "${AGENT_STACK_FIXTURE_RACE_WORK:-}" = "${2:-}" && "${1:-}" = -C && "${3:-}" = clone ]]; then
-    fixture_clone_writer_start "$2"
-  fi
-  command git "$@"
+fixture_clone_constructor_with_writer() {
+  local constructor="$1"
+  local temporary="$2"
+
+  (
+    AGENT_STACK_FIXTURE_RACE_ROOT="$temporary/race"
+    AGENT_STACK_FIXTURE_RACE_WORK="$temporary/work/agent-workflows"
+    mkdir -p "$AGENT_STACK_FIXTURE_RACE_ROOT"
+    trap fixture_clone_writer_finish EXIT
+
+    # shellcheck disable=SC2329 # Invoked by sourced fixture constructors in this subshell.
+    git() {
+      if [[ "${AGENT_STACK_FIXTURE_RACE_WORK:-}" = "${2:-}" && "${1:-}" = -C && "${3:-}" = clone ]]; then
+        fixture_clone_writer_start "$2"
+      fi
+      command git "$@"
+    }
+
+    case "$constructor" in
+      create_origin) "$constructor" "$temporary" agent-workflows ;;
+      create_current_workflows_origin) "$constructor" "$temporary" ;;
+      *) fail "unknown fixture origin constructor: $constructor" ;;
+    esac
+
+    fixture_clone_writer_finish
+    trap - EXIT
+  )
 }
 
 assert_fixture_origin_identity_and_independence() {
@@ -81,28 +104,14 @@ assert_fixture_origin_identity_and_independence() {
 }
 
 test_fixture_origins_clone_without_local_object_sharing_during_temp_pack_writes() {
-  local constructor temporary source origin status
+  local constructor temporary source origin
   for constructor in create_origin create_current_workflows_origin; do
     temporary="$(make_tmp_dir)"
-    AGENT_STACK_FIXTURE_RACE_ROOT="$temporary/race"
-    AGENT_STACK_FIXTURE_RACE_WORK="$temporary/work/agent-workflows"
-    mkdir -p "$AGENT_STACK_FIXTURE_RACE_ROOT"
-
-    set +e
-    if [[ "$constructor" = create_origin ]]; then
-      create_origin "$temporary" agent-workflows
-    else
-      create_current_workflows_origin "$temporary"
-    fi
-    status=$?
-    set -e
-    fixture_clone_writer_finish
-    [[ "$status" -eq 0 ]] || fail "$constructor failed while an unreferenced temporary pack was mutable"
+    fixture_clone_constructor_with_writer "$constructor" "$temporary"
 
     source="$temporary/work/agent-workflows"
     origin="$temporary/origins/agent-workflows.git"
     assert_fixture_origin_identity_and_independence "$source" "$origin"
-    unset AGENT_STACK_FIXTURE_RACE_ROOT AGENT_STACK_FIXTURE_RACE_WORK
   done
 }
 
