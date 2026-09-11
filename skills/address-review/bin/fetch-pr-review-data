@@ -9,15 +9,30 @@
 # The reviewThreads thread_id/is_resolved metadata is joined onto each inline
 # comment by node_id so consumers do not have to redo that join.
 #
+# Bodies are emitted only for actors the shared trust config marks actionable.
+# Metadata-only and non-allowlisted interactions keep their actor, kind, time,
+# and URL in `excluded_interactions` so a maintainer can still audit them.
+#
 # Requires: gh (GitHub CLI). Ruby stdlib only.
 
 require "json"
 require "open3"
+# Ruby versions before 3.2 do not load Set by default.
+# rubocop:disable Lint/RedundantRequireStatement
+require "set"
+# rubocop:enable Lint/RedundantRequireStatement
+
+require_relative "../../pr-batch/lib/git_probe_env"
+require_relative "../../pr-batch/lib/github_actor_trust"
 
 # Pure data shaping (no I/O) plus the gh-backed runner. The pure methods take the
 # raw `gh --paginate --slurp` output strings so they can be unit-tested directly.
 module FetchPrReviewData
   SUMMARY_MARKER = "<!-- address-review-summary -->"
+  GH_TIMEOUT_SECONDS = Integer(ENV.fetch("FETCH_PR_REVIEW_DATA_GH_TIMEOUT_SECONDS", "60"))
+  TRUST_DIGEST_FORMAT = /\Asha256:[0-9a-f]{64}\z/
+  TRUST_CONFIG_SCOPES = %w[global repository].freeze
+  TRUST_CONFIG_SOURCES = %w[explicit repo-local env user-global packaged-fallback].freeze
 
   REVIEW_THREADS_QUERY = <<~GRAPHQL
     query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) {
@@ -33,6 +48,68 @@ module FetchPrReviewData
   GRAPHQL
 
   class Error < StandardError; end
+
+  # Decides which actors may supply actionable review text using the shared
+  # allowlist, without discovering policy from the checkout being reviewed.
+  class TrustBoundary
+    def self.for(repo:, trust_config_path: nil, trust_config_scope: nil, trust_config_source: nil, team_resolver: nil,
+                 repo_local_verifier: nil)
+      resolved = GithubActorTrust.resolve_path(
+        trust_config_path,
+        repo_local_verifier: trust_config_scope.nil? ? repo_local_verifier : nil,
+        allow_repo_local: false
+      )
+      global = case trust_config_scope
+               when nil then resolved.fetch(:global)
+               when "global" then true
+               when "repository" then false
+               else raise Error, "trust config scope must be global or repository"
+               end
+      config = GithubActorTrust.load(path: resolved.fetch(:path), global:)
+      new(
+        repo:, config:, source: trust_config_source || resolved.fetch(:source),
+        scope: global ? "global" : "repository", team_resolver:
+      )
+    rescue GithubActorTrust::Error => e
+      raise Error, e.message
+    end
+
+    def initialize(repo:, config:, source:, scope: "repository", team_resolver: nil)
+      @repo = repo
+      @config = config
+      @source = source
+      @scope = scope
+      @team_resolver = team_resolver
+      @team_cache = {}
+      @classification_cache = {}
+    end
+
+    def classification(login)
+      cache_key = GithubActorTrust.normalized_login(login)
+      return @classification_cache[cache_key] if @classification_cache.key?(cache_key)
+
+      classification = GithubActorTrust.classify(
+        repo: @repo, login:, config: @config, team_cache: @team_cache, team_resolver: @team_resolver
+      )
+      @classification_cache[cache_key] = classification
+    rescue GithubActorTrust::Error => e
+      raise Error, e.message
+    end
+
+    def actionable?(login)
+      classification(login) == :trusted
+    end
+
+    def provenance
+      {
+        "source" => @source,
+        "scope" => @scope,
+        "config_path" => @config.fetch(:path),
+        "content_digest" => @config.fetch(:content_digest),
+        "actionable_actors" => "trusted-only"
+      }
+    end
+  end
 
   module_function
 
@@ -70,25 +147,51 @@ module FetchPrReviewData
     end
   end
 
-  # Map each review comment node_id to its thread metadata.
+  # Map each review comment node_id and database id to its thread metadata.
+  # REST replies identify their parent by database id, which also lets a reply
+  # beyond GraphQL's bounded inner comments page inherit the parent's thread.
   def thread_index(review_threads)
     index = {}
     review_threads.each do |thread|
       thread["comments"].each do |comment|
-        node_id = comment["node_id"]
-        next if node_id.nil?
-
-        index[node_id] = { "thread_id" => thread["thread_id"], "is_resolved" => thread["is_resolved"] }
+        meta = { "thread_id" => thread["thread_id"], "is_resolved" => thread["is_resolved"] }
+        index[comment["node_id"]] = meta unless comment["node_id"].nil?
+        index[comment["id"]] = meta unless comment["id"].nil?
       end
     end
     index
   end
 
-  def build_review_summaries(raw_reviews)
-    raw_reviews.filter_map do |review|
+  # Bounded audit record for an interaction whose body is withheld. Never
+  # carries the body: that is the whole point of the exclusion.
+  def excluded_record(kind:, raw:, trust:, created_at:, extra: {})
+    {
+      "kind" => kind,
+      "id" => raw["id"],
+      "node_id" => raw["node_id"],
+      "user" => raw.dig("user", "login"),
+      "trust" => trust.to_s,
+      "body_withheld" => !raw["body"].to_s.empty?,
+      "created_at" => created_at,
+      "html_url" => raw["html_url"]
+    }.merge(extra)
+  end
+
+  def build_review_summaries(raw_reviews, trust)
+    kept = []
+    excluded = []
+    raw_reviews.each do |review|
+      classification = trust.classification(review.dig("user", "login"))
+      if classification != :trusted
+        excluded << excluded_record(
+          kind: "review_summary", raw: review, trust: classification,
+          created_at: review["submitted_at"], extra: { "state" => review["state"] }
+        )
+        next
+      end
       next if review["body"].to_s == ""
 
-      {
+      kept << {
         "id" => review["id"],
         "type" => "review_summary",
         "body" => review["body"],
@@ -98,12 +201,26 @@ module FetchPrReviewData
         "html_url" => review["html_url"]
       }
     end
+    [kept, excluded]
   end
 
-  def build_inline_comments(raw_inline, index)
-    raw_inline.map do |comment|
-      meta = index[comment["node_id"]]
-      {
+  def build_inline_comments(raw_inline, index, trust)
+    kept = []
+    excluded = []
+    raw_inline.each do |comment|
+      meta = index[comment["node_id"]] || index[comment["in_reply_to_id"]]
+      classification = trust.classification(comment.dig("user", "login"))
+      if classification != :trusted
+        excluded << excluded_record(
+          kind: "review", raw: comment, trust: classification,
+          created_at: comment["created_at"],
+          # No "path": a PR author picks their own filenames, so it is
+          # contributor text. html_url already anchors the audit.
+          extra: { "thread_id" => meta && meta["thread_id"] }
+        )
+        next
+      end
+      kept << {
         "id" => comment["id"],
         "node_id" => comment["node_id"],
         "type" => "review",
@@ -119,11 +236,40 @@ module FetchPrReviewData
         "is_resolved" => meta ? meta["is_resolved"] : false
       }
     end
+    [mark_orphaned_replies(kept, excluded), excluded]
   end
 
-  def build_issue_comments(raw_issue)
-    raw_issue.map do |comment|
-      {
+  # Triage reads replies only as context for a top-level item, so a trusted
+  # reply whose root was excluded would never be looked at. Flag the first
+  # trusted reply for each excluded root/thread as the standalone item; later
+  # trusted replies remain context without duplicating the triage item.
+  def mark_orphaned_replies(kept, excluded)
+    excluded_ids = excluded.map { |row| row["id"] }.compact.to_set
+    represented_roots = Set.new
+    kept.each do |comment|
+      parent = comment["in_reply_to_id"]
+      next unless parent && excluded_ids.include?(parent)
+
+      next if represented_roots.include?(parent)
+
+      comment["root_excluded"] = true
+      represented_roots << parent
+    end
+    kept
+  end
+
+  def build_issue_comments(raw_issue, trust)
+    kept = []
+    excluded = []
+    raw_issue.each do |comment|
+      classification = trust.classification(comment.dig("user", "login"))
+      if classification != :trusted
+        excluded << excluded_record(
+          kind: "issue", raw: comment, trust: classification, created_at: comment["created_at"]
+        )
+        next
+      end
+      kept << {
         "id" => comment["id"],
         "node_id" => comment["node_id"],
         "type" => "issue",
@@ -133,11 +279,15 @@ module FetchPrReviewData
         "html_url" => comment["html_url"]
       }
     end
+    [kept, excluded]
   end
 
-  # Most recent issue comment whose body starts with the summary marker.
-  def compute_cutoff(raw_issue)
-    raw_issue
+  # Most recent trusted issue comment whose body starts with the summary
+  # marker. Only trusted comments count: the cutoff decides which review
+  # comments are treated as already addressed, so honouring a forged marker
+  # would let an untrusted actor hide real review feedback.
+  def compute_cutoff(trusted_issue_comments)
+    trusted_issue_comments
       .select { |comment| comment["body"].to_s.start_with?(SUMMARY_MARKER) }
       .filter_map { |comment| comment["created_at"] }
       .reject(&:empty?)
@@ -146,19 +296,28 @@ module FetchPrReviewData
   end
 
   # Build the normalized result hash from the four raw slurped strings.
-  def assemble(repo:, pr_number:, issue_raw:, reviews_raw:, inline_raw:, threads_raw:)
-    raw_issue = slurped_items(issue_raw)
+  #
+  # `trust` is required: a caller that could omit it would silently select an
+  # unfiltered packet, which is the exposure this boundary exists to close.
+  def assemble(repo:, pr_number:, issue_raw:, reviews_raw:, inline_raw:, threads_raw:, trust: nil)
+    raise ArgumentError, "assemble requires a trust boundary (trust:)" if trust.nil?
+
     review_threads = build_review_threads(thread_nodes(threads_raw))
     index = thread_index(review_threads)
+    summaries, excluded_summaries = build_review_summaries(slurped_items(reviews_raw), trust)
+    inline, excluded_inline = build_inline_comments(slurped_items(inline_raw), index, trust)
+    issue, excluded_issue = build_issue_comments(slurped_items(issue_raw), trust)
 
     {
       "repo" => repo,
       "pr" => pr_number.to_i,
-      "review_cutoff_at" => compute_cutoff(raw_issue),
-      "review_summaries" => build_review_summaries(slurped_items(reviews_raw)),
-      "inline_comments" => build_inline_comments(slurped_items(inline_raw), index),
-      "issue_comments" => build_issue_comments(raw_issue),
-      "review_threads" => review_threads
+      "trust" => trust.provenance,
+      "review_cutoff_at" => compute_cutoff(issue),
+      "review_summaries" => summaries,
+      "inline_comments" => inline,
+      "issue_comments" => issue,
+      "review_threads" => review_threads,
+      "excluded_interactions" => excluded_issue + excluded_summaries + excluded_inline
     }
   end
 
@@ -166,13 +325,18 @@ module FetchPrReviewData
     resolved_inline = result["inline_comments"].count { |comment| comment["is_resolved"] }
     resolved_threads = result["review_threads"].count { |thread| thread["is_resolved"] }
     cutoff = result["review_cutoff_at"].empty? ? "(none)" : result["review_cutoff_at"]
+    excluded = result["excluded_interactions"]
     [
       "PR review data for #{result['repo']}##{result['pr']}",
+      "trust: #{result['trust']['source']} (#{result['trust']['content_digest']})",
       "review_cutoff_at: #{cutoff}",
       "review_summaries: #{result['review_summaries'].length}",
       "inline_comments: #{result['inline_comments'].length} (#{resolved_inline} in resolved threads)",
       "issue_comments: #{result['issue_comments'].length}",
-      "review_threads: #{result['review_threads'].length} (#{resolved_threads} resolved)"
+      "review_threads: #{result['review_threads'].length} (#{resolved_threads} resolved)",
+      "excluded_interactions: #{excluded.length} " \
+      "(#{excluded.count { |row| row['trust'] == 'metadata_only' }} metadata-only, " \
+      "#{excluded.count { |row| row['trust'] == 'untrusted' }} untrusted)"
     ].join("\n")
   end
 
@@ -188,16 +352,40 @@ module FetchPrReviewData
       <pr-number>        PR number to fetch (integer).
 
     Options:
-          --repo REPO    GitHub repo in OWNER/REPO form. Defaults to gh repo view.
-          --json         Print JSON (default).
-          --text         Print a human-readable count summary instead of JSON.
-          --self-check   Run a parser check plus a read-only gh smoke check.
-      -h, --help         Show this help.
+          --repo REPO          GitHub repo in OWNER/REPO form. Defaults to gh repo view.
+          --trust-config PATH  Absolute path to the trusted GitHub actor allowlist
+                               selected by trusted-base preflight (required).
+          --trust-config-source SOURCE
+                               Config source emitted by trusted-base preflight
+                               (required).
+          --trust-config-scope SCOPE
+                               global or repository, exactly as emitted by
+                               trusted-base preflight (required).
+          --expected-trust-digest DIGEST
+                               sha256 digest emitted by trusted-base preflight for
+                               that allowlist (required).
+          --json               Print JSON (default).
+          --text               Print a human-readable count summary instead of JSON.
+          --self-check         Run a parser check plus a read-only gh smoke check.
+      -h, --help               Show this help.
 
-    review_cutoff_at is the created_at of the most recent issue comment whose body
-    starts with "#{SUMMARY_MARKER}", or "" when none exists. Summary and status
-    marker comments are still included in issue_comments so consumers can filter
-    them; computing the cutoff here does not drop them.
+    Only actors the trust config marks actionable (trusted_users, trusted_bots,
+    trusted_teams) contribute bodies. trusted_metadata_bots and non-allowlisted
+    actors, including any comment with a missing or hidden login, are summarized
+    in excluded_interactions with actor, kind, timestamp, and URL but no body, so
+    excluded comment text and paths can never reach an agent as instructions.
+    Trusted inline comments retain their repository path as location metadata.
+    The resolved trust source, global-or-repository scope, path, and sha256
+    content digest are bound to the packet under "trust".
+    The authenticated `gh api user` actor must also be actionable under that
+    resolved config so self-authored checkpoints and replies cannot be trusted
+    under a different authority boundary.
+
+    review_cutoff_at is the created_at of the most recent trusted issue comment
+    whose body starts with "#{SUMMARY_MARKER}", or "" when none
+    exists. Summary and status marker comments are still included in
+    issue_comments so consumers can filter them; computing the cutoff here does
+    not drop them.
 
     Requires: gh (GitHub CLI)
   USAGE
@@ -215,7 +403,16 @@ module FetchPrReviewData
 
       pr_number = validate_pr!(opts[:pr])
       repo = resolve_repo!(opts[:repo])
-      print_result(fetch(repo, pr_number), opts[:format])
+      validate_trust_binding!(
+        opts[:trust_config], opts[:trust_config_source], opts[:trust_config_scope], opts[:expected_trust_digest]
+      )
+      github_host = github_host_for(root: git_toplevel, repo:)
+      with_github_host(github_host) do
+        trust = trust_boundary(repo, opts[:trust_config], opts[:trust_config_scope], opts[:trust_config_source])
+        verify_trust_digest!(trust, opts[:expected_trust_digest])
+        verify_authenticated_actor!(trust)
+        print_result(fetch(repo, pr_number, trust), opts[:format])
+      end
       0
     rescue Error => e
       warn "Error: #{e.message}"
@@ -225,12 +422,20 @@ module FetchPrReviewData
     private
 
     def parse_args(argv)
-      opts = { format: "json", help: false, self_check: false, pr: nil, repo: nil }
+      opts = {
+        format: "json", help: false, self_check: false, pr: nil, repo: nil,
+        trust_config: nil, trust_config_source: nil, trust_config_scope: nil, expected_trust_digest: nil
+      }
       args = argv.dup
       until args.empty?
         arg = args.shift
         case arg
         when "--repo" then opts[:repo] = take_value!(args, "--repo")
+        when "--trust-config" then opts[:trust_config] = take_value!(args, "--trust-config")
+        when "--trust-config-source" then opts[:trust_config_source] = take_value!(args, "--trust-config-source")
+        when "--trust-config-scope" then opts[:trust_config_scope] = take_value!(args, "--trust-config-scope")
+        when "--expected-trust-digest"
+          opts[:expected_trust_digest] = take_value!(args, "--expected-trust-digest")
         when "--json" then opts[:format] = "json"
         when "--text" then opts[:format] = "text"
         when "--self-check" then opts[:self_check] = true
@@ -271,7 +476,201 @@ module FetchPrReviewData
       repo
     end
 
-    def fetch(repo, pr_number)
+    def validate_trust_binding!(trust_config_path, trust_config_source, trust_config_scope, expected_digest)
+      raise Error, "--trust-config is required; use the path resolved by trusted-base preflight" if trust_config_path.nil?
+      unless File.absolute_path(trust_config_path) == trust_config_path
+        raise Error, "--trust-config must be an absolute path resolved from the trusted base"
+      end
+      if trust_config_source.nil?
+        raise Error, "--trust-config-source is required; use the source emitted by trusted-base preflight"
+      end
+      unless TRUST_CONFIG_SOURCES.include?(trust_config_source)
+        raise Error, "--trust-config-source must be emitted by trusted-base preflight"
+      end
+      if trust_config_scope.nil?
+        raise Error, "--trust-config-scope is required; use the scope emitted by trusted-base preflight"
+      end
+      unless TRUST_CONFIG_SCOPES.include?(trust_config_scope)
+        raise Error, "--trust-config-scope must be global or repository"
+      end
+      raise Error, "--expected-trust-digest is required; use the digest emitted by trusted-base preflight" if expected_digest.nil?
+      return if expected_digest.match?(TRUST_DIGEST_FORMAT)
+
+      raise Error, "--expected-trust-digest must be a lowercase sha256: digest"
+    end
+
+    def verify_trust_digest!(trust, expected_digest)
+      actual_digest = trust.provenance.fetch("content_digest")
+      return if actual_digest == expected_digest
+
+      raise Error, "trust config digest changed after preflight: expected #{expected_digest}, got #{actual_digest}"
+    end
+
+    def trust_boundary(repo, trust_config_path, trust_config_scope, trust_config_source = nil)
+      TrustBoundary.for(
+        repo:,
+        trust_config_path:,
+        trust_config_scope:,
+        trust_config_source:,
+        repo_local_verifier: GithubActorTrust.repository_locality_verifier(
+          repo:,
+          git_capture: method(:capture_probe),
+          github_host_resolver: method(:github_host_for),
+          ssh_host_resolver: method(:ssh_hostname)
+        ),
+        team_resolver: method(:team_member?)
+      )
+    end
+
+    def git_toplevel
+      GithubActorTrust.git_toplevel(git_capture: method(:capture_probe))
+    end
+
+    def verify_authenticated_actor!(trust)
+      out, _err, status = capture_probe("gh", "api", "user", "--jq", ".login")
+      unless status&.success?
+        raise Error, "could not verify the authenticated GitHub actor with gh api user; " \
+                     "review mutation/checkpoint workflows require an actionable actor under " \
+                     "#{trust_config_label(trust)}"
+      end
+
+      login = out.dup.force_encoding("UTF-8").scrub.strip
+      if login.empty?
+        raise Error, "gh api user returned no authenticated actor login; review mutation/checkpoint " \
+                     "workflows require an actionable actor under #{trust_config_label(trust)}"
+      end
+
+      classification = trust.classification(login)
+      return login if classification == :trusted
+
+      raise Error, "authenticated GitHub actor @#{login} is #{classification.to_s.tr('_', '-')} under " \
+                   "#{trust_config_label(trust)}; add the actor to trusted_users, trusted_bots, or an " \
+                   "applicable trusted_teams entry before using review mutation/checkpoint workflows"
+    end
+
+    def trust_config_label(trust)
+      provenance = trust.provenance
+      "the #{provenance.fetch('source')} trust config #{provenance.fetch('config_path')}"
+    end
+
+    # A matching checkout remote is the authoritative host when one exists.
+    # Otherwise a same-named repository on gh's default host could redirect
+    # both review data and trusted-user identities into another namespace.
+    def github_host_for(root:, repo:)
+      explicit_host = ENV["GH_HOST"].to_s
+      return GithubActorTrust.normalized_github_host(explicit_host) unless explicit_host.empty?
+
+      return checkout_github_host(root:, repo:) if root
+
+      out, err, status = capture_probe(
+        "gh", "repo", "view", repo, "--json", "nameWithOwner,url"
+      )
+      raise Error, "could not resolve GitHub host for #{repo.inspect}: #{err.lines.first&.strip}" unless status&.success?
+
+      payload = JSON.parse(out)
+      resolved_repo = payload["nameWithOwner"].to_s
+      raise Error, "gh repo view resolved #{resolved_repo.inspect}, expected #{repo.inspect}" unless resolved_repo.casecmp?(repo)
+
+      remote = GithubActorTrust.github_remote_from_remote_url(payload["url"])
+      raise Error, "gh repo view returned an unrecognized GitHub URL for #{repo.inspect}" unless remote
+
+      remote.fetch(:host)
+    rescue JSON::ParserError => e
+      raise Error, "could not resolve GitHub host for #{repo.inspect}: #{e.message.lines.first&.strip}"
+    end
+
+    def checkout_github_host(root:, repo:)
+      matching_hosts = GithubActorTrust.git_remote_urls(root, git_capture: method(:capture_probe)).filter_map do |url|
+        remote = GithubActorTrust.github_remote_from_remote_url(url)
+        next unless remote && remote[:repo].casecmp?(repo)
+
+        resolved = GithubActorTrust.github_remote_from_remote_url(url, ssh_host_resolver: method(:ssh_hostname))
+        GithubActorTrust.github_api_host(resolved) if resolved
+      end.uniq
+
+      return matching_hosts.first if matching_hosts.one?
+
+      reason = matching_hosts.empty? ? "no matching checkout remote" : "checkout remotes span multiple hosts"
+      raise Error, "could not bind #{repo.inspect} to one GitHub host: #{reason}; set GH_HOST explicitly"
+    end
+
+    def ssh_hostname(host)
+      hostname = GithubActorTrust.ssh_config_hostname(host, ssh_capture: method(:capture_probe))
+      return hostname if hostname
+
+      warn "WARN: could not resolve SSH host #{host.inspect}"
+      nil
+    end
+
+    def with_github_host(github_host)
+      raise Error, "could not bind a GitHub API host for this review fetch" if github_host.to_s.empty?
+
+      prior_host = ENV["GH_HOST"]
+      host_was_set = ENV.key?("GH_HOST")
+      ENV["GH_HOST"] = github_host
+      yield
+    ensure
+      if host_was_set
+        ENV["GH_HOST"] = prior_host
+      else
+        ENV.delete("GH_HOST")
+      end
+    end
+
+    # Git and GitHub probes are bounded separately and environment-sanitized,
+    # so a hung credential helper or a GIT_CONFIG_* override cannot stall this tool.
+    def capture_probe(*cmd, timeout_seconds: nil)
+      timeout_seconds ||= cmd.first == "gh" ? GH_TIMEOUT_SECONDS : PrBatchGitProbeEnv::GIT_TIMEOUT_SECONDS
+      PrBatchGitProbeEnv.capture3(
+        PrBatchGitProbeEnv.probe_env, *cmd, timeout_seconds:
+      )
+    rescue PrBatchGitProbeEnv::TimeoutError
+      warn "WARN: #{cmd.first(3).join(' ')} timed out after #{timeout_seconds}s"
+      [+"", +"", nil]
+    rescue SystemCallError
+      [+"", +"", nil]
+    end
+
+    # Team membership is a GitHub fact, not a local one; an unreachable API
+    # must not silently promote or demote an actor. GitHub uses 404 both for a
+    # non-member and for a team hidden from the token, so confirm that the team
+    # itself is visible before interpreting a membership 404 as negative.
+    def team_member?(owner:, slug:, login:)
+      out, _err, status = capture_probe(
+        "gh", "api", "--include", "orgs/#{owner}/teams/#{slug}/memberships/#{login}", "-q", ".state"
+      )
+      http_status = response_http_status(out)
+      body = out.split(/\r?\n\r?\n/).last.to_s.strip
+      return body == "active" if status&.success? && http_status&.start_with?("2")
+      return false if http_status == "404" && team_visible?(owner:, slug:)
+
+      raise Error,
+            "could not verify GitHub team membership for @#{login} in #{owner}/#{slug}; " \
+            "review inventory is incomplete"
+    end
+
+    def team_visible?(owner:, slug:)
+      @team_visibility ||= {}
+      key = [owner.downcase, slug.downcase]
+      return @team_visibility[key] if @team_visibility.key?(key)
+
+      out, _err, status = capture_probe(
+        "gh", "api", "--include", "orgs/#{owner}/teams/#{slug}", "-q", ".slug"
+      )
+      if status&.success? && response_http_status(out)&.start_with?("2")
+        return @team_visibility[key] = true
+      end
+
+      raise Error,
+            "could not verify visibility of GitHub team #{owner}/#{slug}; " \
+            "review inventory is incomplete"
+    end
+
+    def response_http_status(out)
+      out.scan(%r{^HTTP/\S+\s+(\d{3})}).last&.first
+    end
+
+    def fetch(repo, pr_number, trust)
       owner, name = repo.split("/", 2)
       FetchPrReviewData.assemble(
         repo:,
@@ -283,7 +682,8 @@ module FetchPrReviewData
           "gh", "api", "graphql", "--paginate", "--slurp",
           "-f", "owner=#{owner}", "-f", "name=#{name}", "-F", "pr=#{pr_number}",
           "-f", "query=#{REVIEW_THREADS_QUERY}"
-        )
+        ),
+        trust:
       )
     end
 
@@ -308,7 +708,7 @@ module FetchPrReviewData
     end
 
     def self_check
-      errors = self_check_errors(FetchPrReviewData.assemble(**self_check_fixtures))
+      errors = self_check_errors(FetchPrReviewData.assemble(**self_check_fixtures, trust: self_check_trust))
       unless errors.empty?
         warn "self-check failed: #{errors.join('; ')}"
         return 1
@@ -319,16 +719,32 @@ module FetchPrReviewData
       0
     end
 
+    # Self-check runs against an in-memory allowlist so it stays deterministic
+    # wherever the pack is installed. `ok` is trusted; `stranger` is not.
+    def self_check_trust
+      config = GithubActorTrust.build_config(
+        { "trusted_users" => ["ok"] }, contents: "trusted_users:\n  - ok\n",
+                                       path: "(self-check)", global: false
+      )
+      TrustBoundary.new(repo: "owner/repo", config:, source: "self-check")
+    end
+
     def self_check_fixtures
       {
         repo: "owner/repo",
         pr_number: 1234,
-        issue_raw: '[[{"id":1,"body":"first","created_at":"2026-01-01T00:00:00Z"},' \
-                   '{"id":2,"body":"<!-- address-review-summary -->\nold","created_at":"2026-01-02T00:00:00Z"}],' \
-                   '[{"id":3,"body":"<!-- address-review-summary -->\nnew","created_at":"2026-01-03T00:00:00Z"}]]',
-        reviews_raw: '[[{"id":10,"body":"fix it","state":"COMMENTED","submitted_at":"2026-01-04T00:00:00Z"},' \
-                     '{"id":11,"body":"","state":"APPROVED"}]]',
-        inline_raw: '[[{"id":20,"node_id":"RC_20","path":"a.rb"},{"id":21,"node_id":"RC_21","path":"b.rb"}]]',
+        issue_raw: '[[{"id":1,"body":"first","user":{"login":"ok"},"created_at":"2026-01-01T00:00:00Z"},' \
+                   '{"id":2,"body":"<!-- address-review-summary -->\nold","user":{"login":"ok"},' \
+                   '"created_at":"2026-01-02T00:00:00Z"}],' \
+                   '[{"id":3,"body":"<!-- address-review-summary -->\nnew","user":{"login":"ok"},' \
+                   '"created_at":"2026-01-03T00:00:00Z"},' \
+                   '{"id":4,"body":"<!-- address-review-summary -->\nforged","user":{"login":"stranger"},' \
+                   '"created_at":"2026-01-09T00:00:00Z"}]]',
+        reviews_raw: '[[{"id":10,"body":"fix it","state":"COMMENTED","user":{"login":"ok"},' \
+                     '"submitted_at":"2026-01-04T00:00:00Z"},' \
+                     '{"id":11,"body":"","state":"APPROVED","user":{"login":"ok"}}]]',
+        inline_raw: '[[{"id":20,"node_id":"RC_20","path":"a.rb","user":{"login":"ok"}},' \
+                    '{"id":21,"node_id":"RC_21","path":"b.rb","user":{"login":"ok"}}]]',
         threads_raw: '[{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[' \
                      '{"id":"T_A","isResolved":true,"comments":{"nodes":[{"id":"RC_20","databaseId":20}]}},' \
                      '{"id":"T_B","isResolved":false,"comments":{"nodes":[{"id":"RC_21","databaseId":21}]}}]}}}}}]'
@@ -343,6 +759,9 @@ module FetchPrReviewData
       errors << "issue_comments=#{out['issue_comments'].length}" unless out["issue_comments"].length == 3
       errors << "RC_20 thread" unless by_id[20]["thread_id"] == "T_A" && by_id[20]["is_resolved"] == true
       errors << "RC_21 resolved" unless by_id[21]["is_resolved"] == false
+      excluded = out["excluded_interactions"]
+      errors << "excluded=#{excluded.length}" unless excluded.length == 1
+      errors << "excluded body leaked" if excluded.any? { |row| row.key?("body") }
       errors
     end
 

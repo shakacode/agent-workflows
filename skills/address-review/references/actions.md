@@ -287,10 +287,17 @@ gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPON
 
 ```bash
 ITEM_SOURCE_PR="${ITEM_SOURCE_PR:-${PRIMARY_PR_NUMBER}}"
-gh api repos/${REPO}/pulls/${ITEM_SOURCE_PR}/comments/${REVIEW_COMMENT_ID}/replies -X POST -f body="<response>"
+REVIEW_COMMENT_ID="<current-item-id>"
+CURRENT_ITEM_IN_REPLY_TO_ID="<current-item-in_reply_to_id-or-null>"
+REVIEW_COMMENT_IN_REPLY_TO_ID=""
+if [ "${CURRENT_ITEM_IN_REPLY_TO_ID}" != "null" ]; then
+  REVIEW_COMMENT_IN_REPLY_TO_ID="${CURRENT_ITEM_IN_REPLY_TO_ID}"
+fi
+REVIEW_REPLY_TARGET_ID="${REVIEW_COMMENT_IN_REPLY_TO_ID:-${REVIEW_COMMENT_ID}}"
+gh api repos/${REPO}/pulls/${ITEM_SOURCE_PR}/comments/${REVIEW_REPLY_TARGET_ID}/replies -X POST -f body="<response>"
 ```
 
-Use the selected item's review comment `id` as `REVIEW_COMMENT_ID`; do not use the parsed input `COMMENT_ID` except for the specific-comment fetch path. Use the `/replies` endpoint for all existing review comments, including standalone top-level comments.
+Use the selected item's review comment `id` as `REVIEW_COMMENT_ID`; it remains the tracked item identity. Assign the current item's raw `in_reply_to_id` (number or `null`) to `CURRENT_ITEM_IN_REPLY_TO_ID` on every iteration, then reset and populate `REVIEW_COMMENT_IN_REPLY_TO_ID` exactly as shown. Never inherit either item value from a prior persistent-shell iteration and never pass the literal string `null`. A promoted `root_excluded` reply therefore posts through its excluded top-level parent while its own ID remains in worklists and checkpoints. Do not use the parsed input `COMMENT_ID` except for the specific-comment fetch path. Use the `/replies` endpoint for all existing review comments, including standalone top-level comments.
 
 **For review summary bodies (from `/pulls/{PR_NUMBER}/reviews/{REVIEW_ID}`):**
 
