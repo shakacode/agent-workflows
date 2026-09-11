@@ -1,0 +1,96 @@
+{
+  "schema": "verified-backport-v1",
+  "source": {
+    "repository": "shakacode/react_on_rails",
+    "pull_request": 4654,
+    "author": "justin808",
+    "head_sha": "efe09eb6c71717b79217e1634455eb2c7f943a19",
+    "merge_sha": "4ce7a8564aa915e84f5fa6bc9a711d117a8ff046",
+    "trusted_status": "merged"
+  },
+  "source_evidence": {
+    "required_coverage": {
+      "policy_source": "source branch protection and review policy",
+      "review_ids": ["PRR_kwDOAnNnU88AAAABF5l2zQ"],
+      "check_ids": ["actions-run-29306387494-job-87000441682"]
+    },
+    "reviews": [
+      {
+        "id": "PRR_kwDOAnNnU88AAAABF5l2zQ",
+        "actor": "justin808",
+        "head_sha": "efe09eb6c71717b79217e1634455eb2c7f943a19",
+        "status": "accepted",
+        "url": "https://github.com/shakacode/react_on_rails/pull/4654"
+      }
+    ],
+    "checks": [
+      {
+        "id": "actions-run-29306387494-job-87000441682",
+        "name": "detect-changes",
+        "head_sha": "efe09eb6c71717b79217e1634455eb2c7f943a19",
+        "status": "passed",
+        "url": "https://github.com/shakacode/react_on_rails/actions/runs/29306387494/job/87000441682"
+      }
+    ]
+  },
+  "target": {
+    "branch": "release/17.0.0",
+    "base_sha": "ec81b6c2447674d3d08eb70aa4f8b0392b86d035",
+    "head_sha": "e47acb6af5852924c62060db5d2b79fa0d4f13b8"
+  },
+  "patch": {
+    "relation": "semantic-adaptation",
+    "mechanism": "git-patch-id-stable-v1",
+    "source_patch_id": "ae0dac9256eda6272fad55bed523f8abf8f06a53",
+    "target_patch_id": "0d10e6610a9ffb18fc5caf7885d78f298d7cb06a",
+    "source_head_sha": "efe09eb6c71717b79217e1634455eb2c7f943a19",
+    "target_base_sha": "ec81b6c2447674d3d08eb70aa4f8b0392b86d035",
+    "target_head_sha": "e47acb6af5852924c62060db5d2b79fa0d4f13b8"
+  },
+  "target_only_delta": {
+    "files": [
+      "internal/contributor-info/releasing.md",
+      "rakelib/release.rake",
+      "react_on_rails/spec/react_on_rails/release_rake_helpers_spec.rb"
+    ],
+    "hunks": ["post-pull prerelease inference and downgrade guard"],
+    "behavior_change": true,
+    "rationale": "The release branch needed semantic adaptation, and review added a post-pull version floor not present in the source patch."
+  },
+  "reused_evidence": [
+    {
+      "kind": "review",
+      "source_id": "PRR_kwDOAnNnU88AAAABF5l2zQ",
+      "head_sha": "efe09eb6c71717b79217e1634455eb2c7f943a19"
+    },
+    {
+      "kind": "check",
+      "source_id": "actions-run-29306387494-job-87000441682",
+      "head_sha": "efe09eb6c71717b79217e1634455eb2c7f943a19"
+    }
+  ],
+  "target_requirements": {
+    "policy_source": "consumer AGENTS.md target-branch policy",
+    "branch_protection": "retain",
+    "current_head_ci": "required",
+    "current_head_review": "required",
+    "checks": ["ci-required", "release helper specs"]
+  },
+  "review_generated_changes": [
+    {
+      "id": "discussion-r3586485404",
+      "files": ["rakelib/release.rake", "react_on_rails/spec/react_on_rails/release_rake_helpers_spec.rb"],
+      "hunks": ["post-pull prerelease inference cannot downgrade the release"],
+      "behavior_change": true,
+      "rationale": "Review found that a stale checkout could infer and publish an older prerelease after pulling a newer version."
+    }
+  ],
+  "forward_port_dispositions": [
+    {
+      "change_id": "discussion-r3586485404",
+      "status": "tracked",
+      "rationale": "The durable review thread records the behavior change that must be assessed for the source branch.",
+      "url": "https://github.com/shakacode/react_on_rails/pull/4676#discussion_r3586485404"
+    }
+  ]
+}

@@ -1,0 +1,109 @@
+{
+  "schema": "verified-backport-v1",
+  "source": {
+    "repository": "shakacode/react_on_rails",
+    "pull_request": 4661,
+    "author": "justin808",
+    "head_sha": "d4fef09df8b5da0f580563e4f5fb775f4fcb5f0f",
+    "merge_sha": "0357a64ac01bf748ecf0483eb3e9fc87b494b1d0",
+    "trusted_status": "merged"
+  },
+  "source_evidence": {
+    "required_coverage": {
+      "policy_source": "source branch protection and review policy",
+      "review_ids": ["PRR_kwDOAnNnU88AAAABF9bvVA"],
+      "check_ids": ["actions-run-29337585065-job-87100656105"]
+    },
+    "reviews": [
+      {
+        "id": "PRR_kwDOAnNnU88AAAABF9bvVA",
+        "actor": "justin808",
+        "head_sha": "d4fef09df8b5da0f580563e4f5fb775f4fcb5f0f",
+        "status": "accepted",
+        "url": "https://github.com/shakacode/react_on_rails/pull/4661"
+      }
+    ],
+    "checks": [
+      {
+        "id": "actions-run-29337585065-job-87100656105",
+        "name": "detect-changes",
+        "head_sha": "d4fef09df8b5da0f580563e4f5fb775f4fcb5f0f",
+        "status": "passed",
+        "url": "https://github.com/shakacode/react_on_rails/actions/runs/29337585065/job/87100656105"
+      }
+    ]
+  },
+  "target": {
+    "branch": "release/17.0.0",
+    "base_sha": "4ab97d6cfe5ea1af975643d743fb1b65f8439455",
+    "head_sha": "1d7f7a200835df5f472b9797a3ea3cf2fc1d273f"
+  },
+  "patch": {
+    "relation": "semantic-adaptation",
+    "mechanism": "git-patch-id-stable-v1",
+    "source_patch_id": "77d866bb6e7d7ca42de3e029d5255bf1f656715e",
+    "target_patch_id": "50c3fb9684b191151fb9a4c5a479c0b8184190aa",
+    "source_head_sha": "d4fef09df8b5da0f580563e4f5fb775f4fcb5f0f",
+    "target_base_sha": "4ab97d6cfe5ea1af975643d743fb1b65f8439455",
+    "target_head_sha": "1d7f7a200835df5f472b9797a3ea3cf2fc1d273f"
+  },
+  "target_only_delta": {
+    "files": [
+      "internal/contributor-info/releasing.md",
+      "rakelib/release.rake",
+      "react_on_rails/spec/react_on_rails/release_rake_helpers_spec.rb"
+    ],
+    "hunks": ["unprotected-branch response framing", "legacy required-check normalization"],
+    "behavior_change": true,
+    "rationale": "Target review changed GitHub response parsing and required-check normalization beyond the source patch."
+  },
+  "reused_evidence": [
+    {
+      "kind": "review",
+      "source_id": "PRR_kwDOAnNnU88AAAABF9bvVA",
+      "head_sha": "d4fef09df8b5da0f580563e4f5fb775f4fcb5f0f"
+    },
+    {
+      "kind": "check",
+      "source_id": "actions-run-29337585065-job-87100656105",
+      "head_sha": "d4fef09df8b5da0f580563e4f5fb775f4fcb5f0f"
+    }
+  ],
+  "target_requirements": {
+    "policy_source": "consumer AGENTS.md target-branch policy",
+    "branch_protection": "retain",
+    "current_head_ci": "required",
+    "current_head_review": "required",
+    "checks": ["ci-required", "release helper specs"]
+  },
+  "review_generated_changes": [
+    {
+      "id": "discussion-r3590737544",
+      "files": ["rakelib/release.rake", "react_on_rails/spec/react_on_rails/release_rake_helpers_spec.rb"],
+      "hunks": ["accept the installed gh response framing without accepting arbitrary mixed framing"],
+      "behavior_change": true,
+      "rationale": "A live review probe showed the fail-closed parser rejected the installed GitHub CLI response framing."
+    },
+    {
+      "id": "discussion-r3590767355",
+      "files": ["rakelib/release.rake", "react_on_rails/spec/react_on_rails/release_rake_helpers_spec.rb"],
+      "hunks": ["normalize optional legacy checks and app_id fields"],
+      "behavior_change": true,
+      "rationale": "Review found that documented legacy required-status responses would be rejected and block releases."
+    }
+  ],
+  "forward_port_dispositions": [
+    {
+      "change_id": "discussion-r3590737544",
+      "status": "tracked",
+      "rationale": "The durable review thread records the response-framing fix for source-branch assessment.",
+      "url": "https://github.com/shakacode/react_on_rails/pull/4684#discussion_r3590737544"
+    },
+    {
+      "change_id": "discussion-r3590767355",
+      "status": "tracked",
+      "rationale": "The durable review thread records the legacy required-check fix for source-branch assessment.",
+      "url": "https://github.com/shakacode/react_on_rails/pull/4684#discussion_r3590767355"
+    }
+  ]
+}
