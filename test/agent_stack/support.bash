@@ -82,6 +82,39 @@ printf '#!/usr/bin/env bash\necho agent-coord fixture\n' > "$install_dir/agent-c
 chmod +x "$install_dir/agent-coord"
 BASH
     chmod +x "$work/bin/agent-coord"
+  elif [[ "$name" = agent-coordination-dashboard ]]; then
+    mkdir -p "$work/bin"
+    cat > "$work/package.json" <<'JSON'
+{
+  "name": "agent-coordination-dashboard",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "agent-coordination-dashboard": "bin/agent-coordination-dashboard.js" },
+  "scripts": { "build": "node -e \"\"" },
+  "engines": { "node": ">=22.12.0" }
+}
+JSON
+    cat > "$work/package-lock.json" <<'JSON'
+{
+  "name": "agent-coordination-dashboard",
+  "version": "0.1.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "agent-coordination-dashboard",
+      "version": "0.1.0",
+      "bin": { "agent-coordination-dashboard": "bin/agent-coordination-dashboard.js" },
+      "engines": { "node": ">=22.12.0" }
+    }
+  }
+}
+JSON
+    cat > "$work/bin/agent-coordination-dashboard.js" <<'JS'
+#!/usr/bin/env node
+process.stdout.write("fixture lifecycle command\n");
+JS
+    chmod +x "$work/bin/agent-coordination-dashboard.js"
   fi
   git -C "$work" add .
   git -C "$work" commit --quiet -m "initial $name"
