@@ -33,7 +33,7 @@ module GitHubCommentEnvelope
   end
 
   def agent_authored?(body)
-    !parse(body).nil? || body.to_s.match?(/\A🤖 [^\r\n]+(?:\r?\n|\z)/)
+    !parse(body).nil? || body.to_s.match?(/\A🤖 (?:Codex|Claude)(?:\r?\n|\z)/)
   end
 
   def payload(body)

@@ -121,6 +121,9 @@ module HumanAttention
         next if state == "none"
 
         normalize_entry(row, repo:, state:, refreshed_at:)
+      rescue Error, KeyError
+        degraded << repo
+        nil
       end
       entries.concat(repo_entries)
     rescue JSON::ParserError, Error, KeyError

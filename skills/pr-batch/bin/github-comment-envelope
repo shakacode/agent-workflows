@@ -57,6 +57,14 @@ begin
     file.write(enveloped)
     file.flush
     gh = ENV.fetch("GITHUB_COMMENT_GH", "gh")
+    unless attachments.empty?
+      _pr_stdout, pr_stderr, pr_status = Open3.capture3(
+        gh, "api", "repos/#{repo}/pulls/#{number}", "--silent"
+      )
+      unless pr_status.success?
+        raise ArgumentError, "attachments require a pull request: #{pr_stderr.lines.first.to_s.strip}"
+      end
+    end
     arguments = if attachments.empty?
                   method = command == "edit-issue" ? "PATCH" : "POST"
                   [gh, "api", endpoint, "-X", method, "-F", "body=@#{file.path}"]

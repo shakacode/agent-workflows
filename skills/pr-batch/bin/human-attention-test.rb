@@ -283,6 +283,37 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  def test_desk_keeps_valid_rows_when_one_pr_has_conflicting_labels
+    config = <<~YAML
+      ---
+      human_attention:
+        labels:
+          walkthrough: human-attention:walkthrough
+          merge: human-attention:merge
+        repositories:
+          acme/widgets: {}
+    YAML
+    with_repo_config(config) do |root|
+      fake_gh = File.join(root, "gh")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        puts JSON.generate([
+          {"number" => 7, "title" => "Conflicted", "url" => "https://example.test/7", "headRefOid" => "#{'a' * 40}", "labels" => [{"name" => "human-attention:walkthrough"}, {"name" => "human-attention:merge"}]},
+          {"number" => 8, "title" => "Valid", "url" => "https://example.test/8", "headRefOid" => "#{'b' * 40}", "labels" => [{"name" => "human-attention:merge"}]}
+        ])
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli("desk", "--repo-root", root, env: { "HUMAN_ATTENTION_GH" => fake_gh })
+
+      assert_predicate result[:status], :success?, result[:stderr]
+      assert_includes result[:stdout], "MERGE — acme/widgets — Valid"
+      refute_includes result[:stdout], "Conflicted"
+      assert_includes result[:stdout], "Degraded repositories: acme/widgets"
+    end
+  end
+
   def test_desk_degrades_a_malformed_repository_override_without_hiding_healthy_repositories
     config = <<~YAML
       ---

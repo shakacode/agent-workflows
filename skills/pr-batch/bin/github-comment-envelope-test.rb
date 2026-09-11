@@ -78,6 +78,8 @@ class GitHubCommentEnvelopeTest < Minitest::Test
 
     assert GitHubCommentEnvelope.agent_authored?(rendered)
     assert GitHubCommentEnvelope.agent_authored?("🤖 Codex\nlegacy payload")
+    assert GitHubCommentEnvelope.agent_authored?("🤖 Claude\nlegacy payload")
+    refute GitHubCommentEnvelope.agent_authored?("🤖 Justin\nI approve this change.")
     refute GitHubCommentEnvelope.agent_authored?("I approve this change.\n")
   end
 
@@ -211,6 +213,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       File.write(fake_gh, <<~RUBY)
         #!/usr/bin/env ruby
         require "json"
+        exit 0 if ARGV[0] == "api"
         body_index = ARGV.index("--body-file")
         body = File.read(ARGV.fetch(body_index + 1))
         File.write(ENV.fetch("CAPTURE"), JSON.generate({"args" => ARGV, "body" => body}))
@@ -233,6 +236,27 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       end
       assert_equal ["evidence.png#Before and after", "evidence.mp4"], attachments
       assert posted.fetch("body").start_with?("🤖 Codex\n")
+    end
+  end
+
+  def test_post_issue_rejects_attachments_when_the_number_is_not_a_pull_request
+    Dir.mktmpdir("comment-envelope-issue-attach") do |directory|
+      fake_gh = File.join(directory, "gh")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        warn "HTTP 404"
+        exit 1
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "post-issue", "--repo", "acme/widgets", "--number", "7",
+        "--runner", "codex", "--host", "M5", "--task-or-run", "task-7",
+        "--attach", "evidence.png", stdin: "Verified.", env: { "GITHUB_COMMENT_GH" => fake_gh }
+      )
+
+      refute_predicate result[:status], :success?
+      assert_equal "attachments require a pull request: HTTP 404\n", result[:stderr]
     end
   end
 
