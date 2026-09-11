@@ -70,6 +70,37 @@ def validate_utf8_strings!(value)
   end
 end
 
+def path_matches_any?(patterns, path)
+  patterns.any? { |pattern| AutonomousMergePolicy.match?(pattern, path) }
+end
+
+def reviewable_file?(file, policy, policy_patterns)
+  current_path = file.fetch("path")
+  generated = path_matches_any?(policy.generated_paths, current_path)
+  return true unless generated
+
+  paths = [current_path, file["previous_path"]].compact
+  human_review_overlap = paths.any? do |path|
+    path_matches_any?(policy.human_review_paths.map { |rule| rule.fetch("pattern") }, path)
+  end
+  policy_overlap = paths.any? { |path| path_matches_any?(policy_patterns, path) }
+  human_review_overlap || policy_overlap
+end
+
+def reviewable_changed_metrics(files, policy, policy_patterns)
+  reviewable_files = 0
+  reviewable_lines = 0
+
+  files.each do |file|
+    next unless reviewable_file?(file, policy, policy_patterns)
+
+    reviewable_files += 1
+    reviewable_lines += file.fetch("additions") + file.fetch("deletions")
+  end
+
+  [reviewable_files, reviewable_lines]
+end
+
 emit_unknown("--repo-root is required") unless options[:repo_root]
 emit_unknown("--trusted-base is required") unless options[:trusted_base]
 
@@ -359,18 +390,28 @@ end
 missing_review_head = submitted_reviews.any? { |review| review["commit_id"].nil? }
 reviewed_heads = submitted_reviews.filter_map { |review| review["commit_id"] }.uniq.length
 
+policy_patterns = AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS + policy.policy_paths
+reviewable_changed_files, reviewable_changed_lines = reviewable_changed_metrics(
+  objective.fetch("files"),
+  policy,
+  policy_patterns
+)
+
 metrics = {
   "changed_files" => objective.fetch("files").length,
   "changed_lines" => objective.fetch("files").sum do |file|
     file.fetch("additions") + file.fetch("deletions")
   end,
+  "reviewable_changed_files" => reviewable_changed_files,
+  "reviewable_changed_lines" => reviewable_changed_lines,
   "commits" => objective.fetch("commits").length,
   "reviewed_heads" => reviewed_heads
 }
 triggered_gates = []
 thresholds = policy.thresholds
-triggered_gates << "changed-files-limit" if metrics.fetch("changed_files") > thresholds.fetch("max_changed_files")
-triggered_gates << "changed-lines-limit" if metrics.fetch("changed_lines") > thresholds.fetch("max_changed_lines")
+triggered_gates << "changed-files-limit" if metrics.fetch("reviewable_changed_files") > thresholds.fetch("max_changed_files")
+triggered_gates << "changed-lines-limit" if metrics.fetch("reviewable_changed_lines") > thresholds.fetch("max_changed_lines")
+triggered_gates << "total-changed-lines-limit" if metrics.fetch("changed_lines") > thresholds.fetch("max_total_changed_lines")
 triggered_gates << "commit-count-limit" if metrics.fetch("commits") > thresholds.fetch("max_commits")
 semantic_gates = {
   "architectural_product_judgment" => "architectural-product-judgment",
@@ -410,7 +451,6 @@ policy.human_review_paths.each do |rule|
     path_matches << path_match
   end
 end
-policy_patterns = AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS + policy.policy_paths
 paths.each do |path|
   next unless policy_patterns.any? { |pattern| AutonomousMergePolicy.match?(pattern, path) }
 
