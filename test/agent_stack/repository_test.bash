@@ -26,7 +26,7 @@ fixture_clone_writer_start() {
   AGENT_STACK_FIXTURE_RACE_TEMPORARY_PACK="$temporary_pack"
 
   local attempt
-  for attempt in {1..100}; do
+  for ((attempt = 0; attempt < 100; attempt++)); do
     [[ -f "$ready" ]] && return
     sleep 0.01
   done
