@@ -263,17 +263,20 @@ with that one serial group.
    reference, and pauses at a safe checkpoint. The coordinator processes
    expansion requests serially, records an active
    `expansion_path_reservations` entry, refreshes authoritative file-touch maps
-   and lane lifecycle state, and reruns `batch-plan-preflight`. For every
-   multi-editor request, acceptance alone does not authorize resume: the
-   requester must durably transition out of `blocked`, a fresh preflight must
-   accept, and the requester must be absent from `launch.held_lane_ids`; when
-   launch or relaunch is needed, it must also be present in
+   and lane lifecycle state, and reruns `batch-plan-preflight`.
+   For every multi-editor request, acceptance alone does not authorize resume:
+   the requester must durably transition out of `blocked`, a fresh preflight
+   must accept, and the requester must be absent from `launch.held_lane_ids`;
+   when launch or relaunch is needed, it must also be present in
    `launch.eligible_lane_ids`. Under maximum-concurrency-one serialization, the
    current holder must also release the slot before resume. The reservation persists until the
    verified PR file-touch map contains the path or the request is cancelled,
    and it is removed once reflected or cancelled. A collision or `UNKNOWN`
    collision state remains stopped until then. A missing path alone is not
    material scope growth and must not produce `blocked-user-input`.
+   Run both `batch-plan-preflight` invocations from inside the verified consumer
+   worktree so the helper resolves the consumer Git top level from the
+   invocation directory.
    After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
    Directory renames use a distinct `expansion-rename-reservation` v1 record
    with canonical, distinct `old` and `new` endpoints; only this typed rename
@@ -332,7 +335,7 @@ with that one serial group.
    and `Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.` Each prompt must also include `Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle` It must include this exact self-contained completion line:
    `- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.`
    Each prompt must also include this exact compact scope line:
-   `Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.`
+   `Scope: titles/deps/excl/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<ref|i>; ft=refs/paths/create/delete/rename/companions/collisions/owner/serial/UNKNOWN.`
    Each prompt must include these exact compact launch lines:
    ``Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop``
    ``PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security``

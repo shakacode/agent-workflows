@@ -263,7 +263,10 @@
      explicit env-var / loaded-skill / repo-local pinned-copy chain and pass a
      `batch-plan-preflight` v1 envelope on stdin to
      `"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight"`. This required gate
-     owns schema, advisory-overlap reporting, backend-cap, QA, external-premise, active-wave, and
+     resolves the consumer Git top level from the invocation directory and
+     passes that root explicitly to repository-policy and companion-file checks.
+     Invoke it from inside the verified consumer worktree. The gate owns schema,
+     advisory-overlap reporting, backend-cap, QA, external-premise, active-wave, and
      max-one serialization scheduling; do not duplicate its matrices here. V1
      requires `plan.id`, `plan.active_wave`, and a top-level
      `lane_lifecycle_states` array. Advance max-one groups only from a separate
@@ -294,6 +297,14 @@
      requires the exact canonical authority/path shape, and fragments remain
      permitted;
      other source kinds prove durability only and do not invent target identity.
+     When repo policy defines `companion_path_conventions`, resolve each
+     deterministic `source_glob -> companion_glob` pair against declared paths
+     and active path or rename reservations.
+     If the companion exists but the lane neither lists nor actively reserves
+     it, record the nonfatal `companion-path-omitted` advisory in the Batch Plan
+     and compact goal `Scope`. Never add the path automatically. Invalid pairs
+     or duplicate companion-contract keys reject preflight; an absent key and
+     unrelated unreadable or malformed shared policy preserve existing behavior.
      After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
      A rejected result launches no
      worker; an accepted result permits only its eligible lanes and keeps its

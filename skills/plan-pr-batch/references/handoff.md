@@ -142,6 +142,7 @@ the declaration helper. Do not describe coordination as unavailable or degraded.
   - Stable identity `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`: short scope/title; `override_name=<exact override_name>`; `trusted_authorizer=<exact trusted_authorizer>`; `durable_authorization_ref=<exact durable_authorization_ref>`; `original_task_identity=<exact original_task_identity>`; role in batch
 - Excluded or deferred:
 - File-touch map and path evidence:
+- Companion-path advisories: each `source -> companion` omission, or `none`.
 - Dependencies and sequencing:
 - Subagent split:
 - Planning-pass model/effort assessment: classification, recommended route,

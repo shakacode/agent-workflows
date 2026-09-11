@@ -1,0 +1,10 @@
+{
+  "batch": "ror-a-issue-4846-20260817",
+  "lane_id": "ror-a-issue-4846",
+  "repository": "shakacode/react_on_rails",
+  "issue": 4846,
+  "source_glob": "react_on_rails/lib/**/{name}.rb",
+  "companion_glob": "react_on_rails/sig/**/{name}.rbs",
+  "source_path": "react_on_rails/lib/react_on_rails/dev/server_manager.rb",
+  "companion_path": "react_on_rails/sig/react_on_rails/dev/server_manager.rbs"
+}
