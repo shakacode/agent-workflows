@@ -123,6 +123,41 @@ class GithubActorTrustTest < Minitest::Test
     assert_equal :untrusted, classify("stranger", yaml: "trusted_teams: [reviewers]\n", team_resolver: resolver)
   end
 
+  def test_later_team_can_establish_trust_after_an_inconclusive_lookup
+    calls = []
+    resolver = lambda do |owner:, slug:, login:|
+      calls << [owner, slug, login]
+      raise GithubActorTrust::Error, "hidden team" if slug == "hidden"
+
+      true
+    end
+
+    assert_equal :trusted,
+                 classify(
+                   "member",
+                   yaml: "trusted_teams: [owner/hidden, owner/visible]\n",
+                   team_resolver: resolver
+                 )
+    assert_equal [%w[owner hidden member], %w[owner visible member]], calls
+  end
+
+  def test_inconclusive_team_lookup_raises_when_no_team_establishes_trust
+    resolver = lambda do |slug:, **|
+      raise GithubActorTrust::Error, "hidden team" if slug == "hidden"
+
+      false
+    end
+
+    error = assert_raises(GithubActorTrust::Error) do
+      classify(
+        "member",
+        yaml: "trusted_teams: [owner/hidden, owner/visible]\n",
+        team_resolver: resolver
+      )
+    end
+    assert_equal "hidden team", error.message
+  end
+
   # A transient failed membership lookup must not demote a configured reviewer
   # for the rest of a long-running preflight invocation.
   def test_negative_team_membership_result_is_retried

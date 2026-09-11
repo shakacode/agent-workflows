@@ -377,13 +377,23 @@ module GithubActorTrust
 
     repo_owner = repo.to_s.split("/", 2).first
     normalized_repo_owner = normalized_login(repo_owner)
-    teams.any? do |team|
+    inconclusive_error = nil
+    teams.each do |team|
       team_owner = team.fetch(:owner) || repo_owner
-      next false unless normalized_login(team_owner) == normalized_repo_owner
+      next unless normalized_login(team_owner) == normalized_repo_owner
 
       cache_key = [normalized_repo_owner, team.fetch(:slug), normalized_login(login)]
-      team_cache[cache_key] ||= team_resolver.call(owner: team_owner, slug: team.fetch(:slug), login:)
+      begin
+        membership = team_cache[cache_key] ||= team_resolver.call(owner: team_owner, slug: team.fetch(:slug), login:)
+        return true if membership
+      rescue StandardError => e
+        inconclusive_error ||= e
+      end
     end
+
+    raise inconclusive_error if inconclusive_error
+
+    false
   end
 
   def trusted_actor?(repo, login, config, team_cache = {}, team_resolver = nil)

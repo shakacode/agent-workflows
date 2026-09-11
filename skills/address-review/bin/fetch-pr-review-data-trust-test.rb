@@ -191,6 +191,26 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     assert_equal 2, transient_calls, "a failed lookup should retry on the next classification"
   end
 
+  def test_team_classification_accepts_a_later_confirmed_team_after_an_inconclusive_one
+    config = GithubActorTrust.build_config(
+      { "trusted_teams" => %w[owner/hidden owner/visible] },
+      contents: "trusted_teams: [owner/hidden, owner/visible]\n", path: "(test)", global: true
+    )
+    calls = []
+    trust = FetchPrReviewData::TrustBoundary.new(
+      repo: "owner/repo", config:, source: "test",
+      team_resolver: lambda do |owner:, slug:, login:|
+        calls << [owner, slug, login]
+        raise FetchPrReviewData::Error, "team visibility unavailable" if slug == "hidden"
+
+        true
+      end
+    )
+
+    assert_equal :trusted, trust.classification("dev")
+    assert_equal [%w[owner hidden dev], %w[owner visible dev]], calls
+  end
+
   def test_metadata_only_and_untrusted_interactions_stay_auditable
     with_trust_config do |path|
       excluded = assembled(path)["excluded_interactions"]
