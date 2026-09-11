@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "json_schemer"
 require "minitest/autorun"
 require "open3"
 require "openssl"
@@ -8924,5 +8925,21 @@ class BatchTokenBudgetTest < Minitest::Test
 
     assert_equal %w[prompt response tool_result auth secret environment],
                  schema.dig("properties", "privacy", "properties", "excluded", "const")
+  end
+
+  def test_v2_schema_requires_unique_first_session_ids_only_for_complete_evidence
+    with_state do |state_path|
+      receipt, = real_descendants_usage_receipt(state_path)
+      schema_path = File.expand_path("../../../docs/schemas/batch-usage-receipt-v2.schema.json", __dir__)
+      validator = JSONSchemer.schema(JSON.parse(File.read(schema_path, encoding: "UTF-8")))
+      coordinator_evidence = receipt.dig("coordinator", "evidence")
+      coordinator_evidence.fetch("first_session_ids") << coordinator_evidence.fetch("first_session_ids").first
+      coordinator_evidence.fetch("physical_rollout_ids") << "sha256:#{'f' * 64}"
+
+      refute_empty validator.validate(receipt).to_a
+
+      mark_receipt_route_unknown(receipt)
+      assert_empty validator.validate(receipt).to_a
+    end
   end
 end

@@ -105,7 +105,7 @@
       "properties": {
         "status": {"enum": ["complete", "UNKNOWN"]},
         "physical_rollout_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
-        "first_session_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "first_session_ids": {"type": "array", "items": {"type": "string"}},
         "first_session_id": {"type": "string"}
       },
       "allOf": [
@@ -117,7 +117,7 @@
           "then": {
             "properties": {
               "physical_rollout_ids": {"minItems": 1},
-              "first_session_ids": {"minItems": 1}
+              "first_session_ids": {"minItems": 1, "uniqueItems": true}
             },
             "allOf": [
               {
