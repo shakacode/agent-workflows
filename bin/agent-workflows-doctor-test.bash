@@ -105,7 +105,12 @@ write_seam_fixture() {
   cat > "$path" <<'RUBY'
 #!/usr/bin/env ruby
 require "json"
-puts JSON.generate("status" => "PASS", "issues" => [])
+payload = { "status" => "PASS", "issues" => [] }
+if ENV["SEAM_FIXTURE"] == "advice"
+  payload["advice"] = [{ "linter" => "RuboCop", "config" => ".rubocop.yml", "enforced" => [],
+                         "recommendations" => [{ "rule" => "Metrics/AbcSize" }] }]
+end
+puts JSON.generate(payload)
 RUBY
   chmod +x "$path"
 }
@@ -252,6 +257,30 @@ test_deep_mode_runs_workflow_seam_check() {
   ' <<< "$output"
 }
 
+test_deep_mode_keeps_linter_advice_healthy_and_surfaces_details() {
+  local tmp output status
+  make_tmp_dir tmp
+  mkdir -p "$tmp/source" "$tmp/target"
+  write_status_fixture "$tmp/target/bin/agent-workflows-status"
+  write_seam_fixture "$tmp/target/bin/agent-workflow-seam-doctor"
+
+  set +e
+  output="$(SEAM_FIXTURE=advice "$ROOT/bin/agent-workflows-doctor" --stack-json --deep \
+    --host codex --target "$tmp/target" --source "$tmp/source")"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "advice-only seam result returned $status: $output"
+  ruby -rjson -e '
+    payload = JSON.parse(STDIN.read)
+    seam = payload.fetch("checks").find { |item| item["id"] == "workflows.seam" }
+    abort payload.inspect unless payload["status"] == "healthy"
+    abort seam.inspect unless seam["status"] == "healthy"
+    advice = seam.fetch("details").fetch("advice")
+    abort advice.inspect unless advice.fetch(0).fetch("config") == ".rubocop.yml"
+  ' <<< "$output"
+}
+
 test_missing_or_mismatched_status_helper_returns_failed_contract() {
   local tmp output status
   make_tmp_dir tmp
@@ -301,6 +330,7 @@ test_adds_fallback_guidance_for_upgrade_without_remediation
 test_sanitizes_component_output_and_parse_errors
 test_wraps_malformed_status_output_in_failed_contract
 test_deep_mode_runs_workflow_seam_check
+test_deep_mode_keeps_linter_advice_healthy_and_surfaces_details
 test_missing_or_mismatched_status_helper_returns_failed_contract
 test_wraps_non_object_status_payload_in_failed_contract
 

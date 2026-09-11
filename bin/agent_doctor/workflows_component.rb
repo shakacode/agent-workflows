@@ -147,7 +147,9 @@ module AgentDoctor
               payload["issues"].is_a?(Array) && payload["issues"].empty?
       raise JSON::ParserError, "invalid seam payload" unless valid
 
-      Contract.check("workflows.seam", "healthy", "workflow seam contract passes")
+      details = {}
+      details["advice"] = payload["advice"] if payload["advice"].is_a?(Array)
+      Contract.check("workflows.seam", "healthy", "workflow seam contract passes", details:)
     rescue JSON::ParserError
       Contract.check("workflows.seam", "failed", "workflow seam doctor returned malformed JSON or reported issues",
                      guidance: "Run the seam doctor directly for full guidance.")
