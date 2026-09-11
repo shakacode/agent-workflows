@@ -463,7 +463,7 @@
             ]
           }
         },
-        "disclaimer": {"type": "string", "pattern": "not a bill"}
+        "disclaimer": {"const": "Analytical credit equivalents only; this is not a bill, invoice, charge, or authoritative provider cost."}
       },
       "additionalProperties": false
     }

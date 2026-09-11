@@ -1206,7 +1206,8 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "available", credits.fetch("status")
     assert_equal "https://example.invalid/rate-card/2026-08-04", credits.fetch("source")
     assert_equal "2026-08-04", credits.fetch("effective_date")
-    assert_includes credits.fetch("disclaimer"), "not a bill"
+    assert_equal "Analytical credit equivalents only; this is not a bill, invoice, charge, or authoritative provider cost.",
+                 credits.fetch("disclaimer")
     assert_equal 4, credits.fetch("model_values").length
     schema = receipt_schema
     assert_empty JSONSchemer.schema(schema).validate(receipt).to_a

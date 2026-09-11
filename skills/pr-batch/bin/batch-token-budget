@@ -66,6 +66,8 @@ module BatchTokenBudget
   V2_USAGE_COUNTERS = %w[input_tokens output_tokens reasoning_output_tokens cache_read_tokens total_tokens].freeze
   V2_PRIVACY_EXCLUDED = %w[prompt response tool_result auth secret environment].freeze
   CREDIT_EQUIVALENT_UNKNOWN_CODES = %w[rate_mapping_missing route_identity_unknown usage_unknown].freeze
+  CREDIT_EQUIVALENTS_DISCLAIMER =
+    "Analytical credit equivalents only; this is not a bill, invoice, charge, or authoritative provider cost."
   BATCH_RECONCILIATION_EQUATION =
     "batch descendant-inclusive = coordinator self-only + lane descendant-inclusive + unattributed"
   LANE_RECONCILIATION_EQUATION =
@@ -2588,7 +2590,7 @@ module BatchTokenBudget
       %w[available UNKNOWN].include?(value["status"]) && schema_nonempty_string?(value["source"]) &&
       schema_date?(value["effective_date"]) && value["model_values"].is_a?(Array) &&
       value["model_values"].all? { |model_value| credit_model_value_shape?(model_value) } &&
-      value["disclaimer"].is_a?(String) && value["disclaimer"].include?("not a bill")
+      value["disclaimer"] == CREDIT_EQUIVALENTS_DISCLAIMER
   end
 
   # Mirrors the closed shapes and value types in docs/schemas/batch-usage-receipt-v2.schema.json.

@@ -16,6 +16,8 @@ HELPER = File.expand_path("batch-token-budget", __dir__)
 FIXTURE = File.expand_path("../fixtures/batch-token-budget-v1.json", __dir__)
 USAGE_HELPER = File.expand_path("batch-usage-receipt", __dir__)
 USAGE_FIXTURE = File.expand_path("../fixtures/batch-usage-receipt/descendants.json", __dir__)
+CANONICAL_CREDIT_DISCLAIMER =
+  "Analytical credit equivalents only; this is not a bill, invoice, charge, or authoritative provider cost."
 
 class BatchTokenBudgetTest < Minitest::Test
   TEST_VERIFIER_KEY = OpenSSL::PKey::RSA.generate(2048)
@@ -436,7 +438,7 @@ class BatchTokenBudgetTest < Minitest::Test
         "status" => "available",
         "credits" => 1
       }],
-      "disclaimer" => "Estimate only; not a bill"
+      "disclaimer" => CANONICAL_CREDIT_DISCLAIMER
     }
   end
 
@@ -8973,12 +8975,39 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_credit_disclaimer_must_match_the_producer_contract_before_persistence
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, = real_descendants_usage_receipt(state_path)
+      receipt["credit_equivalents"] = available_credit_equivalents
+      sentinel = "PROMPT_SECRET_INLINE"
+      receipt.fetch("credit_equivalents")["disclaimer"] = "#{sentinel} not a bill"
+      state_before = File.binread(state_path)
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "noncanonical-credit-disclaimer")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      refute_includes File.binread(state_path), sentinel
+    end
+  end
+
   def test_v2_schema_pins_the_exact_producer_privacy_exclusions
     schema_path = File.expand_path("../../../docs/schemas/batch-usage-receipt-v2.schema.json", __dir__)
     schema = JSON.parse(File.read(schema_path, encoding: "UTF-8"))
 
     assert_equal %w[prompt response tool_result auth secret environment],
                  schema.dig("properties", "privacy", "properties", "excluded", "const")
+  end
+
+  def test_v2_schema_pins_the_exact_producer_credit_disclaimer
+    schema_path = File.expand_path("../../../docs/schemas/batch-usage-receipt-v2.schema.json", __dir__)
+    schema = JSON.parse(File.read(schema_path, encoding: "UTF-8"))
+
+    assert_equal CANONICAL_CREDIT_DISCLAIMER,
+                 schema.dig("$defs", "creditEquivalents", "properties", "disclaimer", "const")
   end
 
   def test_v2_schema_requires_unique_first_session_ids_only_for_complete_evidence
