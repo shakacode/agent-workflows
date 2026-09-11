@@ -593,6 +593,19 @@ rescue PrBatchGitProbeEnv::TimeoutError
   ["", "#{git_executable} #{args.join(' ')} timed out after #{timeout_seconds}s", nil]
 end
 
+def capture_trusted_ssh_probe(*args, timeout_seconds: GIT_TIMEOUT_SECONDS)
+  ssh_executable = trusted_ssh_executable
+  PrBatchGitProbeEnv.capture3(
+    trusted_git_probe_env,
+    ssh_executable,
+    *args,
+    timeout_seconds:,
+    unsetenv_others: true
+  )
+rescue PrBatchGitProbeEnv::TimeoutError
+  ["", "#{ssh_executable} #{args.join(' ')} timed out after #{timeout_seconds}s", nil]
+end
+
 def resolved_trust_config(explicit_path, repo:, github_host:)
   if explicit_path
     expanded = File.expand_path(explicit_path)
@@ -1114,7 +1127,16 @@ def git_root_matches_repo?(root, repo, github_host:, trusted: false)
                   method(:capture_git_probe)
                 end
   ssh_host_resolver = if trusted
-                        ->(_host) {}
+                        lambda do |host|
+                          GithubActorTrust.ssh_config_hostname(
+                            host,
+                            ssh_capture: lambda do |executable, *args|
+                              next ["", "unexpected executable #{executable}", nil] unless executable == "ssh"
+
+                              capture_trusted_ssh_probe(*args)
+                            end
+                          )
+                        end
                       else
                         lambda do |host|
                           GithubActorTrust.ssh_config_hostname(host, ssh_capture: method(:capture_git_probe))

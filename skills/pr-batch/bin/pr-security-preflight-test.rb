@@ -448,6 +448,51 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_scope_revalidation_resolves_the_same_ssh_alias
+    Dir.mktmpdir("aw794-trusted-alias") do |root|
+      config_path = File.join(root, ".agents", "trusted-github-actors.yml")
+      ordinary_ssh = File.join(root, "ssh")
+      FileUtils.mkdir_p(File.dirname(config_path))
+      init_git_remote(root, "owner/repo", url: "git@github.com-work:owner/repo.git")
+      File.write(config_path, "trusted_users:\n  - operator\n")
+      File.write(ordinary_ssh, <<~SH)
+        #!/bin/sh
+        [ "$1" = "-G" ] && [ "$2" = "github.com-work" ] || exit 1
+        printf 'hostname github.com\n'
+      SH
+      FileUtils.chmod(0o755, ordinary_ssh)
+
+      trusted_ssh_dir = Dir.mktmpdir("aw794-trusted-ssh", Dir.home)
+      trusted_ssh = File.join(trusted_ssh_dir, "ssh")
+      FileUtils.cp(ordinary_ssh, trusted_ssh)
+      FileUtils.chmod(0o755, trusted_ssh)
+      config = GithubActorTrust.load(path: config_path, global: false)
+      resolution = {
+        path: config_path, global: false, source: "explicit", implicit: false,
+        contents: File.binread(config_path)
+      }
+
+      with_env(
+        "PATH" => "#{root}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}",
+        "PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE" => trusted_ssh
+      ) do
+        previous_ssh = TrustedGitState.ssh_executable
+        TrustedGitState.ssh_executable = nil
+        refute trust_config_global?(config_path, "owner/repo", github_host: "github.com")
+        refreshed, error = revalidate_trust_config_for_trusted_base(
+          resolution, config, repo: "owner/repo", github_host: "github.com"
+        )
+
+        assert_nil error
+        assert_equal resolution.fetch(:global), refreshed.fetch(:global)
+      ensure
+        TrustedGitState.ssh_executable = previous_ssh
+      end
+    ensure
+      FileUtils.remove_entry_secure(trusted_ssh_dir) if trusted_ssh_dir && File.exist?(trusted_ssh_dir)
+    end
+  end
+
   def test_inferred_github_enterprise_host_marks_explicit_trust_config_repo_local
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer")

@@ -102,7 +102,9 @@ class FetchPrReviewDataTrustTest < Minitest::Test
   end
 
   def assembled(trust_config_path)
-    trust = FetchPrReviewData::TrustBoundary.for(repo: "owner/repo", trust_config_path:)
+    trust = FetchPrReviewData::TrustBoundary.for(
+      repo: "owner/repo", trust_config_path:, trust_config_source: "repo-local"
+    )
     FetchPrReviewData.assemble(
       repo: "owner/repo", pr_number: 1234,
       issue_raw:, reviews_raw:, inline_raw:, threads_raw: THREADS_RAW,
@@ -447,6 +449,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     _out, warning = capture_io do
       assert_equal 1, runner.run(
         ["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml",
+         "--trust-config-source", "packaged-fallback",
          "--trust-config-scope", "repository",
          "--expected-trust-digest", config.fetch(:content_digest)]
       )
@@ -469,20 +472,28 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     _out, warning = capture_io do
       assert_equal 1, runner.run(["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml"])
     end
+    assert_includes warning, "--trust-config-source is required"
+
+    _out, warning = capture_io do
+      assert_equal 1, runner.run(
+        ["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml",
+         "--trust-config-source", "repo-local"]
+      )
+    end
     assert_includes warning, "--trust-config-scope is required"
 
     _out, warning = capture_io do
       assert_equal 1, runner.run(
         ["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml",
-         "--trust-config-scope", "invalid"]
+         "--trust-config-source", "unknown", "--trust-config-scope", "global"]
       )
     end
-    assert_includes warning, "--trust-config-scope must be global or repository"
+    assert_includes warning, "--trust-config-source must be emitted by trusted-base preflight"
 
     _out, warning = capture_io do
       assert_equal 1, runner.run(
         ["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml",
-         "--trust-config-scope", "global"]
+         "--trust-config-source", "repo-local", "--trust-config-scope", "global"]
       )
     end
     assert_includes warning, "--expected-trust-digest is required"
@@ -490,7 +501,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     _out, warning = capture_io do
       assert_equal 1, runner.run(
         ["12", "--repo", "owner/repo", "--trust-config", "relative.yml",
-         "--trust-config-scope", "global",
+         "--trust-config-source", "repo-local", "--trust-config-scope", "global",
          "--expected-trust-digest", "sha256:#{'0' * 64}"]
       )
     end
@@ -499,7 +510,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     _out, warning = capture_io do
       assert_equal 1, runner.run(
         ["12", "--repo", "owner/repo", "--trust-config", "/trusted.yml",
-         "--trust-config-scope", "global",
+         "--trust-config-source", "repo-local", "--trust-config-scope", "global",
          "--expected-trust-digest", "not-a-digest"]
       )
     end
@@ -518,7 +529,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       _out, warning = capture_io do
         assert_equal 1, runner.run(
           ["12", "--repo", "owner/repo", "--trust-config", path,
-           "--trust-config-scope", "repository",
+           "--trust-config-source", "repo-local", "--trust-config-scope", "repository",
            "--expected-trust-digest", "sha256:#{'0' * 64}"]
         )
       end
@@ -730,7 +741,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
         result = Dir.chdir(root) do
           runner.run(
             ["12", "--repo", "owner/repo", "--trust-config", config_path,
-             "--trust-config-scope", "repository",
+             "--trust-config-source", "repo-local", "--trust-config-scope", "repository",
              "--expected-trust-digest", digest]
           )
         end
@@ -817,7 +828,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     with_trust_config do |path|
       trust = assembled(path)["trust"]
 
-      assert_equal "explicit", trust["source"]
+      assert_equal "repo-local", trust["source"]
       assert_equal "global", trust["scope"]
       assert_equal path, trust["config_path"]
       assert_match(/\Asha256:[0-9a-f]{64}\z/, trust["content_digest"])
@@ -850,7 +861,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
       text = FetchPrReviewData.text_summary(assembled(path))
 
       assert_includes text, "excluded_interactions: 6"
-      assert_includes text, "trust: explicit"
+      assert_includes text, "trust: repo-local"
     end
   end
 
@@ -858,6 +869,7 @@ class FetchPrReviewDataTrustTest < Minitest::Test
     out, status = Open3.capture2e(
       { "GH_HOST" => "github.com" },
       "ruby", SCRIPT, "12", "--repo", "owner/repo", "--trust-config", "/nonexistent/trust.yml",
+      "--trust-config-source", "repo-local",
       "--trust-config-scope", "global",
       "--expected-trust-digest", "sha256:#{'0' * 64}"
     )

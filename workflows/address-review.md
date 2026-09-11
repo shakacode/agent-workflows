@@ -459,11 +459,12 @@ Execution flow when terminal access is available:
      `gh api --paginate repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/comments | jq -s '[.[].[] | {id: .id, node_id: .node_id, path: .path, body: .body, line: .line, start_line: .start_line, user: .user.login, in_reply_to_id: .in_reply_to_id, created_at: .created_at, html_url: .html_url}]'`
    - If the review body contains actionable feedback, include it as an additional general comment. Review summary bodies cannot use the `/replies` endpoint; post those responses as general PR comments (see step 8).
   - Full PR — fetch all review data with the helper (replaces the per-endpoint `gh api ... | jq` blocks and the `reviewThreads` GraphQL query). Resolve `ADDRESS_REVIEW_SKILL_DIR` with the explicit env-var, loaded skill base, repo-local pinned-copy chain before using the fallback assignment:
-    `ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"; "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" --trust-config "${TRUST_CONFIG_PATH}" --trust-config-scope "${TRUST_CONFIG_SCOPE}" --expected-trust-digest "${TRUST_CONFIG_DIGEST}" > review-data.json`
-     Set `TRUST_CONFIG_PATH`, `TRUST_CONFIG_SCOPE`, and `TRUST_CONFIG_DIGEST` to
-     the exact absolute path, `global` or `repository` scope, and `sha256:`
-     digest emitted by trusted-base security preflight. The helper requires all
-     three values, preserves the parsing scope, verifies the bytes again before
+    `ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"; "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" --trust-config "${TRUST_CONFIG_PATH}" --trust-config-source "${TRUST_CONFIG_SOURCE}" --trust-config-scope "${TRUST_CONFIG_SCOPE}" --expected-trust-digest "${TRUST_CONFIG_DIGEST}" > review-data.json`
+     Set `TRUST_CONFIG_PATH`, `TRUST_CONFIG_SOURCE`, `TRUST_CONFIG_SCOPE`, and
+     `TRUST_CONFIG_DIGEST` to the exact absolute path, selection source,
+     `global` or `repository` scope, and `sha256:` digest emitted by trusted-base
+     security preflight. The helper requires all four values, preserves the
+     selection source and parsing scope, verifies the bytes again before
      fetching, and does not discover a different config from the PR checkout or
      user environment.
      When `SOURCE_PR_NUMBER` is present, run the same helper into
@@ -471,7 +472,7 @@ Execution flow when terminal access is available:
      and cutoff only after authenticated schema validation:
      ```bash
      if [ -n "${SOURCE_PR_NUMBER}" ]; then
-       "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${SOURCE_PR_NUMBER}" --repo "${REPO}" --trust-config "${TRUST_CONFIG_PATH}" --trust-config-scope "${TRUST_CONFIG_SCOPE}" --expected-trust-digest "${TRUST_CONFIG_DIGEST}" > source-review-data.json
+       "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${SOURCE_PR_NUMBER}" --repo "${REPO}" --trust-config "${TRUST_CONFIG_PATH}" --trust-config-source "${TRUST_CONFIG_SOURCE}" --trust-config-scope "${TRUST_CONFIG_SCOPE}" --expected-trust-digest "${TRUST_CONFIG_DIGEST}" > source-review-data.json
        SOURCE_REVIEW_CUTOFF_AT=""
        SOURCE_STATE_CHECKPOINT_BODY=""
        SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"

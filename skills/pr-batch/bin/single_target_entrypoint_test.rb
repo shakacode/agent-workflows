@@ -500,7 +500,7 @@ replacement_source_invocation = 'COORDINATED_AUTOFIX=1 COORDINATED_REVIEW_SOURCE
 assert(integration_closeout.include?(replacement_source_invocation), "canonical closeout must show the executable replacement-source invocation")
 assert(address_review.include?("source-review-data.json"), "address-review must fetch a separate source review inventory")
 assert(address_review_workflow.include?("source-review-data.json"), "address-review workflow mirror must fetch a separate source review inventory")
-guarded_source_fetch = %r{if \[ -n "\$\{SOURCE_PR_NUMBER\}" \]; then\n\s+"\$\{ADDRESS_REVIEW_SKILL_DIR\}/bin/fetch-pr-review-data" "\$\{SOURCE_PR_NUMBER\}" --repo "\$\{REPO\}" --trust-config "\$\{TRUST_CONFIG_PATH\}" --trust-config-scope "\$\{TRUST_CONFIG_SCOPE\}" --expected-trust-digest "\$\{TRUST_CONFIG_DIGEST\}" > source-review-data\.json}
+guarded_source_fetch = %r{if \[ -n "\$\{SOURCE_PR_NUMBER\}" \]; then\n\s+"\$\{ADDRESS_REVIEW_SKILL_DIR\}/bin/fetch-pr-review-data" "\$\{SOURCE_PR_NUMBER\}" --repo "\$\{REPO\}" --trust-config "\$\{TRUST_CONFIG_PATH\}" --trust-config-source "\$\{TRUST_CONFIG_SOURCE\}" --trust-config-scope "\$\{TRUST_CONFIG_SCOPE\}" --expected-trust-digest "\$\{TRUST_CONFIG_DIGEST\}" > source-review-data\.json}
 assert(address_review.match?(guarded_source_fetch), "address-review must fetch the source inventory inside its source guard")
 assert(address_review_workflow.match?(guarded_source_fetch), "address-review workflow mirror must fetch the source inventory inside its source guard")
 assert(address_review_actions.include?("ITEM_SOURCE_PR"), "address-review actions must route replies through preserved source identity")
