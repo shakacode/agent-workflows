@@ -30,6 +30,7 @@ require "open3"
 require "time"
 require "yaml"
 require_relative "../../../bin/agent_doctor/ci_readiness_policy"
+require_relative "../lib/configured_review_exception"
 load File.expand_path("diff-identity", __dir__) unless defined?(DiffIdentity)
 
 # Pure verdict logic (no I/O) plus the gh-backed runner. The pure methods take
@@ -319,7 +320,7 @@ module PrCiReadiness
     head_sha:, checked_at:, required_rows:, required_complete:, actions_rows:,
     actions_complete:, check_runs:, check_runs_complete:, statuses:,
     statuses_complete:, errors: {}, gate_advisory_rows: true,
-    optional_approval_held_policy: nil
+    optional_approval_held_policy: nil, configured_review_exception: nil
   )
     actions_rows = non_draft_head_actions_rows(actions_rows)
     # required_rows may still contain a non-Hash entry that survived
@@ -369,7 +370,10 @@ module PrCiReadiness
         rows: gate_advisory_rows ? github_actions_rows : [],
         informational_rows: gate_advisory_rows ? [] : github_actions_rows,
         gates_verdict: gate_advisory_rows,
-        checked_at:, error: errors["github_actions"]
+        checked_at:, error: errors["github_actions"],
+        policy_dispositions: configured_review_exception && ConfiguredReviewException.dispositions(
+          rows: github_actions_rows, required_rows:, authenticated: configured_review_exception
+        )
       ),
       "dependabot" => evidence_scope(
         source: "github.dependabot.exact_head",
@@ -482,6 +486,8 @@ module PrCiReadiness
   end
 
   def disposition_matches_row?(disposition, row)
+    return true if ConfiguredReviewException.matches_row?(disposition, row)
+
     disposition.is_a?(Hash) && row.is_a?(Hash) &&
       disposition["kind"] == row["kind"] && disposition["id"] == row["id"] &&
       disposition["app_slug"] == row["app_slug"] && disposition["name"] == row["name"] &&
@@ -653,6 +659,9 @@ module PrCiReadiness
                                               .agents/agent-workflow.yml Git blob in this repository.
           --diff-base-sha SHA                 Bind evidence to the reviewed effective merge base.
                                               Defaults to the PR's current base SHA.
+          --configured-review-exception FILE  JSON with exact comment_id and body_sha256 for a
+                                              live human maintainer's terminal-review exception.
+                                              Requires --trusted-repo-root; other gates remain mandatory.
           --json                              Print JSON (default).
           --text                              Print a human-readable verdict instead of JSON.
           --self-check                        Run parser checks plus a read-only gh smoke check.
@@ -695,7 +704,8 @@ module PrCiReadiness
     With --requested-hosted-run and no usable required checks, the requested
     current-head runs are the gate instead of the full advisory check list.
     Exact-head non-required checks remain visible as informational rows and do
-    not gate while any requested hosted run is supplied.
+    not gate while any requested hosted run is supplied, unless an exact configured
+    review exception is also supplied; that exception retains all other CI gates.
 
     Requires: gh (GitHub CLI)
   USAGE
@@ -723,7 +733,8 @@ module PrCiReadiness
         repo, pr_number,
         requested_hosted_runs: opts[:requested_hosted_runs],
         trusted_repo_root: opts[:trusted_repo_root],
-        diff_base_sha: opts[:diff_base_sha]
+        diff_base_sha: opts[:diff_base_sha],
+        configured_review_exception: opts[:configured_review_exception]
       )
       result["context"] = { "host" => host }
       print_result(result, opts[:format])
@@ -734,13 +745,15 @@ module PrCiReadiness
     end
 
     def assess_authenticated(
-      repo:, pr_number:, host:, requested_hosted_runs:, trusted_repo_root:, diff_base_sha:
+      repo:, pr_number:, host:, requested_hosted_runs:, trusted_repo_root:, diff_base_sha:,
+      configured_review_exception: nil
     )
       resolved_host = resolve_host!(host)
       @gh_env = { "GH_HOST" => resolved_host }
       result = assess(
         resolve_repo!(repo), validate_pr!(pr_number), requested_hosted_runs:,
-                                                      trusted_repo_root:, diff_base_sha:
+                                                      trusted_repo_root:, diff_base_sha:,
+                                                      configured_review_exception:
       )
       result["context"] = { "host" => resolved_host }
       result
@@ -769,6 +782,8 @@ module PrCiReadiness
         when "--requested-hosted-run" then opts[:requested_hosted_runs] << take_value!(args, "--requested-hosted-run")
         when "--trusted-repo-root" then opts[:trusted_repo_root] = take_value!(args, "--trusted-repo-root")
         when "--diff-base-sha" then opts[:diff_base_sha] = take_value!(args, "--diff-base-sha")
+        when "--configured-review-exception"
+          opts[:configured_review_exception] = read_review_exception_reference!(take_value!(args, arg))
         when "--json" then opts[:format] = "json"
         when "--text" then opts[:format] = "text"
         when "--self-check" then opts[:self_check] = true
@@ -851,7 +866,18 @@ module PrCiReadiness
 
     # Fetch the required-check list first; fall back to the full list when the
     # required form yields no current rows. required_used flips false on fallback.
-    def assess(repo, pr_number, requested_hosted_runs:, trusted_repo_root: nil, diff_base_sha: nil)
+    def read_review_exception_reference!(path)
+      raw = File.read(path)
+      raise Error, "review exception reference contains duplicate keys" unless
+        AutonomousMergePolicy.duplicate_key_errors(raw).empty?
+
+      JSON.parse(raw)
+    rescue JSON::ParserError, Psych::Exception, SystemCallError => e
+      raise Error, "review exception reference is unavailable or malformed: #{e.class}"
+    end
+
+    def assess(repo, pr_number, requested_hosted_runs:, trusted_repo_root: nil, diff_base_sha: nil,
+               configured_review_exception: nil)
       checked_at = Time.now.utc.iso8601
       target_pr =
         begin
@@ -936,6 +962,18 @@ module PrCiReadiness
           )
         end
       inventory = exact_head_inventory(repo, target_pr)
+      authenticated_exception = nil
+      if configured_review_exception
+        begin
+          authenticated_exception = authenticate_review_exception!(
+            configured_review_exception, repo:, target_pr:, trusted_repo_root:
+          )
+          retain_review_exception_aliases!(authenticated_exception, inventory)
+        rescue StandardError => e
+          inventory[:actions_complete] = false
+          inventory[:errors]["github_actions"] = "review exception authentication failed: #{e.message}"
+        end
+      end
       target_identity_error =
         begin
           final_target_pr = fetch_target_pr_identity(repo, pr_number)
@@ -968,7 +1006,8 @@ module PrCiReadiness
         statuses: inventory.fetch(:statuses),
         statuses_complete: inventory.fetch(:statuses_complete),
         errors: inventory.fetch(:errors),
-        gate_advisory_rows: !requested_hosted_runs_supplied,
+        gate_advisory_rows: !requested_hosted_runs_supplied || !configured_review_exception.nil?,
+        configured_review_exception: authenticated_exception,
         optional_approval_held_policy: trusted_ci_policy && {
           "version" => trusted_ci_policy.fetch("version"),
           "optional_approval_held_checks" => trusted_ci_policy.fetch("optional_approval_held_checks")
@@ -982,9 +1021,8 @@ module PrCiReadiness
       disposition_owns_fallback = !required_used && ordinary_checks_verdict == "NOT_READY" &&
                                   result.fetch("invalid").empty? &&
                                   contract.fetch("verdict") == "READY" &&
-                                  PrCiReadiness.policy_dispositions_own_fallback_rows?(
-                                    rows, required_cancellations:,
-                                          other_scope: scopes.fetch("other")
+                                  fallback_dispositions_own_rows?(
+                                    rows, required_cancellations:, scopes:, authenticated_exception:
                                   )
       ordinary_verdict = if !disposition_owns_fallback
                            result.fetch("verdict")
@@ -1009,7 +1047,83 @@ module PrCiReadiness
         "scopes" => scopes
       )
       merged["ci_policy"] = trusted_ci_policy if trusted_ci_policy
+      merged["configured_review_exception"] = configured_review_exception if configured_review_exception
+      merged["check_rows"] = rows if configured_review_exception
       merged
+    end
+
+    def authenticate_review_exception!(reference, repo:, target_pr:, trusted_repo_root:)
+      raise Error, "review exception requires --trusted-repo-root" unless trusted_repo_root
+
+      authenticated = ConfiguredReviewException.authenticate!(
+        reference:, host: @gh_env.fetch("GH_HOST"), repo:, pr_number: target_pr.fetch(:number),
+        head_sha: target_pr.fetch(:head_sha), base_sha: target_pr.fetch(:base_sha),
+        read: ->(endpoint) { capture_json!("gh", "api", endpoint) },
+        git: ->(*args) { PrCiReadiness.git_capture!(trusted_repo_root, *args) },
+        validate_run: lambda { |run|
+          validate_actions_run_identity!(run, target_pr.fetch(:head_sha))
+          raise Error, "review exception run does not target this PR" unless
+            !run.fetch("pull_requests").empty? && actions_run_targets_pr?(run, target_pr)
+        },
+        jobs: ->(run_id) { fetch_actions_jobs(repo, run_id) }
+      )
+      run = authenticated.fetch("run")
+      attribution = {
+        dependabot: dependabot_attributed?(run), head_sha: target_pr.fetch(:head_sha),
+        head_branch: run.fetch("head_branch"),
+        pull_request_numbers: run.fetch("pull_requests").map { |item| item.fetch("number") }.sort
+      }
+      raise Error, "Dependabot is outside the configured review exception" if attribution[:dependabot]
+
+      authenticated.merge("rows" => [
+                            normalize_actions_row(run, "run", **attribution),
+                            normalize_actions_row(authenticated.fetch("job"), "job", **attribution)
+                          ])
+    end
+
+    def fallback_dispositions_own_rows?(rows, required_cancellations:, scopes:, authenticated_exception:)
+      remaining = rows
+      if authenticated_exception && Array(scopes.dig("github_actions", "policy_dispositions")).length ==
+                                    authenticated_exception.fetch("rows").length
+        return false unless required_cancellations.empty?
+        return false unless rows.count do |row|
+          ConfiguredReviewException.fallback_row?(row, authenticated_exception)
+        end == 1
+
+        remaining = rows.reject { |row| ConfiguredReviewException.fallback_row?(row, authenticated_exception) }
+        return true if remaining.length < rows.length && remaining.all? do |row|
+          row.is_a?(Hash) && %w[pass skipping].include?(row["bucket"])
+        end
+      end
+      PrCiReadiness.policy_dispositions_own_fallback_rows?(
+        remaining, required_cancellations:, other_scope: scopes.fetch("other")
+      )
+    end
+
+    def retain_review_exception_aliases!(authenticated, inventory)
+      job = authenticated.fetch("job")
+      aliases = inventory.fetch(:check_runs).select do |row|
+        row["app_slug"] == "github-actions" && row["url"] == job["html_url"]
+      end
+      raise Error, "review exception check-run alias is ambiguous" if aliases.length > 1
+
+      aliases.each do |row|
+        api_root = if @gh_env.fetch("GH_HOST") == "github.com"
+                     "https://api.github.com"
+                   else
+                     "https://#{@gh_env.fetch('GH_HOST')}/api/v3"
+                   end
+        repo = authenticated.dig("payload", "repo")
+        raise Error, "review exception check-run alias contradicts the exact failed job" unless
+          ConfiguredReviewException.positive_integer?(row["id"]) &&
+          job["check_run_url"] == "#{api_root}/repos/#{repo}/check-runs/#{row.fetch('id')}" &&
+          row["name"] == job["name"] && row["status"] == "completed" &&
+          row["conclusion"] == "failure" && row["head_sha"] == job["head_sha"] &&
+          row["dependabot"] == false
+
+        inventory[:actions_rows] << row unless inventory.fetch(:actions_rows).include?(row)
+        authenticated.fetch("rows") << row
+      end
     end
 
     def unavailable_target_pr_result(repo, pr_number, checked_at, error)

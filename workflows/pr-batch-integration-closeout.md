@@ -1424,6 +1424,39 @@ Require or select relied-on hosted Markdown checks. Older-head runs are
 `UNKNOWN`.
 Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
+### Exact Terminal Reviewer Exception
+
+A review-artifact waiver alone does not clear a failed CI row. For one terminal
+failed reviewer, `--configured-review-exception FILE` accepts a JSON reference
+containing only the positive integer `comment_id` and lowercase SHA256
+`body_sha256` of an exact, personally authored PR comment. Supply
+`--trusted-repo-root` to bind the reviewer to the live base's workflow.
+
+The comment begins with `<!-- configured-review-exception:v1 -->`, followed by
+one strict YAML document delimited by `---` and `...`. Its exact fields are
+`host`, `repo`, `pr`, `head_sha`, `workflow_id`, `workflow_path`, `job_key`,
+`job_name`, `job_id`, `run_id`, `run_attempt`, `conclusion`, `decision`, and
+`approved_by`. Use full head SHA, numeric PR/workflow/job/run/attempt identities,
+`conclusion: failure`, and `decision: approve-terminal-review-exception`.
+`approved_by` must equal the live human author's login with current maintainer
+permission. The workflow path and literal job name/key must resolve from the
+trusted base; ambiguous or matrix-generated job identities remain rejected.
+This is a separate receipt from autonomous merge-risk approval.
+
+Readiness retains the failed run, job, and matching check-run rows and records
+only their exact dispositions. No passing Actions run is required or invented.
+Every unrelated or required check, selected hosted run, review draft, unresolved
+finding/thread, security, freshness, and branch-protection gate still applies.
+Supplying this exception keeps the full CI inventory gating even when hosted
+runs are selected. Missing, edited, deleted, revoked, mismatched, rerun,
+nonterminal, unknown, or incomplete authority cannot qualify.
+
+`merge-assurance` independently reauthenticates the comment and reconstructs
+the complete CI scopes from live evidence before accepting a disposition.
+`pr-merge-submit` repeats that authentication and CI inventory before submission,
+including repositories without an optional CI policy. The exception grants no
+merge authority; `none` still prevents merge.
+
 Avoid long-lived `gh ... --watch` commands in agent sessions. Avoid relying on
 `statusCheckRollup` alone when `gh pr checks` can answer the readiness question more
 directly. Ignore superseded cancelled workflow rows unless they belong to the

@@ -13,6 +13,177 @@ require "fileutils"
 SCRIPT = File.expand_path("pr-ci-readiness", __dir__)
 load SCRIPT
 
+require_relative "../lib/configured_review_exception_test_support"
+
+class ConfiguredReviewExceptionReadinessTest < Minitest::Test
+  include ConfiguredReviewExceptionTestSupport
+
+  def test_exact_live_exception_accepts_failed_reviewer_without_successful_actions
+    with_review_exception do |root, base, reference, _data, _fallback, transport|
+      runner = PrCiReadiness::Runner.new(read_transport: transport)
+      result = runner.assess_authenticated(
+        repo: "owner/repo", pr_number: 123, host: "github.com", requested_hosted_runs: [],
+        trusted_repo_root: root, diff_base_sha: base, configured_review_exception: reference
+      )
+      assert_equal "READY", result.fetch("verdict"), "exact exception #{reference.fetch('comment_id')}"
+      assert_equal(%w[failure failure], result.dig("scopes", "github_actions", "rows").map { |row| row["conclusion"] })
+      assert_empty result.dig("requested_hosted", "run_ids")
+    end
+  end
+
+  def test_review_exception_rejects_invalid_live_authority_and_unrelated_failures
+    cases = {
+      "deleted comment" => ->(data, _rows, _ref) { data.delete("repos/owner/repo/issues/comments/501") },
+      "edited comment bytes with identical meaning" => lambda { |data, _rows, _ref|
+        comment = data.fetch("repos/owner/repo/issues/comments/501")
+        comment["body"] = comment.fetch("body").sub("pr: 123", "pr:  123")
+      },
+      "bot author" => ->(data, _rows, _ref) { data["repos/owner/repo/issues/comments/501"]["user"]["type"] = "Bot" },
+      "revoked permission" => ->(data, _rows, _ref) { data["repos/owner/repo/collaborators/maintainer/permission"]["role_name"] = "write" },
+      "wrong PR comment" => ->(data, _rows, _ref) { data["repos/owner/repo/issues/comments/501"]["issue_url"] += "4" },
+      "rerun" => ->(data, _rows, _ref) { data["repos/owner/repo/actions/runs/42"]["run_attempt"] = 2 },
+      "nonterminal" => ->(data, _rows, _ref) { data["repos/owner/repo/actions/runs/42"]["status"] = "in_progress" },
+      "unknown conclusion" => ->(data, _rows, _ref) { data["repos/owner/repo/actions/runs/42"]["conclusion"] = "UNKNOWN" },
+      "wrong workflow" => ->(data, _rows, _ref) { data["repos/owner/repo/actions/workflows/17"]["path"] = ".github/workflows/unit.yml" },
+      "incomplete jobs" => ->(data, _rows, _ref) { data["repos/owner/repo/actions/runs/42/jobs?per_page=100&page=1"]["total_count"] = 2 },
+      "incomplete Actions" => ->(data, _rows, _ref) { data["repos/owner/repo/actions/runs?head_sha=#{'a' * 40}&per_page=100&page=1"]["total_count"] = 2 },
+      "required reviewer failure" => ->(data, rows, _ref) { data["required_checks"] = rows.dup },
+      "required cancellation" => ->(data, rows, _ref) { data["required_checks"] = [rows.first.merge("bucket" => "cancel")] },
+      "unrelated required failure" => ->(data, rows, _ref) { data["required_checks"] = [rows.first.merge("name" => "Unit tests")] },
+      "pending viewer artifact" => lambda { |data, _rows, _ref|
+        data["viewer_reviews"] = { "data" => { "repository" => { "pullRequest" => { "reviews" => {
+          "nodes" => [{ "id" => "PRR_1", "state" => "PENDING", "submittedAt" => nil,
+                        "commit" => { "oid" => "a" * 40 } }],
+          "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+        } } } } }
+      },
+      "unrelated failing job" => lambda { |data, _rows, _ref|
+        jobs = data["repos/owner/repo/actions/runs/42/jobs?per_page=100&page=1"]
+        jobs["jobs"] << jobs["jobs"].first.merge("id" => 421, "name" => "Unit tests")
+        jobs["total_count"] = 2
+      },
+      "unrelated fallback failure" => ->(_data, rows, _ref) { rows << rows.first.merge("name" => "Unit tests") },
+      "duplicate fallback alias" => ->(_data, rows, _ref) { rows << rows.first.dup },
+      "contradictory fallback state" => ->(_data, rows, _ref) { rows.first["state"] = "PENDING" },
+      "missing digest" => ->(_data, _rows, ref) { ref.delete("body_sha256") },
+      "caller asserted authority" => ->(_data, _rows, ref) { ref["approved"] = true }
+    }
+    cases.each do |label, mutate|
+      with_review_exception do |root, base, reference, data, fallback, transport|
+        mutate.call(data, fallback, reference)
+        result = PrCiReadiness::Runner.new(read_transport: transport).assess_authenticated(
+          repo: "owner/repo", pr_number: 123, host: "github.com", requested_hosted_runs: [],
+          trusted_repo_root: root, diff_base_sha: base, configured_review_exception: reference
+        )
+        refute_equal "READY", result.fetch("verdict"), label
+      end
+    end
+  end
+
+  def test_review_exception_rejects_signed_wrong_binding_and_unsafe_yaml
+    mutations = {
+      "host" => ->(body) { body.sub("host: github.com", "host: github.example") },
+      "repository" => ->(body) { body.sub("repo: owner/repo", "repo: other/repo") },
+      "PR" => ->(body) { body.sub("pr: 123", "pr: 124") },
+      "head" => ->(body) { body.sub("a" * 40, "b" * 40) },
+      "reviewer" => ->(body) { body.sub("job_name: Reviewer", "job_name: Unit tests") },
+      "run" => ->(body) { body.sub("run_id: 42", "run_id: 43") },
+      "attempt" => ->(body) { body.sub("run_attempt: 1", "run_attempt: 2") },
+      "duplicate key" => ->(body) { body.sub("pr: 123", "pr: 123\npr: 123") },
+      "extra document" => ->(body) { "#{body}---\npr: 123\n...\n" },
+      "risk approval marker" => ->(body) { body.sub("configured-review-exception:v1", "autonomous-merge-risk-decision:v1") },
+      "YAML alias" => ->(body) { body.sub("job_name: Reviewer", "job_name: &review Reviewer\nextra: *review") }
+    }
+    mutations.each do |label, mutation|
+      with_review_exception do |root, base, reference, data, _fallback, transport|
+        comment = data.fetch("repos/owner/repo/issues/comments/501")
+        comment["body"] = mutation.call(comment.fetch("body"))
+        reference["body_sha256"] = Digest::SHA256.hexdigest(comment["body"])
+        result = PrCiReadiness::Runner.new(read_transport: transport).assess_authenticated(
+          repo: "owner/repo", pr_number: 123, host: "github.com", requested_hosted_runs: [],
+          trusted_repo_root: root, diff_base_sha: base, configured_review_exception: reference
+        )
+        refute_equal "READY", result.fetch("verdict"), label
+      end
+    end
+  end
+
+  def test_review_exception_preserves_exact_failed_check_alias_and_rejects_contradiction
+    with_review_exception do |root, base, reference, data, _fallback, transport|
+      jobs = data.fetch("repos/owner/repo/actions/runs/42/jobs?per_page=100&page=1")
+      job = jobs.fetch("jobs").first
+      job["check_run_url"] = "https://api.github.com/repos/owner/repo/check-runs/520"
+      checks = data.fetch("repos/owner/repo/commits/#{'a' * 40}/check-runs?per_page=100&page=1")
+      checks["total_count"] = 1
+      checks["check_runs"] = [job.merge("id" => 520, "app" => { "slug" => "github-actions" })]
+      runner = PrCiReadiness::Runner.new(read_transport: transport)
+      args = { repo: "owner/repo", pr_number: 123, host: "github.com", requested_hosted_runs: [],
+               trusted_repo_root: root, diff_base_sha: base, configured_review_exception: reference }
+      result = runner.assess_authenticated(**args)
+      assert_equal "READY", result.fetch("verdict")
+      assert_equal(%w[run job check_run], result.dig("scopes", "github_actions", "rows").map { |row| row["kind"] })
+      assert_equal(%w[failure failure failure], result.dig("scopes", "github_actions", "rows").map { |row| row["conclusion"] })
+      checks.fetch("check_runs").first["conclusion"] = "cancelled"
+      refute_equal "READY", runner.assess_authenticated(**args).fetch("verdict")
+    end
+  end
+
+  def test_review_exception_cli_consumes_exact_reference_and_rejects_duplicate_keys
+    with_review_exception do |root, _base, reference, _data, _fallback, transport|
+      path = File.join(root, "exception.json")
+      File.write(path, JSON.generate(reference))
+      args = ["123", "--repo", "owner/repo", "--trusted-repo-root", root,
+              "--configured-review-exception", path]
+      runner = PrCiReadiness::Runner.new(read_transport: transport)
+      output, error = capture_io { assert_equal 0, runner.run(args) }
+      assert_empty error
+      assert_equal "READY", JSON.parse(output).fetch("verdict")
+      File.write(path, JSON.generate(reference).sub("{", '{"comment_id":501,'))
+      _output, error = capture_io { assert_equal 1, runner.run(args) }
+      assert_includes error, "duplicate keys"
+    end
+  end
+
+  def test_review_exception_rejects_permission_revoked_while_collecting_jobs
+    with_review_exception do |root, base, reference, data, _fallback, transport|
+      permission_read = false
+      changing_transport = lambda do |*args, host:|
+        response = transport.call(*args, host:)
+        permission_read = true if args[1] == "repos/owner/repo/collaborators/maintainer/permission"
+        if permission_read && args[1] == "repos/owner/repo/actions/runs/42/jobs?per_page=100&page=1"
+          data.fetch("repos/owner/repo/collaborators/maintainer/permission")["role_name"] = "write"
+        end
+        response
+      end
+      result = PrCiReadiness::Runner.new(read_transport: changing_transport).assess_authenticated(
+        repo: "owner/repo", pr_number: 123, host: "github.com", requested_hosted_runs: [],
+        trusted_repo_root: root, diff_base_sha: base, configured_review_exception: reference
+      )
+      refute_equal "READY", result.fetch("verdict")
+    end
+  end
+
+  def test_review_exception_rejects_ambiguous_trusted_job_name
+    ["Reviewer", "${{ inputs.job_name }}"].each do |name|
+      with_review_exception do |root, _base, reference, data, _fallback, transport|
+        workflow = File.join(root, ".github/workflows/review.yml")
+        File.open(workflow, "a") do |file|
+          file.write("  unrelated:\n    name: #{name}\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo test\n")
+        end
+        system(PrCiReadiness::SYSTEM_GIT, "-C", root, "add", ".", exception: true)
+        system(PrCiReadiness::SYSTEM_GIT, "-C", root, "commit", "-qm", "ambiguous names", exception: true)
+        base = Open3.capture2(PrCiReadiness::SYSTEM_GIT, "-C", root, "rev-parse", "HEAD").first.strip
+        data.fetch("repos/owner/repo/pulls/123").fetch("base")["sha"] = base
+        result = PrCiReadiness::Runner.new(read_transport: transport).assess_authenticated(
+          repo: "owner/repo", pr_number: 123, host: "github.com", requested_hosted_runs: [],
+          trusted_repo_root: root, diff_base_sha: base, configured_review_exception: reference
+        )
+        refute_equal "READY", result.fetch("verdict"), name
+      end
+    end
+  end
+end
+
 class PrCiReadinessTest < Minitest::Test
   # --- Pure verdict logic (module_function), tested directly ---------------
 
