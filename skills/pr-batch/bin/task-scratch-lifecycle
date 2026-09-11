@@ -1,0 +1,885 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "fileutils"
+require "fiddle/import"
+require "json"
+require "optparse"
+require "securerandom"
+require "time"
+require "tmpdir"
+
+require_relative "../lib/git_probe_env"
+
+module TaskScratchLifecycle
+  MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
+  IDENTITY_KEYS = %w[batch_id lane_id plan_digest plan_id task_id].freeze
+  OWNER_BASENAME = ".task-scratch-owner.json"
+  CREATE_DECISION_KEYS = %w[contract receipt status version].freeze
+  RECEIPT_KEYS = %w[
+    allowlist contract created_at digest identity repository_common_dir root_device root_inode root_mode
+    root_owner run_token scratch_parent scratch_root version worktree_root
+  ].freeze
+  TASK_REVIEW_HELPER = File.expand_path("task-review-loop", __dir__)
+  DIRECTORY_OPEN_RETRY_COUNT = 3
+
+  module CleanupSyscalls
+    extend Fiddle::Importer
+    dlload Fiddle.dlopen(nil)
+    extern "int openat(int, const char *, int, ...)"
+    extern "int mkdirat(int, const char *, unsigned int)"
+    extern "int renameat(int, const char *, int, const char *)"
+    extern "int unlinkat(int, const char *, int)"
+    REMOVE_DIRECTORY = case RUBY_PLATFORM
+                       when /darwin/
+                         0x80
+                       when /linux/
+                         0x200
+                       end
+
+    def self.ensure_directory_removal_supported!(unavailable_reason)
+      return true if REMOVE_DIRECTORY
+
+      raise LifecycleError, unavailable_reason
+    end
+
+    if RUBY_PLATFORM.include?("darwin")
+      def self.ensure_cleanup_supported!
+        extern "int renameatx_np(int, const char *, int, const char *, unsigned int)" unless
+          respond_to?(:renameatx_np)
+        true
+      rescue Fiddle::DLError
+        raise LifecycleError, "cleanup-syscall-unavailable"
+      end
+
+      def self.rename_no_replace(source_directory_fd, source, destination_directory_fd, destination)
+        ensure_cleanup_supported!
+        renameatx_np(source_directory_fd, source, destination_directory_fd, destination, 0x4)
+      end
+    elsif RUBY_PLATFORM.include?("linux")
+      def self.ensure_cleanup_supported!
+        extern "int renameat2(int, const char *, int, const char *, unsigned int)" unless
+          respond_to?(:renameat2)
+        true
+      rescue Fiddle::DLError
+        raise LifecycleError, "cleanup-syscall-unavailable"
+      end
+
+      def self.rename_no_replace(source_directory_fd, source, destination_directory_fd, destination)
+        ensure_cleanup_supported!
+        renameat2(source_directory_fd, source, destination_directory_fd, destination, 0x1)
+      end
+    else
+      def self.ensure_cleanup_supported!
+        raise LifecycleError, "cleanup-syscall-unavailable"
+      end
+
+      def self.rename_no_replace(*)
+        ensure_cleanup_supported!
+      end
+    end
+  end
+
+  class LifecycleError < StandardError; end
+
+  module_function
+
+  def fail!(reason)
+    raise LifecycleError, reason
+  end
+
+  def canonicalize(value)
+    case value
+    when Hash
+      value.keys.sort.to_h { |key| [key, canonicalize(value.fetch(key))] }
+    when Array
+      value.map { |entry| canonicalize(entry) }
+    else
+      value
+    end
+  end
+
+  def record_digest(record)
+    payload = record.reject { |key, _value| key == "digest" }
+    "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(payload)))}"
+  end
+
+  def digest?(value)
+    value.is_a?(String) && value.match?(/\Asha256:[0-9a-f]{64}\z/)
+  end
+
+  def nonempty_string?(value)
+    return false unless value.is_a?(String)
+
+    normalized = value.unicode_normalize(:nfkc).strip
+    value == normalized && !normalized.empty? && normalized.casecmp("UNKNOWN").nonzero?
+  rescue Encoding::CompatibilityError, ArgumentError
+    false
+  end
+
+  def absolute_path?(value)
+    nonempty_string?(value) && value == File.absolute_path(value)
+  rescue ArgumentError
+    false
+  end
+
+  def nonnegative_integer?(value)
+    value.is_a?(Integer) && !value.negative?
+  end
+
+  def identity?(value)
+    value.is_a?(Hash) && value.keys.sort == IDENTITY_KEYS.sort &&
+      %w[batch_id lane_id plan_id task_id].all? { |key| nonempty_string?(value[key]) } &&
+      digest?(value["plan_digest"])
+  end
+
+  def read_regular_bytes(path, label)
+    fail!("#{label}-path-invalid") unless nonempty_string?(path)
+
+    File.open(path, File::RDONLY | File::NONBLOCK) do |file|
+      stat = file.stat
+      fail!("#{label}-not-regular-file") unless stat.file?
+      fail!("#{label}-too-large") if stat.size > MAX_ARTIFACT_BYTES
+
+      bytes = file.binmode.read(MAX_ARTIFACT_BYTES + 1).to_s
+      fail!("#{label}-too-large") if bytes.bytesize > MAX_ARTIFACT_BYTES
+      bytes
+    end
+  rescue JSON::ParserError
+    fail!("#{label}-invalid")
+  rescue SystemCallError, ArgumentError
+    fail!("#{label}-unreadable")
+  end
+
+  def read_json(path, label)
+    JSON.parse(read_regular_bytes(path, label))
+  rescue JSON::ParserError
+    fail!("#{label}-invalid")
+  end
+
+  def open_cleanup_claim(path)
+    fail!("receipt-path-invalid") unless nonempty_string?(path)
+
+    file = File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    stat = file.stat
+    fail!("receipt-not-regular-file") unless stat.file?
+    fail!("receipt-too-large") if stat.size > MAX_ARTIFACT_BYTES
+    fail!("cleanup-already-running") unless file.flock(File::LOCK_EX | File::LOCK_NB)
+    file
+  rescue LifecycleError
+    file&.close
+    raise
+  rescue SystemCallError, ArgumentError
+    file&.close
+    fail!("receipt-unreadable")
+  end
+
+  def read_claimed_receipt(file)
+    bytes = file.binmode.read(MAX_ARTIFACT_BYTES + 1).to_s
+    fail!("receipt-too-large") if bytes.bytesize > MAX_ARTIFACT_BYTES
+    document = JSON.parse(bytes)
+    return document if document.is_a?(Hash) && document.keys.sort == RECEIPT_KEYS.sort
+
+    valid_wrapper = document.is_a?(Hash) && document.keys.sort == CREATE_DECISION_KEYS.sort &&
+                    document["contract"] == "task-scratch-lifecycle-decision" &&
+                    document["version"].is_a?(Integer) && document["version"] == 1 &&
+                    document["status"] == "created" &&
+                    document["receipt"].is_a?(Hash)
+    fail!("receipt-invalid") unless valid_wrapper
+
+    document.fetch("receipt")
+  rescue JSON::ParserError
+    fail!("receipt-invalid")
+  end
+
+  def git_output(worktree_root, *arguments)
+    stdout, stderr, status = PrBatchGitProbeEnv.capture3(
+      PrBatchGitProbeEnv.probe_env,
+      "git", *arguments, chdir: worktree_root
+    )
+    fail!("repository-invalid") unless status.success? && stderr.empty?
+
+    stdout.strip
+  rescue PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError
+    fail!("repository-invalid")
+  end
+
+  def repository_identity(repository_root)
+    canonical_input = File.realpath(repository_root)
+    worktree_root = File.realpath(git_output(canonical_input, "rev-parse", "--show-toplevel"))
+    fail!("repository-root-mismatch") unless canonical_input == worktree_root
+
+    common_dir_value = git_output(worktree_root, "rev-parse", "--git-common-dir")
+    common_dir = File.realpath(File.expand_path(common_dir_value, worktree_root))
+    [worktree_root, common_dir]
+  rescue SystemCallError, ArgumentError
+    fail!("repository-invalid")
+  end
+
+  def relative_leaf?(path)
+    return false unless nonempty_string?(path) && !path.start_with?("/")
+
+    parts = path.split("/", -1)
+    parts.all? { |part| !part.empty? && part != "." && part != ".." } && path != OWNER_BASENAME
+  end
+
+  def normalize_allowlist(values)
+    fail!("allowlist-required") unless values.is_a?(Array) && !values.empty?
+    fail!("allowlist-path-invalid") unless values.all? { |path| relative_leaf?(path) }
+    fail!("allowlist-duplicate") unless values.uniq.length == values.length
+
+    values.sort
+  end
+
+  def create(options)
+    fail!("identity-source-path-invalid") unless nonempty_string?(options[:identity_file])
+    fail!("repository-root-invalid") unless nonempty_string?(options[:repository_root])
+    fail!("scratch-parent-invalid") unless nonempty_string?(options[:scratch_parent])
+    allowlist = normalize_allowlist(options[:allowlist])
+
+    identity_source = read_json(options[:identity_file], "identity-source")
+    identity = identity_source.is_a?(Hash) ? identity_source["identity"] : nil
+    fail!("task-identity-invalid") unless identity?(identity)
+
+    worktree_root, common_dir = repository_identity(options[:repository_root])
+    scratch_parent = begin
+      File.realpath(options[:scratch_parent])
+    rescue SystemCallError, ArgumentError
+      fail!("scratch-parent-invalid")
+    end
+    scratch_parent_stat = begin
+      File.lstat(scratch_parent)
+    rescue SystemCallError, ArgumentError
+      fail!("scratch-parent-invalid")
+    end
+    fail!("scratch-parent-invalid") unless scratch_parent_stat.directory?
+    scratch_parent_file = begin
+      File.open(scratch_parent, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    rescue SystemCallError, ArgumentError
+      fail!("scratch-parent-invalid")
+    end
+
+    begin
+      held_parent_stat = scratch_parent_file.stat
+      fail!("scratch-parent-invalid") unless held_parent_stat.directory? &&
+                                             same_identity?(held_parent_stat, scratch_parent_stat)
+      root_name, root_file, created_root_stat = create_private_directory(
+        scratch_parent_file,
+        "task-scratch-",
+        "scratch-parent-invalid",
+        "scratch-initialization-failure"
+      )
+      scratch_root = File.join(scratch_parent, root_name)
+
+      begin
+        fail!("scratch-initialization-failure") unless created_root_stat.directory?
+        root_file.chmod(0o700)
+        root_stat = root_file.stat
+        run_token = SecureRandom.hex(32)
+        receipt = {
+          "contract" => "task-scratch-lifecycle-receipt",
+          "version" => 1,
+          "identity" => identity,
+          "worktree_root" => worktree_root,
+          "repository_common_dir" => common_dir,
+          "scratch_parent" => scratch_parent,
+          "scratch_root" => scratch_root,
+          "run_token" => run_token,
+          "root_device" => root_stat.dev,
+          "root_inode" => root_stat.ino,
+          "root_owner" => root_stat.uid,
+          "root_mode" => root_stat.mode & 0o777,
+          "allowlist" => allowlist,
+          "created_at" => Time.now.utc.iso8601(6)
+        }
+        receipt["digest"] = record_digest(receipt)
+        marker_descriptor = CleanupSyscalls.openat(
+          root_file.fileno,
+          OWNER_BASENAME,
+          File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW,
+          Fiddle::TYPE_INT,
+          0o600
+        )
+        raise SystemCallError.new("openat #{OWNER_BASENAME}", Fiddle.last_error) if marker_descriptor == -1
+
+        marker_file = File.for_fd(marker_descriptor, autoclose: true)
+        marker_stat = marker_file.stat
+        marker_file.write(
+          JSON.generate(
+            "contract" => "task-scratch-owner",
+            "version" => 1,
+            "identity" => identity,
+            "scratch_root" => scratch_root,
+            "run_token" => run_token,
+            "receipt_digest" => receipt.fetch("digest")
+          )
+        )
+        marker_file.close
+        parent_path_matches = begin
+          candidate = File.lstat(scratch_parent)
+          candidate.directory? && same_identity?(candidate, held_parent_stat)
+        rescue SystemCallError, ArgumentError
+          false
+        end
+        fail!("scratch-initialization-failure") unless parent_path_matches
+        fail!("scratch-initialization-failure") unless entry_matches?(
+          scratch_parent_file,
+          root_name,
+          created_root_stat
+        )
+        {
+          "contract" => "task-scratch-lifecycle-decision",
+          "version" => 1,
+          "status" => "created",
+          "receipt" => receipt
+        }
+      rescue LifecycleError, SystemCallError, ArgumentError
+        begin
+          marker_file&.close unless marker_file&.closed?
+          if scratch_parent_file && root_name && root_file && created_root_stat &&
+             same_identity?(root_file.stat, created_root_stat)
+            if marker_stat && entry_matches?(root_file, OWNER_BASENAME, marker_stat)
+              detach_and_remove(root_file, OWNER_BASENAME, marker_stat)
+            end
+            if directory_children(root_file).empty?
+              bound_name = [root_name, *directory_children(scratch_parent_file)].uniq.find do |name|
+                entry_matches?(scratch_parent_file, name, created_root_stat)
+              end
+              detach_and_remove(scratch_parent_file, bound_name, created_root_stat, directory_entry: true) if bound_name
+            end
+          end
+        rescue LifecycleError, SystemCallError, ArgumentError
+          nil
+        end
+        fail!("scratch-initialization-failure")
+      ensure
+        marker_file&.close unless marker_file&.closed?
+        root_file&.close unless root_file&.closed?
+      end
+    ensure
+      scratch_parent_file.close unless scratch_parent_file.closed?
+    end
+  end
+
+  def validate_receipt(receipt)
+    fail!("receipt-invalid") unless receipt.is_a?(Hash) && receipt.keys.sort == RECEIPT_KEYS.sort
+    fail!("receipt-invalid") unless receipt["contract"] == "task-scratch-lifecycle-receipt" && receipt["version"] == 1
+    fail!("receipt-identity-invalid") unless identity?(receipt["identity"])
+    fail!("receipt-digest-invalid") unless digest?(receipt["digest"]) && receipt["digest"] == record_digest(receipt)
+    fail!("receipt-run-token-invalid") unless receipt["run_token"].is_a?(String) &&
+                                              receipt["run_token"].match?(/\A[0-9a-f]{64}\z/)
+    fail!("receipt-created-at-invalid") unless nonempty_string?(receipt["created_at"])
+    %w[worktree_root repository_common_dir scratch_parent scratch_root].each do |field|
+      reason_field = field.tr("_", "-")
+      fail!("receipt-#{reason_field}-invalid") unless absolute_path?(receipt[field])
+    end
+    %w[root_device root_inode root_owner].each do |field|
+      reason_field = field.tr("_", "-")
+      fail!("receipt-#{reason_field}-invalid") unless nonnegative_integer?(receipt[field])
+    end
+    valid_root_mode = nonnegative_integer?(receipt["root_mode"]) && receipt["root_mode"] <= 0o777
+    fail!("receipt-root-mode-invalid") unless valid_root_mode
+    normalize_allowlist(receipt["allowlist"])
+    receipt
+  end
+
+  def validate_owned_root(receipt)
+    scratch_root = receipt.fetch("scratch_root")
+    scratch_parent = receipt.fetch("scratch_parent")
+    fail!("scratch-root-missing") unless File.directory?(scratch_root) && !File.symlink?(scratch_root)
+    fail!("scratch-root-path-mismatch") unless File.realpath(scratch_root) == scratch_root
+    fail!("scratch-parent-path-mismatch") unless File.realpath(File.dirname(scratch_root)) == scratch_parent
+
+    stat = File.stat(scratch_root)
+    expected = [receipt["root_device"], receipt["root_inode"], receipt["root_owner"], receipt["root_mode"]]
+    actual = [stat.dev, stat.ino, stat.uid, stat.mode & 0o777]
+    fail!("scratch-root-ownership-mismatch") unless actual == expected && stat.uid == Process.euid &&
+                                                    (stat.mode & 0o777) == 0o700
+
+    marker = read_json(File.join(scratch_root, OWNER_BASENAME), "owner-marker")
+    expected_marker = {
+      "contract" => "task-scratch-owner",
+      "version" => 1,
+      "identity" => receipt.fetch("identity"),
+      "scratch_root" => scratch_root,
+      "run_token" => receipt.fetch("run_token"),
+      "receipt_digest" => receipt.fetch("digest")
+    }
+    fail!("owner-marker-mismatch") unless marker == expected_marker
+    stat
+  rescue SystemCallError, ArgumentError
+    fail!("scratch-root-unreadable")
+  end
+
+  def root_identity_matches?(stat, receipt)
+    stat.directory? &&
+      [stat.dev, stat.ino, stat.uid, stat.mode & 0o777] == [
+        receipt["root_device"], receipt["root_inode"], receipt["root_owner"], receipt["root_mode"]
+      ]
+  end
+
+  def same_identity?(left, right)
+    left && right && left.dev == right.dev && left.ino == right.ino
+  end
+
+  def open_at(directory, name)
+    descriptor = CleanupSyscalls.openat(
+      directory.fileno,
+      name,
+      File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+    )
+    raise SystemCallError.new("openat #{name}", Fiddle.last_error) if descriptor == -1
+
+    File.for_fd(descriptor, autoclose: true)
+  end
+
+  def directory_children(file)
+    duplicate = file.dup
+    duplicate.autoclose = false
+    directory = Dir.for_fd(duplicate.fileno)
+    directory.children.sort
+  ensure
+    directory&.close
+  end
+
+  def entry_matches?(directory, name, expected_stat)
+    candidate = open_at(directory, name)
+    same_identity?(candidate.stat, expected_stat)
+  rescue SystemCallError, ArgumentError
+    false
+  ensure
+    candidate&.close
+  end
+
+  def entry_missing?(directory, name)
+    candidate = open_at(directory, name)
+    false
+  rescue Errno::ENOENT
+    true
+  rescue SystemCallError, ArgumentError
+    false
+  ensure
+    candidate&.close
+  end
+
+  def scan_allowlisted_tree(root, allowlist)
+    expected_files = allowlist + [OWNER_BASENAME]
+    expected_dirs = expected_directories(allowlist)
+    files = {}
+    directories = {
+      "" => { io: root, parent: nil, name: nil, stat: root.stat }
+    }
+    pending = [""]
+    until pending.empty?
+      relative_parent = pending.shift
+      parent = directories.fetch(relative_parent).fetch(:io)
+      directory_children(parent).each do |name|
+        relative = relative_parent.empty? ? name : "#{relative_parent}/#{name}"
+        child = open_at(parent, name)
+        stat = child.stat
+        if stat.directory?
+          unless expected_dirs.include?(relative)
+            child.close
+            fail!("scratch-directory-not-allowlisted")
+          end
+          directories[relative] = { io: child, parent: parent, name: name, stat: stat }
+          pending << relative
+        elsif stat.file?
+          unless expected_files.include?(relative)
+            child.close
+            fail!("scratch-entry-not-allowlisted")
+          end
+          files[relative] = { io: child, parent: parent, name: name, stat: stat }
+        else
+          child.close
+          fail!("scratch-entry-type-invalid")
+        end
+      rescue Errno::ELOOP
+        fail!("scratch-entry-type-invalid")
+      end
+    end
+    [files, directories]
+  rescue LifecycleError
+    (files&.values.to_a + directories&.values.to_a).each do |record|
+      record[:io]&.close unless record[:io]&.closed? || record[:io].equal?(root)
+    end
+    raise
+  rescue SystemCallError, ArgumentError
+    (files&.values.to_a + directories&.values.to_a).each do |record|
+      record[:io]&.close unless record[:io]&.closed? || record[:io].equal?(root)
+    end
+    fail!("scratch-root-unreadable")
+  end
+
+  def tree_bindings_current?(files, directories)
+    records = files.values + directories.reject { |relative, _record| relative.empty? }.values
+    records.all? do |record|
+      entry_matches?(record.fetch(:parent), record.fetch(:name), record.fetch(:stat))
+    end
+  end
+
+  def owner_marker_matches?(file, receipt)
+    file.rewind
+    bytes = file.read(MAX_ARTIFACT_BYTES + 1).to_s
+    return false if bytes.bytesize > MAX_ARTIFACT_BYTES
+
+    marker = JSON.parse(bytes)
+    marker == {
+      "contract" => "task-scratch-owner",
+      "version" => 1,
+      "identity" => receipt.fetch("identity"),
+      "scratch_root" => receipt.fetch("scratch_root"),
+      "run_token" => receipt.fetch("run_token"),
+      "receipt_digest" => receipt.fetch("digest")
+    }
+  rescue JSON::ParserError, SystemCallError, ArgumentError
+    false
+  end
+
+  def rollback_moved_root(parent, holder, root_name, receipt)
+    return false unless parent && holder && entry_missing?(parent, root_name)
+
+    payload = open_at(holder, "payload")
+    return false unless root_identity_matches?(payload.stat, receipt)
+    return false unless entry_matches?(holder, "payload", payload.stat)
+
+    CleanupSyscalls.rename_no_replace(holder.fileno, "payload", parent.fileno, root_name).zero?
+  rescue SystemCallError, ArgumentError
+    false
+  ensure
+    payload&.close
+  end
+
+  def empty_entry_matches?(directory, name, expected_stat)
+    entry = open_at(directory, name)
+    same_identity?(entry.stat, expected_stat) && directory_children(entry).empty?
+  rescue SystemCallError, ArgumentError
+    false
+  ensure
+    entry&.close
+  end
+
+  def unlink_bound_entry(directory, name, expected_stat, directory_entry:)
+    fail!("scratch-entry-rebound") unless entry_matches?(directory, name, expected_stat)
+
+    flags = directory_entry ? CleanupSyscalls::REMOVE_DIRECTORY : 0
+    result = CleanupSyscalls.unlinkat(directory.fileno, name, flags)
+    raise SystemCallError.new("unlinkat #{name}", Fiddle.last_error) unless result.zero?
+  end
+
+  def detach_and_remove(directory, name, expected_stat, directory_entry: false)
+    private_name = nil
+    10.times do
+      candidate = ".task-scratch-delete-#{SecureRandom.hex(16)}"
+      result = CleanupSyscalls.rename_no_replace(directory.fileno, name, directory.fileno, candidate)
+      if result.zero?
+        private_name = candidate
+        break
+      end
+      raise SystemCallError.new("renameat #{name}", Fiddle.last_error) unless Fiddle.last_error == Errno::EEXIST::Errno
+    end
+    fail!("scratch-entry-rebound") unless private_name
+
+    begin
+      captured = open_at(directory, private_name)
+      fail!("scratch-entry-rebound") unless same_identity?(captured.stat, expected_stat)
+      fail!("scratch-entry-rebound") if directory_entry && !directory_children(captured).empty?
+      unlink_bound_entry(directory, private_name, expected_stat, directory_entry: directory_entry)
+    rescue LifecycleError
+      begin
+        if private_name && captured && entry_missing?(directory, name) &&
+           entry_matches?(directory, private_name, captured.stat)
+          CleanupSyscalls.rename_no_replace(
+            directory.fileno,
+            private_name,
+            directory.fileno,
+            name
+          ).zero?
+        end
+      rescue SystemCallError, ArgumentError
+        false
+      end
+      raise
+    end
+  ensure
+    captured&.close
+  end
+
+  def remove_unbound_empty_private_directory(parent, name)
+    result = CleanupSyscalls.unlinkat(parent.fileno, name, CleanupSyscalls::REMOVE_DIRECTORY)
+    result.zero? || Fiddle.last_error == Errno::ENOENT::Errno
+  rescue SystemCallError, ArgumentError
+    false
+  end
+
+  def create_private_directory(parent, prefix, create_unavailable_reason, open_unavailable_reason)
+    CleanupSyscalls.ensure_directory_removal_supported!(open_unavailable_reason)
+    reserve = begin
+      File.open(File::NULL, File::RDONLY)
+    rescue SystemCallError, ArgumentError
+      fail!(open_unavailable_reason)
+    end
+    name = nil
+    begin
+      10.times do
+        candidate = "#{prefix}#{SecureRandom.hex(16)}"
+        result = CleanupSyscalls.mkdirat(parent.fileno, candidate, 0o700)
+        if result.zero?
+          name = candidate
+          break
+        end
+        raise SystemCallError.new("mkdirat private directory", Fiddle.last_error) unless
+          Fiddle.last_error == Errno::EEXIST::Errno
+      end
+    rescue SystemCallError, ArgumentError
+      fail!(create_unavailable_reason)
+    end
+    fail!(create_unavailable_reason) unless name
+
+    # Releasing an independent open-file reservation makes both a process fd and
+    # a system open-file-table slot available for binding the created directory.
+    reserve.close
+    DIRECTORY_OPEN_RETRY_COUNT.times do
+      opened = begin
+        open_at(parent, name)
+      rescue Errno::EMFILE, Errno::ENFILE
+        nil
+      rescue SystemCallError, ArgumentError
+        fail!(open_unavailable_reason)
+      end
+      return [name, opened, opened.stat] if opened
+
+      sleep 0.01
+    end
+    # No receipt or path escapes before this helper returns. If descriptor
+    # binding remains unavailable, remove the still-empty private entry by its
+    # unguessable invocation-owned name without opening another descriptor.
+    remove_unbound_empty_private_directory(parent, name)
+    fail!(open_unavailable_reason)
+  ensure
+    reserve&.close unless reserve&.closed?
+  end
+
+  def create_cleanup_holder(parent)
+    create_private_directory(
+      parent,
+      ".task-scratch-cleanup-",
+      "cleanup-holder-unavailable",
+      "cleanup-holder-unavailable"
+    )
+  end
+
+  def remove_empty_matching_entry(directory, name, stat)
+    return unless empty_entry_matches?(directory, name, stat)
+
+    detach_and_remove(directory, name, stat, directory_entry: true)
+  rescue LifecycleError, SystemCallError, ArgumentError
+    nil
+  end
+
+  def expected_directories(allowlist)
+    allowlist.flat_map do |path|
+      parts = path.split("/")
+      (1...parts.length).map { |length| parts.first(length).join("/") }
+    end.uniq
+  end
+
+  def validate_allowlisted_contents(root, allowlist)
+    actual_files = []
+    actual_directories = []
+    Dir.glob(File.join(root, "**", "*"), File::FNM_DOTMATCH).sort.each do |path|
+      basename = File.basename(path)
+      next if [".", ".."].include?(basename)
+
+      relative = path.delete_prefix("#{root}/")
+      stat = File.lstat(path)
+      if stat.directory? && !stat.symlink?
+        actual_directories << relative
+      elsif stat.file? && !stat.symlink?
+        actual_files << relative
+      else
+        fail!("scratch-entry-type-invalid")
+      end
+    end
+    allowed_files = allowlist + [OWNER_BASENAME]
+    fail!("scratch-entry-not-allowlisted") unless (actual_files - allowed_files).empty?
+    fail!("scratch-directory-not-allowlisted") unless (actual_directories - expected_directories(allowlist)).empty?
+  rescue SystemCallError, ArgumentError
+    fail!("scratch-root-unreadable")
+  end
+
+  def clean_review?(receipt, review_input_path)
+    review_bytes = read_regular_bytes(review_input_path, "review-input")
+    review_input = JSON.parse(review_bytes)
+    fail!("review-identity-mismatch") unless review_input.is_a?(Hash) &&
+                                             review_input["identity"] == receipt.fetch("identity")
+    stdout, stderr, status = begin
+      PrBatchGitProbeEnv.capture3(
+        PrBatchGitProbeEnv.probe_env,
+        TASK_REVIEW_HELPER,
+        "--repository-root",
+        receipt.fetch("worktree_root"),
+        stdin_data: review_bytes
+      )
+    rescue PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError
+      fail!("review-validation-unavailable")
+    end
+    fail!("review-validation-unavailable") unless status.success? && stderr.empty?
+
+    decision = JSON.parse(stdout)
+    decision == {
+      "contract" => "task-review-loop-decision",
+      "version" => 1,
+      "status" => "task_complete",
+      "dependent_task_permitted" => true,
+      "reasons" => ["review-clean"]
+    }
+  rescue JSON::ParserError
+    fail!("review-input-invalid")
+  end
+
+  def current_review_head(receipt)
+    stdout, stderr, status = PrBatchGitProbeEnv.capture3(
+      PrBatchGitProbeEnv.probe_env,
+      "git", "rev-parse", "--verify", "HEAD^{commit}", chdir: receipt.fetch("worktree_root")
+    )
+    fail!("review-head-unavailable") unless status.success? && stderr.empty?
+    head = stdout.strip
+    fail!("review-head-unavailable") unless head.match?(/\A[0-9a-f]{40}\z/)
+    head
+  rescue PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError
+    fail!("review-head-unavailable")
+  end
+
+  def remove_allowlisted_root(receipt, reviewed_head)
+    CleanupSyscalls.ensure_cleanup_supported!
+    root = receipt.fetch("scratch_root")
+    parent = receipt.fetch("scratch_parent")
+    moved_by_invocation = false
+    intact = true
+    parent_file = File.open(parent, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    fail!("scratch-parent-invalid") unless parent_file.stat.directory?
+    holder_name, holder, holder_stat = create_cleanup_holder(parent_file)
+    fail!("cleanup-holder-invalid") unless holder_stat.directory? && holder_stat.uid == Process.euid &&
+                                           (holder_stat.mode & 0o077).zero?
+    fail!("review-head-changed") unless current_review_head(receipt) == reviewed_head
+    root_name = File.basename(root)
+    current_root = open_at(parent_file, root_name)
+    fail!("scratch-root-rebound") unless root_identity_matches?(current_root.stat, receipt)
+    result = CleanupSyscalls.renameat(parent_file.fileno, root_name, holder.fileno, "payload")
+    raise SystemCallError.new("renameat scratch root", Fiddle.last_error) unless result.zero?
+
+    moved_by_invocation = true
+    owned_root = open_at(holder, "payload")
+    fail!("scratch-root-rebound") unless root_identity_matches?(owned_root.stat, receipt)
+    files, directories = scan_allowlisted_tree(owned_root, receipt.fetch("allowlist"))
+    marker = files[OWNER_BASENAME]
+    fail!("owner-marker-mismatch") unless marker && owner_marker_matches?(marker.fetch(:io), receipt)
+    fail!("scratch-entry-rebound") unless tree_bindings_current?(files, directories)
+
+    intact = false
+    receipt.fetch("allowlist").each do |relative|
+      record = files[relative]
+      detach_and_remove(record.fetch(:parent), record.fetch(:name), record.fetch(:stat)) if record
+    end
+    detach_and_remove(marker.fetch(:parent), marker.fetch(:name), marker.fetch(:stat))
+    directories.reject { |relative, _record| relative.empty? }
+               .sort_by { |relative, _record| -relative.count("/") }
+               .each do |_relative, record|
+      detach_and_remove(
+        record.fetch(:parent),
+        record.fetch(:name),
+        record.fetch(:stat),
+        directory_entry: true
+      )
+    end
+    detach_and_remove(holder, "payload", owned_root.stat, directory_entry: true)
+    moved_by_invocation = false
+    detach_and_remove(parent_file, holder_name, holder_stat, directory_entry: true)
+    holder_name = nil
+  rescue LifecycleError
+    rollback_moved_root(parent_file, holder, root_name, receipt) if moved_by_invocation && intact
+    raise
+  rescue SystemCallError, ArgumentError
+    rollback_moved_root(parent_file, holder, root_name, receipt) if moved_by_invocation && intact
+    fail!("cleanup-filesystem-failure")
+  ensure
+    (files&.values.to_a + directories&.values.to_a).each do |record|
+      record[:io]&.close unless record[:io]&.closed? || record[:io].equal?(owned_root)
+    end
+    owned_root&.close unless owned_root&.closed?
+    current_root&.close unless current_root&.closed?
+    holder&.close unless holder&.closed?
+    remove_empty_matching_entry(parent_file, holder_name, holder_stat) if holder_name && holder_stat && parent_file
+    parent_file&.close unless parent_file&.closed?
+  end
+
+  def cleanup(options)
+    claim = open_cleanup_claim(options[:receipt])
+    begin
+      receipt = validate_receipt(read_claimed_receipt(claim))
+      worktree_root, common_dir = repository_identity(receipt.fetch("worktree_root"))
+      fail!("repository-identity-mismatch") unless worktree_root == receipt["worktree_root"] &&
+                                                   common_dir == receipt["repository_common_dir"]
+      validate_owned_root(receipt)
+      validate_allowlisted_contents(receipt.fetch("scratch_root"), receipt.fetch("allowlist"))
+      reviewed_head = current_review_head(receipt)
+      fail!("review-clean-required") unless clean_review?(receipt, options[:review_input])
+
+      remove_allowlisted_root(receipt, reviewed_head)
+      {
+        "contract" => "task-scratch-lifecycle-decision",
+        "version" => 1,
+        "status" => "cleaned",
+        "removed_root" => receipt.fetch("scratch_root"),
+        "plan_identity" => receipt.fetch("identity")
+      }
+    ensure
+      claim.close
+    end
+  end
+end
+
+mode = ARGV.shift
+options = { allowlist: [] }
+parser = OptionParser.new do |option_parser|
+  option_parser.on("--repository-root PATH") { |value| options[:repository_root] = value }
+  option_parser.on("--scratch-parent PATH") { |value| options[:scratch_parent] = value }
+  option_parser.on("--identity-file PATH") { |value| options[:identity_file] = value }
+  option_parser.on("--allow-relative PATH") { |value| options[:allowlist] << value }
+  option_parser.on("--receipt PATH") { |value| options[:receipt] = value }
+  option_parser.on("--review-input PATH") { |value| options[:review_input] = value }
+end
+
+begin
+  parser.parse!
+rescue OptionParser::ParseError, ArgumentError
+  puts JSON.generate(
+    "contract" => "task-scratch-lifecycle-decision",
+    "version" => 1,
+    "status" => "blocked",
+    "reason" => "options-invalid"
+  )
+  exit 1
+end
+
+begin
+  decision = case mode
+             when "create"
+               TaskScratchLifecycle.create(options)
+             when "cleanup"
+               TaskScratchLifecycle.cleanup(options)
+             else
+               TaskScratchLifecycle.fail!("mode-invalid")
+             end
+  puts JSON.generate(decision)
+rescue TaskScratchLifecycle::LifecycleError => e
+  puts JSON.generate(
+    "contract" => "task-scratch-lifecycle-decision",
+    "version" => 1,
+    "status" => "blocked",
+    "reason" => e.message
+  )
+  exit 1
+end

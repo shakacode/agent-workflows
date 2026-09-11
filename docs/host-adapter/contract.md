@@ -137,6 +137,96 @@ mechanism:
 If a host lacks a mechanism for the requested verb, stop with a precise blocker
 instead of silently weakening the workflow.
 
+## Task-Local Artifact Identity and Retention
+
+Codex and Claude apply this same identity and retention contract. Host-specific
+storage paths are adapter details; they do not create a second task ledger or
+weaken the existing batch, lane, coordination, or task-review schemas.
+
+| Local artifact class | Retention | Identity and reuse contract |
+| --- | --- | --- |
+| Batch and goal manifests, including dependency plans and gate results | Durable evidence | Bind the repository-qualified target, batch id, immutable plan id and digest, schema/version, and creation or observation time. A gate result is reusable only for its exact plan input and current live-dependency snapshot. |
+| Dispatcher assignment and decision state | Durable for the active lane; retain the final assignment receipt | Bind the enclosing verified batch/plan manifest plus lane id, dispatcher, instance id, launch token, lifecycle, and task-brief digest. Same lane numbering outside that verified manifest is foreign state. |
+| Coordination lifecycle state and receipts | Durable evidence | The existing repository-qualified target, batch/lane, holder, generation, instance, schema, and timestamps are sufficient because this state proves ownership and history, not task completion. Recheck the live record before mutation; never rewrite it merely because a plan or code head moved. |
+| Task briefs and worker reports | Durable evidence | `task-review-loop` v1 binds batch, lane, plan id/digest, and task id; the brief and report digests bind their exact contents, while reports also bind base/head SHAs and commits. A changed brief or head invalidates the dependent report/package, not the coordination history. |
+| Exact-diff review packages, finding artifacts, and round checkpoints | Durable evidence | Bind the full task-review identity, brief/report/package digests, exact base/head SHAs, actors, round chain, artifact byte digests, schema/version, and coverage. Recapture the exact diff and validate the current head before every review or reuse. |
+| Pause and continue handoffs | Durable restart hints, never authority | Batch/lane, repository-qualified target, actor/thread, worktree, branch, head, claim generation, and live-state references are sufficient because resume treats the handoff as stale evidence and revalidates authoritative artifacts before work. Non-batch handoffs likewise require live repository and process checks. |
+| Goal monitor state, decisions, wake IDs, acknowledgements, and handoffs | Disposable scratch until terminal enqueue/acknowledgement is settled | Bind the adapter's exact plan identity and stable repository/task-scoped monitor id. The reducer binds wake IDs and every emitted monitor artifact to that plan; `blocker_state` fingerprints code/review facts such as head SHA. |
+| Scratch lifecycle receipt and owner marker | Durable ownership capability until cleanup completes | `task-scratch-lifecycle` binds the full task-review identity, canonical worktree and Git common directory, private root path, random run token, device/inode/owner/mode, exact allowlist, creation time, and receipt digest. A copied, legacy, malformed, or foreign receipt/root is not adoptable. Keep the receipt outside the disposable root. |
+| Lifecycle-created allowlisted scratch root | Disposable scratch | Contains only the owner marker, explicitly allowlisted relative leaf files, and their parent directories. It may be removed only by the creating lifecycle contract after repository-backed `review-clean`; unexpected content fails closed and is preserved. |
+| Generated prompts and scratch evidence | Disposable scratch unless admitted to a versioned artifact above | Filenames and task numbers confer no identity. Recreate prompt-only context from the accepted brief; a diff, finding file, or other evidence becomes reusable only through its owning schema, exact digest, and identity checks. |
+
+Validate the applicable identity before resume, dispatch, edit, review,
+completion, or GitHub mutation. Missing, blank, malformed, ambiguous,
+case-insensitive `UNKNOWN`, foreign, stale, or conflicting identity fails closed
+with a diagnostic naming the rejected boundary. Never fabricate missing
+historical identity: legacy state stays incomplete unless an already-supported
+reconciliation path independently proves its identity.
+
+A moved head invalidates every SHA-bound code or review artifact and requires a
+fresh capture/review. It does not invalidate unrelated durable coordination
+evidence whose repository, batch/lane, ownership generation, schema, and
+timestamps still validate; plan-bound monitor state instead reports the head
+change through its blocker-state delta and reruns the current-head gates.
+
+The goal monitor does not classify external review or coordination artifacts
+from caller-supplied summaries. It rejects an `artifact_boundary` observation
+with `external-artifact-authority-required` before monitor-state mutation.
+Review reuse belongs to repository-backed `task-review-loop`. Invoke
+`task-review-loop --repository-root <verified-lane-root>`: the helper derives
+`HEAD^{commit}`, requires the current report/package to name it, resolves every
+range endpoint as a commit, requires base ancestry, and compares the exact
+repository-derived ordered commit list with current and retained report/package
+provenance. It opens and digest-validates review artifacts and recaptures current
+and retained canonical diffs byte-for-byte from Git. A moved head therefore makes
+the review package stale and requires recapture, while the helper remains read-only. Coordination
+reuse remains an independent live-backend check of the repository-qualified
+target, batch/lane, holder, generation, instance, schema, and timestamps; a
+code-head move alone does not invalidate that ownership history. Neither
+authority may be replaced with a monitor summary.
+
+Cleanup is allowlisted, not directory-wide. Create disposable scratch only with
+`task-scratch-lifecycle create`, passing the canonical repository root, a private
+scratch parent, the accepted identity source, and every permitted relative leaf
+path. Persist its returned create decision outside the scratch root; cleanup
+accepts that exact `created` decision directly, or the unchanged nested raw
+receipt for compatibility, and rejects every other wrapper shape. After clean review,
+invoke `task-scratch-lifecycle cleanup` with that persisted document and the original
+task-review input. The helper revalidates the live repository, full identity,
+root ownership marker and filesystem identity, exact allowlist, and the original
+review input through repository-backed `task-review-loop` before atomically
+isolating and deleting only that root. Cleanup holds an exclusive lock on the durable receipt,
+creates no lock artifact, and keeps an open directory descriptor while it opens
+each allowlisted path one component at a time with no-follow descriptor-relative operations.
+It atomically detaches each identity-verified entry to a random private name before
+descriptor-relative removal, including the final owned root and cleanup holder,
+then repeats the no-follow identity check immediately before each destructive
+unlink or rollback rename with no callback or subprocess in between. This
+cooperative cleanup boundary covers receipt-lock-serialized lifecycle helper
+invocations that honor the contract; mutations visible before the final check
+fail closed. Portable filesystems do not expose conditional-by-inode unlink or
+rename. Hostile same-UID mutation inside the unavoidable final check/syscall
+interval is outside the supported cooperative contract and can redirect deletion.
+That is a documented limitation, not a host prerequisite: Codex and Claude
+semantics do not depend on host-provided same-UID isolation. Cleanup rolls back
+only a still-intact owned root moved by that invocation. Contract-honoring
+concurrent cleanup and replacements visible before the final check fail closed
+without deleting the replacement.
+
+The goal monitor cannot prove a clean task review, its repository-derived
+current head, or ownership of an arbitrary caller-supplied state path. It never
+deletes persistent monitor state. The compatibility option
+`--cleanup-after-clean-review` fails before filesystem or lock access with
+`cleanup-authority-required`; this preserves copied, tracked, foreign, and
+externally located state without leaving a sibling lock. Cleanup belongs
+exclusively to `task-scratch-lifecycle`, which created the allowlisted private
+root. Only exact `task_complete` plus `review-clean` for the same identity and
+live head permits removal; cap-adjudicated completion never authorizes scratch
+deletion. Missing or legacy identity, a copied/foreign root, unexpected content,
+a moved head, or any validation failure preserves every file. Pending wake
+delivery, durable receipts, coordination evidence, Git history, review rounds,
+and externally owned worktrees are always outside its deletion authority.
+
 ## Scheduled Monitoring and Planning-Chat Lifecycle
 
 The portable completion contract prefers one deduplicated deterministic
@@ -167,6 +257,22 @@ submitted capability and statuses, without mutating newer state. Attaching an
 old acknowledgement to unrelated newer evidence, or naming an impossible
 waking action, fails closed. For bounded migration, legacy
 `acknowledged_wake_ids` is dropped on the next state persistence.
+
+Every `goal-state-change-observation` must carry a nonempty, known
+`plan_identity`. Its producer derives one stable opaque value from the accepted
+repository, batch, lane, immutable plan id/digest, and task identity; the stable
+`monitor_id` separately names the repository/task-scoped monitor. A filename or
+sequential task number alone is never identity. Leading or trailing whitespace,
+blank strings, non-strings, and case-insensitive `UNKNOWN` fail respectively as
+`plan-identity-ambiguous`, `plan-identity-blank`,
+`plan-identity-malformed`, and `plan-identity-unknown`; absence fails as
+`plan-identity-missing`. The reducer persists the identity, carries it on every
+decision and restart handoff, includes it in each wake ID, and rejects foreign
+state as `plan-identity-collision` before reuse. A legacy state file or nested
+reusable artifact without `plan_identity` fails closed with
+`plan-identity-missing`; the adapter must reconcile or replace that state
+instead of assigning it to the current plan, because the reducer cannot prove
+which plan created it.
 
 `blocker_state` is an object whose arrays are set-valued collections; adapters
 must encode ordered sequences as keyed objects. The reducer canonicalizes object

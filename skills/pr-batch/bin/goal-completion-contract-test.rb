@@ -512,6 +512,35 @@ def assert_squished_includes(text, phrase, label)
   assert_text_includes(squish(text), squish(phrase), label)
 end
 
+PLAN_IDENTITY_RULE_CONCEPTS = {
+  "observation identity" => /goal-state-change-observation/,
+  "plan identity field" => /plan_identity/,
+  "monitor handoff" => /goal-state-change-monitor/,
+  "stable identity" => /\bstable\b/i,
+  "nonempty identity" => /\bnonempty\b/i,
+  "known identity" => /\bknown\b/i,
+  "unchanged helper handoff" => /\bunchanged\b/i,
+  "persisted identity" => /\bpersist\w*\b/i,
+  "returned identity" => /\breturn\w*\b/i
+}.freeze
+PLAN_IDENTITY_INCONSISTENCY = /\b(?:discard|drop|omit|regenerat|replac|different|inconsisten)\w*\b/i
+
+def plan_identity_rule(contract)
+  rules = contract.scan(/^- .*?(?=\n- |\n\n)/m)
+  rules.find { |candidate| candidate.include?("`plan_identity`") }
+end
+
+def plan_identity_rule_errors(contract)
+  rule = plan_identity_rule(contract)
+  return ["missing plan identity rule"] unless rule
+
+  errors = PLAN_IDENTITY_RULE_CONCEPTS.filter_map do |concept, pattern|
+    "missing #{concept}" unless rule.match?(pattern)
+  end
+  errors << "discarded or inconsistent identity" if rule.match?(PLAN_IDENTITY_INCONSISTENCY)
+  errors
+end
+
 def continuation_title_thread_handle_shape_valid?(text)
   expected_prefix =
     "#{CONTINUATION_INVOCATION_LINE}\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
@@ -842,6 +871,18 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_pr_monitoring,
                          "`stop-dependency-terminal` is a waking outcome and does not require a manual handoff",
                          "standalone dependency-terminal delivery"
+  end
+
+  def test_canonical_watcher_keeps_plan_identity_consistent_through_helper_handoff
+    assert_empty plan_identity_rule_errors(@workflow_contract_section)
+
+    rule = plan_identity_rule(@workflow_contract_section)
+    discarding_rule = rule.sub(/\bunchanged\b/i, "discarded and replaced")
+    refute_equal rule, discarding_rule, "mutation must alter the plan identity rule"
+    discarding_contract = @workflow_contract_section.sub(rule, discarding_rule)
+    mutation_errors = plan_identity_rule_errors(discarding_contract)
+    assert_includes mutation_errors, "missing unchanged helper handoff"
+    assert_includes mutation_errors, "discarded or inconsistent identity"
   end
 
   def test_ready_prerequisite_ask_gate_rejects_external_failure_reclassification

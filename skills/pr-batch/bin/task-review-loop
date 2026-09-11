@@ -3,7 +3,9 @@
 
 require "digest"
 require "json"
-require "open3"
+require "optparse"
+
+require_relative "../lib/git_probe_env"
 
 finding_validator = File.expand_path("../../../bin/validate-review-findings", __dir__)
 unless File.file?(finding_validator)
@@ -72,6 +74,10 @@ module TaskReviewLoop
   CAP_DISPOSITIONS = %w[disproven waived deferred blocked].freeze
   COORDINATOR_ID_ENV = "AGENT_WORKFLOW_TASK_REVIEW_COORDINATOR_ID"
   WAIVER_AUTHORITIES_ENV = "AGENT_WORKFLOW_TASK_REVIEW_WAIVER_AUTHORITY_REFS"
+  CANONICAL_DIFF_FLAGS = %w[
+    --no-ext-diff --no-textconv --no-color --no-relative --binary --unified=3
+    --src-prefix=a/ --dst-prefix=b/ --ignore-submodules=none --submodule=short
+  ].freeze
 
   module_function
 
@@ -104,6 +110,8 @@ module TaskReviewLoop
 
     normalized = value.unicode_normalize(:nfkc).gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
     !normalized.empty? && normalized.downcase(:fold) != "unknown"
+  rescue Encoding::CompatibilityError, ArgumentError
+    false
   end
 
   def string_array?(value, allow_empty: true)
@@ -224,6 +232,8 @@ module TaskReviewLoop
 
     normalized = identity.unicode_normalize(:nfkc).gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
     normalized.empty? ? nil : normalized.downcase(:fold)
+  rescue Encoding::CompatibilityError, ArgumentError
+    nil
   end
 
   def independent?(implementer, reviewer)
@@ -387,19 +397,20 @@ module TaskReviewLoop
     return unless diff.is_a?(String)
 
     # Git parses quoting, renames, deletions, and binary patches without applying them.
-    output, _stderr, status = Open3.capture3(
+    output, _stderr, status = PrBatchGitProbeEnv.capture3(
+      PrBatchGitProbeEnv.probe_env,
       "git", "apply", "--numstat", "-z", stdin_data: diff, chdir: "/"
     )
     return unless status.success?
 
-    paths = output.split("\0").map do |record|
+    paths = output.force_encoding(Encoding::UTF_8).split("\0").map do |record|
       added, removed, path = record.split("\t", 3)
       return nil unless [added, removed].all? { |count| count&.match?(/\A(?:\d+|-)\z/) } && non_empty_string?(path)
 
       path
     end
     paths.uniq unless paths.empty?
-  rescue SystemCallError, ArgumentError
+  rescue PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError
     nil
   end
 
@@ -879,9 +890,10 @@ module TaskReviewLoop
     errors.compact.uniq
   end
 
-  def reduce(input, cap_authority = cap_authority_from_env)
+  def reduce(input, cap_authority = cap_authority_from_env, repository_root: nil)
     findings_cache = {}
     errors = validate(input, findings_cache, cap_authority)
+    errors.concat(repository_errors(input, repository_root)) if repository_root && errors.empty?
     unless errors.empty?
       return decision("blocked", false, errors.sort)
     end
@@ -909,6 +921,158 @@ module TaskReviewLoop
     end
   end
 
+  def repository_errors(input, repository_root)
+    return ["repository-input-invalid"] unless input.is_a?(Hash)
+
+    canonical_root = File.realpath(repository_root)
+    top_level, top_level_stderr, top_level_status = PrBatchGitProbeEnv.capture3(
+      PrBatchGitProbeEnv.probe_env,
+      "git", "rev-parse", "--show-toplevel", chdir: canonical_root
+    )
+    return ["repository-root-invalid"] unless top_level_status.success? && top_level_stderr.empty?
+    return ["repository-root-invalid"] unless File.realpath(top_level.strip) == canonical_root
+
+    head, head_stderr, head_status = PrBatchGitProbeEnv.capture3(
+      PrBatchGitProbeEnv.probe_env,
+      "git", "rev-parse", "--verify", "HEAD^{commit}", chdir: canonical_root
+    )
+    return ["repository-head-unavailable"] unless head_status.success? && head_stderr.empty?
+
+    current_head = head.strip
+    supplied_heads = [
+      input["expected_current_head_sha"],
+      input.dig("worker_report", "head_sha"),
+      input.dig("review_package", "head_sha")
+    ]
+    errors = []
+    errors << "repository-head-mismatch" unless supplied_heads.all? { |supplied| supplied == current_head }
+
+    provenance_records = [
+      ["worker-report", input["worker_report"], "commits"],
+      ["review-package", input["review_package"], "commit_list"]
+    ]
+    packages = [["review-package", input["review_package"]]]
+    Array(input["rounds"]).each do |round|
+      next unless round.is_a?(Hash)
+
+      label = "review-round-#{round['number']}"
+      provenance_records << ["#{label}-worker-report", round["worker_report"], "commits"]
+      provenance_records << ["#{label}-review-package", round["review_package"], "commit_list"]
+      packages << [label, round["review_package"]]
+    end
+    provenance_records.each do |label, record, commits_key|
+      errors.concat(repository_commit_range_errors(label, record, commits_key, canonical_root))
+    end
+    packages.each do |label, package|
+      next unless package.is_a?(Hash)
+
+      captured = begin
+        canonical_diff_bytes(canonical_root, package["base_sha"].to_s, package["head_sha"].to_s)
+      rescue PrBatchGitProbeEnv::OutputLimitError
+        errors << "#{label}-canonical-diff-too-large"
+        next
+      rescue PrBatchGitProbeEnv::IsolationError, PrBatchGitProbeEnv::TimeoutError
+        errors << "#{label}-canonical-diff-unavailable"
+        next
+      end
+
+      submitted, artifact_error = load_artifact(package["exact_diff"], "#{label}-exact-diff")
+      if artifact_error
+        errors << artifact_error
+      elsif submitted != captured.b
+        errors << "#{label}-canonical-diff-mismatch"
+      end
+    end
+    final_head, final_head_stderr, final_head_status = begin
+      PrBatchGitProbeEnv.capture3(
+        PrBatchGitProbeEnv.probe_env,
+        "git", "rev-parse", "--verify", "HEAD^{commit}", chdir: canonical_root
+      )
+    rescue PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError
+      errors << "repository-head-unavailable"
+      return errors
+    end
+    unless final_head_status.success? && final_head_stderr.empty?
+      errors << "repository-head-unavailable"
+      return errors
+    end
+    errors << "repository-head-changed" unless final_head.strip == current_head
+    errors
+  rescue PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError, TypeError
+    ["repository-root-invalid"]
+  end
+
+  def canonical_diff_bytes(repository_root, base_sha, head_sha)
+    PrBatchGitProbeEnv.with_committed_attributes(repository_root) do |env, git_directory|
+      committed_env = env.merge("GIT_ATTR_SOURCE" => head_sha)
+      _read_tree_stdout, read_tree_stderr, read_tree_status = PrBatchGitProbeEnv.capture3(
+        committed_env, "git", "read-tree", head_sha, chdir: git_directory
+      )
+      unless read_tree_status.success? && read_tree_stderr.empty?
+        raise PrBatchGitProbeEnv::IsolationError, "Committed attribute index is unavailable"
+      end
+
+      captured, capture_stderr, capture_status = PrBatchGitProbeEnv.capture3(
+        committed_env,
+        "git", "diff", *CANONICAL_DIFF_FLAGS, base_sha, head_sha, "--",
+        chdir: git_directory,
+        stdout_limit_bytes: MAX_ARTIFACT_BYTES
+      )
+      unless capture_status.success? && capture_stderr.empty?
+        raise PrBatchGitProbeEnv::IsolationError, "Canonical diff capture failed"
+      end
+
+      captured.b
+    end
+  end
+
+  def repository_commit_range_errors(label, record, commits_key, repository_root)
+    return [] unless record.is_a?(Hash)
+
+    errors = []
+    endpoints = {}
+    { "base" => record["base_sha"], "head" => record["head_sha"] }.each do |name, supplied|
+      resolved, stderr, status = PrBatchGitProbeEnv.capture3(
+        PrBatchGitProbeEnv.probe_env,
+        "git", "rev-parse", "--verify", "#{supplied}^{commit}", chdir: repository_root
+      )
+      if status.success? && stderr.empty?
+        endpoints[name] = resolved.strip
+      else
+        errors << "#{label}-#{name}-commit-unavailable"
+      end
+    end
+    return errors unless endpoints.keys.sort == %w[base head]
+
+    _stdout, ancestor_stderr, ancestor_status = PrBatchGitProbeEnv.capture3(
+      PrBatchGitProbeEnv.probe_env,
+      "git", "merge-base", "--is-ancestor", endpoints.fetch("base"), endpoints.fetch("head"),
+      chdir: repository_root
+    )
+    unless ancestor_status.success?
+      errors << if ancestor_status.exitstatus == 1 && ancestor_stderr.empty?
+                  "#{label}-base-not-ancestor"
+                else
+                  "#{label}-commit-range-unavailable"
+                end
+      return errors
+    end
+
+    commits, commits_stderr, commits_status = PrBatchGitProbeEnv.capture3(
+      PrBatchGitProbeEnv.probe_env,
+      "git", "rev-list", "--reverse", "#{endpoints.fetch('base')}..#{endpoints.fetch('head')}",
+      chdir: repository_root
+    )
+    unless commits_status.success? && commits_stderr.empty?
+      errors << "#{label}-commit-range-unavailable"
+      return errors
+    end
+
+    repository_commits = commits.lines(chomp: true)
+    errors << "#{label}-#{commits_key.tr('_', '-')}-repository-mismatch" unless record[commits_key] == repository_commits
+    errors
+  end
+
   def cap_blocking_reasons(input, document)
     findings = document.fetch("review_findings")
     reasons = []
@@ -932,9 +1096,53 @@ module TaskReviewLoop
   end
 end
 
-begin
-  input = JSON.parse($stdin.read)
-  puts JSON.generate(TaskReviewLoop.reduce(input))
-rescue JSON::ParserError
-  puts JSON.generate(TaskReviewLoop.decision("blocked", false, ["malformed-json"]))
+if $PROGRAM_NAME == __FILE__
+  options = {}
+  begin
+    OptionParser.new do |parser|
+      parser.on("--repository-root PATH", "Validate review evidence against repository-derived HEAD and diffs") do |value|
+        options[:repository_root] = value
+      end
+      parser.on("--capture-exact-diff", "Write committed-attribute canonical diff bytes for BASE_SHA HEAD_SHA") do
+        options[:capture_exact_diff] = true
+      end
+    end.parse!
+  rescue OptionParser::ParseError, ArgumentError
+    puts JSON.generate(TaskReviewLoop.decision("blocked", false, ["options-invalid"]))
+    exit 0
+  end
+
+  unless options.key?(:repository_root)
+    puts JSON.generate(TaskReviewLoop.decision("blocked", false, ["repository-root-required"]))
+    exit 0
+  end
+
+  if options[:capture_exact_diff]
+    unless ARGV.length == 2 && ARGV.all? { |value| value.match?(/\A[0-9a-f]{40}\z/i) }
+      warn "capture-exact-diff requires exact BASE_SHA and HEAD_SHA arguments"
+      exit 1
+    end
+
+    begin
+      $stdout.binmode
+      $stdout.write(TaskReviewLoop.canonical_diff_bytes(File.realpath(options[:repository_root]), ARGV[0], ARGV[1]))
+      exit 0
+    rescue PrBatchGitProbeEnv::IsolationError, PrBatchGitProbeEnv::OutputLimitError,
+           PrBatchGitProbeEnv::TimeoutError, SystemCallError, ArgumentError, TypeError => e
+      warn "canonical-diff-unavailable: #{e.message}"
+      exit 1
+    end
+  end
+
+  unless ARGV.empty?
+    puts JSON.generate(TaskReviewLoop.decision("blocked", false, ["options-invalid"]))
+    exit 0
+  end
+
+  begin
+    input = JSON.parse($stdin.read)
+    puts JSON.generate(TaskReviewLoop.reduce(input, repository_root: options[:repository_root]))
+  rescue JSON::ParserError
+    puts JSON.generate(TaskReviewLoop.decision("blocked", false, ["malformed-json"]))
+  end
 end
