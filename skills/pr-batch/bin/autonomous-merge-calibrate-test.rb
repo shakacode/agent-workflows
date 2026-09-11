@@ -738,6 +738,72 @@ class AutonomousMergeCalibrateTest < Minitest::Test
     assert_includes error.message, "GitHub review state is unrecognized"
   end
 
+  # Production break: malformed GitHub response bytes reach calibration data
+  # instead of failing at the API boundary.
+  def test_github_client_rejects_invalid_raw_utf8_as_api_collection_error
+    response = +"HTTP/2 200\nx-ratelimit-remaining: 99\n\n{\"value\":\""
+    response << "\xff"
+    response << "\"}"
+    with_github_api_response(response) do
+      error = assert_raises(AutonomousMergeCalibration::CollectionError) do
+        AutonomousMergeCalibration::GitHubClient.new.call("repos/example/one")
+      end
+
+      assert_equal "api", error.kind
+      assert_equal "GitHub API response is not valid UTF-8 for repos/example/one", error.message
+    end
+  end
+
+  # Production break: malformed header bytes bypass a body-only UTF-8 gate and
+  # make rate-limit header parsing operate on invalid text.
+  def test_github_client_rejects_invalid_raw_utf8_header_as_api_collection_error
+    response = +"HTTP/2 200\nx-ratelimit-"
+    response << "\xff"
+    response << "remaining: 99\n\n{\"value\":\"valid\"}"
+    with_github_api_response(response) do
+      error = assert_raises(AutonomousMergeCalibration::CollectionError) do
+        AutonomousMergeCalibration::GitHubClient.new.call("repos/example/one")
+      end
+
+      assert_equal "api", error.kind
+      assert_equal "GitHub API response is not valid UTF-8 for repos/example/one", error.message
+    end
+  end
+
+  # Production break: a byte-valid JSON response decodes a lone surrogate in a
+  # value and lets the invalid string enter the calibration dataset.
+  def test_github_client_rejects_decoded_invalid_scalar_value_as_api_collection_error
+    response = %q(HTTP/2 200
+x-ratelimit-remaining: 99
+
+{"metadata":[{"value":"\udcff"}]})
+    with_github_api_response(response) do
+      error = assert_raises(AutonomousMergeCalibration::CollectionError) do
+        AutonomousMergeCalibration::GitHubClient.new.call("repos/example/one")
+      end
+
+      assert_equal "api", error.kind
+      assert_match(/invalid Unicode scalar|returned malformed JSON/, error.message)
+    end
+  end
+
+  # Production break: a byte-valid JSON response decodes a lone surrogate in
+  # an object key and makes later field lookup operate on invalid text.
+  def test_github_client_rejects_decoded_invalid_scalar_key_as_api_collection_error
+    response = %q(HTTP/2 200
+x-ratelimit-remaining: 99
+
+{"metadata":{"\udcff":"value"}})
+    with_github_api_response(response) do
+      error = assert_raises(AutonomousMergeCalibration::CollectionError) do
+        AutonomousMergeCalibration::GitHubClient.new.call("repos/example/one")
+      end
+
+      assert_equal "api", error.kind
+      assert_match(/invalid Unicode scalar|returned malformed JSON/, error.message)
+    end
+  end
+
   def test_historical_file_normalization_preserves_and_validates_rename_copy_sources
     renamed = AutonomousMergeCalibration.normalize_file(
       github_file(
@@ -1467,6 +1533,29 @@ class AutonomousMergeCalibrateTest < Minitest::Test
   end
 
   private
+
+  def with_github_api_response(response)
+    Dir.mktmpdir("autonomous-merge-calibration-gh-api") do |root|
+      payload = File.join(root, "payload")
+      fake_gh = File.join(root, "gh")
+      File.binwrite(payload, response)
+      File.write(fake_gh, <<~'RUBY')
+        #!/usr/bin/env ruby
+        STDOUT.binmode
+        STDOUT.write(File.binread(ENV.fetch("AUTONOMOUS_MERGE_TEST_RESPONSE")))
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      prior_command = ENV["AUTONOMOUS_MERGE_GH"]
+      prior_response = ENV["AUTONOMOUS_MERGE_TEST_RESPONSE"]
+      ENV["AUTONOMOUS_MERGE_GH"] = fake_gh
+      ENV["AUTONOMOUS_MERGE_TEST_RESPONSE"] = payload
+      yield
+    ensure
+      ENV["AUTONOMOUS_MERGE_GH"] = prior_command
+      ENV["AUTONOMOUS_MERGE_TEST_RESPONSE"] = prior_response
+    end
+  end
 
   def calibration_dataset(prs, repositories:)
     {
