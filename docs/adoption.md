@@ -173,16 +173,30 @@ libraries provides no guarantee of token or cost savings, quality, or security.
    files, protected-branch requirements, review bots, and which checks are cheap
    locally versus reserved for hosted CI.
 
-2. **Install or enable the shared skills for the user/agent.** Clone
-   [`shakacode/agent-workflows`](https://github.com/shakacode/agent-workflows)
-   and use `bin/install-agent-workflows --host codex` or
-   `bin/install-agent-workflows --host claude`, or use the agent platform's
-   normal user-skill installation mechanism.
+2. **Install or enable the shared skills for the user/agent.** For a stable
+   first install, follow the
+   [authenticated bootstrap](release-channel.md#install-update-and-roll-back)
+   into a durable agent home. It authenticates verifier bytes against an
+   independently trusted pin and verifies release provenance before executing
+   any code from the selected tag. Set the installer's `--target` to
+   `${CODEX_HOME:-$HOME/.codex}` or another intended agent home.
+
+   Use `--host claude --target "${CLAUDE_HOME:-$HOME/.claude}"` for
+   Claude Code. The installer binds the exact tag and candidate bytes to the
+   public GitHub release asset, successful exact-head release workflow run, and
+   protected-environment approval before copying candidate content. The
+   platform's normal user-skill installation mechanism is also available when
+   it can pin the same exact release. For stable Codex skills, use this verified
+   [copy bootstrap](release-channel.md#install-update-and-roll-back): the current
+   native Codex URL route is **development/unverified**. Its marketplace `--ref`
+   does not pin the separately fetched plugin code, and stable companion assets
+   do not make the native plugin stable. Claude's pinned relative-source route
+   remains available; see [Native Plugin Paths](installation-and-upgrades.md#native-plugin-paths).
 
 3. **Initialize the consumer seam.** From the consumer repo, run:
 
    ```bash
-   agent-workflow-seam-doctor --init --shared "$HOME/src/agent-workflows"
+   agent-workflow-seam-doctor --init --shared "$target"
    ```
 
    The initializer preserves valid repo-owned wrappers and existing policy,
@@ -200,7 +214,7 @@ libraries provides no guarantee of token or cost savings, quality, or security.
    agent-workflow-seam-doctor --init \
      --validate-command 'bin/validate' \
      --test-command 'bin/test' \
-     --shared "$HOME/src/agent-workflows"
+     --shared "$target"
    ```
 
    `--validate-command` and `--test-command` accept non-empty single-line shell
@@ -376,12 +390,13 @@ source clone:
 agent-workflows-status --host codex
 ```
 
-Use `upgrade-agent-workflows` to update the source clone, reinstall, and run the
+Use `upgrade-agent-workflows` to install a selected exact release and run the
 seam doctor against one or more consumer repos:
 
 ```bash
 upgrade-agent-workflows \
   --host codex \
+  --release vX.Y.Z \
   --consumer-root /path/to/consumer/repo
 ```
 

@@ -1,0 +1,441 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "digest"
+require "open3"
+require "optparse"
+require "time"
+require "tmpdir"
+
+class ReleaseError < StandardError; end
+
+def read_json(path)
+  value = JSON.parse(File.read(path, encoding: "UTF-8"))
+  raise ReleaseError, "#{path} must contain a JSON object" unless value.is_a?(Hash)
+
+  value
+rescue Errno::ENOENT
+  raise ReleaseError, "missing release metadata: #{path}"
+rescue JSON::ParserError => e
+  raise ReleaseError, "invalid JSON in #{path}: #{e.message}"
+end
+
+def read_json_array(path)
+  value = JSON.parse(File.read(path, encoding: "UTF-8"))
+  raise ReleaseError, "#{path} must contain a JSON array" unless value.is_a?(Array)
+
+  value
+rescue Errno::ENOENT
+  raise ReleaseError, "missing release metadata: #{path}"
+rescue JSON::ParserError => e
+  raise ReleaseError, "invalid JSON in #{path}: #{e.message}"
+end
+
+def checked_version_values(version:, claude:, codex:)
+  raise ReleaseError, "VERSION must be a stable semantic version" unless version.match?(/\A\d+\.\d+\.\d+\z/)
+  unless codex == version && (claude.nil? || claude == version)
+    raise ReleaseError, "release metadata versions do not match VERSION #{version}"
+  end
+
+  {
+    "status" => "VERSION_OK",
+    "version" => version,
+    "metadata" => { "claude" => claude, "codex" => codex }
+  }
+end
+
+def checked_versions(root)
+  version_path = File.join(root, "VERSION")
+  version = File.read(version_path, encoding: "UTF-8").strip
+  claude = read_json(File.join(root, ".claude-plugin", "plugin.json"))["version"]
+  codex = read_json(File.join(root, ".codex-plugin", "plugin.json"))["version"]
+  checked_version_values(version:, claude:, codex:)
+rescue Errno::ENOENT
+  raise ReleaseError, "missing release metadata: #{version_path}"
+end
+
+def run_git(root, *args)
+  stdout, stderr, status = Open3.capture3("git", "-C", root, *args)
+  return stdout.force_encoding("UTF-8").scrub.strip if status.success?
+
+  detail = stderr.force_encoding("UTF-8").scrub.strip
+  raise ReleaseError, "git #{args.join(' ')} failed#{detail.empty? ? '' : ": #{detail}"}"
+rescue Errno::ENOENT
+  raise ReleaseError, "git is required for release verification"
+end
+
+def json_from_git(root, commit, path)
+  value = JSON.parse(run_git(root, "show", "#{commit}:#{path}"))
+  raise ReleaseError, "#{path} at #{commit} must contain a JSON object" unless value.is_a?(Hash)
+
+  value
+rescue JSON::ParserError => e
+  raise ReleaseError, "invalid JSON in #{path} at #{commit}: #{e.message}"
+end
+
+def checked_versions_at_commit(root, commit)
+  checked_version_values(
+    version: run_git(root, "show", "#{commit}:VERSION").strip,
+    claude: json_from_git(root, commit, ".claude-plugin/plugin.json")["version"],
+    codex: json_from_git(root, commit, ".codex-plugin/plugin.json")["version"]
+  )
+end
+
+def verify_tag(root:, release:, approved_commit:, expected_tag_object:)
+  match = release.match(/\Av(\d+\.\d+\.\d+)\z/)
+  raise ReleaseError, "release must be an exact vX.Y.Z tag" unless match
+  unless approved_commit.match?(/\A[0-9a-f]{40}(?:[0-9a-f]{24})?\z/)
+    raise ReleaseError, "approved commit must be a full object ID"
+  end
+  unless expected_tag_object.match?(/\A[0-9a-f]{40}(?:[0-9a-f]{24})?\z/)
+    raise ReleaseError, "expected tag object must be a full object ID"
+  end
+
+  tag_ref = "refs/tags/#{release}"
+  tag_object = run_git(root, "rev-parse", "--verify", tag_ref)
+  raise ReleaseError, "tag moved: expected #{expected_tag_object}, found #{tag_object}" unless tag_object == expected_tag_object
+
+  object_type = run_git(root, "cat-file", "-t", tag_object)
+  raise ReleaseError, "#{release} must be an annotated tag, found #{object_type}" unless object_type == "tag"
+
+  peeled_commit = run_git(root, "rev-parse", "--verify", "#{tag_ref}^{commit}")
+  unless peeled_commit == approved_commit
+    raise ReleaseError, "#{release} peels to #{peeled_commit}, not approved commit #{approved_commit}"
+  end
+
+  versions = checked_versions_at_commit(root, peeled_commit)
+  unless versions.fetch("version") == match[1]
+    raise ReleaseError, "#{release} does not match VERSION #{versions.fetch('version')} at #{peeled_commit}"
+  end
+
+  {
+    "status" => "TAG_VERIFIED",
+    "release_ref" => release,
+    "version" => versions.fetch("version"),
+    "tag_object" => tag_object,
+    "peeled_commit" => peeled_commit
+  }
+end
+
+def required_option(options, name)
+  options.fetch(name) { raise ReleaseError, "--#{name.to_s.tr('_', '-')} is required" }
+end
+
+def github_login!(label, login)
+  return if login.match?(/\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\z/) && !login.downcase.end_with?("[bot]")
+
+  raise ReleaseError, "#{label} must identify a human GitHub user"
+end
+
+def record_receipt(options)
+  environment = required_option(options, :environment)
+  raise ReleaseError, "stable releases require the stable-release protected environment" unless environment == "stable-release"
+
+  change_author = required_option(options, :change_author)
+  release_actor = required_option(options, :release_actor)
+  approval_reviewer = required_option(options, :approval_reviewer)
+  github_login!("change author", change_author)
+  github_login!("release actor", release_actor)
+  github_login!("approval reviewer", approval_reviewer)
+  if approval_reviewer.casecmp?(change_author) || approval_reviewer.casecmp?(release_actor)
+    raise ReleaseError, "approval reviewer must be a non-author human who did not initiate the release"
+  end
+
+  repository = required_option(options, :repository)
+  unless repository.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z})
+    raise ReleaseError, "repository must use owner/name form"
+  end
+
+  workflow_run_id = Integer(required_option(options, :workflow_run_id), 10)
+  workflow_run_attempt = Integer(required_option(options, :workflow_run_attempt), 10)
+  raise ReleaseError, "workflow run ID and attempt must be positive integers" unless workflow_run_id.positive? && workflow_run_attempt.positive?
+
+  workflow_path = required_option(options, :workflow_path)
+  unless workflow_path == ".github/workflows/release.yml"
+    raise ReleaseError, "workflow path must identify .github/workflows/release.yml"
+  end
+
+  workflow_run_url = required_option(options, :workflow_run_url)
+  expected_run_url = "https://github.com/#{repository}/actions/runs/#{workflow_run_id}"
+  raise ReleaseError, "workflow run URL must identify the bound GitHub Actions run" unless workflow_run_url == expected_run_url
+
+  recorded_at = required_option(options, :recorded_at)
+  Time.iso8601(recorded_at)
+
+  verified = verify_tag(
+    root: options.fetch(:root),
+    release: required_option(options, :release),
+    approved_commit: required_option(options, :approved_commit),
+    expected_tag_object: required_option(options, :expected_tag_object)
+  )
+  receipt = {
+    "schema" => "agent-workflows-stable-release-v1",
+    "channel" => "stable",
+    "release_ref" => verified.fetch("release_ref"),
+    "version" => verified.fetch("version"),
+    "tag_object" => verified.fetch("tag_object"),
+    "peeled_commit" => verified.fetch("peeled_commit"),
+    "recorded_at" => recorded_at,
+    "approval" => {
+      "environment" => environment,
+      "reviewer" => approval_reviewer,
+      "change_author" => change_author,
+      "exact_commit" => verified.fetch("peeled_commit"),
+      "human_non_author" => true
+    },
+    "verification" => {
+      "suite" => "full",
+      "exact_commit" => verified.fetch("peeled_commit"),
+      "before_tag" => true
+    },
+    "workflow" => {
+      "repository" => repository,
+      "path" => workflow_path,
+      "run_id" => workflow_run_id,
+      "run_attempt" => workflow_run_attempt,
+      "actor" => release_actor,
+      "run_url" => workflow_run_url
+    }
+  }
+  receipt_path = File.expand_path(required_option(options, :receipt))
+  File.write(receipt_path, "#{JSON.pretty_generate(receipt)}\n", encoding: "UTF-8")
+  { "status" => "RECEIPT_WRITTEN", "receipt" => receipt_path, "release" => receipt }
+rescue ArgumentError
+  raise ReleaseError, "release run identifiers and --recorded-at must be valid"
+end
+
+def verify_receipt(options)
+  receipt_path = File.expand_path(required_option(options, :receipt))
+  receipt = read_json(receipt_path)
+  raise ReleaseError, "GitHub release provenance is required" unless options[:github_release]
+
+  github_release = read_json(File.expand_path(options.fetch(:github_release)))
+
+  unless receipt["schema"] == "agent-workflows-stable-release-v1" && receipt["channel"] == "stable"
+    raise ReleaseError, "receipt must use the stable release receipt schema"
+  end
+
+  approval = receipt["approval"]
+  workflow = receipt["workflow"]
+  unless approval.is_a?(Hash) && workflow.is_a?(Hash)
+    raise ReleaseError, "receipt approval and workflow evidence must be JSON objects"
+  end
+  unless approval["environment"] == "stable-release" && approval["human_non_author"] == true
+    raise ReleaseError, "receipt lacks qualifying protected-environment approval"
+  end
+
+  begin
+    Time.iso8601(receipt.fetch("recorded_at"))
+  rescue ArgumentError, KeyError
+    raise ReleaseError, "receipt lacks a valid recording timestamp"
+  end
+  github_login!("change author", approval.fetch("change_author", ""))
+  github_login!("approval reviewer", approval.fetch("reviewer", ""))
+  github_login!("release actor", workflow.fetch("actor", ""))
+  if approval.fetch("reviewer").casecmp?(approval.fetch("change_author")) ||
+     approval.fetch("reviewer").casecmp?(workflow.fetch("actor"))
+    raise ReleaseError, "receipt reviewer is not independent of the author and release actor"
+  end
+
+  verified = verify_tag(
+    root: options.fetch(:root),
+    release: receipt.fetch("release_ref") { raise ReleaseError, "receipt is missing release_ref" },
+    approved_commit: receipt.fetch("peeled_commit") { raise ReleaseError, "receipt is missing peeled_commit" },
+    expected_tag_object: receipt.fetch("tag_object") { raise ReleaseError, "receipt is missing tag_object" }
+  )
+  unless approval["exact_commit"] == verified.fetch("peeled_commit") &&
+         receipt["version"] == verified.fetch("version") &&
+         workflow["run_url"].to_s.match?(%r{\Ahttps://github\.com/[^/]+/[^/]+/actions/runs/\d+\z})
+    raise ReleaseError, "receipt evidence does not bind the verified release"
+  end
+
+  unless receipt["verification"] == { "suite" => "full", "exact_commit" => verified.fetch("peeled_commit"), "before_tag" => true }
+    raise ReleaseError, "receipt lacks full exact-candidate verification before tagging"
+  end
+
+  release_ref = verified.fetch("release_ref")
+  repository = workflow["repository"].to_s
+  expected_repository = required_option(options, :repository)
+  raise ReleaseError, "receipt provenance does not match the expected repository" unless repository == expected_repository
+
+  expected_asset_url = "https://github.com/#{repository}/releases/download/#{release_ref}/agent-workflows-release-receipt.json"
+  assets = github_release["assets"]
+  matching_assets = assets.is_a?(Array) ? assets.select { |asset| asset.is_a?(Hash) && asset["name"] == "agent-workflows-release-receipt.json" } : []
+  unless github_release["tag_name"] == release_ref && github_release["draft"] == false &&
+         github_release["prerelease"] == false && matching_assets.length == 1
+    raise ReleaseError, "GitHub release provenance does not identify one published receipt asset for #{release_ref}"
+  end
+
+  asset = matching_assets.fetch(0)
+  expected_digest = "sha256:#{Digest::SHA256.file(receipt_path).hexdigest}"
+  raise ReleaseError, "GitHub release asset digest does not match the downloaded receipt" unless asset["digest"] == expected_digest
+  unless asset["state"] == "uploaded" && asset["browser_download_url"] == expected_asset_url
+    raise ReleaseError, "GitHub release asset metadata does not bind the downloaded receipt"
+  end
+
+  expected_release_url = "https://github.com/#{repository}/releases/tag/#{release_ref}"
+  unless github_release["html_url"] == expected_release_url &&
+         github_release.dig("author", "type") == "Bot" &&
+         github_release.dig("author", "login") == "github-actions[bot]" &&
+         asset["size"] == File.size(receipt_path) &&
+         asset.dig("uploader", "type") == "Bot" &&
+         asset.dig("uploader", "login") == "github-actions[bot]"
+    raise ReleaseError, "GitHub release asset does not bind the GitHub Actions release publisher and exact size"
+  end
+
+  raise ReleaseError, "GitHub workflow run provenance is required" unless options[:github_workflow_run]
+
+  github_workflow_run = read_json(File.expand_path(options.fetch(:github_workflow_run)))
+  unless repository.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z}) &&
+         github_workflow_run["id"] == workflow["run_id"] &&
+         github_workflow_run["run_attempt"] == workflow["run_attempt"] &&
+         workflow["path"] == ".github/workflows/release.yml" &&
+         github_workflow_run["path"] == workflow.fetch("path") &&
+         github_workflow_run["event"] == "workflow_dispatch" &&
+         github_workflow_run["status"] == "completed" &&
+         github_workflow_run["conclusion"] == "success" &&
+         github_workflow_run["html_url"] == workflow["run_url"] &&
+         github_workflow_run["head_sha"] == verified.fetch("peeled_commit") &&
+         github_workflow_run.dig("actor", "login") == workflow["actor"] &&
+         github_workflow_run.dig("actor", "type") == "User" &&
+         github_workflow_run.dig("repository", "full_name") == repository &&
+         github_workflow_run.dig("repository", "private") == false
+    raise ReleaseError, "GitHub workflow run metadata does not bind the exact repository, release tag, workflow, and head"
+  end
+
+  raise ReleaseError, "GitHub approval provenance is required" unless options[:github_workflow_approvals]
+
+  github_workflow_approvals = read_json_array(File.expand_path(options.fetch(:github_workflow_approvals)))
+  matching_approval = github_workflow_approvals.any? do |review|
+    review.is_a?(Hash) &&
+      review["state"] == "approved" &&
+      review.dig("user", "type") == "User" &&
+      review.dig("user", "login") == approval["reviewer"] &&
+      review["environments"].is_a?(Array) &&
+      review["environments"].any? { |environment| environment.is_a?(Hash) && environment["name"] == "stable-release" }
+  end
+  raise ReleaseError, "GitHub review history lacks the receipt's protected-environment approval" unless matching_approval
+
+  { "status" => "RECEIPT_VERIFIED", "receipt" => receipt_path, "release" => receipt }
+rescue KeyError => e
+  raise ReleaseError, "receipt is incomplete: #{e.message}"
+end
+
+def download_release_evidence(url, path, label = "published release evidence")
+  output, status = Open3.capture2e(
+    "curl", "--proto", "=https", "--tlsv1.2", "--fail", "--silent", "--show-error", "--location",
+    "--header", "Accept: application/vnd.github+json", "--header", "X-GitHub-Api-Version: 2022-11-28",
+    "--output", path, url
+  )
+  raise ReleaseError, "#{label} is unavailable at #{url}: #{output.strip}" unless status.success?
+rescue Errno::ENOENT
+  raise ReleaseError, "curl is required for published release verification"
+end
+
+def verify_published(options)
+  repository = required_option(options, :repository)
+  release = required_option(options, :release)
+  unless repository.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z}) && release.match?(/\Av\d+\.\d+\.\d+\z/)
+    raise ReleaseError, "published release requires a repository and exact vX.Y.Z tag"
+  end
+
+  Dir.mktmpdir("agent-workflows-release-evidence") do |temp|
+    receipt_path = File.join(temp, "receipt.json")
+    download_release_evidence(
+      "https://github.com/#{repository}/releases/download/#{release}/agent-workflows-release-receipt.json",
+      receipt_path, "protected release receipt"
+    )
+    receipt = read_json(receipt_path)
+    unless receipt["release_ref"] == release && receipt["peeled_commit"] == required_option(options, :approved_commit) &&
+           receipt["tag_object"] == required_option(options, :expected_tag_object)
+      raise ReleaseError, "published receipt does not bind the requested release identity"
+    end
+
+    workflow = receipt["workflow"]
+    unless workflow.is_a?(Hash) && [workflow["run_id"], workflow["run_attempt"]].all? { |value| value.is_a?(Integer) && value.positive? }
+      raise ReleaseError, "stable release receipt lacks a valid workflow run ID and attempt"
+    end
+
+    api = "https://api.github.com/repos/#{repository}"
+    run_url = "#{api}/actions/runs/#{workflow.fetch('run_id')}"
+    evidence = {
+      github_release: "#{api}/releases/tags/#{release}",
+      github_workflow_run: "#{run_url}/attempts/#{workflow.fetch('run_attempt')}",
+      github_workflow_approvals: "#{run_url}/approvals"
+    }.to_h do |key, url|
+      path = File.join(temp, "#{key}.json")
+      download_release_evidence(url, path)
+      [key, path]
+    end
+    verified = verify_receipt(options.merge(evidence).merge(receipt: receipt_path))
+    { "status" => "PUBLISHED_RELEASE_VERIFIED", "release" => verified.fetch("release") }
+  end
+end
+
+command = ARGV.shift
+options = { root: Dir.pwd, json: ARGV.delete("--json") ? true : false }
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: agent-workflows-release COMMAND [options]"
+  opts.on("--root DIR", "Source-pack root") { |value| options[:root] = File.expand_path(value) }
+  opts.on("--json", "Emit JSON") { options[:json] = true }
+  opts.on("--release TAG", "Exact stable release tag") { |value| options[:release] = value }
+  opts.on("--approved-commit SHA", "Approved exact commit") { |value| options[:approved_commit] = value }
+  opts.on("--expected-tag-object SHA", "Expected immutable annotated-tag object") do |value|
+    options[:expected_tag_object] = value
+  end
+  opts.on("--environment NAME", "Protected release environment") { |value| options[:environment] = value }
+  opts.on("--change-author LOGIN", "Author of the approved change") { |value| options[:change_author] = value }
+  opts.on("--release-actor LOGIN", "Actor who initiated the release") { |value| options[:release_actor] = value }
+  opts.on("--approval-reviewer LOGIN", "Protected-environment reviewer") do |value|
+    options[:approval_reviewer] = value
+  end
+  opts.on("--workflow-run-url URL", "Durable GitHub Actions run URL") { |value| options[:workflow_run_url] = value }
+  opts.on("--repository OWNER/NAME", "Canonical GitHub repository") { |value| options[:repository] = value }
+  opts.on("--workflow-run-id ID", "GitHub Actions workflow run ID") { |value| options[:workflow_run_id] = value }
+  opts.on("--workflow-run-attempt N", "GitHub Actions workflow run attempt") do |value|
+    options[:workflow_run_attempt] = value
+  end
+  opts.on("--workflow-path PATH", "Repository-relative workflow path") { |value| options[:workflow_path] = value }
+  opts.on("--recorded-at TIMESTAMP", "Receipt recording timestamp") { |value| options[:recorded_at] = value }
+  opts.on("--receipt PATH", "Release receipt path") { |value| options[:receipt] = value }
+  opts.on("--github-release PATH", "GitHub release API metadata") { |value| options[:github_release] = value }
+  opts.on("--github-workflow-run PATH", "GitHub workflow run API metadata") do |value|
+    options[:github_workflow_run] = value
+  end
+  opts.on("--github-workflow-approvals PATH", "GitHub workflow approval API metadata") do |value|
+    options[:github_workflow_approvals] = value
+  end
+end
+
+begin
+  parser.parse!(ARGV)
+  raise ReleaseError, "unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
+
+  payload = case command
+            when "check-version"
+              checked_versions(options.fetch(:root))
+            when "verify-tag"
+              verify_tag(
+                root: options.fetch(:root),
+                release: options.fetch(:release) { raise ReleaseError, "--release is required" },
+                approved_commit: options.fetch(:approved_commit) { raise ReleaseError, "--approved-commit is required" },
+                expected_tag_object: options.fetch(:expected_tag_object) do
+                  raise ReleaseError, "--expected-tag-object is required"
+                end
+              )
+            when "record-receipt"
+              record_receipt(options)
+            when "verify-receipt"
+              verify_receipt(options)
+            when "verify-published"
+              verify_published(options)
+            else
+              raise ReleaseError, "unknown command: #{command.inspect}"
+            end
+  puts(options[:json] ? JSON.generate(payload) : payload.values_at("status", "release_ref", "version").compact.join(" "))
+rescue OptionParser::ParseError, ReleaseError => e
+  payload = { "status" => "RELEASE_CHECK_FAILED", "reason" => e.message }
+  warn(options[:json] ? JSON.generate(payload) : "#{payload.fetch('status')}: #{e.message}")
+  exit 2
+end

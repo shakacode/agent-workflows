@@ -1,0 +1,205 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: New annotated release tag (vX.Y.Z)
+        required: true
+        type: string
+      candidate_sha:
+        description: Full final candidate commit (dispatch from a branch at this exact commit)
+        required: true
+        type: string
+      change_author:
+        description: GitHub login of the associated merged PR author
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Full exact release candidate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout final candidate without write credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.candidate_sha }}
+
+      - name: Verify final candidate identity and version metadata
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          RELEASE_REF: ${{ inputs.release }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          RUN_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$WORKFLOW_SHA" = "$CANDIDATE_SHA"
+          test "$RUN_SHA" = "$CANDIDATE_SHA"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          test "v$(cat VERSION)" = "$RELEASE_REF"
+          bin/agent-workflows-release check-version --root .
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_REF"; then
+            echo "Release tag already exists; refusing to reuse it" >&2
+            exit 1
+          fi
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+
+      - name: Install validation gems
+        run: |
+          # JSON 3 changes malformed-input diagnostics used by the full suite.
+          gem install json -v 2.21.2 --no-document
+          gem install rubocop -v "$(tr -d '[:space:]' < .rubocop-version)" --no-document --conservative
+          gem install json_schemer -v "$(tr -d '[:space:]' < .json-schemer-version)" --no-document --conservative
+          ruby -rjson -e 'puts "Validation JSON #{JSON::VERSION}"; abort "unexpected JSON version" unless JSON::VERSION == "2.21.2"'
+
+      - name: Run every validation suite before tagging
+        env:
+          CI: "true"
+        run: bin/validate
+
+      - name: Confirm validation preserved the candidate
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+  release:
+    needs: verify
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: read
+    runs-on: ubuntu-latest
+    environment: stable-release
+    steps:
+      - name: Checkout the exact release ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.candidate_sha }}
+
+      - name: Verify independent human approval before creating a tag
+        id: approval
+        env:
+          APPROVED_COMMIT: ${{ inputs.candidate_sha }}
+          CHANGE_AUTHOR: ${{ inputs.change_author }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ACTOR: ${{ github.actor }}
+          RELEASE_REF: ${{ inputs.release }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WORKFLOW_PATH: .github/workflows/release.yml
+        run: |
+          set -euo pipefail
+          associated_authors="$(
+            gh api "repos/$REPOSITORY/commits/$APPROVED_COMMIT/pulls" \
+              --jq '[.[] | select(.merged_at != null) | .user.login] | unique'
+          )"
+          test "$(jq 'length' <<<"$associated_authors")" -eq 1
+          test "$(jq -r '.[0]' <<<"$associated_authors")" = "$CHANGE_AUTHOR"
+
+          approvals="$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/approvals")"
+          approval_reviewer="$(
+            jq -er '[.[] |
+              select(.state == "approved") |
+              select(.user.type == "User") |
+              select(any(.environments[]?; .name == "stable-release")) |
+              .user.login] | last // empty' <<<"$approvals"
+          )"
+
+          test "${approval_reviewer,,}" != "${CHANGE_AUTHOR,,}"
+          test "${approval_reviewer,,}" != "${RELEASE_ACTOR,,}"
+          echo "reviewer=$approval_reviewer" >> "$GITHUB_OUTPUT"
+
+      - name: Create the immutable annotated tag after full validation and approval
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPROVED_COMMIT: ${{ inputs.candidate_sha }}
+          RELEASE_REF: ${{ inputs.release }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPROVED_COMMIT"
+          bin/agent-workflows-release check-version --root .
+          tag_object="$(jq -n --arg tag "$RELEASE_REF" --arg object "$APPROVED_COMMIT" \
+            '{tag: $tag, message: ("Agent Workflows " + $tag), object: $object, type: "commit"}' | \
+            gh api --method POST "repos/$REPOSITORY/git/tags" --input - --jq .sha)"
+          jq -n --arg ref "refs/tags/$RELEASE_REF" --arg sha "$tag_object" \
+            '{ref: $ref, sha: $sha}' | \
+            gh api --method POST "repos/$REPOSITORY/git/refs" --input -
+          git fetch origin "refs/tags/$RELEASE_REF:refs/tags/$RELEASE_REF"
+          bin/agent-workflows-release verify-tag --root . --release "$RELEASE_REF" \
+            --approved-commit "$APPROVED_COMMIT" --expected-tag-object "$tag_object"
+          echo "object=$tag_object" >> "$GITHUB_OUTPUT"
+
+      - name: Record protected-environment approval evidence
+        env:
+          APPROVAL_REVIEWER: ${{ steps.approval.outputs.reviewer }}
+          APPROVED_COMMIT: ${{ inputs.candidate_sha }}
+          CHANGE_AUTHOR: ${{ inputs.change_author }}
+          EXPECTED_TAG_OBJECT: ${{ steps.tag.outputs.object }}
+          RELEASE_ACTOR: ${{ github.actor }}
+          RELEASE_REF: ${{ inputs.release }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WORKFLOW_PATH: .github/workflows/release.yml
+        run: |
+          set -euo pipefail
+          bin/agent-workflows-release record-receipt \
+            --root . \
+            --release "$RELEASE_REF" \
+            --approved-commit "$APPROVED_COMMIT" \
+            --expected-tag-object "$EXPECTED_TAG_OBJECT" \
+            --environment stable-release \
+            --change-author "$CHANGE_AUTHOR" \
+            --release-actor "$RELEASE_ACTOR" \
+            --approval-reviewer "$APPROVAL_REVIEWER" \
+            --repository "$REPOSITORY" \
+            --workflow-run-id "$RUN_ID" \
+            --workflow-run-attempt "$RUN_ATTEMPT" \
+            --workflow-path "$WORKFLOW_PATH" \
+            --workflow-run-url "$RUN_URL" \
+            --recorded-at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            --receipt agent-workflows-release-receipt.json
+
+      - name: Publish release and durable receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_REF" >/dev/null 2>&1; then
+            echo "Release already exists; refusing to replace durable release evidence: $RELEASE_REF" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_REF" \
+            agent-workflows-release-receipt.json \
+            --verify-tag \
+            --title "Agent Workflows $RELEASE_REF" \
+            --generate-notes

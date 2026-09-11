@@ -3,12 +3,15 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: upgrade-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--consumer-root DIR] [--dry-run] [--no-fetch]
+Usage: upgrade-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] (--release vX.Y.Z | --channel development) [--consumer-root DIR] [--dry-run] [--no-fetch]
 
 Updates the source clone, reinstalls this shared workflow pack into an agent
 home, and optionally validates one or more consumer repository seams.
 
-Network note: by default this command runs git fetch/pull in the source clone.
+Stable update and rollback each require an exact --release vX.Y.Z. Development
+branch following requires the explicit --channel development.
+
+Network note: by default this command fetches the selected channel's refs.
 Use --no-fetch for an already-updated local clone.
 With --host auto and an explicit unmarked target, Codex is the deterministic
 backward-compatible default; pass --host claude for arbitrary Claude targets.
@@ -21,6 +24,8 @@ target=""
 source=""
 mode=""
 delivery_mode=""
+channel="${AGENT_WORKFLOWS_CHANNEL:-}"
+release_ref=""
 dry_run=false
 fetch=true
 consumer_roots=()
@@ -175,6 +180,15 @@ while [[ $# -gt 0 ]]; do
       delivery_mode="${2:?--delivery-mode requires flat or plugin-companion}"
       shift 2
       ;;
+    --channel)
+      channel="${2:?--channel requires stable or development}"
+      shift 2
+      ;;
+    --release)
+      release_ref="${2:?--release requires vX.Y.Z}"
+      [[ -n "$channel" ]] || channel="stable"
+      shift 2
+      ;;
     --consumer-root)
       consumer_roots+=("${2:?--consumer-root requires a directory}")
       shift 2
@@ -227,6 +241,35 @@ resolved="$(resolve_host_and_target)"
 host="${resolved%%:*}"
 target="${resolved#*:}"
 metadata_path="$target/$metadata_name"
+installed_channel="$(metadata_value "$metadata_path" channel 2>/dev/null || printf 'development\n')"
+
+case "$channel" in
+  stable)
+    [[ "$release_ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+      echo "Stable update or rollback requires --release vX.Y.Z" >&2
+      exit 64
+    }
+    ;;
+  development)
+    [[ -z "$release_ref" ]] || {
+      echo "Development channel cannot use --release" >&2
+      exit 64
+    }
+    ;;
+  "")
+    echo "Choose --release vX.Y.Z for stable or --channel development for branch-following updates." >&2
+    exit 64
+    ;;
+  *)
+    echo "--channel must be stable or development, got: $channel" >&2
+    exit 64
+    ;;
+esac
+
+if [[ -f "$metadata_path" && "$channel" != "$installed_channel" ]]; then
+  echo "CHECK_FAILED refusing channel change from $installed_channel to $channel; reinstall explicitly instead" >&2
+  exit 3
+fi
 
 if [[ -z "$source" ]]; then
   source="$(metadata_value "$metadata_path" source 2>/dev/null || printf '%s\n' "$script_root")"
@@ -244,8 +287,13 @@ if [[ -z "$delivery_mode" ]]; then
   delivery_mode="$(metadata_value "$metadata_path" delivery_mode 2>/dev/null || printf 'flat\n')"
 fi
 
-status_script="$source/bin/agent-workflows-status"
-install_script="$source/bin/install-agent-workflows"
+if [[ "$channel" = "stable" ]]; then
+  status_script="$target/bin/agent-workflows-status"
+  install_script="$target/bin/install-agent-workflows"
+else
+  status_script="$source/bin/agent-workflows-status"
+  install_script="$source/bin/install-agent-workflows"
+fi
 
 if [[ ! -x "$status_script" || ! -x "$install_script" ]]; then
   echo "CHECK_FAILED missing agent-workflows scripts in source: $source" >&2
@@ -253,7 +301,8 @@ if [[ ! -x "$status_script" || ! -x "$install_script" ]]; then
 fi
 
 if [[ "$dry_run" = "true" ]]; then
-  status_args=(--host "$host" --target "$target" --source "$source" --delivery-mode "$delivery_mode")
+  status_args=(--host "$host" --target "$target" --source "$source" --delivery-mode "$delivery_mode" --channel "$channel")
+  [[ -z "$release_ref" ]] || status_args+=(--release "$release_ref")
   if [[ "$fetch" = "true" ]]; then
     status_args+=(--fetch)
   fi
@@ -270,18 +319,33 @@ fi
 old_revision="$(metadata_value "$metadata_path" source_revision 2>/dev/null || printf 'unknown\n')"
 
 if [[ "$fetch" = "true" ]]; then
-  update_source_clone
+  if [[ "$channel" = "stable" ]]; then
+    git -C "$source" fetch --quiet --prune --tags origin
+  else
+    update_source_clone
+  fi
 fi
 
 backup_target
 completed=false
 trap 'status=$?; if [[ "$completed" != "true" ]]; then restore_target; fi; exit "$status"' ERR
 
-"$install_script" --host "$host" --target "$target" --mode "$mode" --delivery-mode "$delivery_mode"
+install_args=(--host "$host" --target "$target" --mode "$mode" --delivery-mode "$delivery_mode")
+if [[ "$channel" = "stable" ]]; then
+  install_args+=(--source "$source" --release "$release_ref")
+  "$install_script" "${install_args[@]}"
+else
+  install_args+=(--channel development)
+  "$install_script" "${install_args[@]}"
+fi
 
 if [[ "${#consumer_roots[@]}" -gt 0 ]]; then
+  validation_shared_root="$source"
+  if [[ "$channel" = "stable" ]]; then
+    validation_shared_root="$target"
+  fi
   for consumer_root in "${consumer_roots[@]}"; do
-    "$target/bin/agent-workflow-seam-doctor" --root "$consumer_root" --shared "$source"
+    "$target/bin/agent-workflow-seam-doctor" --root "$consumer_root" --shared "$validation_shared_root"
   done
 fi
 
@@ -289,4 +353,13 @@ completed=true
 trap - ERR
 
 new_revision="$(metadata_value "$metadata_path" source_revision 2>/dev/null || printf 'unknown\n')"
-echo "UPGRADE_COMPLETE $(short_revision "$old_revision") $(short_revision "$new_revision") target=$target source=$source"
+old_version="$(metadata_value "$backup_target_dir/$metadata_name" version 2>/dev/null || printf 'unknown\n')"
+new_version="$(metadata_value "$metadata_path" version 2>/dev/null || printf 'unknown\n')"
+operation="UPGRADE_COMPLETE"
+if [[ "$channel" = "stable" ]] && ruby -e '
+  require "rubygems"
+  exit(Gem::Version.new(ARGV.fetch(1)) < Gem::Version.new(ARGV.fetch(0)) ? 0 : 1)
+' "$old_version" "$new_version"; then
+  operation="ROLLBACK_COMPLETE"
+fi
+echo "$operation $(short_revision "$old_revision") $(short_revision "$new_revision") channel=$channel release_ref=${release_ref:-none} target=$target source=$source"

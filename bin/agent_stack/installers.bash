@@ -9,9 +9,7 @@ agent_stack_command_destination_safe() {
 }
 
 agent_stack_install_file() {
-  local source_file="$1"
-  local destination="$2"
-  local temporary
+  local source_file="$1" destination="$2" temporary
   agent_stack_command_destination_safe "$destination" || return 1
   if [[ "$source_file" = "$destination" && ! -L "$destination" ]]; then
     chmod +x "$destination"
@@ -121,7 +119,25 @@ agent_stack_prepare_colocated_doctor_transition() {
 }
 
 agent_stack_install_commands() {
-  local helper source_file workflow_owns_doctor=false
+  local helper source_file workflow_owns_doctor=false workflow_target workflow_metadata
+  workflow_target="$(agent_stack_effective_workflow_target)" || return 64
+  workflow_metadata="$workflow_target/.agent-workflows-install.json"
+  if [[ -e "$workflow_metadata" || -L "$workflow_metadata" ]]; then
+    if "${RUBY_BIN:-ruby}" -rjson -e '
+      begin
+        path = ARGV.fetch(0)
+        exit 1 unless File.file?(path) && !File.symlink?(path)
+        metadata = JSON.parse(File.read(path))
+        exit(metadata.is_a?(Hash) && metadata["channel"] == "stable" ? 0 : 1)
+      rescue JSON::ParserError, SystemCallError
+        # Existing ownership checks handle malformed or unreadable metadata.
+        exit 1
+      end
+    ' "$workflow_metadata"; then
+      echo "STABLE_CHANNEL_PRESERVED: stack sync requires a development workflow target; use the release upgrader for stable installs." >&2
+      return 64
+    fi
+  fi
   for helper in agent-stack agent-stack-doctor; do
     source_file="$source_root/agent-workflows/bin/$helper"
     [[ -x "$source_file" ]] || { echo "Cannot install stack command: missing $source_file" >&2; return 1; }
@@ -159,5 +175,5 @@ agent_stack_install_workflows() {
   [[ -z "$delivery_mode" ]] || args+=(--delivery-mode "$delivery_mode")
   [[ -z "$target" ]] || args+=(--target "$target")
   [[ -x "$repo/bin/install-agent-workflows" ]] || { echo "Cannot install workflows: missing $repo/bin/install-agent-workflows" >&2; return 1; }
-  "$repo/bin/install-agent-workflows" "${args[@]}"
+  AGENT_WORKFLOWS_CHANNEL=development "$repo/bin/install-agent-workflows" "${args[@]}"
 }

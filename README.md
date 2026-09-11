@@ -86,16 +86,11 @@ default.
 
 ## Quick Start
 
-Clone the workflow pack and install it into the agent host you use:
-
-```bash
-git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
-cd "$HOME/src/agent-workflows"
-bin/install-agent-workflows --host codex
-```
-
+For a stable first install, follow the [authenticated release bootstrap](docs/release-channel.md#install-update-and-roll-back).
+It checks a verifier against an independently trusted SHA-256 pin, verifies the
+exact tag and protected release evidence, and only then executes the installer.
 Use `--host claude` for Claude Code, or `--target "$HOME/.agents"` for an
-explicit shared agent home.
+explicit shared agent home. Do not execute an installer from an unverified tag.
 
 New to the pack? Follow [Getting Started](docs/getting-started.md) for
 prerequisites with versions, one host install, one repo adoption, and a first
@@ -127,19 +122,19 @@ delivery route: ordinary flat skills or the native `scw` plugin.
 Install into the default Codex home:
 
 ```bash
-bin/install-agent-workflows --host codex
+bin/install-agent-workflows --host codex --release vX.Y.Z
 ```
 
 Install into the default Claude Code home:
 
 ```bash
-bin/install-agent-workflows --host claude
+bin/install-agent-workflows --host claude --release vX.Y.Z
 ```
 
 Install into a different agent home, such as `~/.agents`:
 
 ```bash
-bin/install-agent-workflows --host codex --target "$HOME/.agents"
+bin/install-agent-workflows --host codex --target "$HOME/.agents" --release vX.Y.Z
 ```
 
 The installer copies:
@@ -149,19 +144,22 @@ The installer copies:
 - selected `bin/*` helpers to `<target>/bin/`;
 - install metadata to `<target>/.agent-workflows-install.json`.
 
-The default `--delivery-mode flat` installs those skills directly. When the
-native `scw` plugin is enabled, retain the installer-managed companion assets
-without a second flat skill tree:
+The default `--delivery-mode flat` installs those skills directly. With the
+release-pinned Claude native `scw` plugin enabled, complete the
+[exact-release bootstrap](docs/release-channel.md#install-update-and-roll-back)
+before retaining the companion assets without a second flat skill tree:
 
 ```bash
-bin/install-agent-workflows \
-  --host codex \
+"$source/bin/install-agent-workflows" \
+  --host claude --source "$source" \
+  --release "$release" \
   --delivery-mode plugin-companion
 ```
 
-The selected delivery mode is durable install state. Repeated installs,
-`upgrade-agent-workflows`, rollback, and `agent-stack sync` replay it unless an
-explicit `--delivery-mode` changes it.
+The selected delivery mode is durable install state. Stable install, update,
+and rollback always name an exact annotated `vX.Y.Z` tag; development branch
+following requires `--channel development`. Neither path silently crosses
+channels. See [Stable Release Channel](docs/release-channel.md).
 
 Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor`,
 `agent-workflows-doctor`, `agent-workflows-refresh`, `agent-workflows-status`,
@@ -182,16 +180,18 @@ Code exposes `skills/verify/SKILL.md` as `/scw:verify`.
 Add and install the Claude Code marketplace plugin with:
 
 ```text
-/plugin marketplace add shakacode/agent-workflows
+/plugin marketplace add shakacode/agent-workflows@vX.Y.Z
 /plugin install scw@agent-workflows
 ```
 
-Add and install the Codex marketplace plugin with:
-
-```bash
-codex plugin marketplace add shakacode/agent-workflows
-codex plugin add scw@agent-workflows
-```
+For stable Codex skills, use the verified
+[copy bootstrap](docs/release-channel.md#install-update-and-roll-back).
+The current native Codex URL route is **development/unverified**: marketplace
+`--ref` pins only the catalog, while the `scw` entry separately fetches the
+default branch without a plugin ref or SHA. Stable companion assets do not
+make that native plugin stable. See
+[Native Plugin Paths](docs/installation-and-upgrades.md#native-plugin-paths)
+for the explicitly development-only route.
 
 The manifests point at the existing `./skills/` tree; native installation does
 not copy helper binaries, write
@@ -237,11 +237,11 @@ Codex when an existing session must rediscover changed skills or instructions.
 
 ## Consumer Repo Adoption
 
-From each repository that should use these workflows, initialize and validate a
-starter seam in one command:
+For a stable install, initialize and validate each consumer repository against
+the installed exact-release target (`$HOME/.claude` for a Claude install):
 
 ```bash
-agent-workflow-seam-doctor --init --shared "$HOME/src/agent-workflows"
+agent-workflow-seam-doctor --init --shared "$HOME/.codex"
 ```
 
 The initializer preserves existing repo-owned seam content. It detects executable
@@ -254,8 +254,11 @@ configuration. Supply both commands explicitly to complete the seam in one run:
 agent-workflow-seam-doctor --init \
   --validate-command 'bin/validate' \
   --test-command 'bin/test' \
-  --shared "$HOME/src/agent-workflows"
+  --shared "$HOME/.codex"
 ```
+
+Only development-channel installs should instead use a mutable source checkout
+such as `--shared "$HOME/src/agent-workflows"`.
 
 Simple explicit commands forward wrapper arguments automatically. Explicit
 `npm run` commands add npm's `--` separator; `pnpm run` and `yarn run` pass the
@@ -414,13 +417,14 @@ ruby bin/codex-plugin-manifest-check
 Check the installed pack:
 
 ```bash
-agent-workflows-status --host codex
+agent-workflows-status --host codex --release vX.Y.Z
 ```
 
 Upgrade and validate a consumer repo seam:
 
 ```bash
-upgrade-agent-workflows --host codex --consumer-root /path/to/consumer/repo
+upgrade-agent-workflows --host codex --release vX.Y.Z \
+  --consumer-root /path/to/consumer/repo
 ```
 
 Long-running agents keep whatever skill text they already loaded. Let active

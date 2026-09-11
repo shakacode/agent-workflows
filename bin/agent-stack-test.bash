@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export AGENT_WORKFLOWS_CHANNEL=development
 source "$ROOT/test/agent_stack/support.bash"
 source "$ROOT/test/agent_stack/install_test.bash"
 source "$ROOT/test/agent_stack/doctor_install_test.bash"

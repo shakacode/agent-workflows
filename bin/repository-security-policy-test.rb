@@ -230,9 +230,49 @@ class RepositorySecurityPolicyTest < Minitest::Test
     policy = File.read(File.join(ROOT, "docs/repository-supply-chain.md"))
 
     assert_includes policy, "Stable release promotion, not ordinary pull-request development"
-    assert_includes policy, "agent-workflows/issues/296"
     assert_includes policy, "Automated reviews remain advisory"
-    assert_includes policy, "There is no supported human-reviewed install or upgrade path today"
+    assert_includes policy, "protected, immutable, annotated `vX.Y.Z` tags"
+    assert_includes policy, "protected `stable-release` environment"
+    assert_includes policy, "Cryptographic tag signatures are not required or checked"
+    assert_includes policy, "dispatch the workflow from the exact candidate commit"
+    assert_includes policy, "--channel development"
+  end
+
+  def test_release_workflow_binds_a_protected_environment_review_to_the_exact_tagged_commit
+    path = File.join(ROOT, ".github/workflows/release.yml")
+    workflow = File.read(path)
+
+    jobs = load_yaml_file(path).fetch("jobs")
+    verification = jobs.fetch("verify")
+    release = jobs.fetch("release")
+    assert_equal({ "contents" => "read" }, verification.fetch("permissions"))
+    refute verification.key?("environment")
+    assert_equal "verify", release.fetch("needs")
+    assert_equal "stable-release", release.fetch("environment")
+    full_step = verification.fetch("steps").find { |step| step["run"] == "bin/validate" }
+    refute_nil full_step
+    assert_equal "true", full_step.dig("env", "CI")
+    refute(verification.fetch("steps").any? { |step| step["continue-on-error"] })
+    release_steps = release.fetch("steps")
+    approval_index = release_steps.index { |step| step["id"] == "approval" }
+    tag_index = release_steps.index { |step| step["id"] == "tag" }
+    assert_operator approval_index, :<, tag_index
+    assert_includes release_steps.fetch(approval_index).fetch("run"), "${approval_reviewer,,}"
+    assert_includes release_steps.fetch(tag_index).fetch("run"), '"repos/$REPOSITORY/git/refs"'
+    assert_includes workflow, "environment: stable-release"
+    assert_includes workflow, "actions/runs/$RUN_ID/approvals"
+    assert_includes workflow, "WORKFLOW_SHA: ${{ github.workflow_sha }}"
+    assert_includes workflow, 'test "$WORKFLOW_SHA" = "$CANDIDATE_SHA"'
+    assert_includes workflow, "bin/agent-workflows-release verify-tag"
+    assert_includes workflow, "bin/agent-workflows-release record-receipt"
+    assert_includes workflow, "--expected-tag-object"
+    assert_includes workflow, "--approved-commit"
+    assert_includes workflow, "--repository \"$REPOSITORY\""
+    assert_includes workflow, "--workflow-run-id \"$RUN_ID\""
+    assert_includes workflow, "--workflow-run-attempt \"$RUN_ATTEMPT\""
+    assert_includes workflow, "--workflow-path \"$WORKFLOW_PATH\""
+    assert_includes workflow, "gh release create"
+    refute_match(/verify-(?:commit|tag).*signature|git verify-tag|git verify-commit/, workflow)
   end
 
   def test_dependabot_proposes_pinned_action_updates_for_review

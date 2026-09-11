@@ -62,6 +62,7 @@ and implementation plans are collected in the final reference section.
 | Report a suspected vulnerability in this pack | [Security Policy](../SECURITY.md) |
 | Configure claims, heartbeats, cancellation, and fail-closed coordination state | [Coordination Backend](coordination-backend.md) |
 | Apply consumer-repository release branch policy | [Release Branching](release-branching.md) |
+| Install or promote an immutable human-reviewed source-pack release | [Stable Release Channel](release-channel.md) |
 | Pause or resume work around an agent runner restart | [Agent Runner Restarts](agent-runner-restarts.md) |
 | Unwind a bad agent merge: revert scope, order, bookkeeping, and authority | [Revert Runbook](revert-runbook.md) |
 

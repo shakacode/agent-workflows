@@ -3,9 +3,12 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion]
+Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] (--release vX.Y.Z | --channel development)
 
 Installs this shared workflow pack into an agent home.
+
+Stable installs use --release vX.Y.Z and copy files from that exact annotated
+tag. Branch-following installs require the explicit --channel development.
 
 Default targets:
   --host codex   ${CODEX_HOME:-$HOME/.codex}
@@ -40,11 +43,28 @@ Installed paths:
 USAGE
 }
 
+emit_install_inventory() {
+  ruby -rjson -e '
+    separator = ARGV.index("__AGENT_WORKFLOWS_DOCS__") or abort
+    helpers = ARGV[0...separator]
+    docs = ARGV[(separator + 1)..]
+    puts JSON.generate({"version" => 1, "bin_helpers" => helpers, "pack_docs" => docs})
+  ' -- "${bin_helpers[@]}" __AGENT_WORKFLOWS_DOCS__ "${pack_docs[@]}"
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source_root="$repo_root"
+release_verifier="$repo_root/bin/agent-workflows-release"
+materialized_temp_root=""
 host="codex"
 target=""
 mode="copy"
 delivery_mode=""
+channel="${AGENT_WORKFLOWS_CHANNEL:-}"
+channel_was_explicit=false
+release_ref=""
+release_commit=""
+tag_object=""
 metadata_name=".agent-workflows-install.json"
 doctor_managed_marker=".agent-workflows-managed"
 doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
@@ -55,6 +75,7 @@ bin_helpers=(
   agent-workflows-delivery-state
   agent-workflows-doctor
   agent-workflows-refresh
+  agent-workflows-release
   agent-workflows-status
   agent-workflows-trust-audit
   install-agent-workflows
@@ -71,6 +92,7 @@ pack_docs=(
   user-facing-coordination.md
   writing-style.md
   writing-style-asd-ste100.md
+  release-channel.md
 )
 for solution_path in "$repo_root"/docs/solutions/*; do
   [[ -f "$solution_path" && ! -L "$solution_path" ]] || continue
@@ -181,13 +203,19 @@ metadata_value() {
       fi
       ;;
     source_revision)
-      git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'unknown\n'
+      if [[ "$channel" = "stable" ]]; then
+        printf '%s\n' "$release_commit"
+      else
+        git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'unknown\n'
+      fi
       ;;
     source_branch)
-      git -C "$repo_root" branch --show-current 2>/dev/null || true
+      if [[ "$channel" = "development" ]]; then
+        git -C "$repo_root" branch --show-current 2>/dev/null || true
+      fi
       ;;
     source_remote)
-      git -C "$repo_root" config --get remote.origin.url 2>/dev/null || true
+      git -C "$source_root" config --get remote.origin.url 2>/dev/null || true
       ;;
     *)
       return 1
@@ -267,15 +295,19 @@ read_installed_metadata_value() {
         managed_pack_doc_copy_fingerprints
         managed_pack_helper_copy_fingerprints
         managed_pack_root_copy_fingerprints
+        managed_bin_helper_copy_fingerprints
       ].any? do |field|
         next false unless metadata.key?(field)
         fingerprints = metadata[field]
         !fingerprints.is_a?(Hash) || fingerprints.any? do |name, digest|
           valid_name = if field == "managed_skill_copy_fingerprints"
                          name.is_a?(String) && !%w[. ..].include?(name) && name.match?(%r{\A[^\x00/]+\z})
+                       elsif field == "managed_bin_helper_copy_fingerprints"
+                         name.is_a?(String) && name.match?(/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/)
                        else
                          segments = name.is_a?(String) ? name.split("/", -1) : []
-                         name.is_a?(String) && !name.empty? && !name.start_with?("/") && !name.include?("\0") &&
+                         name.is_a?(String) && !name.empty? && !name.start_with?("/") &&
+                           !name.match?(/[\x00-\x1f\x7f]/) &&
                            segments.none? { |segment| segment.empty? || segment == "." || segment == ".." }
                        end
           !valid_name || !digest.is_a?(String) || !digest.match?(/\A[0-9a-f]{64}\z/i)
@@ -1880,9 +1912,11 @@ prepare_metadata() {
         end
       end
     end
-    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at, doc_count, *assets = ARGV
-    pack_docs = assets.shift(Integer(doc_count))
-    bin_helpers = assets
+    path, host, mode, delivery_mode, source, content_root, version, revision, branch, remote, installed_at, channel, release_ref, tag_object, pack_doc_count, *inventory = ARGV
+    pack_doc_count = Integer(pack_doc_count, 10)
+    abort if pack_doc_count.negative? || pack_doc_count > inventory.length
+    pack_docs = inventory.shift(pack_doc_count)
+    bin_helpers = inventory
     directory_fingerprint = lambda do |root|
       entries = []
       Find.find(root) do |entry|
@@ -1902,8 +1936,8 @@ prepare_metadata() {
       Digest::SHA256.hexdigest(JSON.generate(entries.sort_by { |fingerprint_entry| fingerprint_entry.fetch(1) }))
     end
     skill_fingerprints = if mode == "copy" && delivery_mode == "flat"
-                           Dir.children(File.join(source, "skills")).sort.each_with_object({}) do |name, fingerprints|
-                             root = File.join(source, "skills", name)
+                           Dir.children(File.join(content_root, "skills")).sort.each_with_object({}) do |name, fingerprints|
+                             root = File.join(content_root, "skills", name)
                              next unless File.directory?(root) && !File.symlink?(root)
 
                              fingerprints[name] = directory_fingerprint.call(root)
@@ -1913,7 +1947,7 @@ prepare_metadata() {
                          end
     doc_fingerprints = if mode == "copy"
                          pack_docs.to_h do |name|
-                           doc = File.join(source, "docs", name)
+                           doc = File.join(content_root, "docs", name)
                            abort "missing pack document while preparing install metadata: #{doc}" unless File.file?(doc) && !File.symlink?(doc)
 
                            [name, Digest::SHA256.file(doc).hexdigest]
@@ -1923,7 +1957,7 @@ prepare_metadata() {
                        end
     root_fingerprints = if mode == "copy"
                           name = "THIRD_PARTY-NOTICES.md"
-                          root_file = File.join(source, name)
+                          root_file = File.join(content_root, name)
                           unless File.file?(root_file) && !File.symlink?(root_file)
                             abort "missing pack root file while preparing install metadata: #{root_file}"
                           end
@@ -1934,10 +1968,9 @@ prepare_metadata() {
                         end
     helper_fingerprints = if mode == "copy"
                             bin_helpers.to_h do |name|
-                              helper = File.join(source, "bin", name)
-                              unless File.file?(helper) && !File.symlink?(helper)
-                                abort "missing pack helper while preparing install metadata: #{helper}"
-                              end
+                              helper = File.join(content_root, "bin", name)
+                              abort "missing helper while preparing install metadata: #{helper}" unless File.file?(helper) &&
+                                                                                                  !File.symlink?(helper)
 
                               [name, Digest::SHA256.file(helper).hexdigest]
                             end
@@ -1957,8 +1990,12 @@ prepare_metadata() {
       "managed_skill_copy_fingerprints" => skill_fingerprints,
       "managed_pack_doc_copy_fingerprints" => doc_fingerprints,
       "managed_pack_helper_copy_fingerprints" => helper_fingerprints,
-      "managed_pack_root_copy_fingerprints" => root_fingerprints
+      "managed_pack_root_copy_fingerprints" => root_fingerprints,
+      "managed_bin_helper_copy_fingerprints" => helper_fingerprints
     }
+    metadata["channel"] = channel
+    metadata["release_ref"] = release_ref unless release_ref.empty?
+    metadata["tag_object"] = tag_object unless tag_object.empty?
     serialized_metadata = JSON.pretty_generate(metadata) + "\n"
     abort unless File.const_defined?(:NOFOLLOW)
     file = nil
@@ -2005,7 +2042,7 @@ prepare_metadata() {
         end
       end
     end
-  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${#pack_docs[@]}" "${pack_docs[@]}" "${bin_helpers[@]}" 2>/dev/null)" || prepare_status=$?
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$source_root" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "$channel" "$release_ref" "$tag_object" "${#pack_docs[@]}" "${pack_docs[@]}" "${bin_helpers[@]}" 2>/dev/null)" || prepare_status=$?
   if [[ "$prepare_status" -ne 0 ]]; then
     echo "METADATA_PREPARE_BLOCKED: could not safely create $metadata_tmp; preserved any path that exists there." >&2
     echo "Verify and move that exact path aside while retaining evidence, then retry; the installer will not delete or overwrite an unverified path." >&2
@@ -3804,6 +3841,371 @@ report_delivery_state_conflict() {
   fi
 }
 
+materialize_stable_release() {
+  local discovered_commit discovered_tag_object materialized_root tag_ref
+
+  [[ "$release_ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    echo "--release must be an exact vX.Y.Z tag, got: $release_ref" >&2
+    exit 64
+  }
+  git -C "$source_root" rev-parse --git-dir >/dev/null 2>&1 || {
+    echo "Stable installation requires a Git source clone: $source_root" >&2
+    exit 64
+  }
+  tag_ref="refs/tags/$release_ref"
+  discovered_tag_object="$(git -C "$source_root" rev-parse --verify "$tag_ref" 2>/dev/null)" || {
+    echo "Stable release tag is missing: $release_ref" >&2
+    exit 64
+  }
+  if [[ "$(git -C "$source_root" cat-file -t "$discovered_tag_object" 2>/dev/null || true)" != "tag" ]]; then
+    echo "Stable release must be an annotated tag: $release_ref" >&2
+    exit 64
+  fi
+  discovered_commit="$(git -C "$source_root" rev-parse --verify "$tag_ref^{commit}" 2>/dev/null)" || {
+    echo "Stable release tag does not peel to a commit: $release_ref" >&2
+    exit 64
+  }
+
+  tag_object="$discovered_tag_object"
+  release_commit="$discovered_commit"
+
+  if [[ ! -f "$release_verifier" || -L "$release_verifier" ]]; then
+    echo "Stable installation requires a trusted regular-file release verifier: $release_verifier" >&2
+    exit 1
+  fi
+  ruby "$release_verifier" verify-tag \
+    --root "$source_root" --release "$release_ref" \
+    --approved-commit "$release_commit" --expected-tag-object "$tag_object" >/dev/null || exit $?
+
+  ruby "$release_verifier" verify-published \
+    --root "$source_root" --release "$release_ref" \
+    --approved-commit "$release_commit" --expected-tag-object "$tag_object" \
+    --repository shakacode/agent-workflows >/dev/null || exit $?
+
+  materialized_temp_root="$(mktemp -d)"
+
+  materialized_root="$materialized_temp_root/pack"
+  mkdir -p "$materialized_root"
+  if ! git -C "$source_root" archive --output="$materialized_temp_root/pack.tar" "$release_commit" ||
+     ! tar -xf "$materialized_temp_root/pack.tar" -C "$materialized_root"; then
+    rm -rf "$materialized_temp_root"
+    materialized_temp_root=""
+    echo "Unable to materialize stable release: $release_ref" >&2
+    exit 1
+  fi
+
+  repo_root="$materialized_root"
+  load_materialized_release_inventory "$materialized_root"
+  doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
+  delivery_state_script="$repo_root/bin/agent-workflows-delivery-state"
+  trap cleanup_materialized_release EXIT
+}
+
+load_materialized_release_inventory() {
+  local materialized_root="$1" installer inventory_path helpers_path docs_path
+  installer="$materialized_root/bin/install-agent-workflows"
+  inventory_path="$materialized_temp_root/install-inventory.json"
+  helpers_path="$materialized_temp_root/install-inventory-helpers"
+  docs_path="$materialized_temp_root/install-inventory-docs"
+
+  if [[ ! -f "$installer" || -L "$installer" ]]; then
+    cleanup_materialized_release
+    echo "Stable release lacks a regular-file installer inventory provider: $release_ref" >&2
+    exit 1
+  fi
+  if ! BASH_ENV=/dev/null ENV=/dev/null "$BASH" --noprofile --norc \
+    "$installer" --print-install-inventory > "$inventory_path"; then
+    cleanup_materialized_release
+    echo "Stable release installer inventory could not be read: $release_ref" >&2
+    exit 1
+  fi
+
+  if ! ruby -rjson -e '
+    root, inventory_path, helpers_path, docs_path = ARGV
+    payload = JSON.parse(File.binread(inventory_path))
+    abort unless payload.is_a?(Hash) && payload.keys.sort == %w[bin_helpers pack_docs version]
+    abort unless payload["version"] == 1
+
+    validate_entry = lambda do |relative, kind|
+      abort unless relative.is_a?(String) && !relative.empty?
+      abort if relative.match?(/[\x00-\x1f\x7f]/)
+      parts = relative.split("/", -1)
+      abort if parts.any? { |part| part.empty? || part == "." || part == ".." }
+      if kind == :helper
+        abort unless parts.length == 1 && relative.match?(/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/)
+        parts = ["bin", relative]
+      else
+        abort if relative.start_with?("/")
+        parts = ["docs", *parts]
+      end
+
+      current = root
+      parts.each_with_index do |part, index|
+        current = File.join(current, part)
+        stat = File.lstat(current)
+        abort if stat.symlink?
+        if index == parts.length - 1
+          abort unless stat.file?
+          abort if kind == :helper && !File.executable?(current)
+        else
+          abort unless stat.directory?
+        end
+      end
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      abort
+    end
+
+    helpers = payload["bin_helpers"]
+    docs = payload["pack_docs"]
+    abort unless helpers.is_a?(Array) && !helpers.empty? && helpers.uniq == helpers
+    abort unless docs.is_a?(Array) && !docs.empty? && docs.uniq == docs
+    helpers.each { |entry| validate_entry.call(entry, :helper) }
+    docs.each { |entry| validate_entry.call(entry, :doc) }
+    File.binwrite(helpers_path, helpers.join("\n") + "\n")
+    File.binwrite(docs_path, docs.join("\n") + "\n")
+  ' "$materialized_root" "$inventory_path" "$helpers_path" "$docs_path"; then
+    cleanup_materialized_release
+    echo "Stable release installer inventory is invalid: $release_ref" >&2
+    exit 1
+  fi
+
+  bin_helpers=()
+  while IFS= read -r helper; do
+    [[ -z "$helper" ]] || bin_helpers+=("$helper")
+  done < "$helpers_path"
+  pack_docs=()
+  while IFS= read -r doc_name; do
+    [[ -z "$doc_name" ]] || pack_docs+=("$doc_name")
+  done < "$docs_path"
+}
+
+restore_obsolete_stable_copy_files() {
+  local index original staged expected_identity original_parent original_parent_identity attestation move_status
+  for ((index = ${#obsolete_managed_staging[@]} - 6; index >= 0; index -= 6)); do
+    original="${obsolete_managed_staging[$index]}"
+    staged="${obsolete_managed_staging[$((index + 1))]}"
+    expected_identity="${obsolete_managed_staging[$((index + 2))]}"
+    original_parent="${obsolete_managed_staging[$((index + 3))]}"
+    original_parent_identity="${obsolete_managed_staging[$((index + 4))]}"
+    attestation="${obsolete_managed_staging[$((index + 5))]}"
+    if [[ -e "$original" || -L "$original" ]] ||
+       [[ "$(regular_file_attestation "$staged" 2>/dev/null || true)" != "$attestation" ]]; then
+      echo "MANAGED_SURFACE_ROLLBACK_FAILED: preserved staged managed file: $staged" >&2
+      return 65
+    fi
+    move_status=0
+    move_bound_recovery_path "$staged" "$original" "$install_lock" "$install_lock_identity" \
+      "$original_parent" "$original_parent_identity" "$expected_identity" || move_status=$?
+    if [[ "$move_status" -ne 0 ]]; then
+      echo "MANAGED_SURFACE_ROLLBACK_FAILED: preserved staged managed file: $staged" >&2
+      return 65
+    fi
+  done
+  obsolete_managed_staging=()
+}
+
+finalize_obsolete_stable_copy_files() {
+  local index staged attestation cleanup_path
+  for ((index = 0; index < ${#obsolete_managed_staging[@]}; index += 6)); do
+    staged="${obsolete_managed_staging[$((index + 1))]}"
+    attestation="${obsolete_managed_staging[$((index + 5))]}"
+    if ! cleanup_path="$(remove_attested_metadata_file "$staged" "$attestation")"; then
+      report_metadata_cleanup_pending "${cleanup_path:-$staged}"
+      return 65
+    fi
+  done
+  obsolete_managed_staging=()
+}
+
+refuse_implicit_channel_migration() {
+  [[ "$channel" = "development" && "$channel_was_explicit" = false ]] || return 0
+  [[ -e "$target/$metadata_name" || -L "$target/$metadata_name" ]] || return 0
+  read_installed_metadata_value channel
+  if [[ "$installed_metadata_state" = corrupt ]]; then
+    report_corrupt_install_metadata
+    return 65
+  fi
+  if [[ "$installed_metadata_state" = valid && "$installed_metadata_value" = stable ]]; then
+    echo "STABLE_CHANNEL_PRESERVED: use upgrade-agent-workflows --release for stable updates; an explicit reinstall is required to change channels." >&2
+    return 64
+  fi
+}
+
+verify_stable_instruction_surface() {
+  [[ "$channel" = "stable" && "$mode" = "copy" ]] || return 0
+  [[ "${install_metadata_binding_state:-}" = "present" ]] || return 0
+  require_install_metadata_binding
+  if ! ruby -rjson -ropen3 -e '
+    metadata_path, source, selected_root, target, *selected_docs = ARGV
+    separator = selected_docs.index("__AGENT_WORKFLOWS_HELPERS__") or abort
+    selected_helpers = selected_docs.drop(separator + 1)
+    selected_docs = selected_docs.take(separator)
+    metadata = JSON.parse(File.binread(metadata_path))
+    abort "invalid prior installation metadata" unless metadata.is_a?(Hash)
+    prior_mode = metadata["mode"]
+    abort "invalid prior installation mode" unless %w[copy symlink].include?(prior_mode)
+    revision = metadata["source_revision"]
+    unless revision.is_a?(String) && revision.match?(/\A[0-9a-f]{40}(?:[0-9a-f]{24})?\z/i)
+      abort "prior exact revision is unavailable"
+    end
+    roots = [source, metadata["source"]].select { |root| root.is_a?(String) && !root.empty? }.uniq
+    prior_source = roots.find do |root|
+      Open3.capture3("git", "-C", root, "cat-file", "-e", "#{revision}^{commit}").last.success?
+    end
+    abort "prior exact revision cannot be read from a source clone" unless prior_source
+
+    if prior_mode == "symlink"
+      recorded_source = File.expand_path(metadata.fetch("source"))
+      { "docs" => selected_docs, "bin" => selected_helpers + ["agent_doctor"] }.each do |surface, selected_names|
+        surface_root = File.join(target, surface)
+        Dir.glob(File.join(surface_root, "**", "*"), File::FNM_DOTMATCH).each do |path|
+          next unless File.symlink?(path)
+
+          name = path.delete_prefix("#{surface_root}/")
+          next if selected_names.any? { |selected| selected == name || selected.start_with?("#{name}/") }
+          next unless File.expand_path(File.readlink(path), File.dirname(path)) == File.join(recorded_source, surface, name)
+
+          abort "prior managed source symlink remains installed: #{surface}/#{name}"
+        end
+      end
+    end
+
+    %w[skills workflows].each do |surface|
+      next if surface == "workflows" && prior_mode == "symlink"
+      next if surface == "skills" && metadata.fetch("delivery_mode", "flat") != "flat"
+
+      output, _error, status = Open3.capture3(
+        "git", "-C", prior_source, "ls-tree", "-z", "--name-only", "#{revision}:#{surface}"
+      )
+      abort "prior #{surface} inventory is unavailable" unless status.success?
+      prior_names = output.split("\0")
+      if surface == "skills" && prior_mode == "copy"
+        fingerprints = metadata.fetch("managed_skill_copy_fingerprints", {})
+        abort "prior skill fingerprint inventory is invalid" unless fingerprints.is_a?(Hash)
+        prior_names |= fingerprints.keys
+      elsif surface == "skills"
+        installed_skills = File.join(target, "skills")
+        recorded_source = File.expand_path(metadata.fetch("source"))
+        if File.directory?(installed_skills)
+          Dir.children(installed_skills).each do |name|
+            path = File.join(installed_skills, name)
+            next unless File.symlink?(path)
+
+            linked_source = File.expand_path(File.readlink(path), installed_skills)
+            prior_names |= [name] if linked_source == File.join(recorded_source, "skills", name)
+          end
+        end
+      end
+      selected_names = Dir.children(File.join(selected_root, surface))
+      prior_names.each do |name|
+        unless name.is_a?(String) && name.match?(/\A[^\x00-\x1f\x7f\/]+\z/) && !%w[. ..].include?(name)
+          abort "invalid prior #{surface} path"
+        end
+        next if name.start_with?(".") || selected_names.include?(name)
+
+        path = File.join(target, surface, name)
+        next unless File.exist?(path) || File.symlink?(path)
+
+        abort "prior release instruction root remains installed: #{surface}/#{name}"
+      end
+    end
+  ' "$install_metadata_snapshot_path" "$source_root" "$repo_root" "$target" "${pack_docs[@]}" \
+    __AGENT_WORKFLOWS_HELPERS__ "${bin_helpers[@]}"; then
+    echo "STABLE_INSTRUCTION_SURFACE_CONFLICT: preserved the prior installation; use a separate clean target for this release." >&2
+    return 65
+  fi
+  require_install_metadata_binding
+}
+
+reconcile_obsolete_stable_copy_files() {
+  local obsolete_records kind name expected_digest destination attestation
+  local original_parent original_parent_identity expected_identity staged move_status
+  local -a removals=()
+  [[ "$channel" = "stable" && "$mode" = "copy" ]] || return 0
+  [[ "${install_metadata_binding_state:-}" = "present" ]] || return 0
+  require_install_metadata_binding
+
+  if ! obsolete_records="$(ruby -rjson -e '
+    metadata_path, separator, *selected = ARGV
+    abort unless separator == "__AGENT_WORKFLOWS_DOCS__"
+    helper_separator = selected.index("__AGENT_WORKFLOWS_HELPERS__") or abort
+    selected_docs = selected.shift(helper_separator)
+    selected.shift
+    selected_helpers = selected
+    metadata = JSON.parse(File.binread(metadata_path))
+    abort unless metadata.is_a?(Hash)
+    exit if metadata["mode"] == "symlink"
+    abort unless metadata["mode"] == "copy"
+    fields = {
+      "doc" => ["managed_pack_doc_copy_fingerprints", selected_docs],
+      "helper" => ["managed_bin_helper_copy_fingerprints", selected_helpers]
+    }
+    fields.each do |kind, (field, selected_names)|
+      fingerprints = metadata.fetch(field, {})
+      abort unless fingerprints.is_a?(Hash)
+      fingerprints.each do |name, digest|
+        abort unless name.is_a?(String) && !name.include?("\t") && !name.match?(/[\x00-\x1f\x7f]/)
+        abort unless digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/i)
+        puts [kind, name, digest].join("\t") unless selected_names.include?(name)
+      end
+    end
+  ' "$install_metadata_snapshot_path" __AGENT_WORKFLOWS_DOCS__ "${pack_docs[@]}" \
+    __AGENT_WORKFLOWS_HELPERS__ "${bin_helpers[@]}")"; then
+    echo "MANAGED_SURFACE_RECONCILIATION_FAILED: installed metadata inventory is invalid." >&2
+    return 65
+  fi
+  require_install_metadata_binding
+
+  while IFS=$'\t' read -r kind name expected_digest; do
+    [[ -n "$kind" ]] || continue
+    case "$kind" in
+      doc) destination="$target/docs/$name" ;;
+      helper) destination="$target/bin/$name" ;;
+      *) return 65 ;;
+    esac
+    [[ -e "$destination" || -L "$destination" ]] || continue
+    if ! attestation="$(regular_file_attestation "$destination")" ||
+       [[ "${attestation#*|}" != "$expected_digest" ]]; then
+      echo "MANAGED_SURFACE_RECONCILIATION_FAILED: preserved modified or replaced prior managed path: $destination" >&2
+      return 65
+    fi
+    removals+=("$destination" "$attestation")
+  done <<< "$obsolete_records"
+
+  local index record_index
+  for ((index = 0; index < ${#removals[@]}; index += 2)); do
+    destination="${removals[$index]}"
+    attestation="${removals[$((index + 1))]}"
+    original_parent="$(dirname "$destination")"
+    original_parent_identity="$(recovery_directory_identity "$original_parent")" || return 65
+    expected_identity="${attestation%%|*}"
+    record_index=$((index / 2))
+    staged="$install_lock/managed-surface-$record_index"
+    move_status=0
+    move_bound_recovery_path "$destination" "$staged" "$original_parent" "$original_parent_identity" \
+      "$install_lock" "$install_lock_identity" "$expected_identity" || move_status=$?
+    if [[ "$move_status" -ne 0 ]]; then
+      restore_obsolete_stable_copy_files || true
+      echo "MANAGED_SURFACE_RECONCILIATION_FAILED: preserved prior managed path: $destination" >&2
+      return 65
+    fi
+    obsolete_managed_staging+=(
+      "$destination" "$staged" "$expected_identity" "$original_parent" "$original_parent_identity" "$attestation"
+    )
+    if [[ "$(regular_file_attestation "$staged" 2>/dev/null || true)" != "$attestation" ]]; then
+      restore_obsolete_stable_copy_files || true
+      echo "MANAGED_SURFACE_RECONCILIATION_FAILED: staged managed path changed: $destination" >&2
+      return 65
+    fi
+    require_install_metadata_binding
+  done
+}
+
+cleanup_materialized_release() {
+  [[ -z "$materialized_temp_root" ]] || rm -rf "$materialized_temp_root"
+}
+
+print_install_inventory=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
@@ -3814,6 +4216,10 @@ while [[ $# -gt 0 ]]; do
       target="${2:?--target requires a directory}"
       shift 2
       ;;
+    --source)
+      source_root="${2:?--source requires a directory}"
+      shift 2
+      ;;
     --mode)
       mode="${2:?--mode requires copy or symlink}"
       shift 2
@@ -3821,6 +4227,20 @@ while [[ $# -gt 0 ]]; do
     --delivery-mode)
       delivery_mode="${2:?--delivery-mode requires flat or plugin-companion}"
       shift 2
+      ;;
+    --channel)
+      channel="${2:?--channel requires stable or development}"
+      channel_was_explicit=true
+      shift 2
+      ;;
+    --release)
+      release_ref="${2:?--release requires vX.Y.Z}"
+      [[ -n "$channel" ]] || channel="stable"
+      shift 2
+      ;;
+    --print-install-inventory)
+      print_install_inventory=true
+      shift
       ;;
     -h|--help)
       usage
@@ -3833,6 +4253,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$print_install_inventory" = true ]]; then
+  emit_install_inventory
+  exit 0
+fi
 
 case "$host" in
   codex|claude|auto) ;;
@@ -3852,6 +4277,38 @@ esac
 
 validate_delivery_mode "--delivery-mode"
 
+case "$channel" in
+  stable)
+    [[ -n "$release_ref" ]] || {
+      echo "Stable channel requires --release vX.Y.Z" >&2
+      exit 64
+    }
+    [[ "$mode" = "copy" ]] || {
+      echo "Stable channel requires copy mode; symlinks would follow mutable source state" >&2
+      exit 64
+    }
+    materialize_stable_release
+    ;;
+  development)
+    [[ -z "$release_ref" ]] || {
+      echo "Development channel cannot use --release" >&2
+      exit 64
+    }
+    if [[ "$(cd "$source_root" && pwd -P)" != "$(cd "$repo_root" && pwd -P)" ]]; then
+      echo "Development --source must match the invoked installer checkout; run the installer from that source." >&2
+      exit 64
+    fi
+    ;;
+  "")
+    echo "Choose --release vX.Y.Z for stable or --channel development for branch-following installation." >&2
+    exit 64
+    ;;
+  *)
+    echo "--channel must be stable or development, got: $channel" >&2
+    exit 64
+    ;;
+esac
+
 resolved="$(resolve_host_and_target)"
 host="${resolved%%:*}"
 target="${resolved#*:}"
@@ -3863,6 +4320,7 @@ if [[ -e "$target" || -L "$target" ]]; then
   fi
   target="$canonical_target"
 fi
+refuse_implicit_channel_migration || exit $?
 delivery_mode_was_explicit=false
 [[ -z "$delivery_mode" ]] || delivery_mode_was_explicit=true
 resolve_delivery_mode
@@ -3921,6 +4379,7 @@ release_install_lock() {
     report_metadata_cleanup_pending "${cleanup_path:-$install_lock}"
     [[ "$status" -ne 0 ]] || status=1
   fi
+  cleanup_materialized_release
   exit "$status"
 }
 trap release_install_lock EXIT
@@ -4079,6 +4538,7 @@ fi
 binding_status=0
 capture_install_metadata_binding || binding_status=$?
 [[ "$binding_status" -eq 0 ]] || exit "$binding_status"
+refuse_implicit_channel_migration || exit $?
 if [[ "$delivery_mode_was_explicit" != "true" &&
       "$delivery_mode" != "$install_metadata_bound_delivery_mode" ]]; then
   report_install_metadata_binding_changed
@@ -4087,6 +4547,7 @@ fi
 prebind_install_metadata_rollback_guard || exit 1
 metadata_committed=false
 metadata_commit_rollback_failed=false
+obsolete_managed_staging=()
 release_install_transaction() {
   local status=$? cleanup_path
   trap - EXIT
@@ -4104,6 +4565,11 @@ release_install_transaction() {
   elif [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" = "true" &&
           -n "$migration_staging" ]]; then
     echo "CLEANUP_PENDING: metadata commit outcome is uncertain; preserved $migration_receipt for $migration_staging without restoring the staged flat layout." >&2
+  fi
+  if [[ "$metadata_committed" != "true" && ${#obsolete_managed_staging[@]} -gt 0 ]]; then
+    if ! restore_obsolete_stable_copy_files; then
+      status=65
+    fi
   fi
   if [[ "$metadata_committed" != "true" && "$metadata_commit_rollback_failed" != "true" &&
         -n "${prepared_metadata_attestation:-}" ]]; then
@@ -4130,6 +4596,7 @@ release_install_transaction() {
     report_metadata_cleanup_pending "${cleanup_path:-$install_lock}"
     [[ "$status" -ne 0 ]] || status=1
   fi
+  cleanup_materialized_release
   exit "$status"
 }
 trap release_install_transaction EXIT
@@ -4144,6 +4611,8 @@ fi
 verify_pack_doc_destinations
 verify_install_destinations
 verify_third_party_notices_destination
+verify_stable_instruction_surface
+reconcile_obsolete_stable_copy_files
 prepare_metadata
 if ! verify_install_metadata_binding; then
   report_install_metadata_binding_changed
@@ -4262,12 +4731,18 @@ if ! verify_install_metadata_binding; then
 fi
 commit_metadata
 metadata_committed=true
+finalize_obsolete_stable_copy_files
 if [[ -n "$migration_staging" ]]; then
   if rm -rf "$migration_staging"; then
     rm -f "$migration_receipt"
   else
     echo "CLEANUP_PENDING: committed plugin-companion mode; preserved $migration_receipt for $migration_staging" >&2
   fi
+fi
+
+guidance_shared_root="$repo_root"
+if [[ "$channel" = "stable" ]]; then
+  guidance_shared_root="$target"
 fi
 
 printf '%s\n' \
@@ -4281,10 +4756,10 @@ printf '%s\n' \
   "  export PATH=\"$target/bin:\$PATH\"" \
   "" \
   "Initialize a consumer repo with:" \
-  "  agent-workflow-seam-doctor --init --root /path/to/consumer/repo --shared \"$repo_root\"" \
+  "  agent-workflow-seam-doctor --init --root /path/to/consumer/repo --shared \"$guidance_shared_root\"" \
   "" \
   "Validate a consumer repo with:" \
-  "  agent-workflow-seam-doctor --shared \"$repo_root\"" \
+  "  agent-workflow-seam-doctor --shared \"$guidance_shared_root\"" \
   "" \
   "Check for updates with:" \
   "  agent-workflows-status --host \"$host\""

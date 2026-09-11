@@ -79,6 +79,33 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
     end
   end
 
+  def test_json_output_identifies_the_installed_release_channel_ref_and_exact_commit
+    with_fake_commands("ok") do |env, preflight_path, trust_config_path|
+      metadata_path = File.join(File.dirname(trust_config_path), "install.json")
+      File.write(
+        metadata_path,
+        JSON.generate(
+          "channel" => "stable",
+          "release_ref" => "v1.2.3",
+          "source_revision" => "a" * 40,
+          "tag_object" => "b" * 40
+        )
+      )
+
+      out, status = run_script(
+        env, preflight_path, "--json", "--install-metadata", metadata_path,
+        trust_config_path:
+      )
+      payload = JSON.parse(out)
+
+      assert status.success?, out
+      assert_equal "stable", payload.dig("workflow_install", "channel")
+      assert_equal "v1.2.3", payload.dig("workflow_install", "release_ref")
+      assert_equal "a" * 40, payload.dig("workflow_install", "exact_commit")
+      assert_equal "b" * 40, payload.dig("workflow_install", "tag_object")
+    end
+  end
+
   def test_preflight_operational_failure_is_not_reported_as_security_block
     with_fake_commands("error") do |env, preflight_path, trust_config_path|
       out, status = run_script(env, preflight_path, trust_config_path:)

@@ -64,8 +64,10 @@ ruby bin/delivery-policy-replay-test.rb
 
 echo "== status unit tests =="
 ruby bin/agent-workflows-refresh-test.rb
+ruby bin/agent-workflows-release-test.rb
 ruby bin/agent-workflows-status-test.rb
 ruby bin/agent-workflows-trust-audit-test.rb
+ruby bin/upgrade-agent-workflows-test.rb
 
 echo "== repository security policy =="
 ruby bin/repository-security-policy-test.rb

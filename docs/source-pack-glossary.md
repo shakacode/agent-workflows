@@ -24,7 +24,8 @@ contract files.
 _Avoid_: plugin settings, global config.
 
 **Host Installer Path**:
-The existing `bin/install-agent-workflows --host <host>` route that installs
+The `bin/install-agent-workflows --host <host> --release vX.Y.Z` stable route,
+or explicitly selected `--channel development` route, that installs
 skills, workflows, helper binaries, and metadata into a Codex or Claude home.
 _Avoid_: legacy path.
 

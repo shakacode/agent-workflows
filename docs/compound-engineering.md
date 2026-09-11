@@ -149,7 +149,7 @@ directory and load the checked-out CE plugin directly:
 ```bash
 export CLAUDE_CONFIG_DIR="$HOME/.claude/profiles/ce-pilot"
 "$AGENT_WORKFLOWS_SOURCE/bin/install-agent-workflows" \
-  --host claude --target "$CLAUDE_CONFIG_DIR"
+  --host claude --target "$CLAUDE_CONFIG_DIR" --channel development
 claude --plugin-dir "$CE_SOURCE"
 ```
 
@@ -161,7 +161,7 @@ with that same `CODEX_HOME`:
 
 ```bash
 export CODEX_HOME="$HOME/.codex/profiles/ce-pilot"
-"$AGENT_WORKFLOWS_SOURCE/bin/install-agent-workflows" --host codex
+"$AGENT_WORKFLOWS_SOURCE/bin/install-agent-workflows" --host codex --channel development
 codex plugin marketplace add "$CE_SOURCE"
 codex plugin add compound-engineering@compound-engineering-plugin
 codex

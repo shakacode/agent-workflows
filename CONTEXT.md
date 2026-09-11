@@ -2,6 +2,13 @@
 
 Portable language for multi-agent PR-batch workflows: how coordinators, workers, and a coordination backend talk about ownership, liveness, and batch lifecycle. Keep repo-specific policy, backend names, dashboards, and domain vocabulary in each consumer repo's `AGENTS.md` seam or local docs. The companion glossary for source-pack distribution, install-path, seam, readiness, and review terms is [docs/source-pack-glossary.md](docs/source-pack-glossary.md).
 
+For the source pack itself, **stable channel** means one protected immutable
+annotated `vX.Y.Z` tag plus protected-environment approval and a durable receipt
+bound to its peeled exact commit. **Development channel** means an explicitly
+selected mutable branch-following install. These delivery channels are distinct
+from a consumer repository's beta/RC/final release phase. Agent Workflows does
+not require or verify cryptographic tag signatures.
+
 ## Language
 
 ### Ownership

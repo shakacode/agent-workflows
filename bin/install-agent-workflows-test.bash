@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export AGENT_WORKFLOWS_CHANNEL=development
 FAKE_CODEX_DIR="$(mktemp -d)"
 TEST_SOURCE_ROOT=""
 cleanup() {
@@ -113,6 +114,129 @@ new_source_repo() {
   git -C "$source_dir" config user.name "Agent Workflows Test"
   git -C "$source_dir" add .
   git -C "$source_dir" commit --quiet -m "initial"
+}
+
+write_stable_release_receipt() {
+  local source="$1"
+  local release="$2"
+  local receipt="$3"
+  local commit tag_object
+  commit="$(git -C "$source" rev-parse "$release^{commit}")"
+  tag_object="$(git -C "$source" rev-parse "refs/tags/$release")"
+  "$source/bin/agent-workflows-release" record-receipt \
+    --root "$source" \
+    --release "$release" \
+    --approved-commit "$commit" \
+    --expected-tag-object "$tag_object" \
+    --environment stable-release \
+    --change-author release-author \
+    --release-actor release-actor \
+    --approval-reviewer release-reviewer \
+    --repository shakacode/agent-workflows \
+    --workflow-run-id 12345 \
+    --workflow-run-attempt 1 \
+    --workflow-path .github/workflows/release.yml \
+    --workflow-run-url https://github.com/shakacode/agent-workflows/actions/runs/12345 \
+    --recorded-at 2026-08-25T00:00:00Z \
+    --receipt "$receipt" >/dev/null
+}
+
+write_fake_release_receipt_curl() {
+  local fake_bin="$1"
+  mkdir -p "$fake_bin"
+  cat > "$fake_bin/curl" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+output=""
+url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output)
+      output="${2:?--output requires a path}"
+      shift 2
+      ;;
+    --header)
+      shift 2
+      ;;
+    --*)
+      shift
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+release_ref="${QA_RELEASE_REF:?}"
+receipt="${QA_RELEASE_RECEIPT_FIXTURE:?}"
+case "$url" in
+  "https://github.com/shakacode/agent-workflows/releases/download/$release_ref/agent-workflows-release-receipt.json")
+    install -m 0600 "$receipt" "$output"
+    ;;
+  "https://api.github.com/repos/shakacode/agent-workflows/releases/tags/$release_ref")
+    ruby -rjson -rdigest -e '
+      receipt, output, release_ref = ARGV
+      data = JSON.parse(File.read(receipt))
+      actor = data.dig("workflow", "actor")
+      repository = data.dig("workflow", "repository")
+      asset_url = "https://github.com/#{repository}/releases/download/#{release_ref}/agent-workflows-release-receipt.json"
+      payload = {
+        "tag_name" => release_ref,
+        "draft" => false,
+        "prerelease" => false,
+        "html_url" => "https://github.com/#{repository}/releases/tag/#{release_ref}",
+        "author" => {"login" => "github-actions[bot]", "type" => "Bot"},
+        "assets" => [{
+          "name" => "agent-workflows-release-receipt.json",
+          "state" => "uploaded",
+          "size" => File.size(receipt),
+          "digest" => "sha256:#{Digest::SHA256.file(receipt).hexdigest}",
+          "browser_download_url" => asset_url,
+          "uploader" => {"login" => "github-actions[bot]", "type" => "Bot"}
+        }]
+      }
+      File.write(output, JSON.generate(payload))
+    ' "$receipt" "$output" "$release_ref"
+    ;;
+  "https://api.github.com/repos/shakacode/agent-workflows/actions/runs/12345/attempts/1")
+    ruby -rjson -e '
+      receipt, output = ARGV
+      data = JSON.parse(File.read(receipt))
+      workflow = data.fetch("workflow")
+      payload = {
+        "id" => workflow.fetch("run_id"),
+        "run_attempt" => workflow.fetch("run_attempt"),
+        "path" => workflow.fetch("path"),
+        "event" => "workflow_dispatch",
+        "status" => "completed",
+        "conclusion" => "success",
+        "html_url" => workflow.fetch("run_url"),
+        "head_branch" => data.fetch("release_ref"),
+        "head_sha" => ENV.fetch("QA_WORKFLOW_HEAD_OVERRIDE", data.fetch("peeled_commit")),
+        "actor" => {"login" => workflow.fetch("actor"), "type" => "User"},
+        "repository" => {"full_name" => workflow.fetch("repository"), "private" => false}
+      }
+      File.write(output, JSON.generate(payload))
+    ' "$receipt" "$output"
+    ;;
+  "https://api.github.com/repos/shakacode/agent-workflows/actions/runs/12345/approvals")
+    ruby -rjson -e '
+      receipt, output = ARGV
+      reviewer = JSON.parse(File.read(receipt)).dig("approval", "reviewer")
+      File.write(output, JSON.generate([{
+        "state" => "approved",
+        "environments" => [{"name" => "stable-release"}],
+        "user" => {"login" => reviewer, "type" => "User"}
+      }]))
+    ' "$receipt" "$output"
+    ;;
+  *)
+    echo "unexpected curl URL: $url" >&2
+    exit 1
+    ;;
+esac
+BASH
+  chmod +x "$fake_bin/curl"
 }
 
 new_source_repo_with_legacy_model_routing_history() {
@@ -5559,7 +5683,7 @@ RUBY
 
   set +e
   output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$target/.agent-workflows-install.json" \
-    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --channel development --host codex --target "$target" 2>&1)"
   status=$?
   set -e
 
@@ -5918,6 +6042,8 @@ require "json"
 module OverwriteMetadataAfterSecondRead
   def parse(source, *args)
     value = super
+    # Count delivery-mode reads; channel checks must not shift recovery injection.
+    return value unless ARGV.length == 2 && ARGV.fetch(1) == "delivery_mode"
     counter = ENV.fetch("QA_METADATA_READ_COUNTER")
     count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
     File.write(counter, count)
@@ -5964,6 +6090,8 @@ require "json"
 module DeleteMetadataAfterSecondRead
   def parse(source, *args)
     value = super
+    # Count delivery-mode reads; channel checks must not shift recovery injection.
+    return value unless ARGV.length == 2 && ARGV.fetch(1) == "delivery_mode"
     counter = ENV.fetch("QA_METADATA_READ_COUNTER")
     count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
     File.write(counter, count)
@@ -8527,6 +8655,311 @@ RUBY
   assert_contains "$retry_output" "Installed ShakaCode agent workflows"
 }
 
+test_stable_install_materializes_the_exact_annotated_release() {
+  local tmp source target release_commit tag_object installed_content tagged_content host receipt fake_bin
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  release_commit="$(git -C "$source" rev-parse HEAD)"
+  git -C "$source" tag -a v0.1.0 -m "Agent Workflows v0.1.0"
+  tag_object="$(git -C "$source" rev-parse refs/tags/v0.1.0)"
+  receipt="$tmp/release-receipt.json"
+  fake_bin="$tmp/fake-bin"
+  write_stable_release_receipt "$source" v0.1.0 "$receipt"
+  write_fake_release_receipt_curl "$fake_bin"
+  printf '\nMutable development-only change.\n' >> "$source/skills/status/SKILL.md"
+  git -C "$source" add skills/status/SKILL.md
+  git -C "$source" commit --quiet -m "development change after release"
+
+  git -C "$source" show v0.1.0:skills/status/SKILL.md > "$tmp/tagged-status-skill"
+  tagged_content="$(shasum "$tmp/tagged-status-skill" | awk '{print $1}')"
+  for host in codex claude; do
+    target="$tmp/$host-home"
+    env -u AGENT_WORKFLOWS_CHANNEL PATH="$fake_bin:$PATH" \
+      QA_RELEASE_REF=v0.1.0 QA_RELEASE_RECEIPT_FIXTURE="$receipt" \
+      "$source/bin/install-agent-workflows" \
+      --host "$host" --target "$target" --release v0.1.0 >"$tmp/$host-install.out"
+
+    installed_content="$(shasum "$target/skills/status/SKILL.md" | awk '{print $1}')"
+    [[ "$installed_content" = "$tagged_content" ]] || fail "$host stable install consumed mutable branch content"
+    ruby -rjson -e '
+      metadata = JSON.parse(File.read(ARGV.fetch(0)))
+      expected = {"host" => ARGV.fetch(1), "channel" => "stable", "release_ref" => ARGV.fetch(2),
+                  "source_revision" => ARGV.fetch(3), "tag_object" => ARGV.fetch(4)}
+      expected.each { |key, value| abort metadata.inspect unless metadata[key] == value }
+    ' "$target/.agent-workflows-install.json" "$host" v0.1.0 "$release_commit" "$tag_object"
+    grep -Fq -- "--shared \"$target\"" "$tmp/$host-install.out" || \
+      fail "$host stable guidance did not use installed release content"
+    ! grep -Eq -- '--shared ".*/tmp\.[^/]*/pack"' "$tmp/$host-install.out" || \
+      fail "$host stable guidance named a deleted materialized release root"
+  done
+}
+
+test_stable_install_ignores_hostile_materialization_state_environment() {
+  local tmp source target release_commit tag_object receipt fake_bin
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  release_commit="$(git -C "$source" rev-parse HEAD)"
+  git -C "$source" tag -a v0.1.0 -m "Agent Workflows v0.1.0"
+  tag_object="$(git -C "$source" rev-parse refs/tags/v0.1.0)"
+  receipt="$tmp/release-receipt.json"
+  fake_bin="$tmp/fake-bin"
+  write_stable_release_receipt "$source" v0.1.0 "$receipt"
+  write_fake_release_receipt_curl "$fake_bin"
+  printf '\nHOSTILE_MUTABLE_SENTINEL\n' >> "$source/skills/status/SKILL.md"
+  git -C "$source" add skills/status/SKILL.md
+  git -C "$source" commit --quiet -m "mutable sentinel after release"
+
+  env -u AGENT_WORKFLOWS_CHANNEL \
+    PATH="$fake_bin:$PATH" \
+    QA_RELEASE_REF=v0.1.0 \
+    QA_RELEASE_RECEIPT_FIXTURE="$receipt" \
+    AGENT_WORKFLOWS_MATERIALIZED_RELEASE=v0.1.0 \
+    AGENT_WORKFLOWS_RELEASE_SOURCE_ROOT="$source" \
+    AGENT_WORKFLOWS_RELEASE_REF=v0.1.0 \
+    AGENT_WORKFLOWS_RELEASE_COMMIT="$release_commit" \
+    AGENT_WORKFLOWS_TAG_OBJECT="$tag_object" \
+    "$source/bin/install-agent-workflows" \
+      --target "$target" --release v0.1.0 >"$tmp/install.out"
+
+  ! grep -Fq HOSTILE_MUTABLE_SENTINEL "$target/skills/status/SKILL.md" || \
+    fail "hostile caller materialization state installed mutable source content"
+}
+
+test_stable_install_never_executes_the_candidate_release_verifier() {
+  local tmp source target candidate_commit receipt fake_bin sentinel trusted_commit
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  receipt="$tmp/release-receipt.json"
+  fake_bin="$tmp/fake-bin"
+  sentinel="$tmp/candidate-verifier-executed"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  trusted_commit="$(git -C "$source" rev-parse HEAD)"
+
+  cat > "$source/bin/agent-workflows-release" <<'RUBY'
+#!/usr/bin/env ruby
+File.write(ENV.fetch("QA_CANDIDATE_VERIFIER_SENTINEL"), "executed\n")
+exit 0
+RUBY
+  chmod +x "$source/bin/agent-workflows-release"
+  git -C "$source" add bin/agent-workflows-release
+  git -C "$source" commit --quiet -m "hostile candidate verifier"
+  candidate_commit="$(git -C "$source" rev-parse HEAD)"
+  git -C "$source" tag -a v0.1.0 -m "Agent Workflows v0.1.0"
+  git -C "$source" checkout --quiet --detach "$trusted_commit"
+  write_stable_release_receipt "$source" v0.1.0 "$receipt"
+  write_fake_release_receipt_curl "$fake_bin"
+
+  env -u AGENT_WORKFLOWS_CHANNEL \
+    PATH="$fake_bin:$PATH" \
+    QA_CANDIDATE_VERIFIER_SENTINEL="$sentinel" \
+    QA_RELEASE_REF=v0.1.0 \
+    QA_RELEASE_RECEIPT_FIXTURE="$receipt" \
+    "$source/bin/install-agent-workflows" \
+      --target "$target" --release v0.1.0 >"$tmp/install.out"
+
+  [[ ! -e "$sentinel" ]] || fail "stable install executed verifier bytes from candidate $candidate_commit"
+}
+
+test_stable_install_rejects_forged_github_workflow_provenance() {
+  local tmp source target receipt fake_bin output exit_code
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  receipt="$tmp/release-receipt.json"
+  fake_bin="$tmp/fake-bin"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  git -C "$source" tag -a v0.1.0 -m "Agent Workflows v0.1.0"
+  write_stable_release_receipt "$source" v0.1.0 "$receipt"
+  write_fake_release_receipt_curl "$fake_bin"
+
+  set +e
+  output="$(env -u AGENT_WORKFLOWS_CHANNEL \
+    PATH="$fake_bin:$PATH" \
+    QA_RELEASE_REF=v0.1.0 \
+    QA_RELEASE_RECEIPT_FIXTURE="$receipt" \
+    QA_WORKFLOW_HEAD_OVERRIDE="0000000000000000000000000000000000000000" \
+    "$source/bin/install-agent-workflows" \
+      --target "$target" --release v0.1.0 2>&1)"
+  exit_code=$?
+  set -e
+
+  [[ "$exit_code" -ne 0 ]] || fail "stable install accepted forged GitHub workflow provenance"
+  assert_contains "$output" "workflow run metadata"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || \
+    fail "forged workflow provenance wrote stable install metadata"
+}
+
+test_stable_install_rejects_local_annotated_tag_without_protected_release_receipt() {
+  local tmp source target output status fake_bin
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  fake_bin="$tmp/fake-bin"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  git -C "$source" tag -a v0.1.0 -m "locally fabricated release"
+  write_fake_release_receipt_curl "$fake_bin"
+
+  set +e
+  output="$(env -u AGENT_WORKFLOWS_CHANNEL PATH="$fake_bin:$PATH" \
+    "$source/bin/install-agent-workflows" \
+    --target "$target" --release v0.1.0 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "stable install accepted a local tag with no protected release receipt"
+  assert_contains "$output" "protected release receipt"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || \
+    fail "receipt-less local tag wrote install metadata"
+}
+
+test_stable_install_accepts_linked_worktree_and_rejects_non_git_source() {
+  local tmp source worktree target receipt fake_bin output status unpacked
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  worktree="$tmp/worktree"
+  target="$tmp/codex-home"
+  receipt="$tmp/release-receipt.json"
+  fake_bin="$tmp/fake-bin"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  git -C "$source" tag -a v0.1.0 -m "Agent Workflows v0.1.0"
+  write_stable_release_receipt "$source" v0.1.0 "$receipt"
+  write_fake_release_receipt_curl "$fake_bin"
+  git -C "$source" worktree add --quiet --detach "$worktree" v0.1.0
+  [[ -f "$worktree/.git" ]] || fail "expected linked worktree .git file"
+
+  env -u AGENT_WORKFLOWS_CHANNEL PATH="$fake_bin:$PATH" \
+    QA_RELEASE_REF=v0.1.0 QA_RELEASE_RECEIPT_FIXTURE="$receipt" \
+    "$worktree/bin/install-agent-workflows" \
+      --target "$target" --release v0.1.0 >"$tmp/worktree-install.out"
+  assert_file "$target/.agent-workflows-install.json"
+
+  unpacked="$tmp/unpacked"
+  mkdir -p "$unpacked"
+  rsync -a --exclude .git "$worktree/" "$unpacked/"
+  set +e
+  output="$(env -u AGENT_WORKFLOWS_CHANNEL "$unpacked/bin/install-agent-workflows" \
+    --target "$tmp/non-git-target" --release v0.1.0 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "stable install accepted a non-Git source"
+  assert_contains "$output" "requires a Git source clone"
+}
+
+test_stable_copy_guidance_uses_authenticated_bootstrap() {
+  # The release-helper tests execute the canonical bootstrap, including its negative controls.
+  ruby -e '
+    ARGV.each do |path|
+      text = File.read(path)
+      unless text.match?(/\]\((?:docs\/)?release-channel\.md#install-update-and-roll-back\)/)
+        abort "#{path}: missing canonical authenticated bootstrap link"
+      end
+      abort "#{path}: duplicate cold bootstrap bypasses the canonical flow" if text.include?("git clone --no-checkout")
+    end
+  ' "$ROOT/README.md" "$ROOT/docs/adoption.md" "$ROOT/docs/installation-and-upgrades.md" || \
+    fail "stable copy guidance does not use the authenticated bootstrap"
+  # Ruby checks the literal bound installer path used in the companion guidance.
+  # shellcheck disable=SC2016
+  ruby -e '
+    ARGV.each do |path|
+      text = File.read(path)
+      heading = if File.basename(path) == "getting-started.md"
+                  "Two things to know about Route B:"
+                else
+                  "## Native Plugin And Host Installer Boundaries"
+                end
+      section = text.split(heading, 2).fetch(1).split("\n## ", 2).first
+      bootstrap = section.index("(release-channel.md#install-update-and-roll-back)")
+      installer = section.index(%q["$source/bin/install-agent-workflows"])
+      unless bootstrap && installer && bootstrap < installer && section.include?("--delivery-mode plugin-companion")
+        abort "#{path}: companion install must first bind its executable through the exact-release bootstrap"
+      end
+      unless section.include?("--host claude") && !section.include?("--host codex") &&
+             section.gsub(/\s+/, " ").include?("does not make the native Codex plugin stable")
+        abort "#{path}: stable companion guidance must distinguish native Codex skills from copied assets"
+      end
+    end
+  ' "$ROOT/docs/getting-started.md" "$ROOT/docs/installation-and-upgrades.md" || \
+    fail "native companion guidance lacks a bootstrap-bound installer"
+  # Ruby checks literal documentation text, without shell expansion.
+  # shellcheck disable=SC2016
+  ruby -e '
+    ARGV.each do |path|
+      text = File.read(path)
+      if text.match?(/^codex plugin marketplace add .*--ref/)
+        abort "#{path}: marketplace ref alone must not be offered as a stable Codex plugin install"
+      end
+      text.scan(/```bash\n(.*?)```/m).flatten.each do |example|
+        if example.include?("--host codex") && example.include?("--release") &&
+           example.include?("--delivery-mode plugin-companion")
+          abort "#{path}: stable Codex example must install verified flat skills, not only companion assets"
+        end
+      end
+      unless text.include?("development/unverified") &&
+             text.match?(/\((?:docs\/)?release-channel\.md#install-update-and-roll-back\)|\(#install-update-and-roll-back\)/)
+        abort "#{path}: native Codex guidance must label the URL route and direct stable users to the copy bootstrap"
+      end
+      next if File.basename(path) == "adoption.md"
+
+      unless text.include?("/plugin marketplace add shakacode/agent-workflows@vX.Y.Z")
+        abort "#{path}: retain the pinned Claude marketplace route"
+      end
+    end
+  ' "$ROOT/README.md" "$ROOT/docs/adoption.md" "$ROOT/docs/getting-started.md" "$ROOT/docs/installation-and-upgrades.md" "$ROOT/docs/release-channel.md" || \
+    fail "native Codex guidance confuses marketplace metadata with pinned plugin code"
+}
+
+test_stable_install_rejects_malformed_missing_lightweight_and_version_mismatched_refs() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  for release in release-0.1.0 v9.9.8; do
+    target="$tmp/$release-target"
+    set +e
+    output="$(env -u AGENT_WORKFLOWS_CHANNEL "$source/bin/install-agent-workflows" \
+      --target "$target" --release "$release" 2>&1)"
+    status=$?
+    set -e
+    [[ "$status" -ne 0 ]] || fail "stable install accepted invalid release $release"
+    [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "invalid release $release wrote metadata"
+  done
+
+  git -C "$source" tag v0.1.0
+  target="$tmp/lightweight-target"
+  set +e
+  output="$(env -u AGENT_WORKFLOWS_CHANNEL "$source/bin/install-agent-workflows" \
+    --target "$target" --release v0.1.0 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "stable install accepted a lightweight tag"
+  assert_contains "$output" "annotated tag"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "lightweight tag wrote metadata"
+
+  git -C "$source" tag -a v9.9.9 -m "mismatched version"
+  target="$tmp/mismatch-target"
+  set +e
+  output="$(env -u AGENT_WORKFLOWS_CHANNEL "$source/bin/install-agent-workflows" \
+    --target "$target" --release v9.9.9 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "stable install accepted source/ref version mismatch"
+  assert_contains "$output" "does not match VERSION"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "version mismatch wrote metadata"
+}
+
 main() {
   TEST_SOURCE_ROOT="$(mktemp -d)"
   new_source_repo "$TEST_SOURCE_ROOT"
@@ -8752,6 +9185,14 @@ main() {
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_upgrade_validates_consumer_root_after_install
+    test_stable_install_materializes_the_exact_annotated_release
+    test_stable_install_ignores_hostile_materialization_state_environment
+    test_stable_install_never_executes_the_candidate_release_verifier
+    test_stable_install_rejects_forged_github_workflow_provenance
+    test_stable_install_rejects_local_annotated_tag_without_protected_release_receipt
+    test_stable_install_accepts_linked_worktree_and_rejects_non_git_source
+    test_stable_copy_guidance_uses_authenticated_bootstrap
+    test_stable_install_rejects_malformed_missing_lightweight_and_version_mismatched_refs
   )
 
   local test_name
