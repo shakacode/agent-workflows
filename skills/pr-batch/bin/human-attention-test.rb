@@ -398,6 +398,39 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  def test_desk_marks_a_repository_degraded_when_the_completeness_sentinel_is_reached
+    config = <<~YAML
+      ---
+      human_attention:
+        labels:
+          walkthrough: human-attention:walkthrough
+          merge: human-attention:merge
+        repositories:
+          acme/widgets: {}
+    YAML
+    with_repo_config(config) do |root|
+      fake_gh = File.join(root, "gh")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        limit = ARGV.fetch(ARGV.index("--limit") + 1).to_i
+        rows = Array.new(limit) do |index|
+          {"number" => index + 1, "title" => "Ordinary", "url" => "https://example.test/\#{index + 1}", "headRefOid" => "#{'a' * 40}", "labels" => []}
+        end
+        rows.last["title"] = "Sentinel attention"
+        rows.last["labels"] = [{"name" => "human-attention:merge"}]
+        puts JSON.generate(rows)
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli("desk", "--repo-root", root, env: { "HUMAN_ATTENTION_GH" => fake_gh })
+
+      assert_predicate result[:status], :success?, result[:stderr]
+      assert_includes result[:stdout], "MERGE — acme/widgets — Sentinel attention"
+      assert_includes result[:stdout], "Degraded repositories: acme/widgets"
+    end
+  end
+
   def test_desk_does_not_treat_a_label_as_exact_head_readiness_evidence
     config = <<~YAML
       ---

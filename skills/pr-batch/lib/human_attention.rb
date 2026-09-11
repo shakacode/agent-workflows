@@ -8,6 +8,7 @@ require "yaml"
 module HumanAttention
   STATES = %w[walkthrough merge].freeze
   PR_LIST_LIMIT = 1000
+  PR_FETCH_LIMIT = PR_LIST_LIMIT + 1
   REPOSITORY_PATTERN = %r{\A[^/\s]+/[^/\s]+\z}
 
   class Error < StandardError; end
@@ -105,7 +106,7 @@ module HumanAttention
       labels = labels_for(config, repo, base_labels:)
       stdout, _stderr, status = Open3.capture3(
         github_cli, "pr", "list", "--repo", repo, "--state", "open",
-        "--limit", PR_LIST_LIMIT.to_s, "--json", "number,title,url,updatedAt,headRefOid,labels"
+        "--limit", PR_FETCH_LIMIT.to_s, "--json", "number,title,url,updatedAt,headRefOid,labels"
       )
       unless status.success?
         degraded << repo
@@ -114,6 +115,8 @@ module HumanAttention
 
       rows = JSON.parse(stdout)
       raise Error, "query result is not a list" unless rows.is_a?(Array)
+
+      degraded << repo if rows.length > PR_LIST_LIMIT
 
       repo_entries = rows.filter_map do |row|
         row_labels = Array(row["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
