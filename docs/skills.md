@@ -187,9 +187,11 @@ decision, and archives tasks only when their work is durably handed off.
 
 ### [`$post-merge-audit`](../skills/post-merge-audit/SKILL.md)
 
-Use `$post-merge-audit` after concurrent PRs merge or before a release
-candidate. It checks cross-PR interactions, missed reviews, unresolved
-follow-ups, changelog coverage, and release risk.
+Use `$post-merge-audit` when the canonical
+[audit applicability rules](../workflows/pr-batch-integration-closeout.md#audit-applicability)
+require one, such as for release assurance, verified cross-PR integration risk,
+or a suspected bad merge. It checks cross-PR interactions, missed reviews,
+unresolved follow-ups, changelog coverage, and release risk.
 
 ### [`$update-changelog`](../skills/update-changelog/SKILL.md)
 
@@ -214,6 +216,13 @@ work. It answers what is done, in progress, blocked, and next.
 Use `$pause` before restarting Codex, Claude, or another agent runner. It
 produces restart-safe pause and resume prompts that preserve the current work
 and recovery steps.
+
+### [`$restart-codex-subagents`](../skills/restart-codex-subagents/SKILL.md)
+
+Use `$restart-codex-subagents` to prepare or recover tasks around a Codex
+restart, crash, or account change. Preparation is optional and bounded; recovery
+reconciles checkpoints, logs, and live state, then verifies that every intended
+task resumed or preserved its prior pause.
 
 ### [`$close-session`](../skills/close-session/SKILL.md)
 

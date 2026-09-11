@@ -30,7 +30,7 @@ paths the examples use. The exceptions are the agent transcripts in Steps 3,
 | Git | 2.41 or newer recommended; verified with 2.50.1 | Cloning the pack and reading repository state. Any recent Git completes this guide; the optional pinned-copy drift checker needs 2.41+ for full-fidelity checks (see [adoption.md](adoption.md)). |
 | Bash | 3.2 or newer; verified with macOS stock bash 3.2.57 | The installer and the shell helper scripts. |
 | Ruby | Ruby 3 series; verified with 3.3.6, and this repo's CI pins 3.4 | The seam doctor, status, and upgrade helpers. Plain Ruby only — no gems to install. |
-| Python | 3.9 or newer; this repo's lint CI pins 3.13 | The `$audit-chats` local inventory helper and this repo's validation suite. Plain Python only — no packages to install. |
+| SQLite CLI (`sqlite3`) | With `-json` output support | The optional `$audit-chats` local inventory helper and this repo's validation suite. The helper uses Ruby's standard library and reads databases without modifying them. |
 | GitHub CLI (`gh`) | 2.x, authenticated; 2.99.0+ for image/video `--attach` (walkthrough machine: 2.89.0) | Workflows that read GitHub, such as `$pr-batch` and `$address-review`. Not needed for install or adoption. Run `gh auth status` to confirm login. Attachment upload requires repository write access plus an OAuth, classic PAT, or fine-grained PAT credential; GitHub Actions and App tokens are unsupported. It works on GitHub.com and GitHub Enterprise Cloud, but not GitHub Enterprise Server in this release. |
 | An agent host | A current release of Codex CLI or Claude Code | Actually loads and runs the installed skills. |
 
@@ -543,11 +543,12 @@ skill or document that implements it.
   merged PRs and fills in missing entries — use it before releases instead
   of reconstructing history later
   ([update-changelog skill](../skills/update-changelog/SKILL.md)).
-- **Audit after parallel work.** After concurrent agent work, before a
-  release candidate, or after a suspected bad merge, the
-  `post-merge-audit` skill checks for missed reviews, missing changelog
-  entries, cross-PR interactions, and release risk
-  ([post-merge-audit skill](../skills/post-merge-audit/SKILL.md)).
+- **Audit when a trigger requires it.** Apply the canonical
+  [audit applicability rules](../workflows/pr-batch-integration-closeout.md#audit-applicability)
+  for release assurance, verified cross-PR integration risk, suspected bad
+  merges, and other required audits. The
+  [post-merge-audit skill](../skills/post-merge-audit/SKILL.md) checks missed
+  reviews, changelog coverage, cross-PR interactions, and release risk.
 - **The habit underneath all of these:** record what you cannot verify as
   `UNKNOWN` instead of guessing, and never present constructed output as a
   real run — the same honesty rule this guide follows for its own output

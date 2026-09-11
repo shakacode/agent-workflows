@@ -48,16 +48,8 @@ are inputs to evaluation, with no implementation commitment.
 - Preserve behavior and validate according to the changed surface and risk.
   Stop at the admitted stopping point or budget. A functional change requires a
   scope decision through the existing task workflow before implementation.
-- For already-filed follow-ups, use the existing authorized triage workflow.
-  Judge evidence and impact, never a severity label or follow-up prefix alone.
-  Close or park low-value items only with existing authority, a rationale, and
-  useful source links; otherwise recommend the disposition. Resolve labels
-  through repository policy. This checklist does not authorize a closing sweep.
 - Keep demonstrated consequential defects in ordinary defect triage and review
   with their normal priority. A quality task cannot downgrade or hide them.
-
-Verify changes to this checklist with the
-[deterministic scenario replay](references/quality-maintenance-scenarios.md).
 
 ## Workflow
 

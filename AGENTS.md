@@ -29,6 +29,8 @@ When integrating current `main` into an ordinary PR, keep the current-base
   `AGENTS.md` seam key instead of embedding an example command.
 - Keep helper scripts in the skill folder that invokes them, unless the helper is
   repo-wide like `bin/agent-workflow-seam-doctor`.
+- Prefer Ruby for new shared helpers and validation tests; reuse existing runtime
+  dependencies.
 - Do not add repo-local domain skills here. Domain skills belong in the consumer
   repo.
 - Keep root documentation user-facing. Do not add extra README files inside
@@ -56,6 +58,17 @@ Before committing, run:
 ```bash
 bin/validate
 ```
+
+Local `bin/validate` and main-push CI run the full suite. PR CI may select
+Markdown, link, and applicable README contracts for only the exact ordinary
+documentation paths in `bin/pr-validation-scope`. The selector is loaded from
+the trusted PR base commit; instruction Markdown, unknown paths, non-regular
+files, renames, deletions, and unavailable or incomplete diff evidence retain
+full coverage. Changes to fenced code, inline-code lines, or indented code
+also retain full coverage, including README installation commands.
+The Validate job summary records selected and omitted suites,
+the reason, tested SHA, and base SHA. Drafts still test the head; ready PRs
+still test the current-base integration.
 
 When `skills/` has meaningful uncommitted changes, `bin/validate` reports
 partial coverage: it skips the installer and stack suites, which contain tests

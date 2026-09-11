@@ -24,6 +24,7 @@ and implementation plans are collected in the final reference section.
 | --- | --- |
 | Understand the team-scale problems this stack solves | [Problems Agent Workflows Solves](problems-solved.md) |
 | Understand how portable workflows meet repository-owned policy | [Seam Design](seam-design.md) |
+| Choose integration checks and qualify an exact promotion candidate | [Delivery Policy](delivery-policy.md) |
 | Look up source-pack, seam, readiness, and review terminology | [Source Pack Glossary](source-pack-glossary.md) |
 
 ## Install and adopt
@@ -55,6 +56,7 @@ and implementation plans are collected in the final reference section.
 | Goal | Read |
 | --- | --- |
 | Find where a human decision is required, and the rule that governs each one | [Operator Handbook](operator-handbook.md) |
+| Understand trusted provenance, fail-closed decisions, concrete failure examples, and the limits of hardening | [Trusted Provenance And Fail-Closed Decisions](trusted-provenance-and-fail-closed.md) |
 | Configure trusted GitHub actors and public-PR preflight | [Trust And Preflight](trust-and-preflight.md) |
 | Understand the broader prompt-injection safety posture | [Security Posture](security-posture.md) |
 | Report a suspected vulnerability in this pack | [Security Policy](../SECURITY.md) |

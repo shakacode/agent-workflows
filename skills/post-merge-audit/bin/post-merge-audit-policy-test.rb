@@ -57,7 +57,6 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_STRUCTURAL_REVIEW_AUDIT_CHECK = "If the audited range also needs a codebase-health lens, run `$structural-review` explicitly on that same range, including release/range audits without worked issues or QA lanes. This audit does not auto-invoke sibling axes."
   REQUIRED_STRUCTURAL_REVIEW_ENTRY_POINT = "- **After a batch audit:** invoke `$structural-review` explicitly on the same range audited by `$post-merge-audit` when you want the codebase-health lens. `post-merge-audit` does not auto-run `structural-review` for you."
   REQUIRED_COMPLETED_BATCH_MODE_SCOPE = "In completed-batch mode only:"
-  REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
   OBSOLETE_COMPLETED_BATCH_AUDIT_TRIGGER = "Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff."
   REQUIRED_ARCHIVE_READY_STATUS = "Conversation status: Ready for archiving."
   REQUIRED_FOLLOW_UP_STATUS = "Conversation status: Follow-ups remain — <each exact action or blocker>."
@@ -384,8 +383,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
       text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
-      assert_includes normalized_text, REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP,
-                      "#{relative_path} should assign completed-batch audit ownership to the batch coordinator"
+      assert_match(/\]\([^)]*#audit-applicability\)/, text,
+                   "#{relative_path} should route audit applicability to canonical closeout")
       refute_includes normalized_text, OBSOLETE_COMPLETED_BATCH_AUDIT_TRIGGER,
                       "#{relative_path} must not assign completed-batch audits to the parent orchestration agent"
       assert_includes normalized_text, REQUIRED_ARCHIVE_READY_STATUS,
@@ -424,8 +423,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
     refute_nil guarded_block, "completed-batch-only guard must use a nested Markdown block before general follow-up issue rules"
 
     body = guarded_block[:body]
+    assert_match(/\]\([^)]*#audit-applicability\)/, body)
     [
-      REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP,
       REQUIRED_DURABLE_RECEIPT_HEADER,
       COMPLETED_BATCH_AUDIT_MARKER_HEADER,
       REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD
