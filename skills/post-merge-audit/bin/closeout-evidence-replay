@@ -875,32 +875,50 @@ module CloseoutEvidenceReplay
     !https_prose_label(value, match).nil?
   end
 
-  # Delimiter stripping, status recognition, protocol/version detection, authority sniffing, and
-  # boundary handling all interact here through shared locals. As with the vocabulary constants at
-  # the top of this file, run the full replay matrix after changing any one branch rather than
-  # reasoning about it in isolation.
+  # Keep the public result contract small: nil is not a label, while ["", offset] is an empty
+  # label that directly introduces a URL. The phases below isolate the prefix, URL boundary, and
+  # semantic-label decisions without changing that distinction.
   def https_prose_label(value, match)
-    # Uppercase HTTPS: is the explicit prose-label form; lowercase https: remains a URL scheme
-    # and therefore fails closed when whitespace makes it malformed.
-    return unless match[0] == "HTTPS:"
+    return unless https_prose_label_prefix?(value, match)
 
+    raw_label, raw_label_start = https_prose_label_suffix(value, match)
+    raw_label, direct_url_boundary = https_prose_label_before_next_url(raw_label)
+    # An empty label means "label present but with no text", which both callers rely on to
+    # exclude this `HTTPS:` from URL validation: the pair is truthy and spans an empty range.
+    # Returning nil here would mark it "not a label" and the token would be validated as a URL,
+    # failing as malformed.
+    return ["", match.end(0)] if direct_url_boundary
+
+    https_prose_label_candidate(raw_label, raw_label_start)
+  end
+
+  # Uppercase HTTPS: is the explicit prose-label form; lowercase https: remains a URL scheme
+  # and therefore fails closed when whitespace makes it malformed.
+  def https_prose_label_prefix?(value, match)
+    match[0] == "HTTPS:" && value[match.end(0)..]&.match?(/\A\s+/)
+  end
+
+  def https_prose_label_suffix(value, match)
     suffix = value[match.end(0)..]
-    return unless suffix&.match?(/\A\s+/)
-
     raw_label = suffix.lstrip
     # Track the offset forward instead of re-searching for the label text later: `index` could
     # otherwise land on an earlier occurrence if the stripped prefix ever gained an alphanumeric.
-    raw_label_start = match.end(0) + (suffix.length - raw_label.length)
-    if (next_https = HTTPS_TOKEN.match(raw_label))
-      raw_label = raw_label[0...next_https.begin(0)].rstrip
-      direct_url_boundary = raw_label.empty? || prose_url_boundary_token?(raw_label)
-      # An empty label means "label present but with no text", which both callers rely on to
-      # exclude this `HTTPS:` from URL validation: the pair is truthy and spans an empty range.
-      # Returning nil here would mark it "not a label" and the token would be validated as a URL,
-      # failing as malformed.
-      return ["", match.end(0)] if direct_url_boundary
+    [raw_label, match.end(0) + (suffix.length - raw_label.length)]
+  end
 
-    end
+  def https_prose_label_before_next_url(raw_label)
+    next_https = HTTPS_TOKEN.match(raw_label)
+    return [raw_label, false] unless next_https
+
+    raw_label = raw_label[0...next_https.begin(0)].rstrip
+    [raw_label, raw_label.empty? || prose_url_boundary_token?(raw_label)]
+  end
+
+  # Delimiter stripping, status recognition, protocol/version detection, authority sniffing, and
+  # continuation validation use the candidate and its exact source offset. As with the vocabulary
+  # constants at the top of this file, run the full replay matrix after changing any one branch
+  # rather than reasoning about it in isolation.
+  def https_prose_label_candidate(raw_label, raw_label_start)
     leading_symbols = raw_label[/\A[^\p{Alnum}]*/u]
     # `:` never decorates a prose label, so a leading run containing one opens an authority
     # (`[::1];`) that the decorative strip below would otherwise erase.
