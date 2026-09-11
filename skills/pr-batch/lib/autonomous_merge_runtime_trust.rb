@@ -2,8 +2,12 @@
 
 require "digest"
 require "open3"
+require "pathname"
+require "rbconfig"
 
 module AutonomousMergeRuntimeTrust
+  class ExecutableError < StandardError; end
+
   Result = Struct.new(:accepted, :provenance, :errors, :manifest, keyword_init: true)
 
   RUNTIME_SOURCES = {
@@ -75,11 +79,21 @@ module AutonomousMergeRuntimeTrust
     skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json
     .agents/skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json
   ].freeze
+  DEFAULT_CALIBRATION_PATH = File.expand_path(
+    "../fixtures/autonomous-merge-reviewed-heads-calibration.json",
+    __dir__
+  )
 
   module_function
 
-  def verify(repo_root:, base_sha:, claim:, calibration_path:)
-    sources = runtime_sources(calibration_path)
+  def verify(
+    repo_root:, base_sha:, claim:, calibration_path:, git_command: nil, trusted_sources: nil
+  )
+    sources = trusted_runtime_sources(calibration_path)
+    if trusted_sources && sources != trusted_sources
+      return rejected(claim, ["prevalidated runtime source binding mismatch"])
+    end
+
     unreadable = sources.filter_map do |role, source|
       "#{role} runtime source is unavailable" unless File.file?(source.fetch(:path))
     end
@@ -90,7 +104,10 @@ module AutonomousMergeRuntimeTrust
       claimed_sha = Regexp.last_match(1)
       return rejected(claim, ["trusted helper claim does not match resolved base"]) unless claimed_sha == base_sha
 
-      verify_trusted_base(repo_root:, base_sha:, claim:, sources:)
+      verify_trusted_base(
+        repo_root:, base_sha:, claim:, sources:,
+        git_command: git_command || trusted_git_executable
+      )
     when /\Averified-installed-pack:([0-9a-f]{64})\z/
       expected = Regexp.last_match(1)
       actual = installed_pack_digest(sources)
@@ -100,8 +117,100 @@ module AutonomousMergeRuntimeTrust
     else
       rejected(claim, ["trusted helper provenance is missing or invalid"])
     end
-  rescue SystemCallError => e
+  rescue SystemCallError, ExecutableError => e
     rejected(claim, ["runtime trust verification failed: #{e.message}"])
+  end
+
+  def trusted_runtime_sources(calibration_path)
+    runtime_sources(calibration_path).each_with_object({}) do |(role, source), trusted|
+      trusted[role] = source.merge(
+        path: trusted_runtime_source_path(
+          source.fetch(:path),
+          "autonomous merge #{role}",
+          executable: %w[helper closeout-helper].include?(role)
+        )
+      )
+    end
+  end
+
+  def trusted_runtime_source_path(path, label, executable: false)
+    resolved = File.realpath(path)
+    stat = File.lstat(resolved)
+    unless stat.file? && [0, Process.euid].include?(stat.uid) && (stat.mode & 0o022).zero?
+      raise ExecutableError, "#{label} runtime source is not a trusted regular file"
+    end
+    if executable && (stat.mode & 0o111).zero?
+      raise ExecutableError, "#{label} runtime source is not executable"
+    end
+
+    ancestor = File.dirname(resolved)
+    loop do
+      validate_trusted_executable_ancestor!(File.lstat(ancestor), label)
+      break if ancestor == File.dirname(ancestor)
+
+      ancestor = File.dirname(ancestor)
+    end
+    resolved
+  rescue SystemCallError => e
+    raise ExecutableError, "#{label} runtime source could not be safely resolved: #{e.message}"
+  end
+
+  def trusted_git_executable
+    candidate = if ENV.key?("AUTONOMOUS_MERGE_GIT")
+                  ENV.fetch("AUTONOMOUS_MERGE_GIT")
+                else
+                  git_name = "git#{RbConfig::CONFIG.fetch('EXEEXT')}"
+                  candidates = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).map do |directory|
+                    File.join(directory, git_name)
+                  end
+                  candidates.find { |path| File.file?(path) && File.executable?(path) }
+                end
+    raise ExecutableError, "AUTONOMOUS_MERGE_GIT could not be found on PATH" if candidate.nil?
+
+    trusted_executable_path(candidate, "AUTONOMOUS_MERGE_GIT")
+  end
+
+  def trusted_executable_path(path, label)
+    unless path.is_a?(String) && !path.empty? && Pathname.new(path).absolute?
+      raise ExecutableError, "#{label} must be an absolute path"
+    end
+
+    resolved = File.realpath(path)
+    stat = File.lstat(resolved)
+    validate_trusted_executable_target!(stat, label)
+
+    ancestor = File.dirname(resolved)
+    loop do
+      validate_trusted_executable_ancestor!(File.lstat(ancestor), label)
+      break if ancestor == File.dirname(ancestor)
+
+      ancestor = File.dirname(ancestor)
+    end
+
+    resolved
+  rescue SystemCallError => e
+    raise ExecutableError, "#{label} could not be safely resolved: #{e.message}"
+  end
+
+  def validate_trusted_executable_target!(stat, label)
+    unless stat.file? && (stat.mode & 0o111).positive?
+      raise ExecutableError, "#{label} target must be a regular executable file"
+    end
+    unless [0, Process.euid].include?(stat.uid)
+      raise ExecutableError, "#{label} target owner is not trusted"
+    end
+    return if (stat.mode & 0o022).zero?
+
+    raise ExecutableError, "#{label} target is group- or world-writable"
+  end
+
+  def validate_trusted_executable_ancestor!(stat, label)
+    unless stat.directory? && [0, Process.euid].include?(stat.uid)
+      raise ExecutableError, "#{label} ancestor is not a trusted directory"
+    end
+    return if (stat.mode & 0o022).zero?
+
+    raise ExecutableError, "#{label} ancestor is group- or world-writable"
   end
 
   def installed_pack_digest(sources)
@@ -123,14 +232,14 @@ module AutonomousMergeRuntimeTrust
     )
   end
 
-  def verify_trusted_base(repo_root:, base_sha:, claim:, sources:)
+  def verify_trusted_base(repo_root:, base_sha:, claim:, sources:, git_command:)
     errors = []
     manifest = {}
     sources.each do |role, source|
       runtime_bytes = File.binread(source.fetch(:path))
       matches = source.fetch(:tree_paths).filter_map do |tree_path|
-        tree_bytes, status = Open3.capture2(
-          "git", "-C", repo_root, "show", "#{base_sha}:#{tree_path}",
+        tree_bytes, _stderr, status = Open3.capture3(
+          git_command, "-C", repo_root, "show", "#{base_sha}:#{tree_path}",
           binmode: true
         )
         tree_path if status.success? && tree_bytes == runtime_bytes

@@ -80,7 +80,13 @@
       ],
       "edge_count": 0,
       "tie_breaker": "maximum-dependency-hops-then-lexicographic-lane-id-sequence",
-      "assignments": []
+      "assignments": [
+        {
+          "lane_id": "install-smoke",
+          "maker": "maker-install-smoke",
+          "checker": "checker-install-smoke"
+        }
+      ]
     },
     "downstream_requirements": {
       "final_combined_tip_validation": "required-via-repo-seam",
@@ -91,5 +97,26 @@
         "merge_readiness"
       ]
     }
+  },
+  "stage_dependency_replay": {
+    "contract": "stage-dependency-gate",
+    "version": 1,
+    "lanes": [
+      {
+        "id": "install-smoke",
+        "maker": "maker-install-smoke",
+        "checker": "checker-install-smoke",
+        "head_sha": "1111111111111111111111111111111111111111",
+        "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "preparation": {
+          "source_patch_inspection": "plan-state://preparation/source-patch",
+          "collision_domain_mapping": "plan-state://preparation/collision-domains",
+          "semantic_adaptation_notes": "plan-state://preparation/semantic-adaptation",
+          "validation_review_plan": "plan-state://preparation/validation-review",
+          "evidence_templates": "plan-state://preparation/evidence-templates"
+        }
+      }
+    ],
+    "edges": []
   }
 }

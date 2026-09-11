@@ -40,10 +40,11 @@ module CurrentIntegrationEvidence
 
   def base_unchanged(
     repo_root:, repo:, pr_number:, recorded_base_sha:, head_sha:, trusted_base_sha:,
-    pr_paths:, policy:, base_ref: "main", snapshot_reader: method(:github_snapshot)
+    pr_paths:, policy:, base_ref: "main", snapshot_reader: method(:github_snapshot),
+    git_executable: nil
   )
     validate_inputs!(repo_root:, repo:, pr_number:, base_ref:, recorded_base_sha:, head_sha:,
-                     trusted_base_sha:, pr_paths:, policy:)
+                     trusted_base_sha:, pr_paths:, policy:, git_executable:)
     raise Error, "base-unchanged evidence requires matching recorded and current bases" unless
       recorded_base_sha == trusted_base_sha
 
@@ -78,32 +79,34 @@ module CurrentIntegrationEvidence
 
   def collect(
     repo_root:, repo:, pr_number:, recorded_base_sha:, head_sha:, trusted_base_sha:,
-    pr_paths:, policy:, changelog_path:, base_ref: "main", snapshot_reader: method(:github_snapshot)
+    pr_paths:, policy:, changelog_path:, base_ref: "main", snapshot_reader: method(:github_snapshot),
+    git_executable: nil
   )
     validate_inputs!(repo_root:, repo:, pr_number:, base_ref:, recorded_base_sha:, head_sha:,
-                     trusted_base_sha:, pr_paths:, policy:)
+                     trusted_base_sha:, pr_paths:, policy:, git_executable:)
     initial = snapshot_reader.call(repo:, pr_number:, base_ref:)
     validate_snapshot!(initial, base_ref:, head_sha:, trusted_base_sha:)
 
-    ensure_commit!(repo_root, recorded_base_sha, "recorded PR base")
-    ensure_commit!(repo_root, head_sha, "PR head")
-    ensure_commit!(repo_root, trusted_base_sha, "trusted current base")
-    unless git_success?(repo_root, "merge-base", "--is-ancestor", recorded_base_sha, trusted_base_sha)
+    ensure_commit!(repo_root, recorded_base_sha, "recorded PR base", git_executable:)
+    ensure_commit!(repo_root, head_sha, "PR head", git_executable:)
+    ensure_commit!(repo_root, trusted_base_sha, "trusted current base", git_executable:)
+    unless git_success?(repo_root, "merge-base", "--is-ancestor", recorded_base_sha, trusted_base_sha,
+                        git_executable:)
       raise Error, "recorded PR base is not an ancestor of the trusted current base"
     end
 
-    recorded_tree = git_output!(repo_root, "rev-parse", "#{recorded_base_sha}^{tree}").strip
-    head_tree = git_output!(repo_root, "rev-parse", "#{head_sha}^{tree}").strip
+    recorded_tree = git_output!(repo_root, "rev-parse", "#{recorded_base_sha}^{tree}", git_executable:).strip
+    head_tree = git_output!(repo_root, "rev-parse", "#{head_sha}^{tree}", git_executable:).strip
     patch_identity = framed_digest("current-integration-patch-v1", recorded_tree, head_tree)
-    git_pr_paths = changed_paths(repo_root, recorded_base_sha, head_sha)
+    git_pr_paths = changed_paths(repo_root, recorded_base_sha, head_sha, git_executable:)
     expected_pr_paths = canonical_paths(pr_paths, "PR path")
     unless git_pr_paths == expected_pr_paths
       raise Error, "Git PR paths do not match complete GitHub changed-file evidence"
     end
 
-    base_delta_paths = changed_paths(repo_root, recorded_base_sha, trusted_base_sha)
+    base_delta_paths = changed_paths(repo_root, recorded_base_sha, trusted_base_sha, git_executable:)
     candidate = candidate_from_snapshot(initial, trusted_base_sha:, head_sha:) ||
-                local_candidate(repo_root, trusted_base_sha, head_sha)
+                local_candidate(repo_root, trusted_base_sha, head_sha, git_executable:)
 
     final = snapshot_reader.call(repo:, pr_number:, base_ref:)
     validate_snapshot!(final, base_ref:, head_sha:, trusted_base_sha:)
@@ -202,7 +205,7 @@ module CurrentIntegrationEvidence
   end
 
   def validate_inputs!(repo_root:, repo:, pr_number:, base_ref:, recorded_base_sha:, head_sha:,
-                       trusted_base_sha:, pr_paths:, policy:)
+                       trusted_base_sha:, pr_paths:, policy:, git_executable: nil)
     raise Error, "repository root is unavailable" unless File.directory?(repo_root)
     unless repo.is_a?(String) && repo.match?(REPOSITORY) &&
            repo.split("/", 2).none? { |segment| segment.start_with?("@") }
@@ -213,7 +216,7 @@ module CurrentIntegrationEvidence
            !base_ref.include?("..") && !base_ref.start_with?("@")
       raise Error, "base ref is invalid"
     end
-    unless git_success?(repo_root, "check-ref-format", "--branch", base_ref)
+    unless git_success?(repo_root, "check-ref-format", "--branch", base_ref, git_executable:)
       raise Error, "base ref is invalid"
     end
 
@@ -258,11 +261,11 @@ module CurrentIntegrationEvidence
     }
   end
 
-  def local_candidate(repo_root, trusted_base_sha, head_sha)
+  def local_candidate(repo_root, trusted_base_sha, head_sha, git_executable: nil)
     Dir.mktmpdir("current-integration-merge-tree") do |directory|
       bare = File.join(directory, "repo.git")
-      run_git_external!(repo_root, "init", "--bare", "--quiet", bare)
-      object_path = git_output!(repo_root, "rev-parse", "--git-path", "objects").strip
+      run_git_external!(repo_root, "init", "--bare", "--quiet", bare, git_executable:)
+      object_path = git_output!(repo_root, "rev-parse", "--git-path", "objects", git_executable:).strip
       object_path = File.expand_path(object_path, repo_root) unless object_path.start_with?("/")
       object_dir = File.realpath(object_path)
       alternates = File.join(bare, "objects", "info", "alternates")
@@ -270,7 +273,7 @@ module CurrentIntegrationEvidence
       File.write(alternates, "#{object_dir}\n")
       stdout, stderr, status = safe_git_capture(
         "--git-dir", bare, "merge-tree", "--write-tree", trusted_base_sha, head_sha,
-        outside_root: repo_root
+        outside_root: repo_root, git_executable:
       )
       raise Error, "trusted local synthetic merge is conflicted or unavailable: #{stderr.lines.first.to_s.strip}" unless
         status.success?
@@ -374,8 +377,9 @@ module CurrentIntegrationEvidence
     snapshot.merge("candidate" => semantic_candidate)
   end
 
-  def changed_paths(repo_root, older, newer)
-    raw = git_output!(repo_root, "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", older, newer)
+  def changed_paths(repo_root, older, newer, git_executable: nil)
+    raw = git_output!(repo_root, "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", older, newer,
+                      git_executable:)
     canonical_paths(raw.split("\0", -1).reject(&:empty?), "Git changed path")
   end
 
@@ -388,30 +392,34 @@ module CurrentIntegrationEvidence
     digest.hexdigest
   end
 
-  def ensure_commit!(repo_root, sha, label)
-    return if git_success?(repo_root, "cat-file", "-e", "#{sha}^{commit}")
+  def ensure_commit!(repo_root, sha, label, git_executable: nil)
+    return if git_success?(repo_root, "cat-file", "-e", "#{sha}^{commit}", git_executable:)
 
     raise Error, "#{label} commit is unavailable"
   end
 
-  def git_output!(repo_root, *arguments)
-    stdout, stderr, status = safe_git_capture("-C", repo_root, *arguments, outside_root: repo_root)
+  def git_output!(repo_root, *arguments, git_executable: nil)
+    stdout, stderr, status = safe_git_capture("-C", repo_root, *arguments, outside_root: repo_root, git_executable:)
     raise Error, "Git evidence command failed: #{stderr.lines.first.to_s.strip}" unless status.success?
 
     stdout
   end
 
-  def git_success?(repo_root, *arguments)
-    _stdout, _stderr, status = safe_git_capture("-C", repo_root, *arguments, outside_root: repo_root)
+  def git_success?(repo_root, *arguments, git_executable: nil)
+    _stdout, _stderr, status = safe_git_capture("-C", repo_root, *arguments, outside_root: repo_root, git_executable:)
     status.success?
   end
 
-  def run_git_external!(repo_root, *arguments)
-    _stdout, stderr, status = safe_git_capture(*arguments, outside_root: repo_root)
+  def run_git_external!(repo_root, *arguments, git_executable: nil)
+    _stdout, stderr, status = safe_git_capture(*arguments, outside_root: repo_root, git_executable:)
     raise Error, "Git evidence setup failed: #{stderr.lines.first.to_s.strip}" unless status.success?
   end
 
-  def safe_git_capture(*arguments, outside_root:)
+  # Callers holding a coordinator-validated Git binding (the trusted
+  # `--trusted-git-executable` / `AUTONOMOUS_MERGE_GIT` path) must pass it as
+  # `git_executable:` so every evidence read runs through that executable.
+  # Without a binding, resolution stays inside the approved system directories.
+  def safe_git_capture(*arguments, outside_root:, git_executable: nil)
     account = Etc.getpwuid(Process.uid)
     environment = {
       "HOME" => account.dir,
@@ -426,7 +434,7 @@ module CurrentIntegrationEvidence
     }
     Open3.capture3(
       environment,
-      resolve_system_git!(outside_root:),
+      git_executable ? bound_git!(git_executable) : resolve_system_git!(outside_root:),
       *arguments,
       unsetenv_others: true
     )
@@ -434,6 +442,22 @@ module CurrentIntegrationEvidence
     raise Error, "local account identity is unavailable for uid #{Process.uid}"
   rescue Errno::ENOENT, Errno::EACCES => e
     raise Error, "Git could not be launched after trusted resolution: #{e.message}"
+  end
+
+  def bound_git!(git_executable)
+    unless git_executable.is_a?(String) && git_executable.start_with?(File::SEPARATOR)
+      raise Error, "bound Git executable must be an absolute path"
+    end
+
+    realpath = File.realpath(git_executable)
+    stat = File.stat(realpath)
+    unless stat.file? && File.executable?(realpath)
+      raise Error, "bound Git executable is not an executable regular file"
+    end
+
+    realpath
+  rescue Errno::ENOENT, Errno::EACCES
+    raise Error, "bound Git executable is unavailable"
   end
 
   def resolve_system_git!(outside_root:)
