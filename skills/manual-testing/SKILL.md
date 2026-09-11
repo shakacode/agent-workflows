@@ -85,7 +85,11 @@ blocker. Do not fake a manual pass from static inspection.
      environment value, the `pr-batch` sibling of the exact loaded skill
      directory, or repo-local `.agents/skills/pr-batch`, in that order; stop with
      a precise blocker if none exists. Write the comment body to
-     `comment_body_file`, then post it with any local evidence attachments:
+     `comment_body_file`. Set `AGENT_COMMENT_RUNNER` to exactly `codex` or
+     `claude`, `AGENT_COMMENT_HOST` to the actual non-empty single-line host
+     label, and `AGENT_COMMENT_TASK_OR_RUN` to the stable task or run identifier.
+     Stop if any value is unavailable; do not invent attribution values. Then post
+     the comment with any local evidence attachments:
 
      ```bash
      "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \

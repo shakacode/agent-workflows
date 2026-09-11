@@ -81,7 +81,10 @@ Memorable invocation: `$verify-pr-fix <PR>` or "manually verify this fix and rep
    outward-facing action), confirm with the user unless they already told you to post. Write the body to a
    temp file and store its path in `comment_body_file`. Resolve `PR_BATCH_SKILL_DIR` from an explicit environment value, the `pr-batch` sibling of
    the exact loaded skill directory, or repo-local `.agents/skills/pr-batch`, in that order; stop with a
-   precise blocker if none exists. Send the file through the helper's stdin explicitly:
+   precise blocker if none exists. Set `AGENT_COMMENT_RUNNER` to exactly `codex` or `claude`,
+   `AGENT_COMMENT_HOST` to the actual non-empty single-line host label, and
+   `AGENT_COMMENT_TASK_OR_RUN` to the stable task or run identifier. Stop if any value is unavailable;
+   do not invent attribution values. Send the file through the helper's stdin explicitly:
 
    ```bash
    "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \

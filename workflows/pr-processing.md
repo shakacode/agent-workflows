@@ -1068,7 +1068,7 @@ For each user-visible UI change:
 2. Put the artifacts where every intended reviewer can open them. For a public
    or GitHub-only project, prefer GitHub PR attachments. With GitHub CLI 2.99.0
    or newer on GitHub.com or GitHub Enterprise Cloud, use the repeatable
-   `--attach` flag on `gh pr create` or `gh pr comment`; the actor needs
+   `--attach` flag on `gh pr create`; the actor needs
    repository write access through OAuth, a classic PAT, or a fine-grained PAT.
    GitHub Actions and App tokens are unsupported. Because these commands mutate GitHub, run them
    only when the user request or active workflow already authorizes that create,
@@ -1076,8 +1076,25 @@ For each user-visible UI change:
    `--body-file`, reference each local image or video path in that Markdown, and
    pass the same path with `--attach` so `gh`
    rewrites it to the uploaded asset URL without losing image alt text. An
-   unreferenced attachment is appended to the body. For an existing PR, default
-   to a dedicated comment; use `gh pr edit` only when the body file preserves
+   unreferenced attachment is appended to the body. For an existing PR, resolve
+   `PR_BATCH_SKILL_DIR` from an explicit environment value, the `pr-batch` sibling
+   of the exact loaded skill directory, or repo-local `.agents/skills/pr-batch`,
+   in that order. Set `AGENT_COMMENT_RUNNER` to exactly `codex` or `claude`,
+   `AGENT_COMMENT_HOST` to the actual non-empty single-line host label, and
+   `AGENT_COMMENT_TASK_OR_RUN` to the stable task or run identifier. Stop if the
+   helper or any attribution value is unavailable. Post a dedicated comment
+   through the shared attribution boundary:
+
+   ```bash
+   "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
+     --repo "${REPO}" --number "${PR_NUMBER}" \
+     --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+     --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" \
+     --attach 'path#useful alt text' < "${comment_body_file}"
+   ```
+
+   Repeat `--attach` for each file and omit `#alt text` for video. Use `gh pr
+   edit` only when the body file preserves
    the complete current description. Read the resulting body/comment back to
    retain its stable GitHub attachment URL. If supported CLI upload is not
    available, an authenticated browser/file-upload capability may use GitHub's

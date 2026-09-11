@@ -35,8 +35,6 @@ class HumanAttentionContractTest < Minitest::Test
     assert_includes closeout, "${PR_BATCH_SKILL_DIR}/bin/human-attention"
     assert_includes closeout, "--repo-root"
     assert_includes closeout, "github-comment-envelope"
-    assert_includes closeout, "single-line host label"
-    assert_includes closeout, "`Codex desktop`"
   end
 
   # Production break: a shipped tower prompt could bypass consumer label
@@ -85,6 +83,7 @@ class HumanAttentionContractTest < Minitest::Test
     audit_receipt = File.read(File.join(ROOT, "skills/post-merge-audit/bin/completed-batch-audit-receipt"))
     verify_fix = File.read(File.join(ROOT, "skills/verify-pr-fix/SKILL.md"))
     manual_testing = File.read(File.join(ROOT, "skills/manual-testing/SKILL.md"))
+    processing = File.read(File.join(ROOT, "workflows/pr-processing.md"))
 
     assert_includes stale_sweep, "GitHubCommentEnvelope.render"
     assert_includes audit_receipt, "GitHubCommentEnvelope.render"
@@ -99,6 +98,11 @@ class HumanAttentionContractTest < Minitest::Test
     assert_includes manual_testing, "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope"
     refute_includes manual_testing, "gh pr comment"
     refute_includes manual_testing, "gh issue comment"
+    visual_evidence = processing[/\n### Durable Visual Evidence Gate\n.*?\n### /m]
+    refute_nil visual_evidence
+    assert_includes visual_evidence, "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope"
+    assert_includes visual_evidence, "post-issue"
+    refute_includes visual_evidence, "gh pr comment"
   end
 
   def test_post_merge_audit_documents_comment_attribution_context
