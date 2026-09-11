@@ -21,6 +21,13 @@ Run a Codex batch
 Run a Claude batch
 ```
 
+<!-- host-branch: cursor-only start -->
+Cursor: `/pr-batch` or pin as a Custom Mode. Sequential Task workers plus
+`git worktree add` are the supported path; stop if a file-editing worker cannot
+isolate. Overnight multi-lane fleets stay blocked until isolation matching
+`isolation: 'worktree'` is proven. Never write into `skills-cursor`.
+<!-- host-branch: cursor-only end -->
+
 For assistants without skill support, follow the high-concurrency batch launch rules below before using the rest of this workflow.
 
 ## Writing Style Resolution

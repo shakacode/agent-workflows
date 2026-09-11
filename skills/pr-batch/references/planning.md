@@ -72,6 +72,12 @@ Before implementation or worker launch, produce:
 <!-- host-branch: codex-only start -->
 13. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
+<!-- host-branch: cursor-only start -->
+13. On Cursor, paste `/pr-batch` or pin as a Custom Mode. Sequential Task
+    workers plus `git worktree add` are the supported path; stop rather than
+    sharing the parent worktree. Overnight multi-lane fleets stay blocked until
+    isolation matching `isolation: 'worktree'` is proven.
+<!-- host-branch: cursor-only end -->
 
 After any target-specific invocation line, each primary pasteable batch prompt
 puts the editable controls first in this exact order: `Batch title:`, `Repo:`,

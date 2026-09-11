@@ -1,7 +1,7 @@
 {
   "name": "scw",
   "version": "0.1.0",
-  "description": "Portable Codex and Claude workflow pack.",
+  "description": "Portable Codex, Claude, and Cursor workflow pack.",
   "author": {
     "name": "ShakaCode",
     "url": "https://github.com/shakacode"

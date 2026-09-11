@@ -53,6 +53,29 @@ class AgentDoctorConfigurationTest < Minitest::Test
       FileUtils.mkdir_p(File.join(home, ".claude"))
       assert_equal ["claude", File.join(home, ".claude")],
                    AgentDoctor::Configuration.host_and_target("auto", nil, environment: environment, home: home)
+
+      FileUtils.mkdir_p(File.join(home, ".cursor"))
+      environment = { "CODEX_HOME" => "", "CLAUDE_HOME" => "", "CURSOR_HOME" => "" }
+      error = assert_raises(AgentDoctor::Configuration::UsageError) do
+        AgentDoctor::Configuration.host_and_target("auto", nil, environment: environment, home: home)
+      end
+      assert_match(/multiple agent homes/, error.message)
+    end
+  end
+
+  def test_cursor_host_uses_cursor_home_and_refuses_skills_cursor
+    Dir.mktmpdir do |home|
+      environment = { "CURSOR_HOME" => File.join(home, "cursor-home") }
+      FileUtils.mkdir_p(environment.fetch("CURSOR_HOME"))
+
+      assert_equal ["cursor", environment.fetch("CURSOR_HOME")],
+                   AgentDoctor::Configuration.host_and_target("cursor", nil, environment: environment, home: home)
+
+      builtins = File.join(home, "skills-cursor")
+      error = assert_raises(AgentDoctor::Configuration::UsageError) do
+        AgentDoctor::Configuration.host_and_target("cursor", builtins, environment: environment, home: home)
+      end
+      assert_match(/skills-cursor/, error.message)
     end
   end
 end

@@ -38,6 +38,12 @@ deterministic QA preference.
 Preferred route, model, and effort are advisory for adversarial review;
 mismatch or unavailability alone does not disqualify an otherwise independent,
 evidence-backed adversarial verdict.
+
+<!-- host-branch: available-tool start -->
+On Cursor, availability-check `/review`, `/review-bugbot`, or `/review-security`
+before using them as a review engine. They do not replace this report-only
+adversarial gate.
+<!-- host-branch: available-tool end -->
 Record observed host, model, and effort only from host-exposed runtime evidence;
 use literal `UNKNOWN` for every unavailable field, and never infer observations
 from the preference, prompt text, or model self-report.

@@ -86,23 +86,38 @@ assert_unsigned_launch_helpers() {
 write_native_scw_state() {
   local host="$1"
   local target="$2"
-  local plugin_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
-  mkdir -p "$plugin_root/skills/example"
-  printf 'example\n' > "$plugin_root/skills/example/SKILL.md"
-  if [[ "$host" = "codex" ]]; then
-    mkdir -p "$plugin_root/.codex-plugin"
-    printf '[plugins."scw@agent-workflows"]\nenabled = true\n' > "$target/config.toml"
-    printf '{"name":"scw","version":"0.1.0","repository":"https://github.com/shakacode/agent-workflows","skills":"./skills/"}\n' \
-      > "$plugin_root/.codex-plugin/plugin.json"
-  else
-    mkdir -p "$target/plugins" "$plugin_root/.claude-plugin"
-    printf '{"enabledPlugins":{"scw@agent-workflows":true}}\n' > "$target/settings.json"
-    ruby -rjson -e '
-      path, plugin_root = ARGV
-      File.write(path, JSON.generate({"version" => 2, "plugins" => {"scw@agent-workflows" => [{"scope" => "user", "installPath" => plugin_root, "version" => "0.1.0"}]}}) + "\n")
-    ' "$target/plugins/installed_plugins.json" "$plugin_root"
-    printf '{"name":"scw","version":"0.1.0","skills":"./skills/"}\n' > "$plugin_root/.claude-plugin/plugin.json"
-  fi
+  local plugin_root
+  case "$host" in
+    cursor)
+      plugin_root="$target/plugins/local/scw"
+      mkdir -p "$plugin_root/skills/example" "$plugin_root/.cursor-plugin"
+      printf 'example\n' > "$plugin_root/skills/example/SKILL.md"
+      printf '{"name":"scw","version":"0.1.0","skills":"./skills/"}\n' \
+        > "$plugin_root/.cursor-plugin/plugin.json"
+      ;;
+    codex)
+      plugin_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
+      mkdir -p "$plugin_root/skills/example" "$plugin_root/.codex-plugin"
+      printf 'example\n' > "$plugin_root/skills/example/SKILL.md"
+      printf '[plugins."scw@agent-workflows"]\nenabled = true\n' > "$target/config.toml"
+      printf '{"name":"scw","version":"0.1.0","repository":"https://github.com/shakacode/agent-workflows","skills":"./skills/"}\n' \
+        > "$plugin_root/.codex-plugin/plugin.json"
+      ;;
+    claude)
+      plugin_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
+      mkdir -p "$target/plugins" "$plugin_root/skills/example" "$plugin_root/.claude-plugin"
+      printf 'example\n' > "$plugin_root/skills/example/SKILL.md"
+      printf '{"enabledPlugins":{"scw@agent-workflows":true}}\n' > "$target/settings.json"
+      ruby -rjson -e '
+        path, plugin_root = ARGV
+        File.write(path, JSON.generate({"version" => 2, "plugins" => {"scw@agent-workflows" => [{"scope" => "user", "installPath" => plugin_root, "version" => "0.1.0"}]}}) + "\n")
+      ' "$target/plugins/installed_plugins.json" "$plugin_root"
+      printf '{"name":"scw","version":"0.1.0","skills":"./skills/"}\n' > "$plugin_root/.claude-plugin/plugin.json"
+      ;;
+    *)
+      fail "unsupported native scw host: $host"
+      ;;
+  esac
 }
 
 new_source_repo() {
@@ -343,7 +358,7 @@ test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
 test_native_plugin_plus_default_flat_install_fails_before_mutation() {
   local tmp target host output status
 
-  for host in codex claude; do
+  for host in codex claude cursor; do
     tmp="$(mktemp -d)"
     target="$tmp/$host-home"
     write_native_scw_state "$host" "$target"
@@ -452,7 +467,7 @@ test_invalid_explicit_target_diagnostics_preserve_exact_path() {
 test_plugin_companion_installs_non_skill_assets_and_records_mode() {
   local tmp target consumer host output
 
-  for host in codex claude; do
+  for host in codex claude cursor; do
     tmp="$(mktemp -d)"
     target="$tmp/$host-home"
     consumer="$tmp/consumer"
@@ -477,6 +492,9 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     assert_file "$target/bin/agent_doctor/process_runner.rb"
     assert_file "$target/bin/agent-workflows-delivery-state"
     assert_file "$target/lib/agent-workflows/secure_github_actions_scanner.rb"
+    if [[ "$host" = "cursor" ]]; then
+      assert_file "$target/rules/agent-workflows.mdc"
+    fi
     ruby -rjson -e '
       metadata = JSON.parse(File.read(ARGV.fetch(0)))
       preset_fingerprint = metadata.fetch("managed_pack_doc_copy_fingerprints")["writing-style-asd-ste100.md"]
@@ -7133,6 +7151,66 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   [[ ! -e "$tmp/.claude/.claude-plugin/marketplace.json" ]] || fail "Claude marketplace metadata must not be copied into the flat Claude home"
 }
 
+test_cursor_host_install_uses_cursor_home_when_target_is_omitted() {
+  local tmp
+  tmp="$(mktemp -d)"
+  mkdir -p "$tmp/.cursor/skills-cursor/create-skill"
+  printf 'builtin\n' > "$tmp/.cursor/skills-cursor/create-skill/SKILL.md"
+
+  CURSOR_HOME="$tmp/.cursor" "$ROOT/bin/install-agent-workflows" --host cursor >"$tmp/install-agent-workflows-test.out"
+
+  assert_file "$tmp/.cursor/LICENSE"
+  grep -q "MIT License" "$tmp/.cursor/LICENSE" || fail "expected installed LICENSE to contain MIT notice"
+  assert_file "$tmp/.cursor/skills/pr-batch/SKILL.md"
+  cmp -s "$tmp/.cursor/skills/pr-batch/SKILL.md" "$ROOT/skills/pr-batch/SKILL.md" || \
+    fail "Cursor copy install must preserve byte-identical skill Markdown"
+  assert_file "$tmp/.cursor/workflows/pr-processing.md"
+  assert_file "$tmp/.cursor/docs/coordination-backend.md"
+  assert_file "$tmp/.cursor/bin/agent-workflows-status"
+  assert_file "$tmp/.cursor/rules/agent-workflows.mdc"
+  cmp -s "$tmp/.cursor/rules/agent-workflows.mdc" "$ROOT/.cursor/rules/agent-workflows.mdc" || \
+    fail "Cursor install must copy the routing rule"
+  grep -qxF 'builtin' "$tmp/.cursor/skills-cursor/create-skill/SKILL.md" || \
+    fail "Cursor install must not modify skills-cursor builtins"
+  [[ -f "$tmp/.cursor/skills/verify/SKILL.md" && -f "$tmp/.cursor/workflows/pr-processing.md" ]] || \
+    fail "Cursor install must place skills and adjacent workflows"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("host") == "cursor"' \
+    "$tmp/.cursor/.agent-workflows-install.json"
+  assert_unsigned_launch_helpers "$tmp/.cursor" "Cursor"
+  [[ ! -e "$tmp/.cursor/bin/agent-stack" ]] || fail "generic workflow install should not install stack-specific helper"
+  [[ ! -e "$tmp/.cursor/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest must not be copied into the flat Cursor home"
+  [[ ! -e "$tmp/.cursor/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest must not be copied into the flat Cursor home"
+}
+
+test_cursor_host_install_refuses_skills_cursor_target() {
+  local tmp target output status
+  tmp="$(mktemp -d)"
+  target="$tmp/skills-cursor"
+  mkdir -p "$target"
+
+  set +e
+  output="$(CURSOR_HOME="$tmp/.cursor" "$ROOT/bin/install-agent-workflows" --host cursor --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "install into skills-cursor unexpectedly succeeded"
+  assert_contains "$output" "skills-cursor"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "skills-cursor refusal wrote metadata"
+}
+
+test_cursor_symlink_install_links_routing_rule() {
+  local tmp
+  tmp="$(mktemp -d)"
+
+  CURSOR_HOME="$tmp/.cursor" "$ROOT/bin/install-agent-workflows" --host cursor --mode symlink \
+    >"$tmp/install-agent-workflows-test.out"
+
+  assert_symlink "$tmp/.cursor/skills/pr-batch"
+  assert_symlink "$tmp/.cursor/rules/agent-workflows.mdc"
+  [[ "$(readlink "$tmp/.cursor/rules/agent-workflows.mdc")" = "$ROOT/.cursor/rules/agent-workflows.mdc" ]] || \
+    fail "Cursor symlink install must point the routing rule at the source pack"
+}
+
 test_copy_mode_preserves_unrelated_agent_files() {
   local tmp target
   tmp="$(mktemp -d)"
@@ -8730,6 +8808,9 @@ main() {
     test_installed_prompt_guard_ignores_unowned_docs
     test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
+    test_cursor_host_install_uses_cursor_home_when_target_is_omitted
+    test_cursor_host_install_refuses_skills_cursor_target
+    test_cursor_symlink_install_links_routing_rule
     test_copy_mode_preserves_unrelated_agent_files
     test_copy_mode_does_not_replace_generic_consumer_docs
     test_symlink_mode_links_skills_workflows_and_helpers

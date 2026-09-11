@@ -23,20 +23,18 @@ module AgentDoctor
     end
 
     def host_and_target(host, target, environment: ENV, home: Dir.home)
-      codex_override = environment["CODEX_HOME"].to_s
-      claude_override = environment["CLAUDE_HOME"].to_s
-      codex_home = File.expand_path(codex_override.empty? ? File.join(home, ".codex") : codex_override)
-      claude_home = File.expand_path(claude_override.empty? ? File.join(home, ".claude") : claude_override)
-      return explicit_target(host, target, codex_home, claude_home) if target
-      return [host, host == "claude" ? claude_home : codex_home] unless host == "auto"
+      homes = host_homes(environment: environment, home: home)
+      return explicit_target(host, target, homes) if target
+      return [host, homes.fetch(host)] unless host == "auto"
 
       candidates = []
-      candidates << ["codex", codex_home] unless codex_override.empty? && !File.directory?(codex_home)
-      candidates << ["claude", claude_home] unless claude_override.empty? && !File.directory?(claude_home)
-      return ["codex", codex_home] if candidates.empty?
+      candidates << ["codex", homes.fetch("codex")] unless environment["CODEX_HOME"].to_s.empty? && !File.directory?(homes.fetch("codex"))
+      candidates << ["claude", homes.fetch("claude")] unless environment["CLAUDE_HOME"].to_s.empty? && !File.directory?(homes.fetch("claude"))
+      candidates << ["cursor", homes.fetch("cursor")] unless environment["CURSOR_HOME"].to_s.empty? && !File.directory?(homes.fetch("cursor"))
+      return ["codex", homes.fetch("codex")] if candidates.empty?
       return candidates.first if candidates.one?
 
-      raise UsageError, "auto host detection found both Codex and Claude homes; pass --host"
+      raise UsageError, "auto host detection found multiple agent homes; pass --host"
     end
 
     def coordination_selector(runtime_root, environment: ENV, home: Dir.home)
@@ -62,16 +60,36 @@ module AgentDoctor
       environment.fetch("PATH", "").split(File::PATH_SEPARATOR).any? { |dir| File.executable?(File.join(dir, name)) }
     end
 
-    def explicit_target(host, target, codex_home, claude_home)
+    def host_homes(environment:, home:)
+      {
+        "codex" => expand_host_home(environment["CODEX_HOME"], File.join(home, ".codex")),
+        "claude" => expand_host_home(environment["CLAUDE_HOME"], File.join(home, ".claude")),
+        "cursor" => expand_host_home(environment["CURSOR_HOME"], File.join(home, ".cursor"))
+      }
+    end
+    private_class_method :host_homes
+
+    def expand_host_home(override, fallback)
+      File.expand_path(override.to_s.empty? ? fallback : override)
+    end
+    private_class_method :expand_host_home
+
+    def explicit_target(host, target, homes)
       expanded = File.expand_path(target)
+      raise UsageError, "refusing to install into Cursor builtins directory skills-cursor" if File.basename(expanded) == "skills-cursor"
       return [host, expanded] unless host == "auto"
 
-      codex_marker = expanded == codex_home || File.file?(File.join(expanded, "config.toml"))
-      claude_marker = expanded == claude_home || File.file?(File.join(expanded, "settings.json")) ||
-                      File.file?(File.join(expanded, "plugins", "installed_plugins.json"))
-      raise UsageError, "explicit target has both Codex and Claude markers; pass --host" if codex_marker && claude_marker
+      markers = {
+        "codex" => expanded == homes.fetch("codex") || File.file?(File.join(expanded, "config.toml")),
+        "claude" => expanded == homes.fetch("claude") || File.file?(File.join(expanded, "settings.json")) ||
+                    File.file?(File.join(expanded, "plugins", "installed_plugins.json")),
+        "cursor" => expanded == homes.fetch("cursor") || File.file?(File.join(expanded, "cli-config.json")) ||
+                    File.directory?(File.join(expanded, "skills-cursor"))
+      }
+      matched = markers.filter_map { |name, present| name if present }
+      raise UsageError, "explicit target has markers for more than one host; pass --host" if matched.length > 1
 
-      [claude_marker ? "claude" : "codex", expanded]
+      [matched.first || "codex", expanded]
     end
     private_class_method :explicit_target
   end

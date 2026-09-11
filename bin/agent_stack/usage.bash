@@ -17,7 +17,7 @@ Options:
   --source-root DIR              source checkout root (default: ~/src)
   --compat-root DIR              compatibility symlink root (default: ~/codex/agent-repos)
   --runtime-root DIR             private runtime/config root (default: ~/.agent-workflows)
-  --host codex|claude|auto       workflow install host (default: codex)
+  --host codex|claude|cursor|auto workflow install host (default: codex)
   --target DIR                   workflow install target
   --mode copy|symlink            workflow install mode (default: copy)
   --delivery-mode MODE           flat or plugin-companion (replays install metadata when omitted)

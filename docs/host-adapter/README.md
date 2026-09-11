@@ -4,6 +4,11 @@ This pack includes an optional Claude Code `SessionEnd` adapter that records
 when a coordinated lane stops. It lives under `plugins/claude-hooks/hooks/` and
 is **off by default**: installing or enabling the pack does not activate it.
 
+Cursor already exposes a `stop` hook surface. A SessionEnd-equivalent lane drain
+for Cursor is optional and later, mirroring this Claude opt-in adapter. Do not
+enable a Cursor drain hook by default. Existing user `~/.cursor/hooks.json`
+entries are unrelated to this pack.
+
 For the portable host model the adapter plugs into, see the
 [Host Adapter Contract](contract.md).
 
