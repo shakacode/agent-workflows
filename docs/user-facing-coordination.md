@@ -92,7 +92,8 @@ assurance gates; autonomous authority does not bypass them.
 When current exact-diff human approval is genuinely required and human
 understanding is the blocker, use `$pr-walkthrough`. Direct chat requests remain
 live and read-only. Publish only when the user or an authorized workflow
-explicitly selects publication with comment authority. In that mode, put
+explicitly selects publication with comment and walkthrough-thread mutation
+authority. In that mode, put
 the orientation and all conceptual sections on GitHub in one pass under
 `$pr-walkthrough`'s mandatory inline-thread and no-anchor-stop rules, and let the owning task consume replies
 asynchronously. A publication-authority blocker is not an explicit skip.

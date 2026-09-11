@@ -16,10 +16,10 @@ gh api repos/${REPO}/issues/comments/${COMMENT_ID} | jq '{body: .body, user: .us
 
 ```bash
 # Review body (often contains summary feedback)
-gh api repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID} | jq '{id: .id, body: .body, state: .state, user: .user.login, created_at: .submitted_at, html_url: .html_url}'
+gh api repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID} | jq '{id: .id, body: .body, state: .state, user: .user.login, created_at: .submitted_at, html_url: .html_url, commit_id: .commit_id}'
 
 # Inline comments for this review
-gh api --paginate repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/comments | jq -s '[.[].[] | {id: .id, node_id: .node_id, path: .path, body: .body, line: .line, start_line: .start_line, user: .user.login, in_reply_to_id: .in_reply_to_id, created_at: .created_at, html_url: .html_url}]'
+gh api --paginate repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/comments | jq -s '[.[].[] | {id: .id, node_id: .node_id, path: .path, body: .body, line: .line, start_line: .start_line, user: .user.login, in_reply_to_id: .in_reply_to_id, created_at: .created_at, html_url: .html_url, pull_request_review_id: .pull_request_review_id, commit_id: .commit_id}]'
 ```
 
 Include the review body as a general comment when it contains actionable feedback. When the review body contains actionable feedback, note that it cannot be replied to via the `/replies` endpoint — responses to review summary bodies must be posted as general PR comments (see Step 8).
@@ -42,8 +42,55 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
   SOURCE_REVIEW_CUTOFF_AT=""
   SOURCE_STATE_CHECKPOINT_BODY=""
   SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
+  SOURCE_PR_IDENTITY_JSON="$(gh api "repos/${REPO}/pulls/${SOURCE_PR_NUMBER}" | jq -ce '{base_ref: .base.ref, base_sha: .base.sha, head_sha: .head.sha, author: .user.login}')"
+  SOURCE_BASE_REF="$(printf '%s' "${SOURCE_PR_IDENTITY_JSON}" | jq -er .base_ref)"
+  SOURCE_BASE_SHA="$(printf '%s' "${SOURCE_PR_IDENTITY_JSON}" | jq -er .base_sha)"
+  SOURCE_HEAD_SHA="$(printf '%s' "${SOURCE_PR_IDENTITY_JSON}" | jq -er .head_sha)"
+  SOURCE_PR_AUTHOR="$(printf '%s' "${SOURCE_PR_IDENTITY_JSON}" | jq -er .author)"
+  SOURCE_DIFF_BASE_SHA="$(gh api "repos/${REPO}/compare/${SOURCE_BASE_SHA}...${SOURCE_HEAD_SHA}" --jq .merge_base_commit.sha)"
+  PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
+  SOURCE_DIFF_IDENTITY="$("${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref "${SOURCE_BASE_REF}" --diff-base-sha "${SOURCE_DIFF_BASE_SHA}" --head-sha "${SOURCE_HEAD_SHA}")"
+  jq -cer --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
+    def v2_marker: "^<!-- pr-walkthrough:v2 pr=(?<pr>[1-9][0-9]*) publisher=(?<publisher>[A-Za-z0-9_-]+(?:\\[bot\\])?) base-ref-b64url=(?<base>[A-Za-z0-9_-]+) diff-base=(?<diff_base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) diff=(?<diff>[0-9a-f]{64}) -->$";
+    def legacy_v1_marker: "^<!-- pr-walkthrough:v1 pr=(?<pr>[1-9][0-9]*) diff=(?<diff>[0-9a-f]{64}) head=(?<head>[0-9a-f]{40}) -->$";
+    .review_summaries[]? |
+     select((.id | type) == "number") |
+     select(.state == "COMMENTED") |
+     ((.body // "") | split("\n")[0]) as $line |
+     (if ($line | test(v2_marker)) then
+        ($line | capture(v2_marker) + {version: "v2"})
+      elif ($line | test(legacy_v1_marker)) then
+        ($line | capture(legacy_v1_marker) + {version: "v1", publisher: $actor})
+      else null end) as $marker |
+     select($marker != null) |
+     select(((.user // "") | ascii_downcase) == ($marker.publisher | ascii_downcase)) |
+     select($marker.pr == $source) |
+     select((.commit_id // "") == $marker.head) |
+     [$marker.version, (.id | tostring), $marker.publisher, ($marker.base // "-"),
+      ($marker.diff_base // "-"), $marker.head, $marker.diff] | @tsv
+  ' source-review-data.json > source-walkthrough-candidates.tsv
+  SOURCE_WALKTHROUGH_REVIEW_IDS_JSON='[]'
+  while IFS="$(printf '\t')" read -r MARKER_VERSION REVIEW_ID MARKER_PUBLISHER MARKER_BASE MARKER_DIFF_BASE MARKER_HEAD MARKER_DIFF; do
+    [ -n "${REVIEW_ID}" ] || continue
+    PUBLISHER_PERMISSION=""
+    if [ "$(printf '%s' "${MARKER_PUBLISHER}" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "${SOURCE_PR_AUTHOR}" | tr '[:upper:]' '[:lower:]')" ]; then
+      PUBLISHER_PERMISSION="$(gh api "repos/${REPO}/collaborators/${MARKER_PUBLISHER}/permission" --jq .permission 2>/dev/null || true)"
+      case "${PUBLISHER_PERMISSION}" in write|maintain|admin) ;; *) continue ;; esac
+    fi
+    if [ "${MARKER_VERSION}" = "v2" ]; then
+      DECODED_BASE_REF="$(ruby -rbase64 -e 'v=Base64.urlsafe_decode64(ARGV.fetch(0)); v.force_encoding("UTF-8"); abort unless v.valid_encoding?; print v' "${MARKER_BASE}" 2>/dev/null || true)"
+      [ -n "${DECODED_BASE_REF}" ] || continue
+      DERIVED_DIFF="$("${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref "${DECODED_BASE_REF}" --diff-base-sha "${MARKER_DIFF_BASE}" --head-sha "${MARKER_HEAD}" 2>/dev/null || true)"
+      [ "${DERIVED_DIFF}" = "${MARKER_DIFF}" ] || continue
+    else
+      [ "$(printf '%s' "${MARKER_PUBLISHER}" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "${SOURCE_REVIEW_ACTOR}" | tr '[:upper:]' '[:lower:]')" ] || continue
+      [ "${MARKER_HEAD}" = "${SOURCE_HEAD_SHA}" ] && [ "${MARKER_DIFF}" = "${SOURCE_DIFF_IDENTITY}" ] || continue
+    fi
+    SOURCE_WALKTHROUGH_REVIEW_IDS_JSON="$(printf '%s' "${SOURCE_WALKTHROUGH_REVIEW_IDS_JSON}" | jq -ce --argjson id "${REVIEW_ID}" '. + [$id] | unique')"
+  done < source-walkthrough-candidates.tsv
+  : "${SOURCE_WALKTHROUGH_REVIEW_IDS_JSON:?could not derive trusted source walkthrough review IDs}"
   if [ -n "${SOURCE_REVIEW_ACTOR}" ]; then
-    if SOURCE_VALID_CHECKPOINTS="$(jq -c --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
+    if SOURCE_VALID_CHECKPOINTS="$(jq -c --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" --argjson walkthrough_review_ids "${SOURCE_WALKTHROUGH_REVIEW_IDS_JSON}" '
       def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";
       def valid_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip" or . == "pending" or . == "ask-user";
       def terminal_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip";
@@ -82,7 +129,23 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
            select(.kind == "review") |
            select((.thread_id // "") == ($thread_id // "")) |
            (.created_at // "") ]) | max // "";
+      def walkthrough_thread_ids:
+        [ $inventory.inline_comments[]? |
+          select((.in_reply_to_id // null) == null) |
+          (.pull_request_review_id // null) as $review_id |
+          select(($walkthrough_review_ids | index($review_id)) != null) |
+          .thread_id // empty ] | unique;
+      def walkthrough_reply_representative_ids:
+        walkthrough_thread_ids as $thread_ids |
+        [ $inventory.inline_comments[]? |
+          (.thread_id // null) as $thread_id |
+          select(($thread_ids | index($thread_id)) != null) |
+          select((.in_reply_to_id // null) != null) ] |
+        group_by(.thread_id) |
+        map(sort_by(.created_at, .id)[0].id);
       def source_candidate_states($checkpoint_created_at):
+        walkthrough_thread_ids as $walkthrough_thread_ids |
+        walkthrough_reply_representative_ids as $walkthrough_reply_ids |
         ([
           $inventory.issue_comments[]? |
           . as $comment |
@@ -91,11 +154,18 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
           candidate_state("issue-comment"; .id; "-"; (.created_at // ""))
         ] + [
           $inventory.review_summaries[]? |
+          .id as $review_id |
+          select(($walkthrough_review_ids | index($review_id)) == null) |
           select((.created_at // "") <= $checkpoint_created_at) |
           candidate_state("review-summary"; .id; "-"; (.created_at // ""))
         ] + [
           $inventory.inline_comments[]? |
-          select((.in_reply_to_id // null) == null or .root_excluded == true) |
+          (.thread_id // null) as $thread_id |
+          .id as $comment_id |
+          select(if ($walkthrough_thread_ids | index($thread_id)) != null
+                 then ($walkthrough_reply_ids | index($comment_id)) != null
+                 else ((.in_reply_to_id // null) == null or .root_excluded == true)
+                 end) |
           select((.is_resolved // false) == false) |
           (.thread_id // "-") as $thread_id |
           (if $thread_id == "-" then (.created_at // "") else inline_latest_activity($thread_id) end) as $latest_activity |
@@ -185,8 +255,8 @@ normalization is unavailable or incomplete, stop with readiness `UNKNOWN`.
 This single read-only call replaces the per-endpoint `gh api ... | jq` blocks and the `reviewThreads` GraphQL query. It emits one normalized JSON document:
 
 - `review_cutoff_at` — the cutoff timestamp described in Step 3 (empty when no prior summary comment exists).
-- `review_summaries` — review bodies with non-empty text: `{id, type: "review_summary", body, state, user, created_at, html_url}`. Treat actionable ones as general comments; like specific review bodies they cannot be replied to via the `/replies` endpoint and must be answered as general PR comments (see Step 8).
-- `inline_comments` — inline review comments: `{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved, root_excluded?}`. The `thread_id` and `is_resolved` fields are already joined from the review threads by `node_id`, so no separate GraphQL query is needed for the full-PR path. Comments with no matching thread get `thread_id: null` and `is_resolved: false`. The first retained trusted reply whose root was excluded has `root_excluded: true`; its own `id` remains the item identity and its `in_reply_to_id` is the top-level reply target. Selecting the first retained reply is a deliberate non-blocking representative heuristic: it may be an acknowledgment, so later trusted replies remain required context for classification.
+- `review_summaries` — review bodies with non-empty text: `{id, type: "review_summary", body, state, user, created_at, html_url, commit_id}`. Treat actionable ones as general comments; like specific review bodies they cannot be replied to via the `/replies` endpoint and must be answered as general PR comments (see Step 8).
+- `inline_comments` — inline review comments: `{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, pull_request_review_id, commit_id, thread_id, is_resolved, root_excluded?}`. The `thread_id` and `is_resolved` fields are already joined from the review threads by `node_id`, so no separate GraphQL query is needed for the full-PR path. Comments with no matching thread get `thread_id: null` and `is_resolved: false`. The first retained trusted reply whose root was excluded has `root_excluded: true`; its own `id` remains the item identity and its `in_reply_to_id` is the top-level reply target. Selecting the first retained reply is a deliberate non-blocking representative heuristic: it may be an acknowledgment, so later trusted replies remain required context for classification.
 - `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, user, created_at, html_url}`. Summary/status/claim/source-reply marker comments are included so you can filter them (see Filtering comments below).
 - `review_threads` — `{thread_id, is_resolved, comments: [{node_id, id}]}` for any thread-level work.
 - `excluded_interactions` — bounded audit metadata `{kind, id, node_id, user, trust, body_withheld, created_at, html_url, state?, thread_id?}` with no body or path. `body_withheld` is true only when non-empty text was removed; use excluded review timestamps when computing thread activity so checkpoint identities remain stable without exposing text.
@@ -211,6 +281,31 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 
 **Filtering comments:**
 
+- Exclude the current exact-diff walkthrough review body and its original
+  explanatory inline comments from triage. Retain trusted replies to those
+  sections, promoting the first retained reply in each thread as the triage item
+  and using later replies as context. Identify the walkthrough as the newest trusted review whose fetched
+  `state` is `COMMENTED`, whose first line is a valid
+  `<!-- pr-walkthrough:v2 ... -->` marker, and whose bound PR number, publisher,
+  `commit_id`, full head SHA, reviewed diff base, and canonical diff identity
+  match the live target. During migration, recognize the legacy short v1 form
+  only under the authenticated-actor and exact-binding rules below. Join its sections by
+  `pull_request_review_id`; never infer membership from explanatory comment text
+  alone. Immediately after fetching the source packet and before source-checkpoint
+  validation, derive `SOURCE_WALKTHROUGH_REVIEW_IDS_JSON` deterministically from
+  trusted `COMMENTED` reviews whose declared v2 publisher matches the review
+  author and whose marker PR, encoded base ref, reviewed diff base, head, and
+  canonical diff identity match the source PR's live identity and review commit.
+  For migration, also accept the legacy short v1 marker only from the authenticated
+  actor when its available PR, head, and canonical diff bindings match. The query
+  emits `[]` when none pass. A missing, malformed, stale, or mismatched
+  binding creates no current-walkthrough exemption. Keep
+  the current walkthrough threads unresolved and omit only their explanatory
+  roots from cutoff or source-checkpoint completeness; retained replies remain
+  normal candidates. Older walkthrough reviews remain
+  informational rather than triage items; after a verified current replacement
+  exists, resolve their threads without posting address-review disposition
+  replies.
 - Never triage prior workflow summary/status/claim comments. Skip any issue comment
   whose body starts with `<!-- address-review-summary -->` or
   `<!-- address-review-status -->` or `<!-- codex-claim v1`; only the summary
@@ -219,7 +314,7 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
   only when their author matches `SOURCE_REVIEW_ACTOR`; a different author
   using that marker remains a source candidate.
 - Skip comments belonging to already-resolved threads (use the `is_resolved` field already joined onto each `inline_comments` entry, or match via `thread_id` against `review_threads`)
-- Do not create standalone triage items from comments where `in_reply_to_id` is set unless `root_excluded` is true. Triage that promoted trusted reply as the standalone item; use other reply text only as the latest thread context when it updates or narrows the unresolved concern
+- Do not create standalone triage items from comments where `in_reply_to_id` is set unless `root_excluded` is true or the explanatory root belongs to the verified current walkthrough. In either case, triage the first retained trusted reply as the standalone item and use later reply text as context when it updates or narrows the unresolved concern
 - When `REVIEW_CUTOFF_AT` is set, evaluate unresolved review threads by their latest activity timestamp, not only by the top-level comment timestamp
 - Do not skip bot-generated comments by default. Many actionable review comments in this repository come from bots.
 - Deduplicate repeated bot comments and skip bot status posts, summaries, and acknowledgments that do not require a code or documentation change

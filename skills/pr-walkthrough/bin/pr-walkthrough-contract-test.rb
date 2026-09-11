@@ -12,6 +12,8 @@ class PrWalkthroughContractTest < Minitest::Test
   INTEGRATION_CLOSEOUT = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
   PR_BATCH = File.join(ROOT, "skills/pr-batch/SKILL.md")
   PR_MONITORING = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
+  ADDRESS_REVIEW_FETCH = File.join(ROOT, "skills/address-review/references/fetch.md")
+  ADDRESS_REVIEW_WORKFLOW = File.join(ROOT, "workflows/address-review.md")
   OPENAI_METADATA = File.join(ROOT, "skills/pr-walkthrough/agents/openai.yaml")
   GETTING_STARTED = File.join(ROOT, "docs/getting-started.md")
   COORDINATION = File.join(ROOT, "docs/user-facing-coordination.md")
@@ -101,11 +103,12 @@ class PrWalkthroughContractTest < Minitest::Test
     skill = File.read(SKILL).gsub(/\s+/, " ")
 
     phrases = [
+      "thread-mutation authority",
       "Build the complete coverage ledger and every conceptual section before any GitHub mutation.",
       "Re-fetch the diff identity immediately before submission.",
       "Submit exactly one GitHub review with event `COMMENT`",
       "Publish every conceptual section in that same review as one separately replyable inline thread",
-      "Include an idempotency marker and full head SHA in the review body.",
+      "<!-- pr-walkthrough:v2 pr=<PR_NUMBER> publisher=<GITHUB_LOGIN> base-ref-b64url=<BASE_REF_BASE64URL> diff-base=<REVIEWED_DIFF_BASE_SHA> head=<FULL_HEAD_SHA> diff=<CANONICAL_DIFF_IDENTITY> -->",
       "Published-review mode never waits for `next`."
     ]
     positions = phrases.map do |phrase|
@@ -133,7 +136,6 @@ class PrWalkthroughContractTest < Minitest::Test
       text = File.read(path).gsub(/\s+/, " ")
 
       assert_includes text, "Direct chat requests"
-      assert_includes text, "the user or an authorized workflow explicitly selects publication with comment authority"
     end
 
     workflow = File.read(WORKFLOW).gsub(/\s+/, " ")
@@ -149,6 +151,42 @@ class PrWalkthroughContractTest < Minitest::Test
     assert_includes skill, "Before archiving a standalone published-review task, include its durable review URL"
     assert_includes skill, "unarchive and resume this same task with that review URL"
     assert_includes skill, "Reply consumption occurs on that explicit resume, not automatically while the task is archived"
+  end
+
+  # Production break: closeout mistakes the newest explanatory review for
+  # actionable feedback, adds disposition replies, then resolves and hides it.
+  def test_current_published_walkthrough_stays_visible_without_triage_noise
+    publish = File.read(SKILL).split("## Publish One Complete Review", 2).last
+                  .split("## Consume Replies Asynchronously", 2).first
+    marker = "<!-- pr-walkthrough:v2 pr=<PR_NUMBER> publisher=<GITHUB_LOGIN> base-ref-b64url=<BASE_REF_BASE64URL> " \
+             "diff-base=<REVIEWED_DIFF_BASE_SHA> head=<FULL_HEAD_SHA> diff=<CANONICAL_DIFF_IDENTITY> -->"
+    assert_includes publish, marker
+    specific_fetch = File.read(ADDRESS_REVIEW_FETCH).split("**If a specific review ID", 2).last
+                         .split("**If only PR number", 2).first
+    assert_includes specific_fetch, "commit_id: .commit_id"
+    assert_includes specific_fetch, "pull_request_review_id: .pull_request_review_id"
+    workflow_specific_fetch = File.read(ADDRESS_REVIEW_WORKFLOW).split("- Specific review:", 2).last
+                                  .split("- If the review body", 2).first
+    assert_includes workflow_specific_fetch, "commit_id: .commit_id"
+    assert_includes workflow_specific_fetch, "pull_request_review_id: .pull_request_review_id"
+    checkpoint_validation = File.read(ADDRESS_REVIEW_FETCH).split("def source_candidate_states", 2).last
+    assert_includes checkpoint_validation, "$walkthrough_review_ids"
+    assert_includes checkpoint_validation, "walkthrough_thread_ids"
+    assert_includes checkpoint_validation, "walkthrough_reply_representative_ids"
+
+    derivation = File.read(ADDRESS_REVIEW_FETCH).split("SOURCE_PR_IDENTITY_JSON=", 2).last
+                       .split("if [ -n \"${SOURCE_REVIEW_ACTOR}\" ]", 2).first
+    assert_includes derivation, 'select(.state == "COMMENTED")'
+    assert_includes derivation, "legacy_v1_marker"
+    assert_includes derivation, "$marker.publisher"
+    assert_includes derivation, "select($marker.pr == $source)"
+    assert_includes derivation, 'select((.commit_id // "") == $marker.head)'
+    assert_includes derivation, "SOURCE_PR_AUTHOR"
+    assert_includes derivation, "collaborators/${MARKER_PUBLISHER}/permission"
+    assert_includes derivation, "DECODED_BASE_REF"
+    assert_includes derivation, "DERIVED_DIFF"
+    assert_includes derivation, '[ "${DERIVED_DIFF}" = "${MARKER_DIFF}" ]'
+
   end
 
   def test_async_reply_consumption_needs_no_undefined_cutoff
