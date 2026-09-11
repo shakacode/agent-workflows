@@ -44,6 +44,10 @@ state row, section, and audit detail in `references/templates.md`.
 Apply the Maintainer Attention Contract from `AGENTS.md` for all broad
 code-changing actions. Skill-specific routing:
 
+First apply [Initial-Pass Optional-Nit Cutoff](../../workflows/pr-processing.md#initial-pass-optional-nit-cutoff)
+before the action defaults below. Recover the existing phase before selecting
+optional work; broad action selection does not grant another optional fix pass.
+
 - Autonomous low-risk optional handling with the behavior-preserving filter
   applies to `f` and `f+i`.
 - Action `f+o` selects every current `OPTIONAL` item for inline handling without

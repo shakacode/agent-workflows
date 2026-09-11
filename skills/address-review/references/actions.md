@@ -8,6 +8,11 @@ syntax stay in `SKILL.md` or `workflows/address-review.md`, which are covered by
 
 <!-- Keep this action-routing section in sync with .agents/workflows/address-review.md Step 8. -->
 
+Apply [Initial-Pass Optional-Nit Cutoff](../../../workflows/pr-processing.md#initial-pass-optional-nit-cutoff)
+before every action below, including `a`, `f`, `f+i`, `f+o`, autopilot, and
+replacement carryover. Their optional defaults operate only within that rule;
+an explicit later human scope decision may select work without resetting phase.
+
 ### Action `a` — Apply, stage, and recommend
 
 Fix all `MUST-FIX` and `OPTIONAL` items inline after the user selects `a`, or automatically when `autopilot` was requested at initiation. Run relevant checks and the self-review gate. Stage only the intended changed files with explicit `git add` paths instead of committing them. Do **not** commit, push, post GitHub replies, resolve review threads, create follow-up issues, or post the PR summary checkpoint. Return a local summary with: fixed `MUST-FIX` items, fixed `OPTIONAL` items, staged files, validation commands/results, unresolved/skipped items, and detailed `DISCUSS` recommendations. Each `DISCUSS` recommendation must include the reviewer/comment link, recommended decision (`fix now`, `defer`, `decline`, or `ask user`), rationale/evidence, risk/tradeoff, and concrete next step. If validation fails after reasonable local repair, still report the staged-file state clearly and mark the PR as not ready for commit/push.

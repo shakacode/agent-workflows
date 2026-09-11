@@ -5,6 +5,7 @@ require_relative "../lib/skill_stage_source"
 
 require "minitest/autorun"
 require_relative "../../../bin/agent_doctor/autonomous_merge_policy"
+require_relative "../lib/autonomous_merge_decision"
 require_relative "../lib/autonomous_merge_runtime_trust"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -90,6 +91,26 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_includes workflow, "mechanically recomputes a length-framed manifest"
     assert_includes workflow, "remain coordinator procedures"
     assert_match(/`merge_authority`\s+remains separate from\s+eligibility/, workflow)
+  end
+
+  def test_human_risk_decision_contract_leads_with_review_context_and_collapses_the_receipt
+    adr = File.read(
+      File.join(ROOT, "docs/adr/0003-smarter-autonomous-merge-gates.md"),
+      encoding: "UTF-8"
+    )
+    section = adr.split(/^## Human Risk Decision\s*$/, 2).fetch(1)
+    templates = section.scan(/````markdown\n(.*?)\n````/m).flatten
+    template = templates.first
+
+    assert_equal 1, templates.length
+    refute_nil template
+    assert template.start_with?(AutonomousMergeDecision::MARKER)
+    assert_includes template, "<details>\n<summary>Approval receipt</summary>"
+    assert_operator template.index("- Commit:"), :<, template.index("<details>")
+    assert_operator template.index("- Risk requiring approval:"), :<, template.index("<details>")
+    assert_operator template.index("- Rollback:"), :<, template.index("<details>")
+    assert_includes template, "```yaml\n---\nhead_sha:"
+    assert template.end_with?("</details>")
   end
 
   def test_goal_generation_surfaces_carry_both_autonomous_stop_states

@@ -1,5 +1,11 @@
 ## Step 5: Triage Comments
 
+Apply [Initial-Pass Optional-Nit Cutoff](../../../workflows/pr-processing.md#initial-pass-optional-nit-cutoff)
+before classification, TodoWrite, coordinated worklists, and menu construction.
+Limit optional fix choices to the accepted phase or an explicit later human
+scope decision; broad actions and a full-history rescan do not reset it.
+Later optional notes receive a non-executable disposition, not `fix now`.
+
 Before creating any todos, classify every review comment into one of four categories:
 
 - `MUST-FIX`: correctness bugs, regressions, security issues, missing tests that could hide a real bug, and clear inconsistencies with adjacent code that would likely block merge

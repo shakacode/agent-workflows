@@ -293,9 +293,9 @@ module GithubActorTrust
   # `global` selects whether unqualified team slugs are accepted; a global
   # config must spell teams as OWNER/team-slug so it cannot grant trust in a
   # repository it was not written for.
-  def load(path:, global:)
+  def load(path:, global:, contents: nil)
     path = File.expand_path(path)
-    contents = File.exist?(path) ? File.binread(path) : ""
+    contents = File.exist?(path) ? File.binread(path) : "" if contents.nil?
     parse_contents = contents.dup.force_encoding(Encoding::UTF_8)
     raise Error, "Invalid trust config #{path}: expected valid UTF-8" unless parse_contents.valid_encoding?
 

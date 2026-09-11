@@ -1,6 +1,6 @@
 ---
 name: batch-status
-description: Use when asked where a dispatched PR batch stands - mid-flight or after dispatch - to report per-lane coordination and live GitHub state in the canonical readiness vocabulary. Read-only; use post-merge-audit for fully merged batches and pr-monitoring for a single PR.
+description: Use when asked where a dispatched PR batch stands - mid-flight or after dispatch - to report per-lane coordination and live GitHub state in the canonical readiness vocabulary. Read-only; use close-batch for completed-batch closeout and pr-monitoring for a single PR.
 argument-hint: '[batch id or id prefix] [owner/repo#N ...]'
 ---
 
@@ -195,5 +195,6 @@ batch id you probed, or stating that it stayed `UNKNOWN`.
 This is a status report, not a handoff: do not emit an archive-readiness
 `Conversation status:` line, which belongs to a batch-level final message.
 
-When every target in a batch is merged, say so and point the operator at
-`post-merge-audit` rather than duplicating its closeout checks here.
+When every target in a batch is merged, say so. Use
+[Ordinary PR Closeout](../../workflows/pr-batch-integration-closeout.md#ordinary-pr-closeout)
+for any requested closeout; a status report does not launch an audit or mutate state.
