@@ -55,7 +55,7 @@
       "properties": {
         "mode": {"const": "metadata_only"},
         "emitted_or_persisted_content": {"const": false},
-        "excluded": {"type": "array", "items": {"type": "string"}}
+        "excluded": {"const": ["prompt", "response", "tool_result", "auth", "secret", "environment"]}
       },
       "additionalProperties": false
     },
@@ -105,7 +105,7 @@
       "properties": {
         "status": {"enum": ["complete", "UNKNOWN"]},
         "physical_rollout_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
-        "first_session_ids": {"type": "array", "items": {"type": "string"}},
+        "first_session_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
         "first_session_id": {"type": "string"}
       },
       "allOf": [

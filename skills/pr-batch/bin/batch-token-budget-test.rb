@@ -506,6 +506,9 @@ class BatchTokenBudgetTest < Minitest::Test
       "descendant_inclusive" => batch_turns,
       "unattributed" => batch_unattributed_turns
     )
+    nested_scopes = [projected.fetch("coordinator"), *projected.fetch("lanes")]
+    nested_scopes.concat(projected.fetch("lanes").flat_map { |lane| lane.fetch("workers") })
+    nested_scopes.each { |scope| synchronize_observed_route_usage(scope) }
     projected
   end
 
@@ -534,6 +537,8 @@ class BatchTokenBudgetTest < Minitest::Test
       "self_only" => worker_self_turns,
       "descendant_inclusive" => worker_turns
     )
+    synchronize_observed_route_usage(lane)
+    synchronize_observed_route_usage(worker)
     receipt
   end
 
@@ -645,6 +650,14 @@ class BatchTokenBudgetTest < Minitest::Test
       "cache_read_tokens" => 0,
       "total_tokens" => tokens
     )
+  end
+
+  def synchronize_observed_route_usage(scope)
+    routes = scope.fetch("observed_routes")
+    return if routes.empty?
+
+    routes.each { |route| set_usage_total(route.fetch("usage"), 0) }
+    routes.first["usage"] = JSON.parse(JSON.generate(scope.dig("usage", "descendant_inclusive")))
   end
 
   def set_usage_counter(value, counter, replacement)
@@ -8016,7 +8029,7 @@ class BatchTokenBudgetTest < Minitest::Test
     with_state do |state_path|
       initialize_budget(state_path)
       receipt, = real_descendants_usage_receipt(state_path)
-      receipt.fetch("privacy").fetch("excluded") << "valid-multibyte-résumé"
+      receipt.dig("coordinator", "observed_routes", 0)["model"] = "valid-multibyte-résumé"
       receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "utf8-boundary")
       artifact_path = receipt_ref.delete_prefix("file://")
       assert File.binread(artifact_path).dup.force_encoding(Encoding::UTF_8).valid_encoding?
@@ -8064,7 +8077,7 @@ class BatchTokenBudgetTest < Minitest::Test
       initialize_budget(state_path)
       reserve(state_path, id: "oversized-receipt", tokens: 100)
       receipt, = real_descendants_usage_receipt(state_path)
-      receipt.fetch("privacy").fetch("excluded") << ("x" * (1024 * 1024))
+      receipt.dig("coordinator", "observed_routes", 0)["model"] = "x" * (1024 * 1024)
       receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "oversized")
       artifact_path = receipt_ref.delete_prefix("file://")
       assert_operator File.size(artifact_path), :>, 1024 * 1024
@@ -8827,5 +8840,89 @@ class BatchTokenBudgetTest < Minitest::Test
       assert File.file?(valid_state_path)
       assert File.file?("#{valid_state_path}.lock")
     end
+  end
+
+  def test_reconcile_rejects_observed_route_usage_that_contradicts_scope_totals
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 0,
+        lane_tokens: { "lane-a" => 0, "lane-b" => 0 }
+      )
+      set_usage_total(receipt.dig("coordinator", "observed_routes", 0, "usage"), 112)
+      observed_total = receipt.dig("coordinator", "observed_routes").sum do |route|
+        route.dig("usage", "total_tokens")
+      end
+      assert_operator observed_total, :>, 0
+      state_before = File.binread(state_path)
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "contradictory-observed-routes")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      state = JSON.parse(state_before)
+      assert_empty state.fetch("usage_receipts")
+      assert_nil state["usage_cursor"]
+    end
+  end
+
+  def test_complete_scope_evidence_rejects_duplicate_first_session_ids
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, = real_descendants_usage_receipt(state_path)
+      evidence = receipt.dig("coordinator", "evidence")
+      assert_equal "complete", evidence.fetch("status")
+      assert_operator evidence.fetch("first_session_ids").length, :>, 1
+      evidence.fetch("first_session_ids") << evidence.fetch("first_session_ids").first
+      extra_rollout_id = "sha256:#{'f' * 64}"
+      extra_rollout_id = "sha256:#{'e' * 64}" if evidence.fetch("physical_rollout_ids").include?(extra_rollout_id)
+      evidence.fetch("physical_rollout_ids") << extra_rollout_id
+      assert_equal evidence.fetch("first_session_ids").length, evidence.fetch("physical_rollout_ids").length
+      assert_equal evidence.fetch("physical_rollout_ids").length,
+                   evidence.fetch("physical_rollout_ids").uniq.length
+      state_before = File.binread(state_path)
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "duplicate-first-session-id")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      assert_empty JSON.parse(state_before).fetch("usage_receipts")
+    end
+  end
+
+  def test_privacy_exclusions_must_match_the_producer_contract_before_persistence
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, = real_descendants_usage_receipt(state_path)
+      expected = %w[prompt response tool_result auth secret environment]
+      assert_equal expected, receipt.dig("privacy", "excluded")
+      sentinel = "PROMPT_SECRET_INLINE_3984688015"
+      receipt.fetch("privacy")["excluded"] = [sentinel]
+      state_before = File.binread(state_path)
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "noncanonical-privacy-exclusions")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      refute_includes File.binread(state_path), sentinel
+    end
+  end
+
+  def test_v2_schema_pins_the_exact_producer_privacy_exclusions
+    schema_path = File.expand_path("../../../docs/schemas/batch-usage-receipt-v2.schema.json", __dir__)
+    schema = JSON.parse(File.read(schema_path, encoding: "UTF-8"))
+
+    assert_equal %w[prompt response tool_result auth secret environment],
+                 schema.dig("properties", "privacy", "properties", "excluded", "const")
   end
 end

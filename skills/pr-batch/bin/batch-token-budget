@@ -63,6 +63,8 @@ module BatchTokenBudget
     input_tokens output_tokens reasoning_output_tokens cache_read_tokens total_tokens
   ].freeze
   V2_UNKNOWN_REASON_ROUTE_FIELDS = %w[provider model effort].freeze
+  V2_USAGE_COUNTERS = %w[input_tokens output_tokens reasoning_output_tokens cache_read_tokens total_tokens].freeze
+  V2_PRIVACY_EXCLUDED = %w[prompt response tool_result auth secret environment].freeze
   CREDIT_EQUIVALENT_UNKNOWN_CODES = %w[rate_mapping_missing route_identity_unknown usage_unknown].freeze
   BATCH_RECONCILIATION_EQUATION =
     "batch descendant-inclusive = coordinator self-only + lane descendant-inclusive + unattributed"
@@ -2438,7 +2440,7 @@ module BatchTokenBudget
   def usage_counter_shape?(value)
     return false unless exact_object_keys?(
       value,
-      %w[cache_read_tokens input_tokens output_tokens reasoning_output_tokens total_tokens]
+      V2_USAGE_COUNTERS
     ) && value.values.all? { |counter| nonnegative_integer?(counter) || counter == "UNKNOWN" }
 
     input, output, total = value.values_at("input_tokens", "output_tokens", "total_tokens")
@@ -2455,6 +2457,14 @@ module BatchTokenBudget
       value.values_at("effort", "host", "model", "provider").all? do |field|
         schema_nonempty_string?(field)
       end && usage_counter_shape?(value["usage"])
+  end
+
+  def observed_route_usage_consistent?(scope)
+    aggregate = V2_USAGE_COUNTERS.to_h do |counter|
+      values = scope.fetch("observed_routes").map { |route| route.dig("usage", counter) }
+      [counter, values.all? { |value| value.is_a?(Integer) } ? values.sum : "UNKNOWN"]
+    end
+    aggregate == scope.dig("usage", "descendant_inclusive")
   end
 
   def scope_evidence_shape?(value)
@@ -2484,6 +2494,7 @@ module BatchTokenBudget
     return false if first_session_ids.empty? || physical_rollout_ids.empty?
     return false unless first_session_ids.length == physical_rollout_ids.length
     return false unless first_session_ids.all? { |item| nonempty_string?(item) }
+    return false unless first_session_ids.uniq.length == first_session_ids.length
 
     if first_session_ids.one?
       value["first_session_id"] == first_session_ids.first
@@ -2524,6 +2535,7 @@ module BatchTokenBudget
       requested_route_shape?(value["requested_route"]) && value["observed_routes"].is_a?(Array) &&
       value["observed_routes"].all? { |route| observed_route_shape?(route) } &&
       execution_usage_shape?(value["usage"]) &&
+      observed_route_usage_consistent?(value) &&
       turns_shape?(value["turns"], %w[descendant_inclusive self_only]) &&
       scope_evidence_shape?(value["evidence"])
   end
@@ -2537,6 +2549,7 @@ module BatchTokenBudget
       requested_route_shape?(value["requested_route"]) && value["observed_routes"].is_a?(Array) &&
       value["observed_routes"].all? { |route| observed_route_shape?(route) } &&
       lane_usage_shape?(value["usage"]) &&
+      observed_route_usage_consistent?(value) &&
       turns_shape?(value["turns"], %w[descendant_inclusive self_only unattributed]) &&
       scope_evidence_shape?(value["evidence"]) && value["workers"].is_a?(Array) &&
       value["workers"].all? { |worker| execution_scope_shape?(worker, "worker") } &&
@@ -2610,8 +2623,8 @@ module BatchTokenBudget
     privacy = usage_receipt["privacy"]
     return false unless exact_object_keys?(privacy, %w[emitted_or_persisted_content excluded mode]) &&
                         privacy["mode"] == "metadata_only" &&
-                        privacy["emitted_or_persisted_content"] == false && privacy["excluded"].is_a?(Array) &&
-                        privacy["excluded"].all? { |item| item.is_a?(String) }
+                        privacy["emitted_or_persisted_content"] == false &&
+                        privacy["excluded"] == V2_PRIVACY_EXCLUDED
 
     !usage_receipt.key?("credit_equivalents") || credit_equivalents_shape?(usage_receipt["credit_equivalents"])
   end
@@ -2767,7 +2780,7 @@ module BatchTokenBudget
     privacy = usage_receipt["privacy"]
     return unless privacy.is_a?(Hash) && privacy.keys.sort == %w[emitted_or_persisted_content excluded mode] &&
                   privacy["mode"] == "metadata_only" && privacy["emitted_or_persisted_content"] == false &&
-                  privacy["excluded"].is_a?(Array) && privacy["excluded"].all? { |item| nonempty_string?(item) }
+                  privacy["excluded"] == V2_PRIVACY_EXCLUDED
 
     batch = usage_receipt["batch"]
     coordinator = usage_receipt["coordinator"]
