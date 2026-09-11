@@ -8873,6 +8873,60 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_reconcile_rejects_coordinator_descendant_usage_that_contradicts_the_batch_total
+    with_state do |state_path|
+      initialize_budget(state_path)
+      base_receipt, = real_descendants_usage_receipt(state_path)
+      receipt = usage_window(
+        base_receipt,
+        from: "2026-08-12T11:00:00Z",
+        to: "2026-08-12T12:00:00Z",
+        coordinator_tokens: 10,
+        lane_tokens: { "lane-a" => 102, "lane-b" => 0 }
+      )
+      set_usage_total(receipt.dig("coordinator", "usage", "self_only"), 0)
+      set_usage_total(receipt.dig("batch", "usage", "descendant_inclusive"), 102)
+      receipt.dig("coordinator", "turns")["self_only"] = 0
+      receipt.dig("batch", "turns")["descendant_inclusive"] -= 1
+      state_before = File.binread(state_path)
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "contradictory-coordinator-descendants")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      state = JSON.parse(state_before)
+      assert_empty state.fetch("usage_receipts")
+      assert_nil state["usage_cursor"]
+    end
+  end
+
+  def test_restart_rejects_invalid_utf8_as_structured_corrupt_state_without_mutation
+    with_state do |state_path|
+      initialize_budget(state_path)
+      valid_state = File.binread(state_path)
+      field = '"batch_id":"batch-399"'.b
+      payload_offset = valid_state.index('"payload":{"command":'.b)
+      refute_nil payload_offset
+      field_offset = valid_state.index(field, payload_offset)
+      refute_nil field_offset
+      invalid_state = valid_state.dup
+      invalid_state.insert(field_offset + field.bytesize - 1, "\xFF".b)
+      refute_equal valid_state, invalid_state
+      refute invalid_state.dup.force_encoding(Encoding::UTF_8).valid_encoding?
+      File.binwrite(state_path, invalid_state)
+
+      output, stderr, status = run_helper(state_path, command("closeout"))
+
+      refute status.success?
+      assert_nil output
+      assert_equal 1, stderr.lines.length
+      assert_equal "corrupt-persisted-state", JSON.parse(stderr).fetch("reason")
+      assert_equal invalid_state, File.binread(state_path)
+    end
+  end
+
   def test_complete_scope_evidence_rejects_duplicate_first_session_ids
     with_state do |state_path|
       initialize_budget(state_path)

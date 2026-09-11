@@ -2800,6 +2800,7 @@ module BatchTokenBudget
 
     batch_tokens = batch.dig("usage", "descendant_inclusive", "total_tokens")
     batch_unattributed = batch.dig("usage", "unattributed", "total_tokens")
+    coordinator_inclusive_usage = coordinator.dig("usage", "descendant_inclusive")
     coordinator_self = coordinator.dig("usage", "self_only", "total_tokens")
     batch_turns = batch.dig("turns", "descendant_inclusive")
     batch_unattributed_turns = batch.dig("turns", "unattributed")
@@ -2810,6 +2811,8 @@ module BatchTokenBudget
     end
     return unless valid_usage_turn_pair?(coordinator_self, coordinator_self_turns) &&
                   valid_usage_turn_pair?(batch_unattributed, batch_unattributed_turns)
+    return unless coordinator_inclusive_usage == batch.dig("usage", "descendant_inclusive")
+    return unless coordinator_inclusive_turns == batch_turns
 
     lane_tokens = lane_projections.to_h { |lane| [lane.fetch("id"), lane.fetch("tokens")] }
     lane_turns = lane_projections.to_h { |lane| [lane.fetch("id"), lane.fetch("turns")] }
@@ -3312,7 +3315,7 @@ module BatchTokenBudget
   def load_persisted_state(path)
     flags = File::RDONLY | File::NONBLOCK
     flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
-    File.open(path, flags, encoding: "UTF-8") do |file|
+    File.open(path, flags) do |file|
       opened_stat = file.stat
       path_stat = File.lstat(path)
       unless opened_stat.file? && path_stat.file? &&
@@ -3322,8 +3325,11 @@ module BatchTokenBudget
 
       raise InvalidInput, "corrupt-persisted-state" if opened_stat.size > PERSISTED_STATE_MAX_BYTES
 
-      persisted_json = file.read(PERSISTED_STATE_MAX_BYTES + 1) || ""
+      persisted_json = (file.read(PERSISTED_STATE_MAX_BYTES + 1) || "").dup
       raise InvalidInput, "corrupt-persisted-state" if persisted_json.bytesize > PERSISTED_STATE_MAX_BYTES
+
+      persisted_json.force_encoding(Encoding::UTF_8)
+      raise InvalidInput, "corrupt-persisted-state" unless persisted_json.valid_encoding?
 
       parse_json_strict(persisted_json)
     end
