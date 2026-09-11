@@ -46,23 +46,39 @@ module PrBatchGitProbeEnv
   module_function
 
   def local_env_vars
-    @local_env_vars ||= begin
-      stdout, _stderr, status = capture3({}, "git", "rev-parse", "--local-env-vars")
-      names = status.success? ? stdout.force_encoding("UTF-8").scrub.lines.map(&:strip).reject(&:empty?) : []
-      names.empty? ? LOCAL_ENV_VARS_FALLBACK : names
-    rescue StandardError
-      LOCAL_ENV_VARS_FALLBACK
-    end
+    @local_env_vars ||= local_env_vars_for("git")
   end
 
-  def capture3(env, *command, stdin_data: nil, timeout_seconds: GIT_TIMEOUT_SECONDS)
+  def local_env_vars_for(git_executable, unsetenv_others: false)
+    stdout, _stderr, status = capture3(
+      {},
+      git_executable,
+      "rev-parse",
+      "--local-env-vars",
+      unsetenv_others:
+    )
+    names = status.success? ? stdout.force_encoding("UTF-8").scrub.lines.map(&:strip).reject(&:empty?) : []
+    names.empty? ? LOCAL_ENV_VARS_FALLBACK : names.freeze
+  rescue StandardError
+    LOCAL_ENV_VARS_FALLBACK
+  end
+
+  def capture3(env, *command, stdin_data: nil, timeout_seconds: GIT_TIMEOUT_SECONDS, unsetenv_others: false)
     Tempfile.create("git-probe-stdin") do |stdin|
       Tempfile.create("git-probe-stdout") do |stdout|
         Tempfile.create("git-probe-stderr") do |stderr|
           [stdin, stdout, stderr].each(&:binmode)
           stdin.write(stdin_data) if stdin_data
           stdin.rewind
-          pid = Process.spawn(env, *command, in: stdin, out: stdout, err: stderr, pgroup: true)
+          pid = Process.spawn(
+            env,
+            *command,
+            in: stdin,
+            out: stdout,
+            err: stderr,
+            pgroup: true,
+            unsetenv_others:
+          )
           status = wait_for_process(pid, timeout_seconds)
           unless status
             terminate_process_group(pid)
@@ -107,8 +123,9 @@ module PrBatchGitProbeEnv
     end
   end
 
-  def probe_env(source_env = ENV)
-    (local_env_vars + EXTRA_ENV_VARS).uniq.to_h { |name| [name, nil] }.tap do |env|
+  def probe_env(source_env = ENV, local_env_vars_override = nil)
+    names = local_env_vars_override || local_env_vars
+    (names + EXTRA_ENV_VARS).uniq.to_h { |name| [name, nil] }.tap do |env|
       source_env.each_key do |name|
         env[name] = nil if name.match?(/\AGIT_CONFIG_(KEY|VALUE)_\d+\z/)
       end
