@@ -9,6 +9,7 @@ source "$ROOT/test/agent_stack/module_install_test.bash"
 source "$ROOT/test/agent_stack/command_install_test.bash"
 source "$ROOT/test/agent_stack/upgrade_test.bash"
 source "$ROOT/test/agent_stack/repository_test.bash"
+source "$ROOT/test/agent_stack/repository_timeout_test.bash"
 source "$ROOT/test/agent_stack/path_safety_test.bash"
 
 tests=(
@@ -36,6 +37,7 @@ tests=(
   test_prior_monolithic_install_bootstraps_modular_command
   test_launcher_uses_only_complete_module_trees
   test_fixture_origins_clone_without_local_object_sharing_during_temp_pack_writes
+  test_fixture_clone_writer_timeout_preserves_primary_failure
   test_repository_guards_reject_unsafe_checkouts
   test_worktree_checkout_and_force_stash_are_supported
   test_path_overlap_and_compatibility_guards
