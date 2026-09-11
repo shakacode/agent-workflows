@@ -166,13 +166,13 @@ module MergeAssurance
 
   def assess(
     ci_result:, autonomous_result:, context:, selected_hosted_ci_receipts: nil,
-    trusted_ci_policy: nil, now: Time.now.utc
+    trusted_ci_policy: nil, trusted_repo_root: nil, ci_readiness_runner: nil, now: Time.now.utc
   )
     failures = []
     selected_hosted_ci_receipts ||= empty_selected_hosted_ci_receipts
     safe_context, follow_up_accounting, semantic_tracker = validate_evidence(
       ci_result:, autonomous_result:, context:, selected_hosted_ci_receipts:,
-      trusted_ci_policy:, now:, failures:
+      trusted_ci_policy:, trusted_repo_root:, ci_readiness_runner:, now:, failures:
     )
     authenticated_tracker_reads = []
     if failures.empty? && semantic_tracker
@@ -219,11 +219,13 @@ module MergeAssurance
   end
 
   def local_evidence_failures(
-    ci_result:, autonomous_result:, context:, trusted_ci_policy: nil, now: Time.now.utc
+    ci_result:, autonomous_result:, context:, trusted_ci_policy: nil,
+    trusted_repo_root: nil, ci_readiness_runner: nil, now: Time.now.utc
   )
     failures = []
     validate_evidence(
-      ci_result:, autonomous_result:, context:, trusted_ci_policy:, now:, failures:,
+      ci_result:, autonomous_result:, context:, trusted_ci_policy:, trusted_repo_root:,
+      ci_readiness_runner:, now:, failures:,
       preflight_selected_hosted_runs: true
     )
     failures.uniq
@@ -232,11 +234,12 @@ module MergeAssurance
   def validate_evidence(
     ci_result:, autonomous_result:, context:, now:, failures:,
     selected_hosted_ci_receipts: nil, preflight_selected_hosted_runs: false,
-    trusted_ci_policy: nil
+    trusted_ci_policy: nil, trusted_repo_root: nil, ci_readiness_runner: nil
   )
     safe_context = context.is_a?(Hash) ? context : {}
     validate_context(context, failures)
-    validate_ci(ci_result, safe_context, trusted_ci_policy, now, failures, autonomous_result:)
+    validate_ci(ci_result, safe_context, trusted_ci_policy, now, failures, autonomous_result:,
+                                                                           trusted_repo_root:, ci_readiness_runner:)
     if selected_hosted_ci_receipts
       validate_selected_hosted_ci(
         selected_hosted_ci_receipts, safe_context, now, failures
@@ -387,7 +390,8 @@ module MergeAssurance
     end
   end
 
-  def validate_ci(ci_result, context, trusted_ci_policy, now, failures, autonomous_result:)
+  def validate_ci(ci_result, context, trusted_ci_policy, now, failures, autonomous_result:,
+                  trusted_repo_root: nil, ci_readiness_runner: nil)
     unless ci_result.is_a?(Hash)
       failures << "ci_result must be an object"
       return
@@ -414,6 +418,9 @@ module MergeAssurance
       ci_result["ci_policy"], trusted_ci_policy, context, failures
     )
     required_rows = scopes.dig("required_status_check_rollup", "rows")
+    review_dispositions = authenticated_review_dispositions(
+      ci_result, context, failures, trusted_repo_root:, ci_readiness_runner:
+    )
     scopes.each do |name, scope|
       unless scope.is_a?(Hash) && SCOPE_STATES.include?(scope["state"])
         failures << "ci_result scope #{name} has invalid state"
@@ -439,6 +446,8 @@ module MergeAssurance
                                 scope, required_rows:, authenticated_policy:,
                                        context:, failures:
                               )
+                            elsif name == "github_actions"
+                              review_dispositions
                             else
                               []
                             end
@@ -451,6 +460,43 @@ module MergeAssurance
     validate_non_gating_requested_hosted_binding(ci_result, context, failures) if
       scopes.any? { |_name, scope| scope.is_a?(Hash) && scope["gates_verdict"] == false }
     validate_timestamp(ci_result["checked_at"], now, "ci_result", failures)
+  end
+
+  def authenticated_review_dispositions(ci_result, context, failures, trusted_repo_root:, ci_readiness_runner:)
+    reference = ci_result["configured_review_exception"]
+    unless reference
+      if ci_result.dig("scopes", "github_actions", "policy_dispositions")&.any?
+        failures << "configured review dispositions require authenticated exception evidence"
+      end
+      return []
+    end
+    raise PrCiReadiness::Error, "trusted repository root is required" unless trusted_repo_root
+
+    runner = ci_readiness_runner || PrCiReadiness::Runner.new
+    refreshed = runner.assess_authenticated(
+      repo: context.fetch("repo"), pr_number: context.fetch("pr"), host: context.fetch("host"),
+      requested_hosted_runs: ci_result.dig("requested_hosted", "run_ids") || [],
+      trusted_repo_root:, diff_base_sha: context.fetch("diff_base_sha"),
+      configured_review_exception: reference
+    )
+    # Reauthenticate live authority and independently reconstruct the complete
+    # scopes. A claimed READY or a checksum over edited raw rows grants nothing.
+    fields = %w[state source complete gates_verdict head_sha rows informational_rows policy_dispositions]
+    same_scopes = SCOPE_NAMES.all? do |name|
+      original = ci_result.dig("scopes", name)
+      current = refreshed.dig("scopes", name)
+      original.is_a?(Hash) && current.is_a?(Hash) && original.slice(*fields) == current.slice(*fields)
+    end
+    unless refreshed["verdict"] == "READY" && refreshed["base"] == context["base"] && same_scopes &&
+           refreshed["configured_review_exception"] == reference &&
+           refreshed["check_rows"] == ci_result["check_rows"]
+      failures << "configured review exception or complete CI inventory no longer matches live evidence"
+      return []
+    end
+    refreshed.dig("scopes", "github_actions", "policy_dispositions") || []
+  rescue StandardError => e
+    failures << "configured review exception could not be authenticated: #{e.message}"
+    []
   end
 
   def validate_non_gating_requested_hosted_binding(ci_result, context, failures)
@@ -1604,9 +1650,11 @@ module MergeAssurance
       autonomous_result = read_json(options[:autonomous_result], "--autonomous-result")
       context = read_json(options[:context], "--context")
       trusted_ci_policy = load_trusted_ci_policy!(ci_result, context, options[:trusted_repo_root])
+      trusted_repo_root = options[:trusted_repo_root]
+      trusted_repo_root ||= trusted_repo_root! if ci_result.is_a?(Hash) && ci_result["configured_review_exception"]
       preflight_now = Time.now.utc
       local_failures = MergeAssurance.local_evidence_failures(
-        ci_result:, autonomous_result:, context:, trusted_ci_policy:, now: preflight_now
+        ci_result:, autonomous_result:, context:, trusted_ci_policy:, trusted_repo_root:, now: preflight_now
       )
       unless local_failures.empty?
         puts JSON.pretty_generate(MergeAssurance.blocked_result(local_failures))
@@ -1621,6 +1669,7 @@ module MergeAssurance
         context:,
         selected_hosted_ci_receipts:,
         trusted_ci_policy:,
+        trusted_repo_root:,
         now: assessment_now
       )
       puts JSON.pretty_generate(result)

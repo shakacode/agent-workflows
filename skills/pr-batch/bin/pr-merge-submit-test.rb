@@ -14,7 +14,125 @@ ASSURANCE_SCRIPT = File.expand_path("merge-assurance", __dir__)
 load ASSURANCE_SCRIPT
 load SCRIPT
 
+require_relative "../lib/configured_review_exception_test_support"
+
 class PrMergeSubmitTest < Minitest::Test
+  include ConfiguredReviewExceptionTestSupport
+
+  def run_review_exception_submission(invalidate: nil, invalidate_at: 1, execution_head_sha: "a" * 40)
+    with_review_exception(execution_head_sha:) do |root, base, reference, data, _fallback, transport|
+      path = File.join(root, "receipt.json")
+      write_merge_assurance_receipt(
+        path, mode: :valid, repo: "owner/repo", head: "a" * 40, base_ref: "main",
+              base_sha: base, host: "github.com", pr_number: 123, gh_dir: root
+      )
+      evidence = JSON.parse(File.read(path)).fetch("evidence")
+      readiness = PrCiReadiness::Runner.new(read_transport: transport)
+      ci = readiness.assess_authenticated(
+        repo: "owner/repo", pr_number: 123, host: "github.com", requested_hosted_runs: [],
+        trusted_repo_root: root, diff_base_sha: base, configured_review_exception: reference
+      )
+      receipt = MergeAssurance.assess(
+        ci_result: ci, autonomous_result: evidence.fetch("autonomous_result"),
+        context: evidence.fetch("context"), trusted_repo_root: root, ci_readiness_runner: readiness
+      )
+      assert_equal true, receipt.fetch("eligible"), receipt.inspect
+      File.write(path, JSON.generate(receipt))
+      mutations = []
+      metadata_reads = 0
+      # Only the external GitHub boundary is replaced. Receipt loading,
+      # authentication, trusted Git reads, CI replay and submission run for real.
+      runner = PrMergeSubmit::Runner.new
+      runner.define_singleton_method(:run_gh) do |*args, host:, mutation: false|
+        pr_record = {
+          "id" => "PR_123", "headRefOid" => "a" * 40, "baseRefName" => "main",
+          "baseRefOid" => base, "state" => "OPEN", "isDraft" => false,
+          "url" => "https://github.com/owner/repo/pull/123", "merged" => false,
+          "isInMergeQueue" => false, "isMergeQueueEnabled" => false, "mergeQueueEntry" => nil
+        }
+        if mutation
+          mutations << args
+          pr_record.merge!("state" => "MERGED", "merged" => true, "mergeCommit" => { "oid" => "c" * 40 })
+          payload = { "data" => { "mergePullRequest" => { "pullRequest" => pr_record } } }
+        elsif args.include?("query=#{PrMergeSubmit::Runner::PR_QUERY}")
+          metadata_reads += 1
+          invalidate&.call(data) if metadata_reads == invalidate_at
+          payload = { "data" => { "repository" => {
+            "currentBaseRef" => { "target" => { "oid" => base } }, "pullRequest" => pr_record
+          } } }
+        else
+          next transport.call(*args, host:)
+        end
+        [JSON.generate(payload), "", Struct.new(:success?).new(true)]
+      end
+      status = nil
+      output, error = capture_io do
+        Dir.chdir(root) do
+          status = runner.run([
+                                "123", "--repo", "owner/repo", "--host", "github.com", "--method", "squash",
+                                "--expected-head", "a" * 40, "--expected-base", "main", "--merge-assurance-receipt", path
+                              ])
+        end
+      end
+      yield status, output, error, mutations, metadata_reads
+    end
+  end
+
+  def test_review_exception_synthetic_run_submits_source_head_and_rejects_execution_drift
+    run_review_exception_submission(execution_head_sha: "b" * 40) do |status, _output, error, mutations, _reads|
+      assert_equal 0, status, error
+      assert_equal 1, mutations.length
+      assert_includes mutations.first, "expectedHeadOid=#{'a' * 40}"
+    end
+    invalidate = ->(data) { data.fetch("repos/owner/repo/actions/runs/42")["head_sha"] = "c" * 40 }
+    run_review_exception_submission(execution_head_sha: "b" * 40, invalidate:, invalidate_at: 2) do |status, _output, _error, mutations, reads|
+      assert_equal 2, reads
+      assert_equal 1, status
+      assert_empty mutations
+    end
+  end
+
+  def test_review_exception_without_optional_policy_reaches_exact_head_bound_submission
+    run_review_exception_submission do |status, output, error, mutations, metadata_reads|
+      assert_equal 0, status, error
+      assert_equal "direct", JSON.parse(output).fetch("submission")
+      assert_equal "c" * 40, JSON.parse(output).fetch("merge_commit")
+      assert_equal 1, mutations.length
+      assert_includes mutations.first, "expectedHeadOid=#{'a' * 40}"
+      assert_operator metadata_reads, :>=, 2
+    end
+  end
+
+  def test_review_exception_invalidation_after_receipt_replay_causes_zero_mutations
+    cases = {
+      "edited comment" => lambda { |data|
+        comment = data.fetch("repos/owner/repo/issues/comments/501")
+        comment["body"] = comment.fetch("body").sub("pr: 123", "pr:  123")
+      },
+      "deleted comment" => ->(data) { data.delete("repos/owner/repo/issues/comments/501") },
+      "revoked permission" => ->(data) { data.fetch("repos/owner/repo/collaborators/maintainer/permission")["role_name"] = "write" },
+      "new run attempt" => ->(data) { data.fetch("repos/owner/repo/actions/runs/42")["run_attempt"] = 2 },
+      "new required failure" => ->(data) { data["required_checks"] = [{ "name" => "Unit tests", "bucket" => "fail" }] }
+    }
+    cases.each do |label, invalidate|
+      run_review_exception_submission(invalidate:) do |status, _output, error, mutations, metadata_reads|
+        assert_equal 1, metadata_reads, "#{label} must change after valid receipt replay"
+        assert_equal 1, status, label
+        assert_includes error, "current policy-aware CI evidence does not qualify", label
+        assert_empty mutations, label
+      end
+    end
+  end
+
+  def test_review_exception_changed_during_last_metadata_refresh_causes_zero_mutations
+    invalidate = ->(data) { data.fetch("repos/owner/repo/actions/runs/42")["run_attempt"] = 2 }
+    run_review_exception_submission(invalidate:, invalidate_at: 2) do |status, _output, error, mutations, metadata_reads|
+      assert_equal 2, metadata_reads
+      assert_equal 1, status, error
+      assert_empty mutations
+    end
+  end
+
   HEAD_SHA = "a" * 40
   NUMERIC_SHA = "1" * 40
   MOVED_SHA = "b" * 40
