@@ -23,6 +23,10 @@ skills, but they are the exception. The default path is:
 3. Validate each consumer repo contract.
 4. Dry-run one workflow before launching a real batch.
 
+For selected third-party techniques, see [Using Matt Pocock Skills With Agent
+Workflows](matt-pocock-skills.md) for shared Claude/Codex installation, version
+pinning across machines, collision handling, and bounded workflow handoffs.
+
 ## Host Targets
 
 `bin/install-agent-workflows` supports the same installed layout for Codex and

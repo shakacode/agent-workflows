@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Maintain External Skills"
+  short_description: "Check or update pinned external skills safely"
+  default_prompt: "Use $maintain-external-skills to inspect or update an approved external skill selection."
