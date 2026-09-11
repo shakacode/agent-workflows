@@ -18,6 +18,82 @@ require_relative "../lib/configured_review_exception_test_support"
 class ConfiguredReviewExceptionReadinessTest < Minitest::Test
   include ConfiguredReviewExceptionTestSupport
 
+  def test_review_exception_accepts_pull_request_merge_sha_without_rewriting_raw_heads
+    with_review_exception(execution_head_sha: "b" * 40) do |root, base, reference, data, _fallback, transport|
+      job = data.fetch("repos/owner/repo/actions/runs/42/jobs?per_page=100&page=1").fetch("jobs").first
+      job["check_run_url"] = "https://api.github.com/repos/owner/repo/check-runs/520"
+      checks = data.fetch("repos/owner/repo/commits/#{'b' * 40}/check-runs?per_page=100&page=1")
+      checks["total_count"] = 1
+      checks["check_runs"] = [job.merge("id" => 520, "app" => { "slug" => "github-actions" })]
+      result = PrCiReadiness::Runner.new(read_transport: transport).assess_authenticated(
+        repo: "owner/repo", pr_number: 123, host: "github.com", requested_hosted_runs: [],
+        trusted_repo_root: root, diff_base_sha: base, configured_review_exception: reference
+      )
+      assert_equal "READY", result.fetch("verdict")
+      assert_equal "a" * 40, result.fetch("head_sha")
+      rows = result.dig("scopes", "github_actions", "rows")
+      assert_equal(%w[run job check_run], rows.map { |row| row["kind"] })
+      assert_equal(["b" * 40] * 3, rows.map { |row| row["head_sha"] })
+      assert_equal(%w[failure failure failure], rows.map { |row| row["conclusion"] })
+    end
+  end
+
+  def test_review_exception_merge_sha_rejects_wrong_source_binding_and_unrelated_execution_failures
+    cases = {
+      "missing association" => ->(data) { data.fetch("repos/owner/repo/actions/runs/42")["pull_requests"] = [] },
+      "wrong PR" => lambda { |data|
+        association = data.fetch("repos/owner/repo/actions/runs/42").fetch("pull_requests").first
+        association.merge!("id" => 9004, "number" => 124)
+      },
+      "wrong source SHA" => lambda { |data|
+        association = data.fetch("repos/owner/repo/actions/runs/42").fetch("pull_requests").first
+        association["head"] = association.fetch("head").merge("sha" => "c" * 40)
+      },
+      "wrong repository URL" => ->(data) { data.fetch("repos/owner/repo/actions/runs/42").fetch("pull_requests").first["url"] = "https://api.github.com/repos/other/repo/pulls/123" },
+      "wrong event" => ->(data) { data.fetch("repos/owner/repo/actions/runs/42")["event"] = "push" },
+      "job belongs to another execution SHA" => ->(data) { data.fetch("repos/owner/repo/actions/runs/42/jobs?per_page=100&page=1").fetch("jobs").first["head_sha"] = "a" * 40 },
+      "incomplete merge-head inventory" => ->(data) { data.fetch("repos/owner/repo/actions/runs?head_sha=#{'b' * 40}&per_page=100&page=1")["total_count"] = 2 },
+      "unrelated merge-head failure" => lambda { |data|
+        status = data.fetch("repos/owner/repo/commits/#{'b' * 40}/status?per_page=100&page=1")
+        status.merge!("state" => "failure", "total_count" => 1,
+                      "statuses" => [{ "id" => 601, "context" => "unit-tests", "state" => "failure",
+                                       "target_url" => "https://ci.example/jobs/601", "created_at" => "2026-09-10T01:00:00Z" }])
+      }
+    }
+    cases.each do |label, mutate|
+      with_review_exception(execution_head_sha: "b" * 40) do |root, base, reference, data, _fallback, transport|
+        mutate.call(data)
+        result = PrCiReadiness::Runner.new(read_transport: transport).assess_authenticated(
+          repo: "owner/repo", pr_number: 123, host: "github.com", requested_hosted_runs: [],
+          trusted_repo_root: root, diff_base_sha: base, configured_review_exception: reference
+        )
+        refute_equal "READY", result.fetch("verdict"), label
+        if label == "unrelated merge-head failure"
+          assert_equal true, result.dig("scopes", "other", "complete")
+          assert_equal "NOT_READY", result.dig("scopes", "other", "state")
+          assert_equal "failure", result.dig("scopes", "other", "rows", 0, "state")
+        end
+      end
+    end
+  end
+
+  def test_review_exception_rejects_revocation_during_synthetic_head_inventory
+    with_review_exception(execution_head_sha: "b" * 40) do |root, base, reference, data, _fallback, transport|
+      changing_transport = lambda do |*args, host:|
+        response = transport.call(*args, host:)
+        if args[1] == "repos/owner/repo/commits/#{'b' * 40}/status?per_page=100&page=1"
+          data.fetch("repos/owner/repo/collaborators/maintainer/permission")["role_name"] = "write"
+        end
+        response
+      end
+      result = PrCiReadiness::Runner.new(read_transport: changing_transport).assess_authenticated(
+        repo: "owner/repo", pr_number: 123, host: "github.com", requested_hosted_runs: [],
+        trusted_repo_root: root, diff_base_sha: base, configured_review_exception: reference
+      )
+      refute_equal "READY", result.fetch("verdict")
+    end
+  end
+
   def test_exact_live_exception_accepts_failed_reviewer_without_successful_actions
     with_review_exception do |root, base, reference, _data, _fallback, transport|
       runner = PrCiReadiness::Runner.new(read_transport: transport)

@@ -18,8 +18,8 @@ load SCRIPT
 class MergeAssuranceTest < Minitest::Test
   include ConfiguredReviewExceptionTestSupport
 
-  def with_review_exception_assessment
-    with_review_exception do |root, base, reference, data, _fallback, transport|
+  def with_review_exception_assessment(execution_head_sha: "a" * 40)
+    with_review_exception(execution_head_sha:) do |root, base, reference, data, _fallback, transport|
       runner = PrCiReadiness::Runner.new(read_transport: transport)
       ci = runner.assess_authenticated(
         repo: "owner/repo", pr_number: 123, host: "github.com", requested_hosted_runs: [],
@@ -34,6 +34,16 @@ class MergeAssuranceTest < Minitest::Test
         trusted_repo_root: root, ci_readiness_runner: runner
       }
       yield args, data
+    end
+  end
+
+  def test_review_exception_assurance_preserves_synthetic_execution_head
+    with_review_exception_assessment(execution_head_sha: "b" * 40) do |args, data|
+      result = MergeAssurance.assess(**args)
+      assert_equal true, result.fetch("eligible"), result.inspect
+      assert_equal(["b" * 40] * 2, result.dig("evidence", "ci_result", "scopes", "github_actions", "rows").map { |row| row["head_sha"] })
+      data.fetch("repos/owner/repo/actions/runs/42")["head_sha"] = "c" * 40
+      assert_equal false, MergeAssurance.assess(**args).fetch("eligible")
     end
   end
 

@@ -968,6 +968,26 @@ module PrCiReadiness
           authenticated_exception = authenticate_review_exception!(
             configured_review_exception, repo:, target_pr:, trusted_repo_root:
           )
+          execution_head = authenticated_exception.fetch("run").fetch("head_sha")
+          if execution_head != exact_head_sha
+            # A pull_request run can execute a synthetic merge commit. Inventory
+            # that commit too; authenticating one reviewer must not hide its CI.
+            execution_inventory = exact_head_inventory(repo, target_pr, execution_head_sha: execution_head)
+            %i[actions_rows check_runs statuses].each do |key|
+              inventory[key] = (inventory.fetch(key) + execution_inventory.fetch(key)).uniq
+            end
+            %i[actions_complete check_runs_complete statuses_complete required_complete].each do |key|
+              inventory[key] &&= execution_inventory.fetch(key)
+            end
+            execution_inventory.fetch(:errors).each do |scope, error|
+              inventory[:errors][scope] = [inventory[:errors][scope], error].compact.join("; ")
+            end
+            refreshed_exception = authenticate_review_exception!(
+              configured_review_exception, repo:, target_pr:, trusted_repo_root:
+            )
+            raise Error, "review exception changed during execution-head inventory" unless
+              refreshed_exception == authenticated_exception
+          end
           retain_review_exception_aliases!(authenticated_exception, inventory)
         rescue StandardError => e
           inventory[:actions_complete] = false
@@ -1055,21 +1075,34 @@ module PrCiReadiness
     def authenticate_review_exception!(reference, repo:, target_pr:, trusted_repo_root:)
       raise Error, "review exception requires --trusted-repo-root" unless trusted_repo_root
 
+      host = @gh_env.fetch("GH_HOST")
+      api_root = host == "github.com" ? "https://api.github.com" : "https://#{host}/api/v3"
       authenticated = ConfiguredReviewException.authenticate!(
         reference:, host: @gh_env.fetch("GH_HOST"), repo:, pr_number: target_pr.fetch(:number),
         head_sha: target_pr.fetch(:head_sha), base_sha: target_pr.fetch(:base_sha),
         read: ->(endpoint) { capture_json!("gh", "api", endpoint) },
         git: ->(*args) { PrCiReadiness.git_capture!(trusted_repo_root, *args) },
         validate_run: lambda { |run|
-          validate_actions_run_identity!(run, target_pr.fetch(:head_sha))
+          # The association binds the source head; run/jobs bind the execution
+          # head, which may differ only for pull_request's synthetic merge ref.
+          execution_head = if run.is_a?(Hash) && run["event"] == "pull_request" && full_sha?(run["head_sha"])
+                             run["head_sha"]
+                           else
+                             target_pr.fetch(:head_sha)
+                           end
+          validate_actions_run_identity!(run, execution_head)
           raise Error, "review exception run does not target this PR" unless
-            !run.fetch("pull_requests").empty? && actions_run_targets_pr?(run, target_pr)
+            !run.fetch("pull_requests").empty? && actions_run_targets_pr?(run, target_pr) &&
+            run.fetch("pull_requests").any? do |association|
+              association["number"] == target_pr.fetch(:number) &&
+                association["url"] == "#{api_root}/repos/#{repo}/pulls/#{target_pr.fetch(:number)}"
+            end
         },
         jobs: ->(run_id) { fetch_actions_jobs(repo, run_id) }
       )
       run = authenticated.fetch("run")
       attribution = {
-        dependabot: dependabot_attributed?(run), head_sha: target_pr.fetch(:head_sha),
+        dependabot: dependabot_attributed?(run), head_sha: run.fetch("head_sha"),
         head_branch: run.fetch("head_branch"),
         pull_request_numbers: run.fetch("pull_requests").map { |item| item.fetch("number") }.sort
       }
@@ -1163,11 +1196,11 @@ module PrCiReadiness
       )
     end
 
-    def exact_head_inventory(repo, target_pr)
-      head_sha = target_pr.fetch(:head_sha)
+    def exact_head_inventory(repo, target_pr, execution_head_sha: target_pr.fetch(:head_sha))
+      head_sha = execution_head_sha
       errors = {}
       actions_rows, actions_complete, actions_error, observed_actions_run_ids =
-        fetch_exact_head_actions(repo, target_pr)
+        fetch_exact_head_actions(repo, target_pr, execution_head_sha:)
       errors["github_actions"] = actions_error if actions_error
       errors["dependabot"] = actions_error if actions_error
 
@@ -1220,8 +1253,8 @@ module PrCiReadiness
       [Integer(match[1], 10), Integer(match[2], 10)] if match
     end
 
-    def fetch_exact_head_actions(repo, target_pr)
-      head_sha = target_pr.fetch(:head_sha)
+    def fetch_exact_head_actions(repo, target_pr, execution_head_sha: target_pr.fetch(:head_sha))
+      head_sha = execution_head_sha
       runs = fetch_paginated_collection(
         "repos/#{repo}/actions/runs?head_sha=#{head_sha}&per_page=100&page=%<page>s",
         "workflow_runs"

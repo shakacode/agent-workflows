@@ -8,7 +8,7 @@ require "tmpdir"
 module ConfiguredReviewExceptionTestSupport
   # A sole failed reviewer must remain a raw failure while an exact live human
   # exception permits readiness without inventing a successful Actions run.
-  def with_review_exception
+  def with_review_exception(execution_head_sha: "a" * 40)
     Dir.mktmpdir("configured-review-exception") do |root|
       system(PrCiReadiness::SYSTEM_GIT, "-C", root, "init", "-q", exception: true)
       system(PrCiReadiness::SYSTEM_GIT, "-C", root, "config", "user.name", "Test", exception: true)
@@ -28,7 +28,7 @@ module ConfiguredReviewExceptionTestSupport
       run = {
         "id" => 42, "workflow_id" => 17, "run_number" => 1, "run_attempt" => 1,
         "name" => "Review", "path" => ".github/workflows/review.yml", "event" => "pull_request",
-        "head_sha" => head, "head_branch" => "feature", "head_repository" => { "id" => 9002 },
+        "head_sha" => execution_head_sha, "head_branch" => "feature", "head_repository" => { "id" => 9002 },
         "pull_requests" => [{ "id" => 9001, "number" => 123,
                               "url" => "https://api.github.com/repos/owner/repo/pulls/123",
                               "head" => identity.fetch("head") }],
@@ -36,7 +36,7 @@ module ConfiguredReviewExceptionTestSupport
         "html_url" => "https://github.com/owner/repo/actions/runs/42"
       }
       job = {
-        "id" => 420, "run_id" => 42, "run_attempt" => 1, "head_sha" => head,
+        "id" => 420, "run_id" => 42, "run_attempt" => 1, "head_sha" => execution_head_sha,
         "name" => "Reviewer", "status" => "completed", "conclusion" => "failure",
         "html_url" => "https://github.com/owner/repo/actions/runs/42/job/420"
       }
@@ -65,6 +65,12 @@ module ConfiguredReviewExceptionTestSupport
         "repos/owner/repo/commits/#{head}/check-runs?per_page=100&page=1" => { "total_count" => 0, "check_runs" => [] },
         "repos/owner/repo/commits/#{head}/status?per_page=100&page=1" => { "sha" => head, "total_count" => 0, "statuses" => [], "state" => "pending" }
       }
+      if execution_head_sha != head
+        data["repos/owner/repo/actions/runs?head_sha=#{head}&per_page=100&page=1"] = { "total_count" => 0, "workflow_runs" => [] }
+        data["repos/owner/repo/actions/runs?head_sha=#{execution_head_sha}&per_page=100&page=1"] = { "total_count" => 1, "workflow_runs" => [run] }
+        data["repos/owner/repo/commits/#{execution_head_sha}/check-runs?per_page=100&page=1"] = { "total_count" => 0, "check_runs" => [] }
+        data["repos/owner/repo/commits/#{execution_head_sha}/status?per_page=100&page=1"] = { "sha" => execution_head_sha, "total_count" => 0, "statuses" => [], "state" => "pending" }
+      end
       fallback = [{ "workflow" => "Review", "name" => "Reviewer", "bucket" => "fail",
                     "state" => "FAILURE", "link" => job["html_url"] }]
       transport = lambda do |*args, host:|

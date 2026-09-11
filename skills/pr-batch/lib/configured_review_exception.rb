@@ -112,7 +112,8 @@ module ConfiguredReviewException
     raise Error, "review exception requires the exact terminal failed run and attempt" unless
       run["id"] == payload["run_id"] && run["run_attempt"] == payload["run_attempt"] &&
       run["workflow_id"] == payload["workflow_id"] && run["path"] == path &&
-      run["name"] == workflow["name"] && run["head_sha"] == head_sha &&
+      run["name"] == workflow["name"] &&
+      (run["head_sha"] == head_sha || run["event"] == "pull_request") &&
       run["status"] == "completed" && run["conclusion"] == "failure" &&
       run["html_url"] == "https://#{host}/#{repo}/actions/runs/#{payload.fetch('run_id')}"
 
@@ -130,7 +131,7 @@ module ConfiguredReviewException
       allowed = selected_job ? ["failure"] : %w[success skipped neutral]
       raise Error, "review exception cannot waive unrelated or nonterminal jobs" unless
         job["run_id"] == payload["run_id"] && job["run_attempt"] == payload["run_attempt"] &&
-        job["head_sha"] == head_sha && job["status"] == "completed" &&
+        job["head_sha"] == run["head_sha"] && job["status"] == "completed" &&
         allowed.include?(job["conclusion"]) && job["name"].is_a?(String) && !job["name"].empty?
     end
     job = selected.first

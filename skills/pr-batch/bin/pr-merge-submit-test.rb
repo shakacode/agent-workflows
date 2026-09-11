@@ -19,8 +19,8 @@ require_relative "../lib/configured_review_exception_test_support"
 class PrMergeSubmitTest < Minitest::Test
   include ConfiguredReviewExceptionTestSupport
 
-  def run_review_exception_submission(invalidate: nil, invalidate_at: 1)
-    with_review_exception do |root, base, reference, data, _fallback, transport|
+  def run_review_exception_submission(invalidate: nil, invalidate_at: 1, execution_head_sha: "a" * 40)
+    with_review_exception(execution_head_sha:) do |root, base, reference, data, _fallback, transport|
       path = File.join(root, "receipt.json")
       write_merge_assurance_receipt(
         path, mode: :valid, repo: "owner/repo", head: "a" * 40, base_ref: "main",
@@ -75,6 +75,20 @@ class PrMergeSubmitTest < Minitest::Test
         end
       end
       yield status, output, error, mutations, metadata_reads
+    end
+  end
+
+  def test_review_exception_synthetic_run_submits_source_head_and_rejects_execution_drift
+    run_review_exception_submission(execution_head_sha: "b" * 40) do |status, _output, error, mutations, _reads|
+      assert_equal 0, status, error
+      assert_equal 1, mutations.length
+      assert_includes mutations.first, "expectedHeadOid=#{'a' * 40}"
+    end
+    invalidate = ->(data) { data.fetch("repos/owner/repo/actions/runs/42")["head_sha"] = "c" * 40 }
+    run_review_exception_submission(execution_head_sha: "b" * 40, invalidate:, invalidate_at: 2) do |status, _output, _error, mutations, reads|
+      assert_equal 2, reads
+      assert_equal 1, status
+      assert_empty mutations
     end
   end
 
