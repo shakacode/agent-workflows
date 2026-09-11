@@ -31,7 +31,7 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     end
   end
 
-  def test_primary_checkpoint_keeps_marker_first_and_details_collapsed
+  def test_primary_checkpoint_keeps_marker_first_and_visible_content_human_ready
     primary = section_after(
       '  if [ "${CUTOFF_SAFE:-0}" = "1" ]; then',
       '} > "${summary_body_file}"'
@@ -42,24 +42,36 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
       primary
     )
     assert_match(
-      /else\n    printf '<!-- address-review-status -->\\n'\n  fi\n  printf '## Address-review summary\\n\\n'/,
+      /else\n    printf '<!-- address-review-status -->\\n'\n  fi\n  printf '🤖 \*\*%s · %s\*\*\\n\\n'/,
       primary
     )
     assert_in_order(
       primary,
-      "printf '## Address-review summary\\n\\n'",
-      "printf 'Scan scope: %s\\n\\n' \"${SCAN_SCOPE}\"",
+      "printf '🤖 **%s · %s**\\n\\n'",
+      "printf '## Review follow-up complete\\n\\n'",
+      "printf '## Review follow-up needs another pass\\n\\n'",
       "printf '<details>\\n'",
-      "printf '<summary>Detailed review outcomes</summary>\\n\\n'",
-      "printf '### Mattered\\n'",
-      "printf '### Optional\\n'",
-      "printf '### Skipped\\n'",
-      "printf 'Deferred-work tracking: %s\\n\\n' \"${TRACKING_OUTCOME}\"",
-      "printf '</details>\\n\\n'"
+      "printf '<summary>Agent details</summary>\\n\\n'",
+      "printf '**Scan scope:** %s\\n\\n' \"${SCAN_SCOPE}\"",
+      "printf '### Findings that mattered\\n'",
+      "printf '### Optional suggestions\\n'",
+      "printf '### Skipped items\\n'",
+      "printf '**Deferred-work tracking:** %s\\n\\n' \"${TRACKING_OUTCOME}\"",
+      "printf '\\n</details>\\n'"
     )
-    assert_includes primary, "Status: cutoff-safe summary. Detailed review outcomes are collapsed below."
-    assert_includes primary, "Status: non-cutoff review status. Detailed review outcomes are collapsed below."
+    assert_includes primary, "**Next scan:** Start after this comment. Say `check all reviews` to rescan the full PR."
+    assert_includes primary, "**Next scan:** Use `check all reviews`; this comment is not a cutoff."
+    assert_equal 1, primary.scan("\${SCAN_SCOPE}").length
+    assert_operator primary.index("\${SCAN_SCOPE}"), :>, primary.index("printf '<summary>Agent details</summary>")
     refute_includes primary, "<details open>"
+  end
+
+  def test_posting_identity_uses_unknown_when_runtime_metadata_is_unavailable
+    assert_includes template, 'POSTING_CLIENT="${POSTING_CLIENT:-UNKNOWN}"'
+    assert_includes template, 'POSTING_MODEL_FAMILY="${POSTING_MODEL_FAMILY:-UNKNOWN}"'
+    refute_includes template, "\${POSTING_CLIENT:?"
+    refute_includes template, "\${POSTING_MODEL_FAMILY:?"
+    assert_equal 2, template.scan("printf '🤖 **%s · %s**\\n\\n'").length
   end
 
   def test_source_checkpoint_keeps_auditable_details_and_source_state
@@ -69,24 +81,26 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     )
 
     assert_match(
-      /if \[ "\$\{SOURCE_CUTOFF_SAFE\}" = "1" \]; then\n      printf '<!-- address-review-summary -->\\n'\n    else\n      printf '<!-- address-review-status -->\\n'\n    fi\n    printf '## Address-review replacement carryover\\n\\n'/,
+      /if \[ "\$\{SOURCE_CUTOFF_SAFE\}" = "1" \]; then\n      printf '<!-- address-review-summary -->\\n'\n    else\n      printf '<!-- address-review-status -->\\n'\n    fi\n    printf '🤖 \*\*%s · %s\*\*\\n\\n'/,
       source
     )
     assert_in_order(
       source,
       "printf '<!-- address-review-summary -->\\n'",
-      "printf '## Address-review replacement carryover\\n\\n'",
-      "printf 'Replacement PR: %s\\n\\n' \"${REPLACEMENT_PR_URL}\"",
+      "printf '🤖 **%s · %s**\\n\\n'",
+      "printf '## Original review follow-up complete\\n\\n'",
+      "printf '## Original review follow-up needs another pass\\n\\n'",
       "printf '<details>\\n'",
-      "printf '<summary>Detailed original PR outcomes</summary>\\n\\n'",
-      "printf '### Original PR outcomes\\n'",
+      "printf '<summary>Agent details</summary>\\n\\n'",
+      "printf '**Replacement PR:** %s\\n\\n' \"${REPLACEMENT_PR_URL}\"",
+      "printf '### Carried-over review outcomes\\n'",
       "printf '%s\\n\\n' \"${SOURCE_OUTCOMES}\"",
       "printf '</details>\\n\\n'",
       "printf '<!-- address-review-source-state:v1\\n'",
       "printf '%s\\n' '-->'"
     )
-    assert_includes source, "Status: cutoff-safe source carryover. Original PR outcomes are collapsed below."
-    assert_includes source, "Status: non-cutoff source carryover. Original PR outcomes are collapsed below."
+    assert_includes source, "Every carried-over review item has a recorded outcome."
+    assert_includes source, "Some carried-over review items still need an explicit outcome"
     refute_includes source, "<details open>"
   end
 

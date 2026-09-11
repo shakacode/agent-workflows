@@ -199,13 +199,19 @@ Rules for the summary comment:
   pending/unselected without a thread-level outcome, use
   `<!-- address-review-status -->` as the first line, call the comment a
   non-cutoff status, and tell the next run to use `check all reviews`.
-- Keep the visible checkpoint concise: show the header, scan scope, and
-  cutoff-safe or non-cutoff status. Put the itemized audit trail in a closed
-  GitHub `<details>` block with a `<summary>`; do not add the `open` attribute.
-  This keeps full durable evidence available without making reviewers scroll
-  through it by default.
-- Summarize `MUST-FIX` and `DISCUSS` items under a `Mattered` section, including whether each item was addressed, deferred, or left pending by user choice.
-- Summarize `OPTIONAL` items under an `Optional` section when any optional item
+- Make the first visible line `🤖 **<client> · <model family>**`, using the
+  posting runtime's real client and model family (for example, `Codex · Astra`
+  or `Claude · Opus 5`). Use `UNKNOWN` for any runtime field the host does not
+  expose; never guess either value or block the workflow only because it is
+  unavailable.
+- Keep the visible checkpoint human-ready: state the useful result in simple,
+  concise language and say plainly when another pass is needed. Put scan
+  metadata, itemized outcomes, tracking receipts, and rescan instructions in
+  one closed GitHub `<details>` block whose summary is exactly `Agent details`;
+  do not add the `open` attribute. Hidden workflow markers may remain outside
+  the disclosure where their parsers require it.
+- Summarize `MUST-FIX` and `DISCUSS` items under `Findings that mattered`, including whether each item was addressed, deferred, or left pending by user choice.
+- Summarize `OPTIONAL` items under `Optional suggestions` when any optional item
   has a recorded outcome or is intentionally left pending/unselected by the
   chosen action. Include whether each acted-on item was fixed inline, deferred
   to tracking, deferred/declined under the attention contract, declined, or
@@ -216,7 +222,7 @@ Rules for the summary comment:
   thread has an explicit reply/resolve/defer/decline outcome that makes it safe
   to skip on later default scans. Do not apply this rule to inspect-only bare
   `o`, which posts no checkpoint.
-- Summarize `SKIPPED` items under a `Skipped` section with short reasons.
+- Summarize `SKIPPED` items under `Skipped items` with short reasons.
 - Mention any deferred-work tracking outcome and follow-up issue URL that was created.
 - Mention whether the run used the default cutoff or the explicit `check all reviews` override.
 - For marked summaries, end with a note that future full-PR scans should start
@@ -242,6 +248,11 @@ fi
 # Set SCAN_SCOPE before this block, e.g.:
 #   SCAN_SCOPE="since previous summary at ${REVIEW_CUTOFF_AT}"  # cutoff active
 #   SCAN_SCOPE="full history via check all reviews"              # CHECK_ALL_REVIEWS set
+# Set POSTING_CLIENT and POSTING_MODEL_FAMILY from reliable runtime context,
+# e.g. POSTING_CLIENT="Codex" and POSTING_MODEL_FAMILY="Astra". When the host
+# does not expose a field, use UNKNOWN rather than guessing or blocking progress.
+POSTING_CLIENT="${POSTING_CLIENT:-UNKNOWN}"
+POSTING_MODEL_FAMILY="${POSTING_MODEL_FAMILY:-UNKNOWN}"
 # Set CUTOFF_SAFE=1 only after verifying the cutoff guard; leave 0 for a non-cutoff status.
 CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
 # Set OPTIONAL_OUTCOMES to bullets for optional items with recorded outcomes or
@@ -258,32 +269,34 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
   else
     printf '<!-- address-review-status -->\n'
   fi
-  printf '## Address-review summary\n\n'
-  printf 'Scan scope: %s\n\n' "${SCAN_SCOPE}"
+  printf '🤖 **%s · %s**\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
   if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
-    printf 'Status: cutoff-safe summary. Detailed review outcomes are collapsed below.\n\n'
+    printf '## Review follow-up complete\n\n'
+    printf 'Every review item in the selected scan has a recorded outcome, so the next routine check can start after this comment.\n\n'
   else
-    printf 'Status: non-cutoff review status. Detailed review outcomes are collapsed below.\n\n'
+    printf '## Review follow-up needs another pass\n\n'
+    printf 'Some feedback in the selected scan still needs an explicit outcome, so this comment does not set a new review checkpoint.\n\n'
   fi
   printf '<details>\n'
-  printf '<summary>Detailed review outcomes</summary>\n\n'
-  printf '### Mattered\n'
+  printf '<summary>Agent details</summary>\n\n'
+  printf '**Scan scope:** %s\n\n' "${SCAN_SCOPE}"
+  printf '### Findings that mattered\n'
   printf '%s\n\n' "<bullets for must-fix/discuss outcomes, or - None.>"
   if [ -n "${OPTIONAL_OUTCOMES:-}" ]; then
-    printf '### Optional\n'
+    printf '### Optional suggestions\n'
     printf '%s\n\n' "${OPTIONAL_OUTCOMES}"
   fi
-  printf '### Skipped\n'
+  printf '### Skipped items\n'
   printf '%s\n\n' "<bullets for skipped items, or - None.>"
   if [ -n "${TRACKING_OUTCOME:-}" ]; then
-    printf 'Deferred-work tracking: %s\n\n' "${TRACKING_OUTCOME}"
+    printf '**Deferred-work tracking:** %s\n\n' "${TRACKING_OUTCOME}"
   fi
-  printf '</details>\n\n'
   if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
-    printf 'Next default scan starts after this comment. Say `check all reviews` to rescan the full PR.\n'
+    printf '**Next scan:** Start after this comment. Say `check all reviews` to rescan the full PR.\n'
   else
-    printf 'Non-cutoff status only. The next review pass must use `check all reviews`.\n'
+    printf '**Next scan:** Use `check all reviews`; this comment is not a cutoff.\n'
   fi
+  printf '\n</details>\n'
 } > "${summary_body_file}"
 
 if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
@@ -351,23 +364,25 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
     else
       printf '<!-- address-review-status -->\n'
     fi
-    printf '## Address-review replacement carryover\n\n'
-    printf 'Replacement PR: %s\n\n' "${REPLACEMENT_PR_URL}"
+    printf '🤖 **%s · %s**\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
     if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
-      printf 'Status: cutoff-safe source carryover. Original PR outcomes are collapsed below.\n\n'
+      printf '## Original review follow-up complete\n\n'
+      printf 'Every carried-over review item has a recorded outcome. Future checks of the original PR can start after this comment.\n\n'
     else
-      printf 'Status: non-cutoff source carryover. Original PR outcomes are collapsed below.\n\n'
+      printf '## Original review follow-up needs another pass\n\n'
+      printf 'Some carried-over review items still need an explicit outcome, so this comment does not set a new checkpoint.\n\n'
     fi
     printf '<details>\n'
-    printf '<summary>Detailed original PR outcomes</summary>\n\n'
-    printf '### Original PR outcomes\n'
+    printf '<summary>Agent details</summary>\n\n'
+    printf '**Replacement PR:** %s\n\n' "${REPLACEMENT_PR_URL}"
+    printf '### Carried-over review outcomes\n'
     printf '%s\n\n' "${SOURCE_OUTCOMES}"
-    printf '</details>\n\n'
     if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
-      printf 'Next default source scan starts after this comment. Say `check all reviews` to rescan the full source PR.\n\n'
+      printf '**Next scan:** Start after this comment. Say `check all reviews` to rescan the full original PR.\n\n'
     else
-      printf 'Non-cutoff source status only. Pending source items remain eligible for the next source scan.\n\n'
+      printf '**Next scan:** Pending items remain eligible; use `check all reviews` to rescan the full original PR.\n\n'
     fi
+    printf '</details>\n\n'
     printf '<!-- address-review-source-state:v1\n'
     if [ -n "${SOURCE_STATE_ROWS}" ]; then
       printf '%s\n' "${SOURCE_STATE_ROWS}"

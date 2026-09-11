@@ -453,6 +453,51 @@ resolution, exact-target scanning, configured strictness, acknowledgement, and
 the fail-closed result. Preserve its `security-floor v1` result through the
 stage gates below rather than restating or reinterpreting the security rules.
 
+Repositories that deliberately use accepted base history as high-risk review
+provenance may define the exact closed mapping
+`pr_security_preflight.trusted_base_high_risk_acceptance` in
+`.agents/agent-workflow.yml`: `enabled: true`, the authenticated
+`repository: OWNER/REPO`, one named `remote`, and a full
+`ref: refs/heads/<branch>`. The helper treats worktree policy only as bootstrap,
+verifies the named remote's single stored exact `github.com` HTTPS or GitHub SSH
+URL, independently anchors the policy ref to the authenticated remote default
+`HEAD` (or the documented operator-owned full-ref environment seam for a
+nondefault base), fetches the exact ref, and requires the same complete mapping
+from the fetched base commit. A remote-default advertisement/fetch mismatch
+fails closed. The invoking checkout must be attached to that anchored ref at the
+exact fetched commit, or detached at that exact commit; a stale base or
+self-selected PR-branch checkout remains blocked. A repo-local trust config
+selected automatically or through explicit `--trust-config PATH` must not be
+changed by the PR and must exist as a regular, byte-identical blob at the same
+repository-relative path in the fetched base; untracked or locally modified
+actor policy cannot authorize the receipt. `GH_HOST`, plaintext HTTP,
+non-GitHub hosts, and test
+selection cannot create an acceptance exception. It emits
+`TRUSTED_BASE_HIGH_RISK_ACCEPTED` only for an exact closed merged
+same-repository PR whose matching REST/GraphQL merge result is an ancestor of
+that base, with complete trusted actors, interactions, API coverage, and no
+suspicious findings. Complete coverage includes globally keyed GraphQL node IDs
+with coherent typename/login/presentation facts for participants, timeline
+events, and commit authors. Duplicate, unavailable, or conflicting identities
+are ordinary operator-visible GitHub API coverage findings. Remote
+inspection, fetch, object inspection, and ancestry checks use one system Git
+executable pinned before task-scoped inputs, never a later inherited-`PATH`
+selection. The post-fetch security scan and exact PR-provenance reads likewise
+use one canonical GitHub CLI executable outside the repository and temporary
+directories. Nonstandard Git, GitHub CLI, and SSH installations use the explicit
+operator-owned absolute executable seams documented in
+`docs/trust-and-preflight.md`. The JSON receipt binds repository, PR, head, merge, base,
+policy source, remote/ref, its independent ref-anchor source and any advertised
+remote-default object ID, and every high-risk path. When repo-local actor policy
+is selected automatically or explicitly, the receipt also binds its fetched
+source, content digest, and file mode. This is not manual
+acknowledgement and cannot be inferred from PR text or green checks; every other
+blocker remains in force.
+
+Treat the receipt's base SHA as freshness-bound. If the configured base moves
+after preflight, rerun the helper immediately before worker launch or any later
+dependent gate. Never reuse an older receipt against a newer base.
+
 Fetch inline PR review comments separately; `gh pr view --json comments` is not
 enough for review-thread comments:
 
@@ -2541,15 +2586,17 @@ process-level escape hatch**, not a single kill switch:
 While a chat remains a planning chat, it has exactly two roles:
 
 - **prompt-only**: after all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat, it may archive. It does not wait for workers. Do not archive if an unhanded-off question or planner-owned `UNKNOWN` remains. A durably handed-off coordinator-owned worker state, including a worker `UNKNOWN`, does not block prompt-only archive.
-- **parent-orchestrator**: stays open and read-only while workers execute. It never claims, edits, or duplicates per-PR closeout. Batch coordinators retain checks, reviews, QA, merge, and completed-batch audit. An open planning chat is not an implicit pre-merge gate under `auto_merge_when_gates_pass`. Deliberate pre-merge planner review requires `merge_authority=ask` or an explicit dependency/gate. It may archive only after terminal batch handoffs, narrow live cross-batch reconciliation, and explicit ownership for shared-path, release-note, and external-reservation follow-ups, and no OUTSTANDING follow-up or `UNKNOWN` remains. Coordinated release may pass this reconciliation gate only under separately established release authority; reconciliation never grants release or merge authority. This reconciliation is the post-batch/pre-release-or-archive gate below.
+- **parent-orchestrator**: stays open and read-only while workers execute. It never claims, edits, or duplicates per-PR closeout. Batch coordinators retain checks, reviews, QA, merge, and any required completed-batch audit. An open planning chat is not an implicit pre-merge gate under `auto_merge_when_gates_pass`. Deliberate pre-merge planner review requires `merge_authority=ask` or an explicit dependency/gate. It may archive only after terminal batch handoffs, narrow live cross-batch reconciliation, and explicit ownership for shared-path, release-note, and external-reservation follow-ups, and no OUTSTANDING follow-up or `UNKNOWN` remains. Coordinated release may pass this reconciliation gate only under separately established release authority; reconciliation never grants release or merge authority. This reconciliation is the post-batch/pre-release-or-archive gate below.
 
 For `prompt-only`, durable handoff is satisfied when every goal prompt is delivered or durably registered for a named distinct future batch coordinator and stable batch/lane/dependency/ownership state is durable outside the chat. The future coordinator need not be launched; the planner waits for neither worker start nor completion, and prompt delivery or durable registration does not start workers.
 
 After same-chat self-launch, transition to the batch-coordinator lifecycle only when no cross-batch, dependency, release, or shared-follow-up responsibility is retained. Then record: Lifecycle transition: transitioned-to-batch-coordinator. Planning-chat role: not applicable after self-launch. Archive/closeout owner: batch coordinator. Retained responsibilities: none (no cross-batch, dependency, release, or shared-follow-up responsibility is retained). This is a transition out of planning, not a third planning role; neither `prompt-only` nor `parent-orchestrator` is selectable after the transition. For same-chat launch with retained cross-batch, dependency, release, or shared-follow-up duties, select and record `parent-orchestrator` immediately because retained duties determine the mandatory planning role; list each exact retained responsibility, do not use `prompt-only`, and do not record `Retained responsibilities: none`. Only a retained-duty `parent-orchestrator` is BLOCKED before launch of a distinct batch coordinator succeeds: it remains read-only and starts no workers. It records the exact distinct-coordinator launch blocker/follow-up and uses final `Conversation status: Follow-ups remain — <each exact action or blocker>.` Once that launch succeeds, workers may start under the distinct batch coordinator, which owns PR/check/QA/merge/completed-batch-audit closeout, while the parent remains read-only.
 
-Parent cross-batch reconciliation is checklist+replay over durable terminal handoffs/manifests. After terminal batch handoffs, parent reconciliation is a post-batch/pre-release-or-archive gate, not a per-PR/pre-merge gate. Before a coordinated release action or parent archive, the parent determines applicability for every exact target/surface and performs a bounded read-only refresh and comparison with durable terminal handoffs/manifests only for applicable GitHub, coordination-backend/claim, head/merge, issue, QA, and release-note surfaces. Explicit durable `n/a`, `no-PR`, or `no-code/not-required` evidence with rationale satisfies an inapplicable surface. `UNKNOWN` applicability or missing applicable evidence blocks both release action and parent archive. The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. The durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive. Its marker has separate well-formed, archive-ready, and blocker-union outputs; only `complete`/`clean`/`none` with fully evidenced terminal records is archive-ready, and every OUTSTANDING ref or non-ready record remains in the normalized blocker union. The parent only reconciles this handoff; it never reruns or owns the audit. PR with backend: refresh GitHub, coordination-backend/claim, head/merge, QA when code changed, and release notes when required. PR with backend n/a: durable `n/a` rationale satisfies coordination-backend/claim; refresh the remaining applicable surfaces. Issue no-PR: durable `no-PR` rationale satisfies head/merge; refresh GitHub, issue, and any other applicable surfaces. Ad hoc no-PR: durable `no-PR` rationale satisfies GitHub, head/merge, and issue when they are inapplicable; refresh QA or release notes only when applicable. No-code target: durable `no-code/not-required` rationale satisfies QA. Unknown applicability blocks both release action and parent archive. Missing applicable evidence blocks both release action and parent archive. For each exact batch/target scope, the durable record captures evidence, owner, status, and follow-up for: exact scope coverage; dependency outcomes; issue closed or no-PR evidence; released claims; exact-final-head QA replay; changelog/release-note ownership; and shared-path interactions.
+Parent cross-batch reconciliation is checklist+replay over durable terminal handoffs/manifests. After terminal batch handoffs, parent reconciliation is a post-batch/pre-release-or-archive gate, not a per-PR/pre-merge gate. Before a coordinated release action or parent archive, the parent determines applicability for every exact target/surface and performs a bounded read-only refresh and comparison with durable terminal handoffs/manifests only for applicable GitHub, coordination-backend/claim, head/merge, issue, QA, and release-note surfaces. Explicit durable `n/a`, `no-PR`, or `no-code/not-required` evidence with rationale satisfies an inapplicable surface. `UNKNOWN` applicability or missing applicable evidence blocks both release action and parent archive. Apply [Audit applicability](pr-batch-integration-closeout.md#audit-applicability) before requiring a completed-batch audit handoff. Ordinary terminal handoffs remain sufficient when no audit is required. For a required audit, the durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. For a required audit, missing handoff or missing or `UNKNOWN` audit status or verdict blocks both coordinated release and parent archive. Its marker has separate well-formed, archive-ready, and blocker-union outputs; only `complete`/`clean`/`none` with fully evidenced terminal records is archive-ready, and every OUTSTANDING ref or non-ready record remains in the normalized blocker union. The parent only reconciles this handoff; it never reruns or owns the audit. PR with backend: refresh GitHub, coordination-backend/claim, head/merge, QA when code changed, and release notes when required. PR with backend n/a: durable `n/a` rationale satisfies coordination-backend/claim; refresh the remaining applicable surfaces. Issue no-PR: durable `no-PR` rationale satisfies head/merge; refresh GitHub, issue, and any other applicable surfaces. Ad hoc no-PR: durable `no-PR` rationale satisfies GitHub, head/merge, and issue when they are inapplicable; refresh QA or release notes only when applicable. No-code target: durable `no-code/not-required` rationale satisfies QA. Unknown applicability blocks both release action and parent archive. Missing applicable evidence blocks both release action and parent archive. For each exact batch/target scope, the durable record captures evidence, owner, status, and follow-up for: exact scope coverage; dependency outcomes; issue closed or no-PR evidence; released claims; exact-final-head QA replay; changelog/release-note ownership; and shared-path interactions.
 
-Batch coordinators execute retained closeout through the canonical
+Batch coordinators apply
+[Ordinary PR Closeout](pr-batch-integration-closeout.md#ordinary-pr-closeout).
+For required audits, execute
 [Completed-Batch Audit Receipt And Archive Replay](pr-batch-integration-closeout.md#completed-batch-audit-receipt-and-archive-replay)
 contract. Parent orchestration remains read-only and reconciles the durable
 receipt rather than reproducing or re-running batch closeout.
@@ -2565,7 +2612,7 @@ Pressure checks:
 - A host that exposes task creation while the user never asked for a task is `copy-paste`, not `host-native-user-task`; capability is not consent.
 - A pending-worktree launch that returns only a provisional identifier is recorded as provisional and resolved later; if it never resolves it is `UNKNOWN` and a follow-up, never a clean durable handoff.
 - Prompt-only single-batch: after all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat, it archives without waiting for workers; closeout owner: the batch coordinator; an unhanded-off question or planner-owned `UNKNOWN` blocks archive, while a durably handed-off coordinator-owned worker state, including worker `UNKNOWN`, does not; final status: use exactly `Conversation status: Ready for archiving.` when prompt-only is clean; otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.
-- Parent-orchestrated multi-batch: the parent stays open and read-only while workers execute; each batch coordinator owns checklist+replay closeout; parent cross-batch reconciliation is checklist+replay over durable terminal handoffs/manifests. The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. Preserve the durable completed-batch handoff, reconcile only applicable surfaces, and use the canonical [Completed-Batch Audit Receipt And Archive Replay](pr-batch-integration-closeout.md#completed-batch-audit-receipt-and-archive-replay) marker grammar; `UNKNOWN` applicability or missing applicable evidence blocks release action and parent archive. For each exact batch/target scope the durable record captures evidence, owner, status, and follow-up for exact scope coverage, dependency outcomes, issue closed or no-PR evidence, released claims, exact-final-head QA replay, changelog/release-note ownership, and shared-path interactions; clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then final status: use exactly `Conversation status: Ready for archiving.` Otherwise final status: use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`
+- Parent-orchestrated multi-batch: the parent stays open and read-only while workers execute; each batch coordinator owns checklist+replay closeout; parent cross-batch reconciliation is checklist+replay over durable terminal handoffs/manifests. Apply [Audit applicability](pr-batch-integration-closeout.md#audit-applicability) before requiring a completed-batch audit handoff. Ordinary terminal handoffs remain sufficient when no audit is required. Preserve the durable completed-batch handoff, reconcile only applicable surfaces, and use the canonical [Completed-Batch Audit Receipt And Archive Replay](pr-batch-integration-closeout.md#completed-batch-audit-receipt-and-archive-replay) marker grammar; `UNKNOWN` applicability or missing applicable evidence blocks release action and parent archive. For each exact batch/target scope the durable record captures evidence, owner, status, and follow-up for exact scope coverage, dependency outcomes, issue closed or no-PR evidence, released claims, exact-final-head QA replay, changelog/release-note ownership, and shared-path interactions; clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then final status: use exactly `Conversation status: Ready for archiving.` Otherwise final status: use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`
 
 ## Integration And PR Publication
 
@@ -2614,6 +2661,43 @@ Canonical rules: [Hosted CI Backpressure](pr-batch-integration-closeout.md#hoste
 ## CI Polling And Live State
 
 Canonical rules: [CI Polling And Live State](pr-batch-integration-closeout.md#ci-polling-and-live-state). This heading remains as a compatibility route and must not mirror the component.
+
+## Initial-Pass Optional-Nit Cutoff
+
+During the initial review of the accepted work, consider inexpensive, useful,
+in-scope optional improvements and select any worth doing for one consolidated
+fix pass. Optional naming, wording, formatting, and cleanup suggestions are
+opportunities, never mandatory merely because a reviewer listed them. Record
+the selection and its completion in the existing review/task history.
+
+After that initial selection, later passes verify accepted fixes, unresolved
+substantive findings, and demonstrated consequential defects. A new optional
+suggestion cannot reopen implementation, start another repair pass, or block
+completion. Triage it without a code change under the existing disposition and
+follow-up admission rules; recording it grants no implementation authority.
+Do not promote optional polish to a blocking tier just to bypass this cutoff.
+
+A consequential defect remains actionable at every phase: establish a concrete
+failure scenario and impact on correctness, security, compatibility, data,
+required behavior, or release safety. Severity labels alone are insufficient.
+Preserve independent validation, required review, CI, security, and unresolved
+genuine-defect gates. The cutoff does not waive a broken accepted fix or change
+any existing repair-round cap or automatic-continuation brake.
+
+Recover the phase and accepted selection from existing task, review, and PR
+history before triage or executable-work construction. When trusted task
+context or history establishes this is the first review of the accepted work,
+establish and record the initial phase; absence of a phase record alone does
+not establish a first review. Pushes, resumed threads,
+replacement reviewers, replacement PRs carrying the same work, and final
+whole-branch reviews retain that phase; they do not start a fresh initial pass.
+If unavailable or ambiguous history prevents establishing the phase, allow no
+fresh optional fix allowance;
+continue substantive review and recover evidence for any claimed accepted fix.
+Explicit later human scope decisions remain authoritative for the selected
+work. Broad continue, autofix, autopilot, or apply-all actions alone do not reset
+the phase. Apply this rule before entry-point action defaults and finding
+admission, including task-local re-review; keep their existing scope limits.
 
 ## Review Comment Handling
 
