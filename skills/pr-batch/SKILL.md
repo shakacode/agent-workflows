@@ -305,6 +305,15 @@ for optional controls; unavailable controls or offline access to that source
 guide do not block portable work. A new message alone neither cancels running
 tools nor reverses completed actions.
 
+## Heavy-Root Capacity
+
+Before any local or remote heavyweight validator, broad test, review, or QA
+root, use the optional host-local
+[Heavy-Root Capacity Admission](../../workflows/pr-batch-capacity-admission.md)
+contract whenever independent coordinators may share that host. Reserve on the
+execution host itself; ordinary lightweight implementation remains outside this
+capacity mechanism.
+
 ## Worker Rules
 
 Codex-targeted waves may use up to 10 independent lanes, or 8 when shared/risky
