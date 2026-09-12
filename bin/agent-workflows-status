@@ -57,6 +57,7 @@ module AgentWorkflowsStatus
     if target
       expanded = File.expand_path(target)
       raise ArgumentError, "refusing to inspect Cursor builtins directory skills-cursor" if File.basename(expanded) == "skills-cursor"
+
       if host == "auto"
         homes = {
           "codex" => File.expand_path(default_target_for_host("codex")),
