@@ -2113,6 +2113,28 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_non_string_human_attention_repository_is_not_reported_as_a_duplicate
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "human_attention" => {
+            "labels" => { "walkthrough" => "needs-walkthrough", "merge" => "needs-merge" },
+            "repositories" => [1, "acme/widgets"]
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "every human-attention repository must use OWNER/REPO form"
+      refute_includes out, "human-attention repositories must be unique ignoring case"
+    end
+  end
+
   def test_valid_human_attention_policy_passes_the_seam_doctor
     with_repo do |root|
       write_valid_binstub_contract(root)

@@ -167,7 +167,18 @@ against the fresh data before mutating GitHub or the branch.
   ```
 
   Post a new fallback claim through `github-comment-envelope post-issue` and
-  retain the returned issue-comment ID. Route every refresh and terminal
+  extract the returned issue-comment ID from its JSON response:
+
+  ```bash
+  CLAIM_COMMENT_ID="$(printf '%s' "${CLAIM_BODY}" |
+    "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
+      --repo "${REPO}" --number "${CLAIM_TARGET}" \
+      --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+      --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" |
+    jq -er '.id')"
+  ```
+
+  Retain that ID. Route every refresh and terminal
   fallback-claim update through `github-comment-envelope edit-issue`; pipe the
   complete replacement claim body on stdin and pass the retained ID:
 

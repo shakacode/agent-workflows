@@ -25,14 +25,18 @@ skills, but they are the exception. The default path is:
 
 ## Host Targets
 
-`bin/install-agent-workflows` supports the same installed layout for Codex and
-Claude:
+`bin/install-agent-workflows` supports the same installed layout for Codex,
+Claude, and Cursor:
 
 | Host | Default target |
 | --- | --- |
 | `codex` | `${CODEX_HOME:-$HOME/.codex}` |
 | `claude` | `${CLAUDE_HOME:-$HOME/.claude}` |
-| `auto` | An existing Codex or Claude home, only when exactly one is detectable |
+| `cursor` | `${CURSOR_HOME:-$HOME/.cursor}` |
+| `auto` | An existing Codex, Claude, or Cursor home, only when exactly one is detectable |
+
+Never install into `~/.cursor/skills-cursor`. That directory is reserved for
+Cursor builtins. Only `~/.cursor/skills` syncs to Cloud Agents.
 
 The installer also supplies `agent-workflow-writing-style`,
 [the packaged default guide](writing-style.md), and the opt-in
@@ -122,13 +126,14 @@ tracked separately from this generic installer default.
 ## Native Plugin Paths
 
 This repository ships native plugin metadata for Codex at
-`.codex-plugin/plugin.json` and for Claude Code under `.claude-plugin/`. Both
-paths expose the source pack's existing semantic `./skills/` tree through the
-plugin identifier `scw`; the skill directories and frontmatter names remain
-unprefixed. Claude Code therefore exposes `skills/verify/SKILL.md` as
-`/scw:verify`. Claude's plugin manifest publishes `ShakaCode Agent Workflows`
-as the UI display name without changing the `scw` install or namespace
-identifier.
+`.codex-plugin/plugin.json`, for Claude Code under `.claude-plugin/`, and for
+Cursor at `.cursor-plugin/plugin.json`. Codex and Claude expose the source
+pack's existing semantic `./skills/` tree through the plugin identifier `scw`;
+the skill directories and frontmatter names remain unprefixed. Claude Code
+therefore exposes `skills/verify/SKILL.md` as `/scw:verify`. Claude's plugin
+manifest publishes `ShakaCode Agent Workflows` as the UI display name without
+changing the `scw` install or namespace identifier. Cursor loads `/<skill>`
+from the local plugin or from the flat `~/.cursor/skills` install.
 
 Install the Claude Code plugin from the repository marketplace:
 
@@ -220,13 +225,19 @@ Install for Claude Code:
 bin/install-agent-workflows --host claude
 ```
 
+Install for Cursor:
+
+```bash
+bin/install-agent-workflows --host cursor
+```
+
 Install into an explicit shared agent home:
 
 ```bash
 bin/install-agent-workflows --host codex --target "$HOME/.agents"
 ```
 
-A clean Codex or Claude installation can plan and launch ordinary batches as
+A clean Codex, Claude, or Cursor installation can plan and launch ordinary batches as
 installed. Do not generate project signing keys or provision fixed launch trust
 anchors: assignment activation and lane progression use ordinary durable
 lifecycle state. Model/effort values are advisory preferences, while any
@@ -239,6 +250,21 @@ Install companion assets for an already-enabled native plugin:
 bin/install-agent-workflows \
   --host codex \
   --delivery-mode plugin-companion
+```
+
+```bash
+bin/install-agent-workflows \
+  --host cursor \
+  --delivery-mode plugin-companion
+```
+
+For a local Cursor plugin test, symlink the checkout and keep companion
+delivery so flat skills are not a second auto-invocable tree:
+
+```bash
+mkdir -p "$HOME/.cursor/plugins/local"
+ln -sfn /path/to/agent-workflows "$HOME/.cursor/plugins/local/scw"
+bin/install-agent-workflows --host cursor --delivery-mode plugin-companion
 ```
 
 When migrating a previous flat install, the installer inventories every known
@@ -433,8 +459,8 @@ creating any missing directory:
 | `--source-root DIR` | `~/src` |
 | `--compat-root DIR` | `~/codex/agent-repos` |
 | `--runtime-root DIR` | `${AGENT_STACK_RUNTIME_ROOT:-~/.agent-workflows}` |
-| `--host codex\|claude\|auto` | `codex` |
-| `--target DIR` | The selected host's normal home (`$CODEX_HOME`, `$CLAUDE_HOME`, or its standard fallback) |
+| `--host codex\|claude\|cursor\|auto` | `codex` |
+| `--target DIR` | The selected host's normal home (`$CODEX_HOME`, `$CLAUDE_HOME`, `$CURSOR_HOME`, or its standard fallback) |
 | `--agent-coord-install-dir DIR` | `~/.local/bin` |
 | `--dashboard-url URL` | `http://127.0.0.1:${PORT:-4319}` |
 
@@ -477,6 +503,7 @@ The installer writes:
 - `<target>/LICENSE`
 - `<target>/THIRD_PARTY-NOTICES.md`
 - `<target>/workflows/*`
+- `<target>/rules/agent-workflows.mdc` for Cursor installs
 - `<target>/docs/coordination-backend.md`
 - `<target>/docs/execution-provenance-schema.md`
 - `<target>/docs/review-finding-schema.md`
@@ -717,12 +744,13 @@ Then dry-run one installed workflow, such as `$plan-pr-batch` or
 review-gate, changelog, and follow-up values from the repo seam without making
 code changes.
 
-## Codex And Claude
+## Codex, Claude, And Cursor
 
-The skill Markdown is host-neutral. Codex and Claude both use the same
+The skill Markdown is host-neutral. Codex, Claude, and Cursor all use the same
 `skills/`, `workflows/`, `docs/`, and `bin/` layout after installation. Files under
 `skills/*/agents/openai.yaml` are optional Codex UI metadata and are ignored by
-Claude.
+Claude and Cursor. Cursor also installs `rules/agent-workflows.mdc` so Grok and
+other Cursor models Read the matching skill when the skill catalog is truncated.
 
 Some workflow steps name host-specific tools, such as `codex review`, Claude
 Code slash commands, or `/simplify`. Treat those as available-tool branches:
@@ -751,8 +779,8 @@ the session must avoid network access.
   `--source /path/to/agent-workflows`.
 - `UPGRADE_AVAILABLE`: run `upgrade-agent-workflows` or manually update the
   source clone and reinstall.
-- `Auto host detection found both Codex and Claude homes`: rerun with
-  `--host codex` or `--host claude`.
+- `Auto host detection found multiple agent homes`: rerun with
+  `--host codex`, `--host claude`, or `--host cursor`.
 - `Refusing to replace non-symlink path`: symlink mode will not overwrite a real
   file or directory. Use copy mode or remove the conflicting path deliberately.
 - `DELIVERY_MODE_CONFLICT`: keep one skill delivery route. Disable/remove the

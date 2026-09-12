@@ -1819,7 +1819,7 @@ module AgentWorkflowSeamDoctor
     unless values.all? { |repo| repo.is_a?(String) && repo.match?(HUMAN_ATTENTION_REPOSITORY_PATTERN) }
       errors << "every human-attention repository must use OWNER/REPO form"
     end
-    if values.select { |repo| repo.is_a?(String) }.map(&:downcase).uniq.length != values.length
+    if values.all? { |repo| repo.is_a?(String) } && values.map(&:downcase).uniq.length != values.length
       errors << "human-attention repositories must be unique ignoring case"
     end
 

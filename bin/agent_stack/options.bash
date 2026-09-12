@@ -20,7 +20,7 @@ agent_stack_parse_options() {
       --source-root) [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "--source-root requires a directory" >&2; exit 64; }; source_root="$2"; shift 2 ;;
       --compat-root) [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "--compat-root requires a directory" >&2; exit 64; }; compat_root="$2"; shift 2 ;;
       --runtime-root) [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "--runtime-root requires a directory" >&2; exit 64; }; runtime_root="$2"; shift 2 ;;
-      --host) [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "--host requires codex, claude, or auto" >&2; exit 64; }; host="$2"; shift 2 ;;
+      --host) [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "--host requires codex, claude, cursor, or auto" >&2; exit 64; }; host="$2"; shift 2 ;;
       --target) [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "--target requires a directory" >&2; exit 64; }; target="$2"; shift 2 ;;
       --mode) [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "--mode requires copy or symlink" >&2; exit 64; }; mode="$2"; shift 2 ;;
       --delivery-mode) [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "--delivery-mode requires flat or plugin-companion" >&2; exit 64; }; delivery_mode="$2"; shift 2 ;;
@@ -34,7 +34,7 @@ agent_stack_parse_options() {
     esac
   done
 
-  case "$host" in codex|claude|auto) ;; *) echo "--host must be codex, claude, or auto, got: $host" >&2; exit 64 ;; esac
+  case "$host" in codex|claude|cursor|auto) ;; *) echo "--host must be codex, claude, cursor, or auto, got: $host" >&2; exit 64 ;; esac
   case "$mode" in copy|symlink) ;; *) echo "--mode must be copy or symlink, got: $mode" >&2; exit 64 ;; esac
   case "$delivery_mode" in ""|flat|plugin-companion) ;; *) echo "--delivery-mode must be flat or plugin-companion, got: $delivery_mode" >&2; exit 64 ;; esac
 }

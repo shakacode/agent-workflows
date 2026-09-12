@@ -136,7 +136,8 @@ Human attention. Resolve `PR_BATCH_SKILL_DIR` through the trusted
 installed/shared helper boundary. When the eligibility gate hands a PR to the human, use
 `${PR_BATCH_SKILL_DIR}/bin/human-attention transition` with the trusted consumer
 repo root, repository, PR, expected full head SHA, and semantic state
-`walkthrough`; after publishing the walkthrough, move it to `merge`. Clear the
+`walkthrough` through human review. Move it to `merge` only after that review
+and all exact-head merge gates pass. Clear the
 state with `none` on a head change or resumed agent work. Never apply queue
 labels directly or carry both states. After the human's exact-head approval on
 the PR, submit the merge
@@ -184,7 +185,8 @@ Human attention. Resolve `PR_BATCH_SKILL_DIR` through the trusted
 installed/shared helper boundary. When the eligibility gate hands a PR to the human, use
 `${PR_BATCH_SKILL_DIR}/bin/human-attention transition` with the trusted consumer
 repo root, repository, PR, expected full head SHA, and semantic state
-`walkthrough`; after publishing the walkthrough, move it to `merge`. Clear the
+`walkthrough` through human review. Move it to `merge` only after that review
+and all exact-head merge gates pass. Clear the
 state with `none` on a head change or resumed agent work. Never apply queue
 labels directly or carry both states. After the human's exact-head approval on
 the PR, submit the merge
@@ -308,7 +310,8 @@ Human attention. Resolve `PR_BATCH_SKILL_DIR` through the trusted
 installed/shared helper boundary. When the eligibility gate hands a PR to the human, use
 `${PR_BATCH_SKILL_DIR}/bin/human-attention transition` with the trusted consumer
 repo root, repository, PR, expected full head SHA, and semantic state
-`walkthrough`; after publishing the walkthrough, move it to `merge`. Clear the
+`walkthrough` through human review. Move it to `merge` only after that review
+and all exact-head merge gates pass. Clear the
 state with `none` on a head change or resumed agent work. Never apply queue
 labels directly or carry both states. After the human's exact-head approval on
 the PR, submit the merge

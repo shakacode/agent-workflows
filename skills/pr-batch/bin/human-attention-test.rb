@@ -558,6 +558,36 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  def test_transition_none_clears_preexisting_conflicting_attention_labels
+    with_repo_config(LABEL_POLICY) do |root|
+      fake_gh = File.join(root, "gh")
+      calls = File.join(root, "calls")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        File.open(ENV.fetch("CALLS"), "a") { |file| file.puts(ARGV.join("\t")) }
+        if ARGV[0, 2] == ["pr", "view"]
+          edited = File.read(ENV.fetch("CALLS")).include?("pr\tedit")
+          labels = edited ? [] : ["human-attention:walkthrough", "human-attention:merge"]
+          puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}",
+                              "labels" => labels.map { |name| {"name" => name} }})
+        end
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "transition", "--repo-root", root, "--repo", "acme/widgets", "--pr", "7",
+        "--state", "none", "--expected-head", ("a" * 40).to_s,
+        env: { "HUMAN_ATTENTION_GH" => fake_gh, "CALLS" => calls }
+      )
+
+      assert_predicate result[:status], :success?, result[:stderr]
+      edit = File.readlines(calls, chomp: true).find { |line| line.start_with?("pr\tedit") }
+      assert_includes edit, "--remove-label\thuman-attention:walkthrough"
+      assert_includes edit, "--remove-label\thuman-attention:merge"
+    end
+  end
+
   def test_transition_does_not_assign_attention_labels_on_a_closed_pr
     with_repo_config(LABEL_POLICY) do |root|
       fake_gh = File.join(root, "gh")
@@ -618,6 +648,81 @@ class HumanAttentionTest < Minitest::Test
       edits = File.readlines(calls, chomp: true).select { |line| line.start_with?("pr\tedit") }
       assert_equal 2, edits.length
       assert_includes edits.last, "--remove-label\thuman-attention:merge"
+    end
+  end
+
+  def test_transition_clears_attention_state_when_post_edit_verification_fails
+    with_repo_config(LABEL_POLICY) do |root|
+      fake_gh = File.join(root, "gh")
+      calls = File.join(root, "calls")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        calls = ENV.fetch("CALLS")
+        File.open(calls, "a") { |file| file.puts(ARGV.join("\t")) }
+        if ARGV[0, 2] == ["pr", "view"]
+          view_count = File.readlines(calls).count { |line| line.start_with?("pr\tview") }
+          case view_count
+          when 1
+            puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}",
+                                "labels" => [{"name" => "human-attention:walkthrough"}]})
+          when 2
+            warn "verification unavailable"
+            exit 1
+          else
+            puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}", "labels" => []})
+          end
+        end
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "transition", "--repo-root", root, "--repo", "acme/widgets", "--pr", "7",
+        "--state", "merge", "--expected-head", ("a" * 40).to_s,
+        env: { "HUMAN_ATTENTION_GH" => fake_gh, "CALLS" => calls }
+      )
+
+      refute_predicate result[:status], :success?
+      assert_includes result[:stderr], "cannot verify human-attention labels; attention state cleared"
+      edits = File.readlines(calls, chomp: true).select { |line| line.start_with?("pr\tedit") }
+      assert_equal 2, edits.length
+      assert_includes edits.last, "--remove-label\thuman-attention:walkthrough"
+      assert_includes edits.last, "--remove-label\thuman-attention:merge"
+    end
+  end
+
+  def test_idempotent_transition_preserves_attention_state_when_verification_fails
+    with_repo_config(LABEL_POLICY) do |root|
+      fake_gh = File.join(root, "gh")
+      calls = File.join(root, "calls")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        calls = ENV.fetch("CALLS")
+        File.open(calls, "a") { |file| file.puts(ARGV.join("\t")) }
+        if ARGV[0, 2] == ["pr", "view"]
+          view_count = File.readlines(calls).count { |line| line.start_with?("pr\tview") }
+          if view_count == 1
+            puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}",
+                                "labels" => [{"name" => "human-attention:merge"}]})
+          else
+            warn "verification unavailable"
+            exit 1
+          end
+        end
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "transition", "--repo-root", root, "--repo", "acme/widgets", "--pr", "7",
+        "--state", "merge", "--expected-head", ("a" * 40).to_s,
+        env: { "HUMAN_ATTENTION_GH" => fake_gh, "CALLS" => calls }
+      )
+
+      refute_predicate result[:status], :success?
+      assert_includes result[:stderr], "cannot verify unchanged human-attention labels"
+      edits = File.readlines(calls, chomp: true).select { |line| line.start_with?("pr\tedit") }
+      assert_empty edits
     end
   end
 

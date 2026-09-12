@@ -46,6 +46,18 @@ def extract_source_wait_checkpoint_filter(text)
   filter_tail[0...terminator.begin(0)]
 end
 
+def extract_source_walkthrough_derivation(text)
+  start_marker = 'SOURCE_PR_IDENTITY_JSON="$(gh api'
+  start_offset = text.index(start_marker)
+  abort("FAIL: source walkthrough derivation start missing") unless start_offset
+
+  tail = text[start_offset..]
+  terminator = tail.match(/\n\s+: "\$\{SOURCE_WALKTHROUGH_REVIEW_IDS_JSON:\?[^\n]+/)
+  abort("FAIL: source walkthrough derivation terminator missing") unless terminator
+
+  tail[0...terminator.end(0)]
+end
+
 def extract_source_template_awk(text)
   marker = %q{SOURCE_STATE_ROW_COUNT="$(printf '%s\n' "${SOURCE_STATE_ROWS}" | awk -F '\t' -v source="${SOURCE_PR_NUMBER}" '}
   marker_offset = text.index(marker)
@@ -494,6 +506,14 @@ assert(address_review_workflow.include?(public_claim_per_target), "address-revie
    '--host "${AGENT_COMMENT_HOST:?}"', '--task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}"'].each do |argument|
     assert(invocation.include?(argument), "fallback claim edit invocation must include #{argument}")
   end
+
+  post_invocations = text.scan(/```bash\n(.*?)```/m).flatten.select do |block|
+    block.include?("CLAIM_COMMENT_ID=") && block.include?('github-comment-envelope" post-issue')
+  end
+  assert(post_invocations.length == 1, "address-review must define one fallback claim post invocation")
+  post_invocation = post_invocations.first
+  assert(post_invocation.include?("jq -er '.id'"),
+         "fallback claim posts must extract the returned issue-comment ID")
 end
 all_claim_cleanup = "At a stable stop, update every acquired private heartbeat or advisory claim"
 assert(address_review.include?(all_claim_cleanup), "address-review must clean up every carryover claim")
@@ -559,6 +579,15 @@ normalized_source_actor = 'select(((.user // "") | ascii_downcase) == ($actor | 
 assert(address_review.include?(normalized_source_actor), "source wait must authenticate the normalized checkpoint author")
 assert(address_review_workflow.include?(normalized_source_actor),
        "workflow source wait must authenticate the normalized checkpoint author")
+[address_review, address_review_workflow].each do |text|
+  source_checkpoint_probe = text[%r{if SOURCE_CHECKPOINT_JSON=.*?2>/dev/null\)"; then}m]
+  assert(source_checkpoint_probe, "source wait must include the normalized checkpoint probe")
+  ['--trust-config "${TRUST_CONFIG_PATH}"', '--trust-config-source "${TRUST_CONFIG_SOURCE}"',
+   '--trust-config-scope "${TRUST_CONFIG_SCOPE}"', '--expected-trust-digest "${TRUST_CONFIG_DIGEST}"'].each do |argument|
+    assert(source_checkpoint_probe.include?(argument),
+           "source wait checkpoint probe must include #{argument}")
+  end
+end
 assert(address_review.include?("for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do"), "address-review must implement the dual-PR review wait")
 assert(address_review_workflow.include?("for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do"), "address-review workflow mirror must implement the dual-PR review wait")
 specific_source_rejection = "A specific review/comment target remains immediate; reject its combination with `SOURCE_PR_NUMBER` and require a full replacement-PR invocation instead of starting broad source carryover."
@@ -633,6 +662,12 @@ workflow_checkpoint_filter = extract_source_checkpoint_filter(address_review_wor
 assert(
   skill_checkpoint_filter.lines.map(&:strip) == workflow_checkpoint_filter.lines.map(&:strip),
   "address-review source checkpoint validators must stay mirrored"
+)
+skill_walkthrough_derivation = extract_source_walkthrough_derivation(address_review)
+workflow_walkthrough_derivation = extract_source_walkthrough_derivation(address_review_workflow)
+assert(
+  skill_walkthrough_derivation.lines.map(&:strip) == workflow_walkthrough_derivation.lines.map(&:strip),
+  "address-review source walkthrough derivations must stay mirrored"
 )
 skill_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review)
 workflow_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review_workflow)
@@ -772,7 +807,8 @@ checkpoint_fixture = {
   ]
 }
 stdout, stderr, status = Open3.capture3(
-  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_checkpoint_filter,
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+  "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
   stdin_data: JSON.generate(checkpoint_fixture)
 )
 assert(status.success?, "source checkpoint jq validator must execute: #{stderr}")
@@ -782,13 +818,59 @@ assert(valid_checkpoints[0]["body"] == valid_generated_summary_body, "source che
 assert(valid_checkpoints[1]["body"] == valid_status_body, "source checkpoint validator must return newest valid checkpoint first")
 assert(valid_checkpoints[2]["body"] == valid_summary_body, "source checkpoint validator must accept padded Base64 node IDs")
 
+walkthrough_fixture = checkpoint_fixture.merge(
+  "review_summaries" => checkpoint_fixture.fetch("review_summaries") +
+    [{ "id" => 999, "created_at" => "2026-07-15T00:00:20Z" }],
+  "inline_comments" => checkpoint_fixture.fetch("inline_comments") +
+    [{ "id" => 998, "pull_request_review_id" => 999, "thread_id" => "PRRT_walkthrough",
+       "in_reply_to_id" => nil, "is_resolved" => false, "created_at" => "2026-07-15T00:00:20Z" }]
+)
+stdout, stderr, status = Open3.capture3(
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+  "--argjson", "walkthrough_review_ids", "[999]", skill_checkpoint_filter,
+  stdin_data: JSON.generate(walkthrough_fixture)
+)
+assert(status.success?, "source checkpoint jq validator must execute with walkthrough fixture: #{stderr}")
+assert(JSON.parse(stdout).length == 3,
+       "source checkpoint validator must exclude verified walkthrough summaries and roots from completeness")
+
+replacement_walkthrough_fixture = walkthrough_fixture.merge(
+  "review_summaries" => walkthrough_fixture.fetch("review_summaries") +
+    [{ "id" => 996, "created_at" => "2026-07-15T00:00:15Z" }]
+)
+stdout, stderr, status = Open3.capture3(
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+  "--argjson", "walkthrough_review_ids", "[996,999]", skill_checkpoint_filter,
+  stdin_data: JSON.generate(replacement_walkthrough_fixture)
+)
+assert(status.success?, "source checkpoint jq validator must execute with replacement walkthrough fixture: #{stderr}")
+assert(JSON.parse(stdout).length == 3,
+       "source checkpoint validator must exclude both stale and current walkthrough summaries")
+
+walkthrough_reply_fixture = walkthrough_fixture.merge(
+  "inline_comments" => walkthrough_fixture.fetch("inline_comments") +
+    [{ "id" => 997, "pull_request_review_id" => 1000, "thread_id" => "PRRT_walkthrough",
+       "in_reply_to_id" => 998, "is_resolved" => false, "created_at" => "2026-07-15T00:00:25Z" }]
+)
+stdout, stderr, status = Open3.capture3(
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+  "--argjson", "walkthrough_review_ids", "[999]", skill_checkpoint_filter,
+  stdin_data: JSON.generate(walkthrough_reply_fixture)
+)
+assert(status.success?, "source checkpoint jq validator must execute with walkthrough reply fixture: #{stderr}")
+walkthrough_reply_checkpoints = JSON.parse(stdout)
+assert(walkthrough_reply_checkpoints.length == 1 &&
+       walkthrough_reply_checkpoints[0]["body"] == valid_summary_body,
+       "source checkpoint validator must invalidate checkpoints posted after an unrecorded walkthrough reply")
+
 incomplete_fixture = checkpoint_fixture.merge(
   "issue_comments" => checkpoint_fixture.fetch("issue_comments") + [
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:02:30Z", "body" => incomplete_summary_body }
   ]
 )
 stdout, stderr, status = Open3.capture3(
-  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_checkpoint_filter,
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+  "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
   stdin_data: JSON.generate(incomplete_fixture)
 )
 assert(status.success?, "source checkpoint jq validator must execute with incomplete fixture: #{stderr}")
@@ -826,7 +908,8 @@ cumulative_history_fixture = {
   ]
 }
 stdout, stderr, status = Open3.capture3(
-  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_checkpoint_filter,
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+  "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
   stdin_data: JSON.generate(cumulative_history_fixture)
 )
 assert(status.success?, "source checkpoint jq validator must execute with cumulative historical rows: #{stderr}")
@@ -857,7 +940,8 @@ stale_activity_fixture = {
   ]
 }
 stdout, stderr, status = Open3.capture3(
-  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_checkpoint_filter,
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+  "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
   stdin_data: JSON.generate(stale_activity_fixture)
 )
 assert(status.success?, "source checkpoint jq validator must execute with stale pre-checkpoint activity: #{stderr}")
@@ -870,7 +954,8 @@ future_activity_fixture = stale_activity_fixture.merge(
   ]
 )
 stdout, stderr, status = Open3.capture3(
-  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_checkpoint_filter,
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+  "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
   stdin_data: JSON.generate(future_activity_fixture)
 )
 assert(status.success?, "source checkpoint jq validator must execute with future activity state: #{stderr}")

@@ -150,3 +150,8 @@ one-off memory notes stay out of `docs/solutions/`.
 - Host-sensitive paths, metadata, and helper availability are reported as
   `UNKNOWN` when not verified.
 - Validation evidence names the exact helper tests and repo gate that ran.
+
+<!-- host-branch: cursor-only start -->
+On Cursor, memory and session-start hooks stay availability-checked. Do not
+treat Claude Desktop archive or Codex goal monitors as Cursor surfaces.
+<!-- host-branch: cursor-only end -->

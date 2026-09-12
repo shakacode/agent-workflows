@@ -41,7 +41,7 @@ module AgentDoctor
           --source-root DIR              source checkout root (default: ~/src)
           --compat-root DIR              compatibility symlink root (default: ~/codex/agent-repos)
           --runtime-root DIR             private runtime/config root (default: ~/.agent-workflows)
-          --host codex|claude|auto       workflow install host (default: codex)
+          --host codex|claude|cursor|auto workflow install host (default: codex)
           --target DIR                   workflow install target
           --agent-coord-install-dir DIR  agent-coord install dir (default: ~/.local/bin)
           --dashboard-url URL            loopback dashboard URL (default: http://127.0.0.1:${PORT:-4319})
@@ -68,7 +68,7 @@ module AgentDoctor
 
     def validate!(options, arguments)
       raise Configuration::UsageError, "unexpected arguments" unless arguments.empty?
-      raise Configuration::UsageError, "--host must be codex, claude, or auto" unless %w[codex claude auto].include?(options[:host])
+      raise Configuration::UsageError, "--host must be codex, claude, cursor, or auto" unless %w[codex claude cursor auto].include?(options[:host])
 
       empty_path = { source_root: "--source-root", compat_root: "--compat-root", runtime_root: "--runtime-root",
                      target: "--target", install_dir: "--agent-coord-install-dir" }.find { |key,| options[key] == "" }

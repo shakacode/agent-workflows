@@ -13,6 +13,9 @@ GPT-5.6 recommendations below for the listed roles; those recommendations and
 planning tables remain the established comparison baseline. Keep explicit user
 routes, verified host support, portable fallback, and independent evidence rules.
 This is an unmeasured pilot, not a measured promotion.
+If the current host is Cursor, resolve the advisory `cursor-grok-v0` profile
+the same way; every role stays portable/generic until measured. Keep using
+`generic` prompt sizing for Cursor.
 If a partial or pinned installation lacks the resolver or data, continue with
 established or portable advisory routes; use the complete pack to access the pilot.
 

@@ -72,7 +72,10 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
   SOURCE_HAS_CHECKPOINT=0
   if [ -n "${SOURCE_PR_NUMBER}" ]; then
     if SOURCE_CHECKPOINT_JSON="$("${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" \
-      "${SOURCE_PR_NUMBER}" --repo "${REPO}" --issue-comments-only 2>/dev/null)"; then
+      "${SOURCE_PR_NUMBER}" --repo "${REPO}" --issue-comments-only \
+      --trust-config "${TRUST_CONFIG_PATH}" --trust-config-source "${TRUST_CONFIG_SOURCE}" \
+      --trust-config-scope "${TRUST_CONFIG_SCOPE}" \
+      --expected-trust-digest "${TRUST_CONFIG_DIGEST}" 2>/dev/null)"; then
       SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
       SOURCE_CHECKPOINT_COUNT="$(printf '%s' "${SOURCE_CHECKPOINT_JSON}" | jq --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
         def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";

@@ -177,14 +177,15 @@ module HumanAttention
     raise Error, "PR head changed" unless detail["headRefOid"] == expected_head
 
     current = Array(detail["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
-    classify(labels: current, configured_labels: labels)
+    classify(labels: current, configured_labels: labels) unless state == "none"
     arguments = [github_cli, "pr", "edit", pr_number.to_s, "--repo", repo]
     labels.each do |semantic, label|
       desired = semantic == state
       arguments.concat(["--remove-label", label]) if !desired && label_present?(current, label)
       arguments.concat(["--add-label", label]) if desired && !label_present?(current, label)
     end
-    if arguments.length > 6
+    edit_attempted = arguments.length > 6
+    if edit_attempted
       _edit_stdout, edit_stderr, edit_status = Open3.capture3(*arguments)
       unless edit_status.success?
         reconcile_stdout, reconcile_stderr, reconcile_status = Open3.capture3(
@@ -210,7 +211,18 @@ module HumanAttention
     verify_stdout, verify_stderr, verify_status = Open3.capture3(
       github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels"
     )
-    raise Error, "cannot verify human-attention labels: #{verify_stderr.lines.first.to_s.strip}" unless verify_status.success?
+    unless verify_status.success?
+      if edit_attempted
+        clear_attention_state!(
+          github_cli:, repo:, pr_number:, labels:, current_labels: labels.values,
+          error_prefix: "cannot verify human-attention labels"
+        )
+        raise Error, "cannot verify human-attention labels; attention state cleared: " \
+                     "#{verify_stderr.lines.first.to_s.strip}"
+      end
+
+      raise Error, "cannot verify unchanged human-attention labels: #{verify_stderr.lines.first.to_s.strip}"
+    end
 
     verified = JSON.parse(verify_stdout)
     unchanged = verified["state"] == detail["state"] && verified["headRefOid"] == expected_head

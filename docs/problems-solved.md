@@ -1,7 +1,7 @@
 # Problems Agent Workflows Solves
 
-Agent Workflows gives engineering teams a shared operating model for Codex and
-Claude Code across many repositories. The Source Pack distributes reusable
+Agent Workflows gives engineering teams a shared operating model for Codex,
+Claude Code, and Cursor across many repositories. The Source Pack distributes reusable
 process, each repository keeps its own execution and policy seam, and an
 optional coordination layer makes concurrent work visible and recoverable.
 
@@ -27,15 +27,15 @@ Each developer installs it once per agent host, either with the host installer
 or through that host's native `scw` plugin and marketplace route. Consumer repos
 keep only the small seam that the shared workflows resolve at runtime.
 
-Codex and Claude Code are equal delivery targets for the same shared content:
+Codex, Claude Code, and Cursor are delivery targets for the same shared content:
 
-| Distribution layer | Codex | Claude Code |
-| --- | --- | --- |
-| Shared workflow source | The Source Pack's `skills/` and `workflows/` | The same `skills/` and `workflows/` |
-| Host installer | `bin/install-agent-workflows --host codex` | `bin/install-agent-workflows --host claude` |
-| Native plugin | `scw` through the Codex marketplace manifest | `scw` through the Claude marketplace manifest |
-| Repository contract | The repo-owned `.agents/` seam and `AGENTS.md` pointer | The same repo-owned `.agents/` seam and `AGENTS.md` pointer |
-| Status and upgrades | Shared helpers manage installer assets; Codex manages native-plugin updates | The same helpers manage installer assets; Claude Code manages native-plugin updates |
+| Distribution layer | Codex | Claude Code | Cursor |
+| --- | --- | --- | --- |
+| Shared workflow source | The Source Pack's `skills/` and `workflows/` | The same `skills/` and `workflows/` | The same `skills/` and `workflows/` |
+| Host installer | `bin/install-agent-workflows --host codex` | `bin/install-agent-workflows --host claude` | `bin/install-agent-workflows --host cursor` |
+| Native plugin | `scw` through the Codex marketplace manifest | `scw` through the Claude marketplace manifest | Local `scw` symlink at `~/.cursor/plugins/local/scw`; public marketplace listing later |
+| Repository contract | The repo-owned `.agents/` seam and `AGENTS.md` pointer | The same repo-owned `.agents/` seam and `AGENTS.md` pointer | The same repo-owned `.agents/` seam and `AGENTS.md` pointer |
+| Status and upgrades | Shared helpers manage installer assets; Codex manages native-plugin updates | The same helpers manage installer assets; Claude Code manages native-plugin updates | Shared helpers manage installer assets; Cursor plugin refresh is interactive, so use `upgrade-agent-workflows --host cursor` |
 
 ShakaCode maintainers can roll seam changes across the registered consumer fleet
 with one pull request per repository. The
@@ -119,8 +119,8 @@ time can declare coordination unavailable and still use the process skills. See
 
 Agent Workflows currently provides:
 
-- one portable Source Pack with equal Codex and Claude Code skill text;
-- host installers and native `scw` plugin manifests for both hosts;
+- one portable Source Pack with identical Codex, Claude, and Cursor skill text;
+- host installers and native `scw` plugin manifests for Codex and Claude, plus a Cursor installer and local plugin path;
 - repo-owned seams plus initialization and validation tooling;
 - installed-pack status, upgrade, rollback, and trust-audit helpers;
 - read-only, manifest-driven drift detection for repo-pinned shared copies;
@@ -145,7 +145,7 @@ control plane.
 
 1. Choose the shared workflows that belong in the Source Pack and keep domain
    workflows in their owning repos.
-2. Install one delivery route on each Codex and Claude Code host that needs the
+2. Install one delivery route on each Codex, Claude Code, or Cursor host that needs the
    pack.
 3. Initialize and review each consumer repo's workflow seam.
 4. Validate a canary repo, then use ShakaCode's maintainer sync—or your

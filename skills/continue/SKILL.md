@@ -98,3 +98,8 @@ for what to continue.
 - End with a `$status` report when that companion skill is installed; otherwise use the same four
   sections directly: Done, In progress, Blocked / needs input, and Next. Treat this closing summary
   as a report of the resumed work within the authorized outcome from step 5.
+
+<!-- host-branch: cursor-only start -->
+On Cursor, resume this same chat. Do not use `claude --resume`. Cursor `/loop`
+is a model-polling fallback, not an out-of-context watcher.
+<!-- host-branch: cursor-only end -->

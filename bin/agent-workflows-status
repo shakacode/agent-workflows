@@ -25,45 +25,56 @@ module AgentWorkflowsStatus
       ENV.fetch("CODEX_HOME", File.join(Dir.home, ".codex"))
     when "claude"
       ENV.fetch("CLAUDE_HOME", File.join(Dir.home, ".claude"))
+    when "cursor"
+      ENV.fetch("CURSOR_HOME", File.join(Dir.home, ".cursor"))
     else
       raise ArgumentError, "unsupported host: #{host}"
     end
   end
 
   def resolve_auto_target
-    codex_home = ENV.fetch("CODEX_HOME", File.join(Dir.home, ".codex"))
-    claude_home = ENV.fetch("CLAUDE_HOME", File.join(Dir.home, ".claude"))
+    homes = {
+      "codex" => ENV.fetch("CODEX_HOME", File.join(Dir.home, ".codex")),
+      "claude" => ENV.fetch("CLAUDE_HOME", File.join(Dir.home, ".claude")),
+      "cursor" => ENV.fetch("CURSOR_HOME", File.join(Dir.home, ".cursor"))
+    }
     candidates = []
-    candidates << ["codex", codex_home] if ENV.key?("CODEX_HOME") || Dir.directory?(codex_home)
-    candidates << ["claude", claude_home] if ENV.key?("CLAUDE_HOME") || Dir.directory?(claude_home)
+    candidates << ["codex", homes.fetch("codex")] if ENV.key?("CODEX_HOME") || Dir.directory?(homes.fetch("codex"))
+    candidates << ["claude", homes.fetch("claude")] if ENV.key?("CLAUDE_HOME") || Dir.directory?(homes.fetch("claude"))
+    candidates << ["cursor", homes.fetch("cursor")] if ENV.key?("CURSOR_HOME") || Dir.directory?(homes.fetch("cursor"))
 
     case candidates.length
     when 0
-      ["codex", codex_home]
+      ["codex", homes.fetch("codex")]
     when 1
       candidates.first
     else
-      raise ArgumentError, "auto host detection found both Codex and Claude homes"
+      raise ArgumentError, "auto host detection found multiple agent homes"
     end
   end
 
   def resolve_host_and_target(host, target)
     if target
       expanded = File.expand_path(target)
-      if host == "auto"
-        codex_home = File.expand_path(default_target_for_host("codex"))
-        claude_home = File.expand_path(default_target_for_host("claude"))
-        codex_marker = expanded == codex_home || File.file?(File.join(expanded, "config.toml"))
-        claude_marker = expanded == claude_home || File.file?(File.join(expanded, "settings.json")) ||
-                        File.file?(File.join(expanded, "plugins/installed_plugins.json"))
-        raise ArgumentError, "explicit target has both Codex and Claude markers; pass --host" if codex_marker && claude_marker
+      raise ArgumentError, "refusing to inspect Cursor builtins directory skills-cursor" if File.basename(expanded) == "skills-cursor"
 
-        resolved_host = if claude_marker
-                          "claude"
-                        else
-                          "codex"
-                        end
-        return [resolved_host, expanded]
+      if host == "auto"
+        homes = {
+          "codex" => File.expand_path(default_target_for_host("codex")),
+          "claude" => File.expand_path(default_target_for_host("claude")),
+          "cursor" => File.expand_path(default_target_for_host("cursor"))
+        }
+        markers = {
+          "codex" => expanded == homes.fetch("codex") || File.file?(File.join(expanded, "config.toml")),
+          "claude" => expanded == homes.fetch("claude") || File.file?(File.join(expanded, "settings.json")) ||
+                      File.file?(File.join(expanded, "plugins/installed_plugins.json")),
+          "cursor" => expanded == homes.fetch("cursor") || File.file?(File.join(expanded, "cli-config.json")) ||
+                      File.directory?(File.join(expanded, "skills-cursor"))
+        }
+        matched = markers.filter_map { |name, present| name if present }
+        raise ArgumentError, "explicit target has markers for more than one host; pass --host" if matched.length > 1
+
+        return [matched.first || "codex", expanded]
       end
       return [host, expanded]
     end
@@ -316,10 +327,10 @@ end
 if $PROGRAM_NAME == __FILE__
   options = { host: "codex", target: nil, source: nil, delivery_mode: nil, fetch: false, json: false }
   parser = OptionParser.new do |opts|
-    opts.banner = "Usage: agent-workflows-status [--host codex|claude|auto] [--target DIR] [--source DIR] [--delivery-mode flat|plugin-companion] [--fetch] [--json]"
+    opts.banner = "Usage: agent-workflows-status [--host codex|claude|cursor|auto] [--target DIR] [--source DIR] [--delivery-mode flat|plugin-companion] [--fetch] [--json]"
     opts.on(
       "--host HOST",
-      "Agent host: codex, claude, or auto (unmarked explicit targets default to codex)"
+      "Agent host: codex, claude, cursor, or auto (unmarked explicit targets default to codex)"
     ) { |value| options[:host] = value }
     opts.on("--target DIR", "Installed agent home to inspect") { |value| options[:target] = value }
     opts.on("--source DIR", "Source shakacode/agent-workflows clone") { |value| options[:source] = value }
@@ -335,8 +346,8 @@ if $PROGRAM_NAME == __FILE__
   end
   parser.parse!
 
-  unless %w[codex claude auto].include?(options.fetch(:host))
-    warn "--host must be codex, claude, or auto, got: #{options.fetch(:host)}"
+  unless %w[codex claude cursor auto].include?(options.fetch(:host))
+    warn "--host must be codex, claude, cursor, or auto, got: #{options.fetch(:host)}"
     exit AgentWorkflowsStatus::STATUS_EXIT.fetch("CHECK_FAILED")
   end
   if options[:delivery_mode] && !%w[flat plugin-companion].include?(options[:delivery_mode])
