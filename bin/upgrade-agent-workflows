@@ -155,6 +155,15 @@ update_source_clone() {
   fi
 }
 
+path_is_within_snapshot_symlink_root() {
+  local path="$1"
+  local root
+  for root in "${snapshot_symlink_roots[@]}"; do
+    [[ "$path" = "$root" || "$path" = "$root/"* ]] && return 0
+  done
+  return 1
+}
+
 backup_target() {
   backup_dir="$(mktemp -d)"
   backup_target_dir="$backup_dir/target"
@@ -169,7 +178,7 @@ backup_target() {
     # under worktrees/, tmp/, and sessions/. Snapshot only paths the installer
     # can replace so rollback remains bounded by the pack installation.
     ruby -rjson -e '
-      target, source, host, delivery_mode, metadata_path = ARGV
+      target, source, host, _delivery_mode, metadata_path = ARGV
       managed = [
         ".agent-workflows-install.json",
         "LICENSE",
@@ -224,7 +233,7 @@ backup_target() {
           managed << "#{prefix}#{name}"
         end
       end
-      if delivery_mode == "flat"
+      if metadata["delivery_mode"] == "flat"
         Dir.glob(File.join(source, "skills", "*"), File::FNM_DOTMATCH).each do |path|
           managed << "skills/#{File.basename(path) }" if File.directory?(path) && !File.symlink?(path)
         end
@@ -235,23 +244,19 @@ backup_target() {
       end
     ' "$target" "$source" "$host" "$delivery_mode" "$metadata_path" > "$backup_manifest"
     : > "$backup_symlink_manifest"
+    snapshot_symlink_roots=()
     for path in "${managed_snapshot_roots[@]}"; do
+      path_is_within_snapshot_symlink_root "$path" && continue
       if [[ -L "$target/$path" ]]; then
         printf '%s\0' "$path" >> "$backup_symlink_manifest"
         mkdir -p "$backup_target_dir/$(dirname "$path")"
         cp -a "$target/$path" "$backup_target_dir/$path"
+        snapshot_symlink_roots+=("$path")
       fi
     done
     : > "$backup_existing_manifest"
     while IFS= read -r -d '' path; do
-      skip_path=false
-      for root in "${managed_snapshot_roots[@]}"; do
-        if [[ "$path" == "$root/"* && -L "$target/$root" ]]; then
-          skip_path=true
-          break
-        fi
-      done
-      [[ "$skip_path" = "true" ]] && continue
+      path_is_within_snapshot_symlink_root "$path" && continue
       if [[ -e "$target/$path" || -L "$target/$path" ]]; then
         printf '%s\0' "$path" >> "$backup_existing_manifest"
       fi
@@ -273,14 +278,7 @@ restore_target() {
       cp -a "$backup_target_dir/$path" "$target/$path"
     done < "$backup_symlink_manifest"
     while IFS= read -r -d '' path; do
-      skip_path=false
-      for root in "${managed_snapshot_roots[@]}"; do
-        if [[ "$path" == "$root/"* && -L "$backup_target_dir/$root" ]]; then
-          skip_path=true
-          break
-        fi
-      done
-      [[ "$skip_path" = "true" ]] && continue
+      path_is_within_snapshot_symlink_root "$path" && continue
       if [[ -d "$backup_target_dir/$path" && ! -L "$backup_target_dir/$path" ]]; then
         mkdir -p "$target/$path"
         rsync -a --delete "$backup_target_dir/$path"/ "$target/$path"/
