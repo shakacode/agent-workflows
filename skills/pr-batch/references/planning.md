@@ -69,8 +69,16 @@ Before implementation or worker launch, produce:
     timeout or whole-group `TERM` then `KILL` records best-effort
     field-granular `UNKNOWN`, names reconciliation, and does not block worker
     launch.
+13. For an opt-in `batch-token-budget v1`, the exact aggregate, coordinator,
+    and all-lane limits; warning/approval/hard thresholds; telemetry freshness;
+    delegation threshold; a nonempty immutable allowlist of unique
+    `rsa-pss-sha256` verifier ids and canonical RSA public keys of at least 2048
+    bits with unique canonical key fingerprints; a separately persisted trusted
+    plan path plus expected plan id/digest; durable state path; current per-scope
+    totals; and latest receipt cutoff. Any partial or `UNKNOWN` required value
+    blocks new expensive work, not read-only discovery or checkpointing.
 <!-- host-branch: codex-only start -->
-13. A final `/goal` prompt when the user asked for Goal mode.
+14. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
 <!-- host-branch: cursor-only start -->
 13. On Cursor, paste `/pr-batch` or pin as a Custom Mode. Sequential Task

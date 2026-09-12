@@ -352,5 +352,26 @@
      evidence-only, unresolved identities fail closed as `UNKNOWN`, and control
      transfer requires trusted out-of-band human authority plus exact receiver
      membership.
+   - When token-budget enforcement is requested, add one complete opt-in
+     `batch-token-budget v1` at `plan.token_budget`: the exact plan/batch id;
+     positive raw-token limits for aggregate, coordinator, and every planned
+     lane id; warning/approval/hard percentages; telemetry freshness; and the
+     delegation approval threshold; and an absolute coordinator-owned
+     `state_path`; plus a nonempty exact allowlist of unique trusted verifier
+     ids with canonical RSA public keys of at least 2048 bits and algorithm
+     `rsa-pss-sha256`, rejecting duplicate canonical key fingerprints across
+     ids. Persist that exact budget object separately and add
+     `plan.token_budget_anchor` with its absolute coordinator-selected path,
+     matching plan id, and canonical `sha256:` digest. Keep private keys outside
+     plans/state and resolve consumer-specific custody/signing through
+     `AGENTS.md`. Do not invent universal absolute limits. Reserve `aggregate`
+     and `coordinator` for the parent scopes; they cannot be lane ids. Require
+     trusted-plan and mutable-state paths to be distinct canonical artifacts;
+     equal, resolvable aliases, and ancestor/file collisions fail preflight.
+     Partial, inline, stale, malformed, duplicate-key, or `UNKNOWN` budget
+     metadata fails the batch-plan preflight. A plan with no budget metadata
+     remains legacy compatible. Record the coordinator-owned durable runtime
+     state path and exact trusted-plan invocation binding in the Batch Plan and
+     goal prompt. See [Hierarchical Token Budgets](../../../docs/token-budgets.md).
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.

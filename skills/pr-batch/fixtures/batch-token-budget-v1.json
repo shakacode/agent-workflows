@@ -1,0 +1,26 @@
+{
+  "type": "batch-token-budget",
+  "version": 1,
+  "batch_id": "batch-399",
+  "state_path": "/var/tmp/batch-399-token-budget.json",
+  "scopes": {
+    "aggregate": { "limit_tokens": 1000 },
+    "coordinator": { "limit_tokens": 300 },
+    "lanes": {
+      "lane-a": { "limit_tokens": 600 },
+      "lane-b": { "limit_tokens": 500 }
+    }
+  },
+  "thresholds": {
+    "warning_percent": 50,
+    "approval_percent": 80,
+    "hard_percent": 100
+  },
+  "telemetry": { "max_age_seconds": 900 },
+  "delegation": { "approval_threshold_tokens": 250 },
+  "trusted_verifiers": [{
+    "id": "coordinator-399",
+    "algorithm": "rsa-pss-sha256",
+    "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAywSNffEzyX/XGsOK3Lc+\ngPrwcg9avOQ/yWW3ei5S3hZShQpomZY5A64SYIrTftd3sRihM4VMHfhTHmzNp+bg\nISsaS3x+9Mk9To2zN1Iip0vExyrrElnKb4ebtA9lIfaLdK02OFuwQp2ccEVZVrAd\nDH5RnbbCiUZn2zHmvjzp6ur1/q+5tW7PhwyZH41EKuGPZTtqi5Dg7Fnai0al7X9Y\n+AsyrtLDeM/wAB3kCcsCOo8SDcpnpHS1gVnEsrj76XRmkcVMGnYNcfb13Q9f1Wm6\nMkysVLphFhVs5AoTQJa5LLlCjRsmGFFPcvMJm+HNyiL4s73B5aI6rt06SVqXIQji\nJwIDAQAB\n-----END PUBLIC KEY-----\n"
+  }]
+}

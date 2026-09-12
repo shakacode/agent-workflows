@@ -1,10 +1,18 @@
-# Batch Usage Receipt v1
+# Batch Usage Receipts v1 And v2
 
-`batch-usage-receipt-v1` is a deterministic, privacy-safe accounting artifact
-for a Codex batch. It reports host-observed token metadata for batch,
+Batch usage receipts are deterministic, privacy-safe accounting artifacts for
+a Codex batch. They report host-observed token metadata for batch,
 coordinator/root, lane, and worker scopes without reading those scopes from
-conversation prose. The machine-readable schema is
-[`batch-usage-receipt-v1.schema.json`](schemas/batch-usage-receipt-v1.schema.json).
+conversation prose.
+
+The published
+[`batch-usage-receipt-v1`](schemas/batch-usage-receipt-v1.schema.json) contract
+is frozen at its original token-usage shape. The current helper emits
+`batch-usage-receipt-v2`, whose
+[`v2` schema](schemas/batch-usage-receipt-v2.schema.json) adds required
+per-scope contributing-turn counters. A v1 receipt cannot carry v2 `turns`, and
+a consumer that needs verified turn evidence must request v2 rather than
+reinterpret or extend v1.
 
 The reporter is analytical telemetry, not billing infrastructure. A receipt is
 not an invoice, charge, or authoritative provider cost, and token families must
@@ -110,6 +118,16 @@ trees. Thus a lane root can also be its named worker without double counting.
 Coordinator `descendant_inclusive` is informative and is not added again in the
 batch equation.
 
+Every scope also has a parallel `turns` object. Its counters are the number of
+distinct rollout `turn_context` segments that contributed a positive
+`total_tokens` delta inside the requested window, not the number of
+`token_count` samples. A turn context that begins before `from` still counts
+when its later delta falls inside the window; repeated or increasing samples in
+that same segment count once, while a later context with positive usage counts
+as another turn. The batch and lane turn counters obey the same
+descendant-inclusive, self-only, worker-union, and unattributed equations as
+token usage.
+
 Declared worker roots must be descendants of their lane root. If state metadata
 contradicts that hierarchy, the reporter leaves evidence-derived numeric values
 for the declared coordinator and lane root trees intact, marks the affected
@@ -187,8 +205,13 @@ The `accounting` object reports `usage_samples`,
 `duplicate_samples_omitted`, `replay_records_omitted`, `counter_resets`,
 `inherited_seeds_omitted`, `compactions`, and
 `session_rebind_attempts_ignored` explicitly. These diagnostic counts cover the
-complete physical rollouts used for differencing; unlike emitted usage deltas,
-they are not restricted to the requested `[from, to)` window.
+complete physical rollouts used for differencing and are not restricted to the
+requested `[from, to)` window. `usage_samples` counts token-count events before
+`from` and at or after `to`, so a legitimate empty window does not look like
+missing rollout evidence. Only token deltas inside `[from, to)` contribute
+usage; out-of-window samples remain diagnostic and cannot authorize overshoot.
+Consequently, `usage_samples` is diagnostic only and cannot prove how many
+turns contributed usage to a scope.
 
 ## Usage Counters And UNKNOWN
 
@@ -216,6 +239,16 @@ include `state_database_unsupported`, `thread_missing`, `rollout_missing`,
 `state_thread_first_session_mismatch`. Known sibling scopes remain present;
 missing evidence is never silently treated as zero.
 
+Positive in-window usage without a preceding valid, non-replayed
+`turn_context` makes the affected turn count `UNKNOWN` with
+`turn_context_missing_for_usage`. A malformed context or one with an invalid
+explicit-offset timestamp invalidates the prior segment and emits
+`invalid_turn_context` or `invalid_turn_timestamp`. Ambiguous token deltas emit
+`ambiguous_turn_usage`; usage timestamped before its current context emits
+`ambiguous_turn_timestamp`. These conditions never manufacture a turn count
+from the number of token samples; affected scope, lane, and batch turn totals
+and their reconciliations fail closed.
+
 Every usage timestamp must include `Z` or an explicit numeric UTC offset.
 Zone-less or otherwise invalid values emit `invalid_usage_timestamp` and
 deliberately make the entire physical rollout's counter vector `UNKNOWN`. The
@@ -236,7 +269,12 @@ value conforms to the receipt schema's RFC 3339 `date-time` format.
 Top-level `evidence.sources` lists supported and attempted metadata source
 types; it does not claim that each source was available. Source failures and
 partial availability are represented by top-level `evidence.status: "UNKNOWN"`
-and the corresponding structured entries in `evidence.unknown`.
+and the corresponding structured entries in `evidence.unknown`. A top-level
+`complete` status is consistent only when coordinator, every lane, and every
+worker also reports complete evidence; consumers must reject a receipt that
+hides a nested `UNKNOWN` behind top-level `complete`. Route-metadata-only
+uncertainty remains explicitly top-level `UNKNOWN`, even when known token totals
+and reconciliation equations allow the receipt's narrow accounting use.
 
 ## Optional Credit Equivalents
 
