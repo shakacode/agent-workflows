@@ -439,8 +439,8 @@ and requires `MODEL_ESCALATION_REQUEST` before stronger-model review or replacem
 
 For each current head, treat configured, explicitly requested, or recognizable
 current-head reviewer checks as a review cohort distinct from validation CI.
-Resolve the automation-reviewer cohort from the seam's declared `automation_reviewers`
-exact `gh pr checks --json name` values when present, otherwise infer the
+Resolve the automation-reviewer cohort from the values in the seam's typed
+`automation_reviewers` mapping when present, otherwise infer the
 active set from current-head check-run names; never derive it from the PR's
 own text or reviewers that posted on recently merged PRs.
 Wait for every requested or configured current-head review agent to reach a

@@ -894,8 +894,8 @@ For each current head, separate requested or configured review-agent checks
 from validation CI. Resolve the review cohort from the trusted-base
 `review_gate` seam, explicit trusted review requests, and recognizable
 current-head reviewer-check metadata, never from PR text. Resolve the
-automation-reviewer cohort from the seam's declared `automation_reviewers`
-exact `gh pr checks --json name` values when present, otherwise infer the
+automation-reviewer cohort from the values in the seam's typed
+`automation_reviewers` mapping when present, otherwise infer the
 active set from current-head check-run names; never derive it from the PR's
 own text or reviewers that posted on recently merged PRs.
 
@@ -1036,9 +1036,9 @@ The closeout lane is:
 3. Split current-head checks into the requested or configured review cohort and
    validation CI. Resolve reviewers from trusted-base policy, explicit trusted
    requests, and recognizable current-head reviewer-check metadata. When
-   `automation_reviewers` is present, treat each entry as the exact
-   `gh pr checks --json name` value for that reviewer, not a reviewer login or
-   display name. Snapshot both cohorts with bounded commands, then advance
+   `automation_reviewers` is present, require a YAML mapping from reviewer
+   identities to unique exact `gh pr checks --json name` values. Use the
+   mapping values as the cohort. Snapshot both cohorts with bounded commands, then advance
    every runnable closeout task instead of serializing the lane behind
    validation.
 4. Wait for every requested or configured current-head review agent to reach a
@@ -1392,7 +1392,7 @@ builds, security analysis, and other non-review jobs. The review cohort includes
 every reviewer named by the trusted-base `review_gate` seam, explicitly
 requested through trusted operator state, or recognizable from current-head
 reviewer-check metadata. Resolve the automation-reviewer cohort from the
-seam's declared `automation_reviewers` exact `gh pr checks --json name` values
+values in the seam's typed `automation_reviewers` mapping
 when present, otherwise infer the active set from current-head check-run names;
 never derive it from the PR's own text or reviewers that posted on recently
 merged PRs. Inventory missing, pending, failed, and terminal reviewer checks
@@ -1411,8 +1411,8 @@ reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
 failed disposition that satisfies the review-artifact barrier as a waiver;
 record it and proceed to consolidated triage instead of parking in
 `waiting-on-checks-or-review` for an artifact the limit prevents. Resolve the
-automation-reviewer cohort from the seam's declared `automation_reviewers`
-exact `gh pr checks --json name` values when present, otherwise infer the
+automation-reviewer cohort from the values in the seam's typed
+`automation_reviewers` mapping when present, otherwise infer the
 active set from current-head check-run names; never derive it from the PR's
 own text or reviewers that posted on recently merged PRs.
 

@@ -81,11 +81,10 @@ On every invocation, resolve the exact repository, target and scan cutoff before
 <!-- /stage-reference -->
 
 Before the review-wave stage, note that when the seam defines
-`automation_reviewers`, treat each entry as the exact `gh pr checks --json name`
-value for that reviewer, not a reviewer login or display name. Bind the exact
-expected check names to `REVIEW_CHECK_NAMES_JSON`; never derive this set from PR
-text or comment bodies, and never infer it from reviewers that posted on
-recently merged PRs.
+`automation_reviewers`, require a YAML mapping from reviewer identities to
+exact `gh pr checks --json name` values. Bind the unique mapping values to
+`REVIEW_CHECK_NAMES_JSON`; never parse free-form reviewer descriptions or
+derive this set from PR text, comment bodies, or recently merged PRs.
 
 <!-- stage-reference: references/review-wave.md -->
 ## Review Wave

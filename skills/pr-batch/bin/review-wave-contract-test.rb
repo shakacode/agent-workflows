@@ -6,6 +6,7 @@ require_relative "../lib/skill_stage_source"
 require "minitest/autorun"
 require "json"
 require "open3"
+require "yaml"
 
 ROOT = File.expand_path("../../..", __dir__)
 
@@ -25,11 +26,6 @@ USAGE_LIMIT_WAIVER = "A usage-limit or capacity failure — CodeRabbit's `too ma
                      "quota exhaustion — is an explicit terminal failed disposition that satisfies the review-artifact " \
                      "barrier as a waiver; record it and proceed to consolidated triage instead of parking in " \
                      "`waiting-on-checks-or-review` for an artifact the limit prevents."
-COHORT_DISCOVERY = "Resolve the automation-reviewer cohort from the seam's declared `automation_reviewers` exact " \
-                   "`gh pr checks --json name` values when present, otherwise infer the active set from current-head " \
-                   "check-run names; never derive it from the PR's own text or reviewers that posted on recently " \
-                   "merged PRs."
-
 class ReviewWaveContractTest < Minitest::Test
   def setup
     @workflow = read("workflows/pr-processing.md")
@@ -91,16 +87,45 @@ class ReviewWaveContractTest < Minitest::Test
   end
 
   def test_usage_limit_and_observability_invariants_are_documented
-    [REVIEWER_OBSERVABILITY, USAGE_LIMIT_WAIVER, COHORT_DISCOVERY].each do |rule|
-      assert_rule @integration_closeout, rule
+    [@integration_closeout, @docs].each do |text|
+      [REVIEWER_OBSERVABILITY, USAGE_LIMIT_WAIVER].each do |rule|
+        assert_rule text, rule
+      end
     end
-    [REVIEWER_OBSERVABILITY, USAGE_LIMIT_WAIVER].each do |rule|
-      assert_rule @docs, rule
-    end
-    assert_rule @pr_batch, COHORT_DISCOVERY
-    assert_rule @docs, COHORT_DISCOVERY
     assert_includes @pr_batch,
                     "[Review-Wave And Validation Cohorts](../../workflows/pr-batch-integration-closeout.md#review-wave-and-validation-cohorts)"
+  end
+
+  def test_automation_reviewer_seams_are_typed_mappings_of_exact_check_names
+    source_reviewers = automation_reviewers(".agents/agent-workflow.yml")
+    fixture_reviewers = automation_reviewers("test/fixtures/consumer-repo/.agents/agent-workflow.yml")
+
+    [source_reviewers, fixture_reviewers].each do |reviewers|
+      assert_instance_of Hash, reviewers
+      assert valid_automation_reviewers?(reviewers)
+    end
+    assert_equal %w[claude-review CodeRabbit], source_reviewers.values
+    assert_equal source_reviewers.values, fixture_reviewers.values
+  end
+
+  def test_automation_reviewer_schema_rejects_ambiguous_shapes
+    invalid_values = [
+      "claude-review (check: claude-review)",
+      ["claude-review"],
+      { "" => "claude-review" },
+      { "claude-review" => "" },
+      { "first" => "shared-check", "second" => "shared-check" }
+    ]
+
+    invalid_values.each { |value| refute valid_automation_reviewers?(value), value.inspect }
+  end
+
+  def test_portable_example_keeps_automation_reviewers_opt_in
+    example = read("examples/agent-workflow.yml")
+    parsed = YAML.safe_load(example, aliases: false) || {}
+
+    refute parsed.key?("automation_reviewers")
+    assert_match(/^# automation_reviewers:\n(?:#   \S+: \S+\n)+/, example)
   end
 
   def test_continue_replans_serialized_handoffs_before_waiting
@@ -149,6 +174,22 @@ class ReviewWaveContractTest < Minitest::Test
     pending_cases.each do |name, checks, expected_count|
       assert_equal expected_count, pending_count(checks, expected_reviewers), name
     end
+  end
+
+  def automation_reviewers(path)
+    policy = YAML.safe_load(read(path), aliases: false) || {}
+    policy.fetch("automation_reviewers")
+  end
+
+  def non_empty_string?(value)
+    value.is_a?(String) && !value.empty?
+  end
+
+  def valid_automation_reviewers?(value)
+    value.is_a?(Hash) &&
+      !value.empty? &&
+      value.all? { |identity, check_name| non_empty_string?(identity) && non_empty_string?(check_name) } &&
+      value.values.uniq == value.values
   end
 
   def test_pending_fixtures_reject_inverted_and_missing_name_mutants

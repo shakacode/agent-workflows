@@ -238,11 +238,14 @@ libraries provides no guarantee of token or cost savings, quality, or security.
    repository key absent until the project chooses to enable it.
 
    Repositories that automate review-cohort discovery can add the optional
-   `automation_reviewers` key. Each entry should map a reviewer identity to the
-   exact GitHub check-run name returned by `gh pr checks --json name`; for
-   example, `claude-review (check: claude-review; GitHub Action, in-flight and
-   terminal state observable via the checks API)` and `coderabbitai (check:
-   CodeRabbit; advisory, may fail on rate limits)`.
+   `automation_reviewers` mapping. Each key is a reviewer identity. Each value
+   is the exact GitHub check-run name returned by `gh pr checks --json name`:
+
+   ```yaml
+   automation_reviewers:
+     claude-review: claude-review
+     coderabbitai: CodeRabbit
+   ```
 
    Repositories that use repository-based GitHub Actions and reusable workflows
    must also add a closed, exact `trusted_actions` allowlist. Its entries are

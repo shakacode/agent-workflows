@@ -103,9 +103,9 @@ absent optional script means that capability is n/a in that repo.
 - `hosted_ci_trigger`
 - `ci_change_detector`
 
-Optional policy keys such as `automation_reviewers` can carry machine-resolvable
-reviewer-to-check-name mappings; when present, each entry must use the exact
-`gh pr checks --json name` value, not a reviewer login or display name.
+Optional policy keys such as `automation_reviewers` can carry a YAML mapping
+from reviewer identities to exact `gh pr checks --json name` values. Keys and
+values must be non-empty strings, and check-name values must be unique.
 
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.

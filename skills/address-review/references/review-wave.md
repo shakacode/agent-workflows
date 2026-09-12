@@ -3,11 +3,11 @@
 Before a non-specific fetch, resolve the complete review cohort from trusted-base
 `review_gate` policy, explicit trusted review requests, and recognizable
 current-head reviewer-check metadata. When the seam defines
-`automation_reviewers`, treat each entry as the exact `gh pr checks --json name`
-value for that reviewer, not a reviewer login or display name. Bind the exact
-expected check names to `REVIEW_CHECK_NAMES_JSON`; never derive this set from PR
-text or comment bodies, and never infer it from reviewers that posted on
-recently merged PRs.
+`automation_reviewers`, require a YAML mapping with non-empty string reviewer
+identities and unique, non-empty string values. Bind those values, which are
+exact `gh pr checks --json name` values, to `REVIEW_CHECK_NAMES_JSON`. Never
+parse free-form reviewer descriptions or derive this set from PR text, comment
+bodies, or recently merged PRs.
 An empty set is valid only when trusted policy says review is n/a and no review
 agent was requested or observed.
 
