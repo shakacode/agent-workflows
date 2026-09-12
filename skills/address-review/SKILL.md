@@ -80,11 +80,12 @@ For trusted coordinated autofix or replacement carryover, load before selecting 
 On every invocation, resolve the exact repository, target and scan cutoff before fetching. Read [Intake](references/intake.md) for this stage.
 <!-- /stage-reference -->
 
-Before the review-wave stage, note that when the seam defines
-`automation_reviewers`, require a YAML mapping from reviewer identities to
-exact `gh pr checks --json name` values. Bind the unique mapping values to
-`REVIEW_CHECK_NAMES_JSON`; never parse free-form reviewer descriptions or
-derive this set from PR text, comment bodies, or recently merged PRs.
+Before the review-wave stage, require `automation_reviewers` whenever trusted
+repository policy expects an automated reviewer; its absence is a configuration
+error, not an empty settled wave. Require a YAML mapping from reviewer identities
+to exact `gh pr checks --json name` values. Bind the unique mapping values to
+`REVIEW_CHECK_NAMES_JSON`; never parse free-form reviewer descriptions or derive
+this set from PR text, comment bodies, or recently merged PRs.
 
 <!-- stage-reference: references/review-wave.md -->
 ## Review Wave

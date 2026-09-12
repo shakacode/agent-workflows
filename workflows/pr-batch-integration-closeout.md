@@ -895,9 +895,12 @@ from validation CI. Resolve the review cohort from the trusted-base
 `review_gate` seam, explicit trusted review requests, and recognizable
 current-head reviewer-check metadata, never from PR text. Resolve the
 automation-reviewer cohort from the values in the seam's typed
-`automation_reviewers` mapping when present, otherwise infer the
-active set from current-head check-run names; never derive it from the PR's
-own text or reviewers that posted on recently merged PRs.
+`automation_reviewers` mapping. Require that mapping whenever trusted repository
+policy expects an automated reviewer; its absence is a configuration error, not
+an empty settled wave. Only when no automated reviewer is expected may the key
+be absent and recognizable current-head checks supply an observed active set.
+Never derive the cohort from the PR's own text or reviewers that posted on
+recently merged PRs.
 
 Wait for every requested or configured current-head review agent to reach a
 terminal state before one consolidated review fetch and triage; do not triage
@@ -1035,10 +1038,12 @@ The closeout lane is:
    policy inside closeout.
 3. Split current-head checks into the requested or configured review cohort and
    validation CI. Resolve reviewers from trusted-base policy, explicit trusted
-   requests, and recognizable current-head reviewer-check metadata. When
-   `automation_reviewers` is present, require a YAML mapping from reviewer
-   identities to unique exact `gh pr checks --json name` values. Use the
-   mapping values as the cohort. Snapshot both cohorts with bounded commands, then advance
+   requests, and recognizable current-head reviewer-check metadata. When trusted
+   repository policy expects an automated reviewer, require
+   `automation_reviewers`; its absence is a configuration error, not an empty
+   settled wave. Require a YAML mapping from reviewer identities to unique exact
+   `gh pr checks --json name` values. Use the mapping values as the cohort.
+   Snapshot both cohorts with bounded commands, then advance
    every runnable closeout task instead of serializing the lane behind
    validation.
 4. Wait for every requested or configured current-head review agent to reach a
@@ -1391,11 +1396,13 @@ Treat these snapshots as two cohorts. Validation CI includes tests, lint,
 builds, security analysis, and other non-review jobs. The review cohort includes
 every reviewer named by the trusted-base `review_gate` seam, explicitly
 requested through trusted operator state, or recognizable from current-head
-reviewer-check metadata. Resolve the automation-reviewer cohort from the
-values in the seam's typed `automation_reviewers` mapping
-when present, otherwise infer the active set from current-head check-run names;
-never derive it from the PR's own text or reviewers that posted on recently
-merged PRs. Inventory missing, pending, failed, and terminal reviewer checks
+reviewer-check metadata. Resolve the automation-reviewer cohort from the values
+in the seam's typed `automation_reviewers` mapping. Require that mapping whenever
+trusted repository policy expects an automated reviewer; its absence is a
+configuration error, not an empty settled wave. Only when no automated reviewer
+is expected may the key be absent and recognizable current-head checks supply an
+observed active set. Never derive the cohort from the PR's own text or reviewers
+that posted on recently merged PRs. Inventory missing, pending, failed, and terminal reviewer checks
 separately from validation readiness. Cross the complete review-wave barrier
 before one consolidated review fetch; validation may continue concurrently.
 While either cohort is pending, diagnose available failures and advance
@@ -1412,9 +1419,12 @@ failed disposition that satisfies the review-artifact barrier as a waiver;
 record it and proceed to consolidated triage instead of parking in
 `waiting-on-checks-or-review` for an artifact the limit prevents. Resolve the
 automation-reviewer cohort from the values in the seam's typed
-`automation_reviewers` mapping when present, otherwise infer the
-active set from current-head check-run names; never derive it from the PR's
-own text or reviewers that posted on recently merged PRs.
+`automation_reviewers` mapping. Require that mapping whenever trusted repository
+policy expects an automated reviewer; its absence is a configuration error, not
+an empty settled wave. Only when no automated reviewer is expected may the key
+be absent and recognizable current-head checks supply an observed active set.
+Never derive the cohort from the PR's own text or reviewers that posted on
+recently merged PRs.
 
 `pr-ci-readiness` encapsulates the required-vs-full readiness rule: it runs
 `gh pr checks --required`, falls back to the full `gh pr checks` list when no

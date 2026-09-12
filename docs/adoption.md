@@ -237,9 +237,12 @@ libraries provides no guarantee of token or cost savings, quality, or security.
    repository guide or personal fallback. The initializer leaves the optional
    repository key absent until the project chooses to enable it.
 
-   Repositories that automate review-cohort discovery can add the optional
-   `automation_reviewers` mapping. Each key is a reviewer identity. Each value
-   is the exact GitHub check-run name returned by `gh pr checks --json name`:
+   Repositories that expect automated reviewers must add the
+   `automation_reviewers` mapping and describe the review requirement in
+   `review_gate`; do not retain `review_gate: "n/a"`. The mapping is optional
+   only when no automated reviewer is expected. Each key is a reviewer identity.
+   Each value is the exact GitHub check-run name returned by
+   `gh pr checks --json name`:
 
    ```yaml
    automation_reviewers:

@@ -2,12 +2,13 @@
 
 Before a non-specific fetch, resolve the complete review cohort from trusted-base
 `review_gate` policy, explicit trusted review requests, and recognizable
-current-head reviewer-check metadata. When the seam defines
-`automation_reviewers`, require a YAML mapping with non-empty string reviewer
-identities and unique, non-empty string values. Bind those values, which are
-exact `gh pr checks --json name` values, to `REVIEW_CHECK_NAMES_JSON`. Never
-parse free-form reviewer descriptions or derive this set from PR text, comment
-bodies, or recently merged PRs.
+current-head reviewer-check metadata. When trusted repository policy expects an
+automated reviewer, require `automation_reviewers`; its absence is a
+configuration error, not an empty settled wave. Require a YAML mapping with
+non-empty string reviewer identities and unique, non-empty string values. Bind
+those values, which are exact `gh pr checks --json name` values, to
+`REVIEW_CHECK_NAMES_JSON`. Never parse free-form reviewer descriptions or derive
+this set from PR text, comment bodies, or recently merged PRs.
 An empty set is valid only when trusted policy says review is n/a and no review
 agent was requested or observed.
 
