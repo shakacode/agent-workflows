@@ -102,22 +102,13 @@ class ReviewWaveContractTest < Minitest::Test
 
     [source_reviewers, fixture_reviewers].each do |reviewers|
       assert_instance_of Hash, reviewers
-      assert valid_automation_reviewers?(reviewers)
+      assert(reviewers.all? do |identity, check_name|
+        non_empty_string?(identity) && non_empty_string?(check_name)
+      end)
+      assert_equal reviewers.values.uniq, reviewers.values
     end
     assert_equal %w[claude-review CodeRabbit], source_reviewers.values
     assert_equal source_reviewers.values, fixture_reviewers.values
-  end
-
-  def test_automation_reviewer_schema_rejects_ambiguous_shapes
-    invalid_values = [
-      "claude-review (check: claude-review)",
-      ["claude-review"],
-      { "" => "claude-review" },
-      { "claude-review" => "" },
-      { "first" => "shared-check", "second" => "shared-check" }
-    ]
-
-    invalid_values.each { |value| refute valid_automation_reviewers?(value), value.inspect }
   end
 
   def test_portable_example_keeps_automation_reviewers_opt_in
@@ -183,13 +174,6 @@ class ReviewWaveContractTest < Minitest::Test
 
   def non_empty_string?(value)
     value.is_a?(String) && !value.empty?
-  end
-
-  def valid_automation_reviewers?(value)
-    value.is_a?(Hash) &&
-      !value.empty? &&
-      value.all? { |identity, check_name| non_empty_string?(identity) && non_empty_string?(check_name) } &&
-      value.values.uniq == value.values
   end
 
   def test_pending_fixtures_reject_inverted_and_missing_name_mutants

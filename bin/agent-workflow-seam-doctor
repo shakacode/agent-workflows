@@ -138,6 +138,7 @@ module AgentWorkflowSeamDoctor
   ].freeze
   REPO_PREFIX_POLICY_KEY = "repo_prefix"
   REPO_PREFIX_PATTERN = /\A[A-Z0-9]{1,6}\z/
+  AUTOMATION_REVIEWERS_POLICY_KEY = "automation_reviewers"
   COORDINATION_BACKEND_CONTRACT_POLICY_KEY = "coordination_backend_contract"
   COORDINATION_BACKEND_CONTRACT_KEYS = %w[version allowed_identifiers].freeze
   MERGE_SUBMISSION_POLICY_KEY = "merge_submission"
@@ -1759,7 +1760,8 @@ module AgentWorkflowSeamDoctor
       next if key == "writing_style"
 
       closed_policy = [
-        "autonomous_merge", SELECTED_HOSTED_CI_POLICY_KEY, CI_READINESS_POLICY_KEY
+        "autonomous_merge", AUTOMATION_REVIEWERS_POLICY_KEY,
+        SELECTED_HOSTED_CI_POLICY_KEY, CI_READINESS_POLICY_KEY
       ].include?(key)
       next unless unresolved_policy_value?(
         value,
@@ -1779,6 +1781,7 @@ module AgentWorkflowSeamDoctor
     end
 
     issues.concat(coordination_backend_policy_issues(yaml))
+    issues.concat(automation_reviewers_policy_issues(config, yaml))
     issues.concat(writing_style_policy_issues(root, config, yaml))
     issues.concat(coordination_backend_contract_policy_issues(config, yaml))
     issues.concat(untrusted_contributor_intake_policy_issues(config))
@@ -1796,6 +1799,36 @@ module AgentWorkflowSeamDoctor
     issues
   rescue Psych::Exception
     ["invalid policy config: #{POLICY_CONFIG}"]
+  end
+
+  def automation_reviewers_policy_issues(config, yaml)
+    key = AUTOMATION_REVIEWERS_POLICY_KEY
+    return [] unless config.key?(key)
+
+    errors = AutonomousMergePolicy.duplicate_key_errors(yaml).select do |error|
+      error.start_with?("$.#{key}.") ||
+        error.start_with?("$.#{key} ") ||
+        error == "$ contains duplicate key #{key.inspect}"
+    end
+    reviewers = config[key]
+    unless reviewers.is_a?(Hash) && !reviewers.empty?
+      errors << "must be a nonempty mapping from reviewer identities to check names"
+      return errors.map { |error| "invalid #{key} policy: #{error}" }.uniq
+    end
+
+    unless reviewers.keys.all? { |identity| valid_automation_reviewer_value?(identity) }
+      errors << "reviewer identities must be nonblank UTF-8 strings"
+    end
+    unless reviewers.values.all? { |check_name| valid_automation_reviewer_value?(check_name) }
+      errors << "check names must be nonblank UTF-8 strings"
+    end
+    errors << "check names must be unique" unless reviewers.values.uniq.length == reviewers.values.length
+
+    errors.map { |error| "invalid #{key} policy: #{error}" }.uniq
+  end
+
+  def valid_automation_reviewer_value?(value)
+    value.is_a?(String) && value.encoding == Encoding::UTF_8 && value.valid_encoding? && !value.strip.empty?
   end
 
   def writing_style_policy_issues(root, config, yaml)
