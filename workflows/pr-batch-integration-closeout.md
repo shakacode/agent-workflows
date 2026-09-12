@@ -1664,6 +1664,28 @@ When tracking is warranted:
 - Title new follow-up issues with the repo's follow-up issue prefix.
 - Build issue bodies with `--body-file` and reject literal `\n` escapes before posting.
 
+### Optional Quality Candidates
+
+Selectively retain worthwhile optional candidates in the originating PR
+description or decision log, optionally under `Deferred code quality`. Include
+the original review link, affected area, potential benefit, and an explicit
+`nonblocking; no implementation commitment` disposition. Other nits may remain
+only in their original comments; no separate record is required for every
+declined idea. Do not create an issue per nit, shared backlog file, or dashboard.
+
+Recording a candidate does not admit work or recommend "fix after X lands".
+It creates no dependency trigger or maintenance schedule. Age and generic
+"fix issues" wording do not change that. Preserve the existing
+[Initial-Pass Optional-Nit Cutoff](pr-processing.md#initial-pass-optional-nit-cutoff):
+retaining optional polish does not justify another commit or restart a finished
+review. These notes add no audit, receipt, or archive gate to
+[Ordinary PR Closeout](#ordinary-pr-closeout).
+
+An occasional coherent cleanup task needs the
+[quality maintenance admission checklist](../skills/evaluate-issue/SKILL.md#quality-maintenance-admission)
+and ordinary canonical launch admission. Retention does not lower the follow-up
+issue value bar above or change the priority of consequential defects.
+
 ### Deferred-Until-Unblocked Recommendations
 
 A recommendation of the form "fix later, after X lands" is only durable if
