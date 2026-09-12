@@ -229,6 +229,8 @@ module AgentWorkflowSeamDoctor
 
   module_function
 
+  singleton_class.send(:public, *InitCommandShell::PUBLIC_METHODS)
+
   def init(root, base_branch:, validate_command:, test_command:, shared_roots: [])
     raise InitError, "missing directory: #{root}" unless File.directory?(root)
 
