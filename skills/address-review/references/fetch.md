@@ -294,12 +294,16 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
   alone. Immediately after fetching the source packet and before source-checkpoint
   validation, derive `SOURCE_WALKTHROUGH_REVIEW_IDS_JSON` deterministically from
   trusted `COMMENTED` reviews whose declared v2 publisher matches the review
-  author and whose marker PR, encoded base ref, reviewed diff base, head, and
-  canonical diff identity match the source PR's live identity and review commit.
-  For migration, also accept the legacy short v1 marker only from the authenticated
-  actor when its available PR, head, and canonical diff bindings match. The query
-  emits `[]` when none pass. A missing, malformed, stale, or mismatched
-  binding creates no current-walkthrough exemption. Keep
+  author, whose marker PR and head match the source PR and review commit, and
+  whose encoded base ref, reviewed diff base, head, and canonical diff identity
+  are internally consistent. This source-checkpoint set intentionally includes
+  marker-valid historical walkthroughs so their explanatory roots do not
+  re-enter triage after a push. For migration, accept the legacy short v1 marker
+  only from the authenticated actor when its available PR, head, and canonical
+  diff bindings match the live source identity. The query emits `[]` when none
+  pass. Apply the live target bindings above separately for exact-current
+  classification; a stale marker remains historical but receives no current-
+  walkthrough exemption. Keep
   the current walkthrough threads unresolved and omit only their explanatory
   roots from cutoff or source-checkpoint completeness; retained replies remain
   normal candidates. Older walkthrough reviews remain
