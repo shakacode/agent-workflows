@@ -7770,6 +7770,89 @@ test_upgrade_rolls_back_when_consumer_seam_fails() {
   [[ "$before" == "$after" ]] || fail "expected rollback to $before, got $after"
 }
 
+# Break: a full-home rsync of ~/.codex (worktrees/tmp/sessions) or ~/.cursor
+# (User/extensions) hangs or wipes host data on rollback --delete.
+test_upgrade_snapshots_only_managed_paths_and_preserves_host_trees() {
+  local tmp source target consumer before after output status wrap real_rsync log
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  wrap="$tmp/wrap"
+  log="$tmp/rsync.log"
+  mkdir -p "$source" "$wrap"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  mkdir -p "$target/worktrees/heavy" "$target/tmp" "$target/sessions" \
+    "$target/.tmp" "$target/User" "$target/extensions" "$target/bin"
+  printf 'worktree-bytes\n' > "$target/worktrees/heavy/blob"
+  printf 'session-bytes\n' > "$target/sessions/keep.json"
+  printf 'user-settings\n' > "$target/User/settings.json"
+  printf 'extension-payload\n' > "$target/extensions/keep.bin"
+  printf '#!/bin/sh\necho user-tool\n' > "$target/bin/user-tool"
+  chmod +x "$target/bin/user-tool"
+  before="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' "$target/.agent-workflows-install.json")"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  mkdir -p "$consumer"
+  printf '# AGENTS.md\n\n## Commands\n' > "$consumer/AGENTS.md"
+
+  real_rsync="$(command -v rsync)"
+  cat > "$wrap/rsync" <<WRAP
+#!/usr/bin/env bash
+{
+  printf 'BEGIN\\n'
+  printf '%s\\n' "\$@"
+  printf 'END\\n'
+} >> $(printf '%q' "$log")
+exec $(printf '%q' "$real_rsync") "\$@"
+WRAP
+  chmod +x "$wrap/rsync"
+
+  set +e
+  output="$(PATH="$wrap:$PATH" "$source/bin/upgrade-agent-workflows" --target "$target" \
+    --source "$source" --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure: $output"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  after="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' "$target/.agent-workflows-install.json")"
+  [[ "$before" == "$after" ]] || fail "expected rollback to $before, got $after"
+  [[ "$(cat "$target/worktrees/heavy/blob")" == "worktree-bytes" ]] || \
+    fail "rollback changed unmanaged worktrees"
+  [[ "$(cat "$target/sessions/keep.json")" == "session-bytes" ]] || \
+    fail "rollback changed unmanaged sessions"
+  [[ "$(cat "$target/User/settings.json")" == "user-settings" ]] || \
+    fail "rollback changed unmanaged User tree"
+  [[ "$(cat "$target/extensions/keep.bin")" == "extension-payload" ]] || \
+    fail "rollback changed unmanaged extensions"
+  [[ -x "$target/bin/user-tool" ]] || fail "rollback removed unmanaged bin helper"
+  ruby - "$log" "$target" <<'RUBY' || fail "upgrade rsync copied the whole agent home"
+    log, target = ARGV
+    sources = []
+    current = []
+    File.foreach(log) do |line|
+      line = line.chomp
+      if line == "BEGIN"
+        current = []
+        next
+      end
+      if line == "END"
+        operands = current.reject { |arg| arg.start_with?("-") }
+        sources.concat(operands[0...-1]) if operands.length >= 2
+        current = []
+        next
+      end
+      current << line
+    end
+    home = [target, "#{target}/"]
+    abort "full-home rsync sources: #{sources.inspect}" if sources.any? { |src| home.include?(src) }
+RUBY
+}
+
 test_failed_upgrade_restores_companion_delivery_mode_and_layout() {
   local tmp source target consumer output status
   tmp="$(mktemp -d)"
@@ -8860,6 +8943,7 @@ main() {
     test_upgrade_without_consumer_roots_succeeds
     test_upgrade_reports_missing_source_as_check_failed
     test_upgrade_rolls_back_when_consumer_seam_fails
+    test_upgrade_snapshots_only_managed_paths_and_preserves_host_trees
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_upgrade_validates_consumer_root_after_install
   )
