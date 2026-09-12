@@ -10,6 +10,7 @@ ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 INTEGRATION_CLOSEOUT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
 COORDINATION_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
+REVERT_RUNBOOK_PATH = File.join(ROOT, "docs/revert-runbook.md")
 PR_BATCH_DOC_PATH = File.join(ROOT, "docs/pr-batch-skills.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
@@ -1048,6 +1049,18 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
     assert_match(/\A[0-9a-f]{40}\z|\AUNKNOWN\z/, manifest.fetch("pack_sha"))
     assert_manifest_route_provenance(manifest)
+
+    manifest_section = extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Batch Provenance Manifest")
+    normalized_section = manifest_section.gsub(/\s+/, " ")
+    assert_includes normalized_section, '"targets": ["123"]'
+    assert_includes normalized_section, "exact raw target identities"
+    assert_includes normalized_section, "does not normalize equivalent forms"
+    assert_includes normalized_section, "complete manifest"
+    assert_includes normalized_section, "Do not invent a lane-only repair operation"
+
+    runbook = read_repo_file(REVERT_RUNBOOK_PATH).gsub(/\s+/, " ")
+    assert_includes runbook, "terminal closeout does not match exactly one lane in batch <id>"
+    assert_includes runbook, "reconcile the lane and retry"
 
     [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
       assert_manifest_prompt_contract(read_repo_file(path), path)

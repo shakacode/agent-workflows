@@ -264,7 +264,7 @@ its batch-registration seam. A representative dry-run manifest is:
     {
       "name": "implementation",
       "owner": "batch-a-implementation",
-      "targets": ["issue:123"],
+      "targets": ["123"],
       "worker_preference": {
         "model": "gpt-5.6-terra",
         "effort": "high"
@@ -278,6 +278,15 @@ its batch-registration seam. A representative dry-run manifest is:
   ]
 }
 ```
+
+The `targets[]` strings are exact raw target identities. Use the same exact
+string for batch registration, `agent-coord claim`, and `agent-coord release`;
+the backend does not normalize equivalent forms such as `123` and `issue:123`.
+If terminal closeout reports that it does not match exactly one lane, inspect
+the registered manifest and claim/release target for this mismatch. Re-register
+the complete manifest with the supported `register-batch --file` operation,
+using one target form consistently, before retrying the release. Do not invent
+a lane-only repair operation that the backend does not support.
 
 `pack_sha` is the verified full git SHA of the loaded Agent Workflows pack, or
 the verified installed-release identifier when the pack is not a git checkout.
