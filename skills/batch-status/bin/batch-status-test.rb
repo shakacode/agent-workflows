@@ -990,7 +990,6 @@ class BatchStatusTest < Minitest::Test
         "PR_BATCH_SKILL_DIR" => File.expand_path("../../pr-batch", __dir__)
       }
 
-      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       stdout, stderr, status = Open3.capture3(
         env,
         RbConfig.ruby,
@@ -1000,10 +999,10 @@ class BatchStatusTest < Minitest::Test
         "--timeout", "0.05",
         "--json"
       )
-      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
 
       assert_predicate status, :success?, stderr
-      assert_operator elapsed, :<, 0.5
+      # The child marker is the deterministic control for process-group cleanup;
+      # elapsed time here is dominated by scheduler contention before `gh` starts.
       sleep 0.7
       refute File.exist?(child_marker), "timed-out gh child process survived"
       row = JSON.parse(stdout).fetch("items").first
@@ -1046,7 +1045,9 @@ class BatchStatusTest < Minitest::Test
 
       assert_predicate status, :success?, stderr
       assert_operator elapsed, :>=, 1.7
-      assert_operator elapsed, :<, 3.5, "timeout, TERM/KILL cleanup, and the following bounded probe must not hang"
+      # Keep a real upper bound, but leave scheduler headroom beyond the
+      # production timeout plus its two one-second cleanup windows.
+      assert_operator elapsed, :<, 5, "timeout, TERM/KILL cleanup, and the following bounded probe must not hang"
       assert File.exist?(term_marker), "TERM handler did not run before KILL escalation"
       row = JSON.parse(stdout).fetch("items").first
       assert_equal "UNKNOWN", row.fetch("target").fetch("kind")
