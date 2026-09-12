@@ -60,10 +60,7 @@ does not redefine scope or substitute a new diagnosis.
   dependency state that is missing or `UNKNOWN` stops the lane.
 - Give every file-editing worker a separate worktree and branch. Codex and
   multi-machine workers use `git worktree add`; in-process Claude Code
-  `Agent`/`Workflow` workers use `isolation: 'worktree'`. Cursor workers use
-  `git worktree add` until `Task` exposes an equivalent isolation flag; sequential
-  Task lanes are the supported Cursor path, and overnight multi-lane fleets stay
-  blocked until that isolation is proven. Never let concurrent
+  `Agent`/`Workflow` workers use `isolation: 'worktree'`. Never let concurrent
   file-editing workers share a working directory, index, or branch.
 - Verify repository root, exact base, branch, and worktree cleanliness before
   editing. For a GitHub issue/PR, re-fetch the live target. For a
