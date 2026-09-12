@@ -336,6 +336,57 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal selected.dig("dispatch", "launch_token"), replay.dig("dispatch", "launch_token")
   end
 
+  def test_fresh_dispatch_decision_supersedes_persisted_refresh_resolution
+    fallback = candidate(dispatcher: "other", instance_id: "other-1", fallback_authorized: true)
+    input = input_for(candidates: [fallback])
+    prior_request = dispatch(input).fetch("dispatch_decision_request")
+    refresh = {
+      "type" => "dispatch-decision-refresh",
+      "version" => 1,
+      "id" => "refresh-before-dispatch",
+      "request_id" => prior_request.fetch("id"),
+      "lane_id" => "lane-a"
+    }
+    refreshed = dispatch(
+      input.merge("dispatch_decision_request" => prior_request, "operator_decision" => refresh)
+    )
+    refreshed_request = refreshed.fetch("dispatch_decision_request")
+    decision = {
+      "type" => "dispatch-decision",
+      "version" => 1,
+      "id" => "dispatch-after-refresh",
+      "request_id" => refreshed_request.fetch("id"),
+      "lane_id" => "lane-a",
+      "choice_id" => refreshed_request.dig("viable_fallback_choices", 0, "choice_id"),
+      "updated_authority" => { "dispatch" => true }
+    }
+
+    selected = dispatch(
+      input.merge(
+        "dispatch_decision_request" => refreshed_request,
+        "decision_resolution" => refreshed.fetch("decision_resolution"),
+        "operator_decision" => decision
+      )
+    )
+
+    assert_equal "selected", selected.fetch("status")
+    assert_equal "dispatch-decision", selected.dig("decision_resolution", "action")
+    assert_equal decision.fetch("id"), selected.dig("decision_resolution", "decision_id")
+    assert_equal({ "dispatch" => true }, selected.fetch("authority"))
+
+    replay = dispatch(
+      input.merge(
+        "dispatch_decision_request" => refreshed_request,
+        "decision_resolution" => selected.fetch("decision_resolution"),
+        "active_assignments" => selected.fetch("active_assignments")
+      )
+    )
+
+    assert_equal "launch-pending", replay.fetch("status")
+    assert_equal decision.fetch("id"), replay.dig("decision_resolution", "decision_id")
+    assert_equal selected.dig("dispatch", "launch_token"), replay.dig("dispatch", "launch_token")
+  end
+
   def test_operator_decision_authorizes_fallback_whose_candidate_omitted_optional_route
     fallback = candidate(
       dispatcher: "other", instance_id: "other-1", fallback_authorized: true
