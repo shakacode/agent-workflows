@@ -2,6 +2,7 @@
 base_branch: main
 follow_up_prefix: "Follow-up:"
 review_gate: "codex review before non-trivial workflow changes"
+automation_reviewers: "claude-review (check: claude-review; GitHub Action, in-flight and terminal state observable via the checks API) and coderabbitai (check: CodeRabbit; advisory, may fail on rate limits)"
 approval_exempt: "docs, workflow text, helper scripts, skill metadata, and validation fixtures"
 coordination_backend: "public claim-comment fallback"
 changelog: "CHANGELOG.md; user-visible changes only"
