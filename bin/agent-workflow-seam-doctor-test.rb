@@ -2798,6 +2798,12 @@ end
 class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
   include AgentWorkflowSeamDoctorTestHelpers
 
+  def test_init_command_shell_helpers_remain_public_module_methods
+    AgentWorkflowSeamDoctor::InitCommandShell::PUBLIC_METHODS.each do |method_name|
+      assert_includes AgentWorkflowSeamDoctor.public_methods, method_name
+    end
+  end
+
   def test_help_advertises_init
     out, status = Open3.capture2e("ruby", SCRIPT, "--help")
 
