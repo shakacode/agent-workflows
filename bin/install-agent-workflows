@@ -3757,7 +3757,7 @@ link_cursor_routing_rule() {
     echo "Missing Cursor routing rule: $source_rule" >&2
     exit 1
   }
-  mkdir -p "$target/rules"
+  ensure_real_directory "$target/rules"
   if [[ -e "$destination" && ! -L "$destination" ]]; then
     echo "Refusing to replace non-symlink path: $destination" >&2
     exit 1

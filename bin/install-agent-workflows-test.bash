@@ -7211,6 +7211,33 @@ test_cursor_symlink_install_links_routing_rule() {
     fail "Cursor symlink install must point the routing rule at the source pack"
 }
 
+test_cursor_symlink_install_replaces_rules_directory_symlink() {
+  local tmp target external_rules
+  tmp="$(mktemp -d)"
+  target="$tmp/.cursor"
+  external_rules="$tmp/external-rules"
+  mkdir -p "$target" "$external_rules"
+  ln -s "$external_rules" "$target/rules"
+
+  CURSOR_HOME="$target" "$ROOT/bin/install-agent-workflows" --host cursor --mode symlink \
+    >"$tmp/install-agent-workflows-test.out"
+
+  [[ -d "$target/rules" && ! -L "$target/rules" ]] || fail "expected real Cursor rules directory"
+  assert_symlink "$target/rules/agent-workflows.mdc"
+  [[ ! -e "$external_rules/agent-workflows.mdc" ]] || fail "should not write through pre-existing rules symlink"
+}
+
+test_upgrade_host_missing_operand_mentions_cursor() {
+  local output status
+  set +e
+  output="$("$ROOT/bin/upgrade-agent-workflows" --host 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "upgrade --host without a value unexpectedly succeeded"
+  assert_contains "$output" "cursor"
+}
+
 test_copy_mode_preserves_unrelated_agent_files() {
   local tmp target
   tmp="$(mktemp -d)"
@@ -8811,6 +8838,8 @@ main() {
     test_cursor_host_install_uses_cursor_home_when_target_is_omitted
     test_cursor_host_install_refuses_skills_cursor_target
     test_cursor_symlink_install_links_routing_rule
+    test_cursor_symlink_install_replaces_rules_directory_symlink
+    test_upgrade_host_missing_operand_mentions_cursor
     test_copy_mode_preserves_unrelated_agent_files
     test_copy_mode_does_not_replace_generic_consumer_docs
     test_symlink_mode_links_skills_workflows_and_helpers

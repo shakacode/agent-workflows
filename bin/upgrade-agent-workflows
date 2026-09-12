@@ -167,7 +167,7 @@ restore_target() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
-      host="${2:?--host requires codex, claude, or auto}"
+      host="${2:?--host requires codex, claude, cursor, or auto}"
       shift 2
       ;;
     --target)
