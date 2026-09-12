@@ -14,6 +14,11 @@ preparation, read [the recovery procedure](references/recovery.md). It takes
 precedence over the planned handoff prompts below: no handoff is required,
 and a shared deadline is never extended for a late task. Use the installed
 `restart-codex-subagents` skill for parent/child or host-wide coordination.
+<!-- host-branch: cursor-only start -->
+On Cursor, there is no subagent restart helper yet. Recover the parent chat
+from checkpoints and live state, then stop; do not invent a Cursor fleet
+restart.
+<!-- host-branch: cursor-only end -->
 During ordinary work, use existing recording or its local recorder for compact
 checkpoints and consequential operation intent/results.
 

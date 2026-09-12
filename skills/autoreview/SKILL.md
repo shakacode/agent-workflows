@@ -19,6 +19,9 @@ clean" loop on top.
 - **Alternative engine: Claude review tooling** when the current Claude Code environment provides
   it, such as `/code-review` or `/code-review ultra`. Treat these as environment-specific, not
   repo-local commands.
+- **Cursor review tooling** when the current Cursor session provides `/review`,
+  `/review-bugbot`, or `/review-security`. Treat these as availability-checked
+  host tools, not portable requirements.
 - For PR-comment triage (reacting to review comments already on a GitHub PR), use
   `.agents/skills/address-review/SKILL.md`; Claude Code exposes it as `/address-review`.
 <!-- host-branch: available-tool end -->

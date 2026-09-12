@@ -153,7 +153,12 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
   end
 
   def write_manifest(root, host:)
-    manifest_dir = File.join(root, host == "codex" ? ".codex-plugin" : ".claude-plugin")
+    manifest_dir = File.join(root, case host
+                                   when "codex" then ".codex-plugin"
+                                   when "claude" then ".claude-plugin"
+                                   when "cursor" then ".cursor-plugin"
+                                   else raise "unsupported host #{host}"
+                                   end)
     FileUtils.mkdir_p(manifest_dir)
     FileUtils.mkdir_p(File.join(root, "skills/example"))
     File.write(File.join(root, "skills/example/SKILL.md"), "example\n")
@@ -195,6 +200,12 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     FileUtils.mkdir_p(target)
     File.write(File.join(target, "config.toml"), "[plugins.\"scw@agent-workflows\"]\nenabled = true\n")
     write_manifest(plugin_root, host: "codex")
+  end
+
+  def write_cursor_native_state(target)
+    plugin_root = File.join(target, "plugins/local/scw")
+    FileUtils.mkdir_p(plugin_root)
+    write_manifest(plugin_root, host: "cursor")
   end
 
   def create_source(root)
@@ -266,7 +277,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       )
       write_manifest(claude_plugin, host: "claude")
 
-      [["codex", codex_home], ["claude", claude_home]].each do |host, target|
+      cursor_home = File.join(tmp, "cursor")
+      write_cursor_native_state(cursor_home)
+
+      [["codex", codex_home], ["claude", claude_home], ["cursor", cursor_home]].each do |host, target|
         out, err, status = run_state("check", "--host", host, "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "plugin-companion", "--json")
 
         assert status.success?, "#{host}: #{out}#{err}"

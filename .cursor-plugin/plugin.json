@@ -1,6 +1,7 @@
 {
   "name": "scw",
   "displayName": "ShakaCode Agent Workflows",
+  "version": "0.1.0",
   "description": "Portable Codex, Claude, and Cursor workflow pack.",
   "author": {
     "name": "ShakaCode",
@@ -10,11 +11,12 @@
   "repository": "https://github.com/shakacode/agent-workflows",
   "license": "MIT",
   "keywords": [
-    "claude-code",
+    "cursor",
     "agent-workflows",
     "pull-requests",
     "code-review",
     "ci"
   ],
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "rules": "./.cursor/rules/"
 }

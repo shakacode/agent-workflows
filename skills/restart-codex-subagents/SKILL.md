@@ -9,6 +9,11 @@ Restartability is normal operation. Preparation improves evidence; it is never
 a prerequisite for the operator to restart. No control tower is required.
 Use supported task and collaboration tools; unavailable state stays UNKNOWN.
 
+<!-- host-branch: cursor-only start -->
+This helper is Codex-only. Cursor has no subagent restart helper yet; recover
+the parent chat from checkpoints and live state, then stop.
+<!-- host-branch: cursor-only end -->
+
 ## Modes
 
 - `prepare`: stop admitting work and collect readily available evidence for the

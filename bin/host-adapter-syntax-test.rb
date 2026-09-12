@@ -84,6 +84,37 @@ class HostAdapterSyntaxTest < Minitest::Test
     assert_includes stdout, "PASS host adapter syntax"
   end
 
+  def test_switch_mode_must_be_inside_cursor_branch
+    File.write(File.join(@tmp, "workflows/demo.md"), "Use SwitchMode to plan.\n")
+
+    _stdout, stderr, status = run_validator
+
+    refute status.success?
+    assert_includes stderr, "SwitchMode must be inside a cursor-only host branch"
+  end
+
+  def test_cursor_branch_permits_switch_mode
+    File.write(File.join(@tmp, "workflows/demo.md"), <<~MARKDOWN)
+      <!-- host-branch: cursor-only start -->
+      Use SwitchMode to plan. Never write into skills-cursor. Pin as a Custom Mode.
+      <!-- host-branch: cursor-only end -->
+    MARKDOWN
+
+    stdout, stderr, status = run_validator
+
+    assert status.success?, stderr
+    assert_includes stdout, "PASS host adapter syntax"
+  end
+
+  def test_custom_mode_must_be_inside_cursor_branch
+    File.write(File.join(@tmp, "workflows/demo.md"), "Pin the skill as a Custom Mode.\n")
+
+    _stdout, stderr, status = run_validator
+
+    refute status.success?
+    assert_includes stderr, "Custom Mode must be inside a cursor-only host branch"
+  end
+
   def test_worktree_pair_must_include_both_hosts
     path = File.join(@tmp, "skills/demo/SKILL.md")
     text = File.read(path).sub(" and `isolation: 'worktree'`", "")

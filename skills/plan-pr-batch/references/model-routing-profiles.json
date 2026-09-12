@@ -67,6 +67,72 @@
           "reason": "Use an existing deterministic helper when available; otherwise retain an established suitable route."
         }
       }
+    },
+    "cursor-grok-v0": {
+      "status": "unmeasured-pilot",
+      "advisory": true,
+      "routes": {
+        "diagnosis": {
+          "model": null,
+          "effort": null,
+          "class": "strongest",
+          "reason": "Unmeasured Grok route. Use generic batch sizing and the closest host-supported model until measured."
+        },
+        "architecture": {
+          "model": null,
+          "effort": null,
+          "class": "strongest",
+          "reason": "Unmeasured Grok route. Use generic batch sizing and the closest host-supported model until measured."
+        },
+        "integration": {
+          "model": null,
+          "effort": null,
+          "class": "strongest",
+          "reason": "Unmeasured Grok route. Use generic batch sizing and the closest host-supported model until measured."
+        },
+        "difficult-review": {
+          "model": null,
+          "effort": null,
+          "class": "strongest",
+          "reason": "Unmeasured Grok route. Use generic batch sizing and the closest host-supported model until measured."
+        },
+        "uncertain-worker": {
+          "model": null,
+          "effort": null,
+          "class": "strongest",
+          "reason": "Unmeasured Grok route. Use generic batch sizing and the closest host-supported model until measured."
+        },
+        "difficult-recovery": {
+          "model": null,
+          "effort": null,
+          "class": "strongest",
+          "reason": "Unmeasured Grok route. Use generic batch sizing and the closest host-supported model until measured."
+        },
+        "adversarial-review": {
+          "model": null,
+          "effort": null,
+          "class": "strongest",
+          "reason": "Unmeasured Grok route. Use generic batch sizing and the closest host-supported model until measured."
+        },
+        "bounded-implementation": {
+          "model": null,
+          "effort": null,
+          "class": "balanced",
+          "reason": "Unmeasured Grok route. Use generic batch sizing and the closest host-supported model until measured."
+        },
+        "routine-coordination": {
+          "model": null,
+          "effort": null,
+          "class": "balanced",
+          "reason": "Unmeasured Grok route. Use generic batch sizing and the closest host-supported model until measured."
+        },
+        "deterministic-work": {
+          "model": null,
+          "effort": null,
+          "class": "helper",
+          "reason": "Unmeasured Grok route. Use generic batch sizing and the closest host-supported model until measured."
+        }
+      }
     }
   },
   "api_efforts": {

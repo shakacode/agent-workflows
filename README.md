@@ -1,6 +1,6 @@
 # ShakaCode Agent Workflows
 
-Portable Codex and Claude workflow pack.
+Portable Codex, Claude, and Cursor workflow pack.
 
 [![ShakaCode Agent Workflows — Run AI coding agents in fleets, safely](https://agents.shakacode.com/og.png)](https://agents.shakacode.com)
 
@@ -44,7 +44,7 @@ default.
 
 ## What You Get
 
-- Portable Codex and Claude skills for planning, running, reviewing, and
+- Portable Codex, Claude, and Cursor skills for planning, running, reviewing, and
   verifying agent-assisted PR work, from one coordinated PR lane through
   multi-lane batches.
 - A repo contract so shared workflows can resolve base branches, validation
@@ -94,8 +94,14 @@ cd "$HOME/src/agent-workflows"
 bin/install-agent-workflows --host codex
 ```
 
-Use `--host claude` for Claude Code, or `--target "$HOME/.agents"` for an
-explicit shared agent home.
+Use `--host claude` for Claude Code, `--host cursor` for Cursor, or
+`--target "$HOME/.agents"` for an explicit shared agent home.
+
+Cursor installs into `${CURSOR_HOME:-$HOME/.cursor}`. Never install into
+`~/.cursor/skills-cursor`; that directory is reserved for Cursor builtins.
+Only `~/.cursor/skills` syncs to Cloud Agents. Add
+`export PATH="$HOME/.cursor/bin:$PATH"` if you want the Cursor-installed
+helpers on `PATH`.
 
 New to the pack? Follow [Getting Started](docs/getting-started.md) for
 prerequisites with versions, one host install, one repo adoption, and a first
@@ -136,6 +142,12 @@ Install into the default Claude Code home:
 bin/install-agent-workflows --host claude
 ```
 
+Install into the default Cursor home:
+
+```bash
+bin/install-agent-workflows --host cursor
+```
+
 Install into a different agent home, such as `~/.agents`:
 
 ```bash
@@ -174,10 +186,13 @@ notes.
 
 ### Native Plugin Paths
 
-Codex and Claude Code can also consume this source pack through native plugin
-metadata. Both native paths publish the semantic skills under the short `scw`
-plugin namespace without renaming anything under `skills/`. For example, Claude
-Code exposes `skills/verify/SKILL.md` as `/scw:verify`.
+Codex and Claude Code consume this source pack through native plugin
+metadata. Cursor can load the same pack from a local plugin symlink at
+`~/.cursor/plugins/local/scw` plus `--delivery-mode plugin-companion`, or from
+the flat Cursor install. Public Cursor Marketplace listing is a later
+decision. Both Codex and Claude native paths publish the semantic skills under
+the short `scw` plugin namespace without renaming anything under `skills/`. For
+example, Claude Code exposes `skills/verify/SKILL.md` as `/scw:verify`.
 
 Add and install the Claude Code marketplace plugin with:
 

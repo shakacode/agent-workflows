@@ -13,6 +13,8 @@ GPT-5.6 recommendations below for the listed roles; those recommendations and
 planning tables remain the established comparison baseline. Keep explicit user
 routes, verified host support, portable fallback, and independent evidence rules.
 This is an unmeasured pilot, not a measured promotion.
+If the current host is Cursor, resolve the advisory `cursor-grok-v0` profile
+the same way; every role stays portable/generic until measured.
 If a partial or pinned installation lacks the resolver or data, continue with
 established or portable advisory routes; use the complete pack to access the pilot.
 
@@ -58,6 +60,13 @@ Run an agent batch
 Run a Codex batch
 Run a Claude batch
 ```
+
+<!-- host-branch: cursor-only start -->
+Cursor: `/pr-batch` or pin as a Custom Mode. Sequential Task workers plus
+`git worktree add` are the supported path; stop if a file-editing worker cannot
+isolate. Overnight multi-lane fleets stay blocked until isolation matching
+`isolation: 'worktree'` is proven. Never write into `skills-cursor`.
+<!-- host-branch: cursor-only end -->
 
 ## User-Facing Coordination Contract
 
