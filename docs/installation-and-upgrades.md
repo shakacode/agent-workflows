@@ -638,7 +638,8 @@ Upgrade behavior:
 
 1. Resolve target and source from arguments or install metadata.
 2. Fetch and fast-forward the source clone unless `--no-fetch` is set.
-3. Back up the target install.
+3. Snapshot installer-managed paths in the target. Host trees such as
+   `worktrees/`, `sessions/`, `tmp/`, `User/`, and `extensions/` stay in place.
 4. Reinstall with the recorded or requested artifact and delivery modes.
 5. Run `agent-workflow-seam-doctor --root <consumer> --shared <source>` for
    every `--consumer-root`.
@@ -646,7 +647,8 @@ Upgrade behavior:
 
 The command prints `UPGRADE_COMPLETE` on success and `ROLLBACK_COMPLETE` when it
 restores the prior install after a failed upgrade. Rollback restores the prior
-delivery mode and skill layout. `upgrade-agent-workflows` never installs or
+managed files, delivery mode, and skill layout without copying or deleting host
+data outside those paths. `upgrade-agent-workflows` never installs or
 updates the native plugin itself.
 
 ## Verification After Upgrade

@@ -8,6 +8,10 @@ Usage: upgrade-agent-workflows [--host codex|claude|cursor|auto] [--target DIR] 
 Updates the source clone, reinstalls this shared workflow pack into an agent
 home, and optionally validates one or more consumer repository seams.
 
+Rollback snapshots only installer-managed paths (skills, workflows, docs,
+helpers, metadata, and Cursor rules). Host trees such as worktrees, sessions,
+tmp, User, and extensions are left in place.
+
 Network note: by default this command runs git fetch/pull in the source clone.
 Use --no-fetch for an already-updated local clone.
 With --host auto and an explicit unmarked target, Codex is the deterministic
@@ -143,21 +147,113 @@ update_source_clone() {
   fi
 }
 
+# Keep in sync with install-agent-workflows installed paths, including Cursor
+# extras that --help does not yet list.
+managed_relpaths_for_backup() {
+  local name helper
+  for name in \
+    LICENSE \
+    THIRD_PARTY-NOTICES.md \
+    .agent-workflows-install.json \
+    skills \
+    workflows \
+    docs \
+    lib \
+    rules \
+    .cursor-plugin
+  do
+    if [[ -e "$target/$name" || -L "$target/$name" ]]; then
+      printf '%s\n' "$name"
+    fi
+  done
+  if [[ -e "$target/bin/agent_doctor" || -L "$target/bin/agent_doctor" ]]; then
+    printf '%s\n' "bin/agent_doctor"
+  fi
+  for helper in \
+    agent-workflow-seam-doctor \
+    agent-workflow-writing-style \
+    agent-workflows-delivery-state \
+    agent-workflows-doctor \
+    agent-workflows-refresh \
+    agent-workflows-status \
+    agent-workflows-trust-audit \
+    install-agent-workflows \
+    upgrade-agent-workflows \
+    validate-execution-provenance \
+    validate-review-findings
+  do
+    if [[ -e "$target/bin/$helper" || -L "$target/bin/$helper" ]]; then
+      printf '%s\n' "bin/$helper"
+    fi
+  done
+}
+
+copy_managed_relpath() {
+  local src_root="$1"
+  local dest_root="$2"
+  local relpath="$3"
+  local delete_extra="${4:-false}"
+  local src="$src_root/$relpath"
+  local dest="$dest_root/$relpath"
+
+  mkdir -p "$(dirname "$dest")"
+  if [[ -d "$src" && ! -L "$src" ]]; then
+    mkdir -p "$dest"
+    if [[ "$delete_extra" = "true" ]]; then
+      rsync -a --delete "$src/" "$dest/"
+    else
+      rsync -a "$src/" "$dest/"
+    fi
+  elif [[ "$delete_extra" = "true" ]]; then
+    rm -rf "$dest"
+    rsync -a "$src" "$dest"
+  else
+    rsync -a "$src" "$dest"
+  fi
+}
+
+path_listed_in() {
+  local needle="$1"
+  local file="$2"
+  local line
+  while IFS= read -r line; do
+    [[ "$line" == "$needle" ]] && return 0
+  done < "$file"
+  return 1
+}
+
 backup_target() {
   backup_dir="$(mktemp -d)"
   backup_target_dir="$backup_dir/target"
+  backup_manifest="$backup_dir/paths"
   target_existed=false
   if [[ -d "$target" ]]; then
     target_existed=true
     mkdir -p "$backup_target_dir"
-    rsync -a "$target/" "$backup_target_dir/"
+    managed_relpaths_for_backup > "$backup_manifest"
+    local relpath
+    while IFS= read -r relpath; do
+      [[ -n "$relpath" ]] || continue
+      copy_managed_relpath "$target" "$backup_target_dir" "$relpath"
+    done < "$backup_manifest"
   fi
 }
 
 restore_target() {
   if [[ "${target_existed:-false}" = "true" ]]; then
     mkdir -p "$target"
-    rsync -a --delete "$backup_target_dir/" "$target/"
+    local relpath
+    while IFS= read -r relpath; do
+      [[ -n "$relpath" ]] || continue
+      copy_managed_relpath "$backup_target_dir" "$target" "$relpath" true
+    done < "$backup_manifest"
+    while IFS= read -r relpath; do
+      [[ -n "$relpath" ]] || continue
+      if path_listed_in "$relpath" "$backup_manifest"; then
+        continue
+      fi
+      rm -rf "${target:?}/${relpath:?}"
+    done < <(managed_relpaths_for_backup)
   else
     rm -rf "$target"
   fi
