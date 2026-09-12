@@ -18,6 +18,13 @@ require "uri"
 require "yaml"
 
 require_relative "../lib/git_probe_env"
+require_relative "../lib/github_actor_trust"
+
+DEFAULT_TRUST_CONFIG = GithubActorTrust::DEFAULT_TRUST_CONFIG
+HOME_TRUST_CONFIG = GithubActorTrust::HOME_TRUST_CONFIG
+PACKAGED_TRUST_CONFIG = GithubActorTrust::PACKAGED_TRUST_CONFIG
+USER_TRUST_CONFIG_ENV = GithubActorTrust::USER_TRUST_CONFIG_ENV
+PACKAGED_METADATA_BOTS = GithubActorTrust.packaged_metadata_bots.freeze
 
 TRUSTED_GIT_EXECUTABLE_ENV = "PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE"
 TRUSTED_GH_EXECUTABLE_ENV = "PR_SECURITY_PREFLIGHT_TRUSTED_GH_EXECUTABLE"
@@ -490,7 +497,7 @@ rescue StandardError => e
 end
 
 def repo_info_from_payload(payload)
-  remote = github_remote_from_remote_url(payload["url"])
+  remote = GithubActorTrust.github_remote_from_remote_url(payload["url"])
   repo = payload.fetch("nameWithOwner")
 
   {
@@ -525,22 +532,15 @@ def visible_actor_logins(node, graph_field)
   actors
 end
 
+# Trust vocabulary is shared with fetch-pr-review-data so both ingestion
+# boundaries resolve the same allowlist. See lib/github_actor_trust.rb.
 def normalized_login(login)
-  login.to_s.delete_prefix("@").downcase
+  GithubActorTrust.normalized_login(login)
 end
 
 def normalized_bot_login(login)
-  normalized_login(login).delete_suffix("[bot]")
+  GithubActorTrust.normalized_bot_login(login)
 end
-
-DEFAULT_TRUST_CONFIG = ".agents/trusted-github-actors.yml"
-HOME_TRUST_CONFIG = "~/.agents/trusted-github-actors.yml"
-PACKAGED_TRUST_CONFIG = File.expand_path("../trusted-github-actors.yml", __dir__)
-USER_TRUST_CONFIG_ENV = "AGENT_WORKFLOWS_TRUST_CONFIG"
-PACKAGED_METADATA_BOTS = begin
-  packaged = YAML.safe_load_file(PACKAGED_TRUST_CONFIG, aliases: false) || {}
-  Array(packaged["trusted_metadata_bots"]).to_set { |login| normalized_bot_login(login) }
-end.freeze
 
 def git_probe_env
   PrBatchGitProbeEnv.probe_env
@@ -591,6 +591,19 @@ def capture_trusted_git_probe(*args, timeout_seconds: GIT_TIMEOUT_SECONDS, stdin
   )
 rescue PrBatchGitProbeEnv::TimeoutError
   ["", "#{git_executable} #{args.join(' ')} timed out after #{timeout_seconds}s", nil]
+end
+
+def capture_trusted_ssh_probe(*args, timeout_seconds: GIT_TIMEOUT_SECONDS)
+  ssh_executable = trusted_ssh_executable
+  PrBatchGitProbeEnv.capture3(
+    trusted_git_probe_env,
+    ssh_executable,
+    *args,
+    timeout_seconds:,
+    unsetenv_others: true
+  )
+rescue PrBatchGitProbeEnv::TimeoutError
+  ["", "#{ssh_executable} #{args.join(' ')} timed out after #{timeout_seconds}s", nil]
 end
 
 def resolved_trust_config(explicit_path, repo:, github_host:)
@@ -999,22 +1012,27 @@ rescue StandardError
 end
 
 def inferred_github_host_from_local_git(repo)
-  root = git_toplevel
+  root = GithubActorTrust.git_toplevel(git_capture: method(:capture_git_probe))
   return unless root
 
-  matching_hosts = git_remote_urls(root).filter_map do |url|
-    remote = github_remote_from_remote_url(url)
-    remote[:host] if remote && remote[:repo].casecmp(repo).zero?
+  matching_hosts = GithubActorTrust.git_remote_urls(root, git_capture: method(:capture_git_probe)).filter_map do |url|
+    remote = GithubActorTrust.github_remote_from_remote_url(
+      url,
+      ssh_host_resolver: lambda do |host|
+        GithubActorTrust.ssh_config_hostname(host, ssh_capture: method(:capture_git_probe))
+      end
+    )
+    GithubActorTrust.github_api_host(remote) if remote && remote[:repo].casecmp(repo).zero?
   end.uniq
   matching_hosts.first if matching_hosts.one?
 end
 
-def normalized_github_host(host)
-  host.to_s.downcase
+def expected_github_host
+  GithubActorTrust.normalized_github_host(ENV.fetch("GH_HOST", "github.com"))
 end
 
-def expected_github_host
-  normalized_github_host(ENV.fetch("GH_HOST", "github.com"))
+def normalized_github_host(host)
+  GithubActorTrust.normalized_github_host(host)
 end
 
 def normalized_remote_host(host)
@@ -1099,16 +1117,38 @@ def remote_matches_github_host?(remote, github_host)
 end
 
 def git_root_matches_repo?(root, repo, github_host:, trusted: false)
-  remote_repos = git_remote_urls(root, trusted:).filter_map do |url|
-    remote = github_remote_from_remote_url(url)
-    remote[:repo] if remote && remote_matches_github_host?(remote, github_host)
-  end
-  if remote_repos.empty?
-    warn "WARN: could not determine repo from remotes for trust config working tree #{root.inspect}; treating trust config as global"
-    return false
-  end
+  git_capture = if trusted
+                  lambda do |executable, *args|
+                    next ["", "unexpected executable #{executable}", nil] unless executable == "git"
 
-  remote_repos.any? { |remote_repo| remote_repo.casecmp(repo).zero? }
+                    capture_trusted_git_probe(*args)
+                  end
+                else
+                  method(:capture_git_probe)
+                end
+  ssh_host_resolver = if trusted
+                        lambda do |host|
+                          GithubActorTrust.ssh_config_hostname(
+                            host,
+                            ssh_capture: lambda do |executable, *args|
+                              next ["", "unexpected executable #{executable}", nil] unless executable == "ssh"
+
+                              capture_trusted_ssh_probe(*args)
+                            end
+                          )
+                        end
+                      else
+                        lambda do |host|
+                          GithubActorTrust.ssh_config_hostname(host, ssh_capture: method(:capture_git_probe))
+                        end
+                      end
+  GithubActorTrust.git_root_matches_repo?(
+    root,
+    repo,
+    github_host:,
+    git_capture:,
+    ssh_host_resolver:
+  )
 end
 
 def canonical_path(path)
@@ -1139,46 +1179,21 @@ def normalized_trusted_teams(values, require_owner:)
 end
 
 def load_trust_config(path:, global:, contents:)
-  path = File.expand_path(path)
-  parse_contents = contents.dup.force_encoding(Encoding::UTF_8)
-  abort "Invalid trust config #{path}: expected valid UTF-8" unless parse_contents.valid_encoding?
-
-  data = parse_contents.empty? ? {} : YAML.safe_load(parse_contents, aliases: false, filename: path) || {}
-  abort "Invalid trust config #{path}: expected a YAML mapping at the top level" unless data.is_a?(Hash)
-
-  trusted_bots = Array(data["trusted_bots"]).to_set { |login| normalized_bot_login(login) }
-  trusted_metadata_bots = Array(data["trusted_metadata_bots"]).to_set { |login| normalized_bot_login(login) }
-  trusted_metadata_bots.merge(PACKAGED_METADATA_BOTS - trusted_bots)
-  overlapping_bots = trusted_bots & trusted_metadata_bots
-  if overlapping_bots.any?
-    abort "Invalid trust config #{path}: bot(s) listed in both trusted_bots and " \
-          "trusted_metadata_bots: #{overlapping_bots.to_a.sort.join(', ')}"
-  end
-
-  {
-    content_digest: "sha256:#{Digest::SHA256.hexdigest(contents)}",
-    path:,
-    trusted_bots:,
-    trusted_metadata_bots:,
-    trusted_teams: normalized_trusted_teams(data["trusted_teams"], require_owner: global),
-    trusted_users: Array(data["trusted_users"]).to_set { |login| normalized_login(login) }
-  }
-rescue Psych::Exception
-  abort "Invalid trust config #{path}: malformed YAML"
+  GithubActorTrust.load(path:, global:, contents:)
+rescue GithubActorTrust::Error => e
+  abort e.message
 end
 
 def bot_login_in_set?(login, trusted_set)
-  normalized = normalized_login(login)
-
-  normalized.end_with?("[bot]") && trusted_set.include?(normalized.delete_suffix("[bot]"))
+  GithubActorTrust.bot_login_in_set?(login, trusted_set)
 end
 
 def trusted_bot?(login, trust_config)
-  bot_login_in_set?(login, trust_config.fetch(:trusted_bots))
+  GithubActorTrust.trusted_bot?(login, trust_config)
 end
 
 def trusted_metadata_bot?(login, trust_config)
-  bot_login_in_set?(login, trust_config.fetch(:trusted_metadata_bots))
+  GithubActorTrust.trusted_metadata_bot?(login, trust_config)
 end
 
 def collaborator_permission(repo, login)
@@ -1188,34 +1203,21 @@ rescue StandardError => e
   "none"
 end
 
-def trusted_team_member?(repo, login, trust_config, team_cache)
-  repo_owner = repo.split("/", 2).first
-  normalized_repo_owner = normalized_login(repo_owner)
-  trust_config.fetch(:trusted_teams).any? do |team|
-    team_owner = team.fetch(:owner) || repo_owner
-    next false unless normalized_login(team_owner) == normalized_repo_owner
-
-    team_slug = team.fetch(:slug)
-    cache_key = [normalized_repo_owner, team_slug, normalized_login(login)]
-    team_cache[cache_key] ||= begin
-      membership = run_gh_json("api", "orgs/#{team_owner}/teams/#{team_slug}/memberships/#{login}")
-      membership.fetch("state") == "active"
-    rescue StandardError
-      false
-    end
-  end
+TEAM_MEMBERSHIP_RESOLVER = lambda do |owner:, slug:, login:|
+  run_gh_json("api", "orgs/#{owner}/teams/#{slug}/memberships/#{login}").fetch("state") == "active"
+rescue StandardError => e
+  warn "WARN: could not fetch team membership for #{login} in #{owner}/#{slug}: #{e.message.lines.first&.strip}"
+  false
 end
 
 def trusted_actor?(repo, login, trust_config, team_cache)
-  return false if login.to_s.empty?
-  return true if trust_config.fetch(:trusted_users).include?(normalized_login(login))
-  return true if trusted_bot?(login, trust_config)
-
-  trusted_team_member?(repo, login, trust_config, team_cache)
+  GithubActorTrust.trusted_actor?(repo, login, trust_config, team_cache, TEAM_MEMBERSHIP_RESOLVER)
 end
 
 def allowed_metadata_actor?(repo, login, trust_config, team_cache)
-  trusted_actor?(repo, login, trust_config, team_cache) || trusted_metadata_bot?(login, trust_config)
+  GithubActorTrust.classify(
+    repo:, login:, config: trust_config, team_cache:, team_resolver: TEAM_MEMBERSHIP_RESOLVER
+  ) != :untrusted
 end
 
 def trusted_metadata_text?(repo, author, text, trust_config:, team_cache:, pattern:)
@@ -4605,6 +4607,7 @@ def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.n
   trust_config_resolution = resolved_trust_config(options.fetch(:trust_config), repo:, github_host:)
   puts "Trust config: #{trust_config_resolution.fetch(:path)}"
   puts "Trust config source: #{trust_config_resolution.fetch(:source)}"
+  puts "Trust config scope: #{trust_config_resolution.fetch(:global) ? 'global' : 'repository'}"
   trust_config = load_trust_config(
     path: trust_config_resolution.fetch(:path),
     global: trust_config_resolution.fetch(:global),

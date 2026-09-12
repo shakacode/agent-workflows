@@ -83,7 +83,7 @@ module PrBatchGitProbeEnv
           unless status
             terminate_process_group(pid)
             status = :terminated
-            raise TimeoutError, "Git probe timed out after #{timeout_seconds} seconds"
+            raise TimeoutError, "probe timed out after #{timeout_seconds} seconds"
           end
 
           stdout.rewind
