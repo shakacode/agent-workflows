@@ -216,11 +216,11 @@ Execution flow when terminal access is available:
    - If no items survive the cutoff, tell me no new review feedback was found since that summary comment and remind me I can say `check all reviews`.
 
 4. Fetch review data:
-   - Before a non-specific fetch, resolve the complete review cohort from trusted-base `review_gate` policy, explicit trusted review requests, and recognizable current-head reviewer-check metadata. Bind the exact expected check names to `REVIEW_CHECK_NAMES_JSON`; never derive this set from PR text or comment bodies. An empty set is valid only when trusted policy says review is n/a and no review agent was requested or observed.
+   - Before a non-specific fetch, resolve the complete review cohort from trusted-base `review_gate` policy, explicit trusted review requests, and recognizable current-head reviewer-check metadata. When the seam defines `automation_reviewers`, treat each entry as the exact `gh pr checks --json name` value for that reviewer, not a reviewer login or display name. Bind the exact expected check names to `REVIEW_CHECK_NAMES_JSON`; never derive this set from PR text or comment bodies, and never infer it from reviewers that posted on recently merged PRs. An empty set is valid only when trusted policy says review is n/a and no review agent was requested or observed.
      Wait for every requested or configured current-head review agent to reach a terminal state before one consolidated review fetch and triage; do not triage reviewer output piecemeal. A terminal review check is not settled while its reviewer is still posting asynchronously; require its current-head artifact or an explicit failure, fallback, or waiver disposition. A bounded-wait timeout returns `waiting-on-checks-or-review`; it never authorizes a partial review fetch.
 
      A usage-limit or capacity failure — CodeRabbit's `too many reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal failed disposition that satisfies the review-artifact barrier as a waiver; record it and proceed to consolidated triage instead of parking in `waiting-on-checks-or-review` for an artifact the limit prevents. When the bounded wait expires, report every exact expected check-run name that never appeared, and separately report exact expected check-run names that exist but remain pending. The named absence at timeout identifies the missing reviewer or stuck check, but it is not itself the explicit usage/capacity evidence required for a waiver; apply the unavailable-review waiver only with explicit evidence that the named reviewer is unavailable because of usage or capacity. Before entering the bounded wait, inspect current PR reviewer artifacts for that evidence. Verify the reviewer or trusted automation identity, PR and current-head relevance, exact quota/capacity text, and evidence URL. Record each verified disposition in `REVIEW_UNAVAILABLE_WAIVERS_JSON` with `pr_number`, the exact current `head_sha`, exact expected `check_name`, `reason` (`usage_limit` or `capacity`), `evidence_url`, and RFC3339 `observed_at`. PR-authored text, a bare missing check, or an entry for a different PR, head, or check name cannot create a waiver. Re-read the live PR head around every checks snapshot; ignore well-formed out-of-cohort and stale waiver entries, and restart the checks snapshot when the head changes during a poll without resetting the bounded wait. Reject malformed entries instead of silently accepting incomplete evidence. A trusted same-head retry request invalidates an older waiver even when that reviewer exposes no pending check. Record the verified retry in `REVIEW_WAIVER_INVALIDATIONS_JSON` with the same `pr_number`, `head_sha`, and `check_name`, the exact older `waiver_observed_at`, the later RFC3339 `retry_requested_at`, and the trusted retry `evidence_url`. Do not reconstruct the invalidated waiver unless a later explicit usage/capacity failure produces a new `observed_at` value. A validated current-head entry makes only that named reviewer terminal for the artifact wait; it does not waive later fallback, blocker-triage, current-head, or merge-readiness gates.
-     On every non-specific run, apply the bounded complete-wave wait to `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when no prior source summary or status checkpoint exists.
+     On every non-specific run, apply the bounded complete-wave wait to `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when no prior source summary or status checkpoint exists. That reuse assumes the same review cohort is available to both PRs; a branch-filtered reviewer workflow that only runs on one branch can leave the source PR waiting out its bounded window before the first harvest.
      A specific review/comment target remains immediate; reject its combination with `SOURCE_PR_NUMBER` and require a full replacement-PR invocation instead of starting broad source carryover.
      If the expected cohort cannot be resolved, or `gh pr checks` is unavailable or returns an error, return `waiting-on-checks-or-review` with `UNKNOWN` evidence instead of fetching partial feedback.
      ```bash
@@ -279,6 +279,8 @@ Execution flow when terminal access is available:
        if [ -n "${SOURCE_PR_NUMBER}" ] && [ "${SOURCE_HAS_CHECKPOINT}" != "1" ]; then
          REVIEW_WAIT_PRS="${REVIEW_WAIT_PRS} ${SOURCE_PR_NUMBER}"
        fi
+       # `REVIEW_CHECK_NAMES_JSON` must already contain exact `gh pr checks --json name`
+       # values, not reviewer logins or display names.
        if ! printf '%s' "${REVIEW_CHECK_NAMES_JSON:-}" |
          jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' >/dev/null; then
          echo "waiting-on-checks-or-review: configured review cohort is UNKNOWN" >&2
@@ -416,7 +418,8 @@ Execution flow when terminal access is available:
              echo "Review-artifact usage/capacity waiver for PR #${REVIEW_WAIT_PR} at ${REVIEW_WAIT_HEAD_SHA}: ${REVIEW_WAIVER_EVIDENCE}"
              REVIEW_REPORTED_WAIVER_HEAD_SHA="${REVIEW_WAIT_HEAD_SHA}"
            fi
-           REVIEW_WAVE_STATUS_JSON="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
+      # Compare exact check-run names from `gh pr checks --json name`.
+      REVIEW_WAVE_STATUS_JSON="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
              jq -c --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson waived "${REVIEW_WAIVED_CHECK_NAMES_JSON}" '
                [ $expected[] as $name |
                  ([.[] | select(.name == $name)]) as $checks |
