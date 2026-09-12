@@ -23,14 +23,14 @@ class FetchPrReviewDataTest < Minitest::Test
 
   REVIEWS_RAW = <<~JSON
     [[
-      {"id":10,"body":"fix the nil guard","state":"COMMENTED","user":{"login":"alice"},"submitted_at":"2026-01-04T00:00:00Z"},
+      {"id":10,"body":"fix the nil guard","state":"COMMENTED","user":{"login":"alice"},"submitted_at":"2026-01-04T00:00:00Z","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
       {"id":11,"body":"","state":"APPROVED","user":{"login":"bob"}}
     ]]
   JSON
 
   INLINE_RAW = <<~JSON
     [[
-      {"id":20,"node_id":"RC_20","path":"a.rb","user":{"login":"alice"}},
+      {"id":20,"node_id":"RC_20","path":"a.rb","user":{"login":"alice"},"pull_request_review_id":10,"commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
       {"id":21,"node_id":"RC_21","path":"b.rb","user":{"login":"alice"}},
       {"id":22,"node_id":"RC_22","path":"c.rb","user":{"login":"alice"}}
     ]]
@@ -67,6 +67,17 @@ class FetchPrReviewDataTest < Minitest::Test
 
   def test_drops_empty_review_summaries
     assert_equal([10], assembled["review_summaries"].map { |r| r["id"] })
+  end
+
+  # Production break: address-review cannot associate an inline concept with
+  # its current walkthrough review, so it replies to and resolves that thread.
+  def test_preserves_review_and_commit_identity_for_walkthrough_filtering
+    summary = assembled["review_summaries"].fetch(0)
+    comment = assembled["inline_comments"].find { |row| row["id"] == 20 }
+
+    assert_equal "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", summary["commit_id"]
+    assert_equal 10, comment["pull_request_review_id"]
+    assert_equal "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", comment["commit_id"]
   end
 
   def test_joins_thread_metadata_by_node_id

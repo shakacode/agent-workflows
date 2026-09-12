@@ -30,8 +30,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
   SKILL_GUIDE = "docs/skills.md"
   HST_REPLAY = "skills/pr-batch/fixtures/human-status-translation-replay.json"
   OWNER_ROUTE_REPLAY = "skills/pr-batch/fixtures/owner-route-pr383-replay.json"
-  GMCC_V5 = "GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|" \
-            "threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
+  GMCC_V6 = "GMCC-v6:CI@head/configured-reviewers pending|missing|untriaged|failed|" \
+            "actionable threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;" \
+            "walk exempt;poll/fix;" \
             "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
             "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
             "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;" \
@@ -289,7 +290,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   def test_coordination_changes_preserve_exact_gmcc_v5_merge_authority_clauses
     [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE].each do |path|
       text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
-      assert_includes text, GMCC_V5, path
+      assert_includes text, GMCC_V6, path
       refute_includes text, "GMCC-v3:", path
     end
   end
