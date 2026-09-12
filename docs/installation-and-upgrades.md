@@ -546,6 +546,29 @@ the original installed content or move personal content to a distinct path
 before retrying. The status and upgrade helpers use the metadata so they can run
 from either the source clone or the installed host.
 
+A complete flat copy also records
+`managed_runtime_manifest_digests["autonomous-merge"]`. The installer computes
+this length-framed SHA-256 from the copied runtime bytes and writes the metadata
+with mode `0600`. Symlink, plugin-companion, incomplete, and legacy installs do
+not publish this attestation. Use the hardened status reader to obtain it:
+
+```bash
+status="$(agent-workflows-status --host codex --json)" && rc=0 || rc=$?
+case "$rc" in
+  0 | 1) ;; # Only these states are eligible for a digest check.
+  *) echo "install state is unusable; do not source a digest from it" >&2; exit 1 ;;
+esac
+digest="$(printf '%s' "$status" | jq -er '.runtime_manifest_digests["autonomous-merge"]')"
+provenance="verified-installed-pack:${digest}"
+```
+
+The status helper refuses redirected or malformed metadata and withholds the
+digest when delivery checks fail or managed policy state no longer verifies.
+An absent key means the install does not support this trust route; malformed
+metadata returns `CHECK_FAILED`. Do not compute the expected value from the
+runtime that will consume it. Reinstall or upgrade a legacy flat copy to create
+new installation state.
+
 ## Status Checks
 
 For the full three-repository contributor stack, start with

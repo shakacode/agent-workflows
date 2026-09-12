@@ -38,6 +38,8 @@ Installed paths:
   <target>/bin/upgrade-agent-workflows
   <target>/lib/agent-workflows/secure_github_actions_scanner.rb (plugin-companion mode only)
   <target>/.agent-workflows-install.json
+    A complete flat copy records managed_runtime_manifest_digests["autonomous-merge"],
+    the exact verified-installed-pack digest for the installed runtime bytes.
 USAGE
 }
 
@@ -309,7 +311,17 @@ read_installed_metadata_value() {
           !valid_name || !digest.is_a?(String) || !digest.match?(/\A[0-9a-f]{64}\z/i)
         end
       end
-      if invalid_string || invalid_required_value || invalid_enum || invalid_fingerprints
+      invalid_runtime_digests = if metadata.key?("managed_runtime_manifest_digests")
+                                  digests = metadata["managed_runtime_manifest_digests"]
+                                  !digests.is_a?(Hash) || digests.any? do |name, digest|
+                                    !name.is_a?(String) || !name.match?(/\A[a-z0-9][a-z0-9-]*\z/) ||
+                                      !digest.is_a?(String) || !digest.match?(/\A[0-9a-f]{64}\z/)
+                                  end
+                                else
+                                  false
+                                end
+      if invalid_string || invalid_required_value || invalid_enum || invalid_fingerprints ||
+         invalid_runtime_digests
         puts "corrupt"
         exit
       end
@@ -1874,10 +1886,96 @@ validate_delivery_mode() {
   esac
 }
 
+# Read the runtime manifest in a separate interpreter using installer-owned code.
+# The security-sensitive metadata writer never loads runtime-pack code.
+compute_autonomous_merge_runtime_digest() {
+  local pack_root="${1:-$repo_root}"
+  ruby -rdigest -rfiddle/import -e '
+    module RuntimeManifestSyscalls
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int openat(int, const char *, int, unsigned int)"
+    end
+    openat = lambda do |directory, name|
+      flags = File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+      fd = RuntimeManifestSyscalls.openat(directory.fileno, name, flags, 0)
+      raise SystemCallError.new("openat runtime source #{name}", Fiddle.last_error) if fd == -1
+
+      File.for_fd(fd, "r", autoclose: true)
+    end
+    root = File.expand_path(ARGV.fetch(0))
+    sources = {
+      "helper" => "skills/pr-batch/bin/autonomous-merge-eligibility",
+      "closeout-helper" => "skills/pr-batch/bin/autonomous-merge-closeout",
+      "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
+      "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
+      "integration-evidence-library" => "skills/pr-batch/lib/current_integration_evidence.rb",
+      "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",
+      "policy-glob-library" => "bin/agent_doctor/autonomous_merge_policy_globs.rb",
+      "policy-yaml-library" => "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
+      "runtime-trust-library" => "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb",
+      "calibration-decision" => "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json"
+    }
+    digest = Digest::SHA256.new
+    sources.sort.each do |role, relative|
+      path = File.join(root, relative)
+      handles = []
+      begin
+        root_named = File.lstat(root)
+        exit 0 unless root_named.directory? && !root_named.symlink? && File.const_defined?(:NOFOLLOW)
+        root_handle = File.open(root, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+        handles << root_handle
+        root_opened = root_handle.stat
+        abort "runtime pack root changed while opening" unless root_opened.directory? &&
+                                                              root_opened.dev == root_named.dev &&
+                                                              root_opened.ino == root_named.ino
+
+        parts = relative.split(File::SEPARATOR)
+        parts[0...-1].each do |part|
+          directory = openat.call(handles.last, part)
+          handles << directory
+          abort "runtime source ancestor is not a directory" unless directory.stat.directory?
+        end
+
+        file = openat.call(handles.last, parts.last)
+        handles << file
+        opened = file.stat
+        abort "runtime source is not a single-link regular file" unless opened.file? && opened.nlink == 1
+        file.binmode
+        bytes = file.read
+        RuntimeManifestDigestHook.call(path) if defined?(RuntimeManifestDigestHook)
+        file.rewind
+        named = File.lstat(path)
+        abort "runtime source changed while being read" unless named.file? && !named.symlink? && named.nlink == 1 &&
+                                                          named.dev == opened.dev && named.ino == opened.ino &&
+                                                          file.read == bytes
+      rescue Errno::ENOENT, Errno::ELOOP
+        exit 0
+      ensure
+        handles.reverse_each(&:close)
+      end
+      digest << [role.bytesize].pack("N") << role
+      digest << [bytes.bytesize].pack("Q>") << bytes
+    end
+    print digest.hexdigest
+  ' "$pack_root"
+}
+
+validate_runtime_manifest_digest_output() {
+  local digest="$1"
+  local source_label="$2"
+  if [[ -n "$digest" && ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "RUNTIME_DIGEST_FAILED: the autonomous-merge runtime manifest digest from $source_label was not a bare 64-character lowercase hexadecimal value." >&2
+    echo "The installer-owned manifest calculator wrote unexpected output; fix the pack and retry." >&2
+    return 68
+  fi
+}
+
 prepare_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
   local version source_revision source_branch source_remote installed_at prepare_status=0
+  local preflight_runtime_manifest_digest=""
   prepared_metadata_attestation=""
   if [[ -e "$metadata_tmp" || -L "$metadata_tmp" ]]; then
     echo "METADATA_PREPARE_BLOCKED: preserved existing untrusted metadata preparation path $metadata_tmp." >&2
@@ -1889,6 +1987,14 @@ prepare_metadata() {
   source_branch="$(metadata_value source_branch)"
   source_remote="$(metadata_value source_remote)"
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  if [[ "$mode" = "copy" && "$delivery_mode" = "flat" ]]; then
+    if ! preflight_runtime_manifest_digest="$(compute_autonomous_merge_runtime_digest)"; then
+      echo "RUNTIME_DIGEST_FAILED: could not compute the autonomous-merge runtime manifest digest from $repo_root." >&2
+      echo "The installer-owned runtime manifest reader raised an unexpected error; fix the pack and retry." >&2
+      return 68
+    fi
+    validate_runtime_manifest_digest_output "$preflight_runtime_manifest_digest" "$repo_root" || return $?
+  fi
 
   prepared_metadata_attestation="$(ruby -rjson -rdigest -rfind -rfiddle/import -rsecurerandom -e '
     module PreparedMetadataSyscalls
@@ -1985,7 +2091,8 @@ prepare_metadata() {
       "managed_skill_copy_fingerprints" => skill_fingerprints,
       "managed_pack_doc_copy_fingerprints" => doc_fingerprints,
       "managed_pack_helper_copy_fingerprints" => helper_fingerprints,
-      "managed_pack_root_copy_fingerprints" => root_fingerprints
+      "managed_pack_root_copy_fingerprints" => root_fingerprints,
+      "managed_runtime_manifest_digests" => {}
     }
     serialized_metadata = JSON.pretty_generate(metadata) + "\n"
     abort unless File.const_defined?(:NOFOLLOW)
@@ -1993,9 +2100,11 @@ prepare_metadata() {
     file_stat = nil
     completed = false
     begin
+      PreparedMetadataHook.call(:before_create) if defined?(PreparedMetadataHook)
       file = File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600)
       file_stat = file.stat
       abort unless file_stat.file?
+      file.chmod(0o600)
       PreparedMetadataHook.call(:after_create) if defined?(PreparedMetadataHook)
       file.write(serialized_metadata)
       file.flush
@@ -2039,6 +2148,80 @@ prepare_metadata() {
     echo "Verify and move that exact path aside while retaining evidence, then retry; the installer will not delete or overwrite an unverified path." >&2
     return 68
   fi
+}
+
+refresh_prepared_metadata_runtime_digest() {
+  local metadata_tmp="$target/$metadata_name.tmp"
+  local runtime_manifest_digest="" refreshed_attestation="" refresh_status=0
+  if [[ "$mode" != "copy" || "$delivery_mode" != "flat" ]]; then
+    return 0
+  fi
+
+  if ! runtime_manifest_digest="$(compute_autonomous_merge_runtime_digest "$target")"; then
+    echo "RUNTIME_DIGEST_FAILED: could not compute the autonomous-merge runtime manifest digest from $target." >&2
+    echo "The installer-owned runtime manifest reader raised an unexpected error; fix the pack and retry." >&2
+    return 68
+  fi
+  validate_runtime_manifest_digest_output "$runtime_manifest_digest" "$target" || return $?
+  [[ -n "$runtime_manifest_digest" ]] || return 0
+
+  refreshed_attestation="$(
+    ruby -rjson -rdigest -e '
+      path, digest, expected_attestation = ARGV
+      abort unless File.const_defined?(:NOFOLLOW)
+      file = nil
+      begin
+        file = File.open(path, File::RDWR | File::NONBLOCK | File::NOFOLLOW)
+        opened = file.stat
+        source = file.read
+        actual_attestation = "#{opened.dev}:#{opened.ino}|#{Digest::SHA256.hexdigest(source)}"
+        exit 65 unless opened.file? && opened.nlink == 1 && actual_attestation == expected_attestation
+
+        current = File.lstat(path)
+        exit 65 unless current.file? && !current.symlink? &&
+                       current.dev == opened.dev && current.ino == opened.ino
+        begin
+          metadata = JSON.parse(source)
+          exit 65 unless metadata.is_a?(Hash)
+          digests = metadata.fetch("managed_runtime_manifest_digests")
+        rescue JSON::ParserError, KeyError, TypeError
+          exit 65
+        end
+        exit 65 unless digests == {}
+        digests["autonomous-merge"] = digest
+        serialized = JSON.pretty_generate(metadata) + "\n"
+
+        file.chmod(0o600)
+        file.rewind
+        file.truncate(0)
+        file.write(serialized)
+        file.flush
+        file.fsync
+        final_handle = file.stat
+        final_path = File.lstat(path)
+        exit 65 unless final_handle.file? && final_handle.nlink == 1 &&
+                       final_path.file? && !final_path.symlink? &&
+                       final_path.dev == final_handle.dev && final_path.ino == final_handle.ino &&
+                       (final_handle.mode & 0o777) == 0o600
+        print "#{final_handle.dev}:#{final_handle.ino}|#{Digest::SHA256.hexdigest(serialized)}"
+      rescue Errno::ENOENT, Errno::ELOOP
+        exit 65
+      ensure
+        file&.close
+      end
+  ' "$metadata_tmp" "$runtime_manifest_digest" "$prepared_metadata_attestation" 2>/dev/null
+  )" || refresh_status=$?
+  if [[ "$refresh_status" -ne 0 ]]; then
+    if [[ "$refresh_status" -eq 65 ]]; then
+      echo "CORRUPT_INSTALL_METADATA: prepared install metadata changed before the runtime digest could be committed safely." >&2
+      echo "The unverified prepared path was preserved for inspection; verify it before retrying." >&2
+      return 65
+    fi
+    echo "RUNTIME_DIGEST_FAILED: could not bind the installed autonomous-merge runtime digest to $metadata_tmp." >&2
+    echo "The prepared metadata was preserved for inspection; fix the pack and retry." >&2
+    return 68
+  fi
+  prepared_metadata_attestation="$refreshed_attestation"
 }
 
 preflight_metadata_commit_capability() {
@@ -4294,6 +4477,8 @@ else
     ln -sfn "$repo_root/bin/$helper" "$destination"
   done
 fi
+
+refresh_prepared_metadata_runtime_digest
 
 if [[ "$delivery_mode" = "plugin-companion" ]]; then
   scanner_companion_dir="$target/lib/agent-workflows"
