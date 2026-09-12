@@ -644,6 +644,11 @@ Upgrade behavior:
    every `--consumer-root`.
 6. Restore the previous install if reinstall or seam validation fails.
 
+The rollback snapshot is limited to installer-managed paths recorded in the
+install metadata and the current pack layout. It does not walk unrelated agent
+home content such as `worktrees/`, `tmp/`, or `sessions/`, so large homes do
+not make the pre-install backup unnecessarily expensive.
+
 The command prints `UPGRADE_COMPLETE` on success and `ROLLBACK_COMPLETE` when it
 restores the prior install after a failed upgrade. Rollback restores the prior
 delivery mode and skill layout. `upgrade-agent-workflows` never installs or

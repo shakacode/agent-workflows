@@ -7748,8 +7748,11 @@ test_upgrade_rolls_back_when_consumer_seam_fails() {
   source="$tmp/source"
   target="$tmp/codex-home"
   consumer="$tmp/consumer"
-  mkdir -p "$source"
+  mkdir -p "$source" "$target/worktrees/large" "$target/tmp/large" "$target/sessions"
   new_source_repo "$source"
+  printf 'user worktree\n' > "$target/worktrees/large/file"
+  printf 'user tmp\n' > "$target/tmp/large/file"
+  printf 'user session\n' > "$target/sessions/file"
 
   "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install-agent-workflows-test.out"
   before="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' "$target/.agent-workflows-install.json")"
@@ -7768,6 +7771,9 @@ test_upgrade_rolls_back_when_consumer_seam_fails() {
   assert_contains "$output" "ROLLBACK_COMPLETE"
   after="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' "$target/.agent-workflows-install.json")"
   [[ "$before" == "$after" ]] || fail "expected rollback to $before, got $after"
+  [[ "$(cat "$target/worktrees/large/file")" == "user worktree" ]] || fail "rollback touched user worktree"
+  [[ "$(cat "$target/tmp/large/file")" == "user tmp" ]] || fail "rollback touched user tmp"
+  [[ "$(cat "$target/sessions/file")" == "user session" ]] || fail "rollback touched user session"
 }
 
 test_failed_upgrade_restores_companion_delivery_mode_and_layout() {

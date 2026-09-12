@@ -25,6 +25,18 @@ dry_run=false
 fetch=true
 consumer_roots=()
 metadata_name=".agent-workflows-install.json"
+managed_snapshot_roots=(
+  bin
+  bin/agent_doctor
+  docs
+  docs/solutions
+  docs/schemas
+  lib
+  lib/agent-workflows
+  rules
+  skills
+  workflows
+)
 
 default_target_for_host() {
   case "$1" in
@@ -146,18 +158,139 @@ update_source_clone() {
 backup_target() {
   backup_dir="$(mktemp -d)"
   backup_target_dir="$backup_dir/target"
+  backup_manifest="$backup_dir/managed-paths"
+  backup_existing_manifest="$backup_dir/existing-managed-paths"
+  backup_symlink_manifest="$backup_dir/managed-symlinks"
   target_existed=false
   if [[ -d "$target" ]]; then
     target_existed=true
     mkdir -p "$backup_target_dir"
-    rsync -a "$target/" "$backup_target_dir/"
+    # The agent home can contain hundreds of thousands of unrelated files
+    # under worktrees/, tmp/, and sessions/. Snapshot only paths the installer
+    # can replace so rollback remains bounded by the pack installation.
+    ruby -rjson -e '
+      target, source, host, delivery_mode, metadata_path = ARGV
+      managed = [
+        ".agent-workflows-install.json",
+        "LICENSE",
+        "THIRD_PARTY-NOTICES.md",
+        "docs/model-routing.md",
+        "workflows/",
+        "bin/agent_doctor/",
+        "bin/agent-workflow-seam-doctor",
+        "bin/agent-workflow-writing-style",
+        "bin/agent-workflows-delivery-state",
+        "bin/agent-workflows-doctor",
+        "bin/agent-workflows-refresh",
+        "bin/agent-workflows-status",
+        "bin/agent-workflows-trust-audit",
+        "bin/install-agent-workflows",
+        "bin/upgrade-agent-workflows",
+        "bin/validate-execution-provenance",
+        "bin/validate-review-findings"
+      ]
+      managed << "rules/agent-workflows.mdc" if host == "cursor"
+      managed << "lib/agent-workflows/"
+      managed.concat(%w[
+        docs/coordination-backend.md
+        docs/execution-provenance-schema.md
+        docs/review-finding-schema.md
+        docs/schemas/task-review-loop-v1.schema.json
+        docs/agent-workflows-model-routing.md
+        docs/user-facing-coordination.md
+        docs/writing-style.md
+        docs/writing-style-asd-ste100.md
+      ])
+      Dir.glob(File.join(source, "docs/solutions", "*"), File::FNM_DOTMATCH).each do |path|
+        managed << "docs/solutions/#{File.basename(path)}" if File.file?(path) && !File.symlink?(path)
+      end
+      metadata = begin
+        JSON.parse(File.binread(metadata_path))
+      rescue StandardError
+        {}
+      end
+      {
+        "managed_skill_copy_fingerprints" => "skills/",
+        "managed_pack_doc_copy_fingerprints" => "docs/",
+        "managed_pack_helper_copy_fingerprints" => "bin/",
+        "managed_pack_root_copy_fingerprints" => ""
+      }.each do |field, prefix|
+        names = metadata[field]
+        next unless names.is_a?(Hash)
+        names.each_key do |name|
+          next unless name.is_a?(String) && !name.empty? && !name.start_with?("/") && !name.include?("\0")
+          segments = name.split("/", -1)
+          next if segments.any? { |segment| segment.empty? || segment == "." || segment == ".." }
+          managed << "#{prefix}#{name}"
+        end
+      end
+      if delivery_mode == "flat"
+        Dir.glob(File.join(source, "skills", "*"), File::FNM_DOTMATCH).each do |path|
+          managed << "skills/#{File.basename(path) }" if File.directory?(path) && !File.symlink?(path)
+        end
+      end
+      managed.uniq.each do |path|
+        STDOUT.write(path)
+        STDOUT.write("\0")
+      end
+    ' "$target" "$source" "$host" "$delivery_mode" "$metadata_path" > "$backup_manifest"
+    : > "$backup_symlink_manifest"
+    for path in "${managed_snapshot_roots[@]}"; do
+      if [[ -L "$target/$path" ]]; then
+        printf '%s\0' "$path" >> "$backup_symlink_manifest"
+        mkdir -p "$backup_target_dir/$(dirname "$path")"
+        cp -a "$target/$path" "$backup_target_dir/$path"
+      fi
+    done
+    : > "$backup_existing_manifest"
+    while IFS= read -r -d '' path; do
+      skip_path=false
+      for root in "${managed_snapshot_roots[@]}"; do
+        if [[ "$path" == "$root/"* && -L "$target/$root" ]]; then
+          skip_path=true
+          break
+        fi
+      done
+      [[ "$skip_path" = "true" ]] && continue
+      if [[ -e "$target/$path" || -L "$target/$path" ]]; then
+        printf '%s\0' "$path" >> "$backup_existing_manifest"
+      fi
+    done < "$backup_manifest"
+    rsync -a --from0 --files-from="$backup_existing_manifest" "$target/" "$backup_target_dir/"
   fi
 }
 
 restore_target() {
   if [[ "${target_existed:-false}" = "true" ]]; then
     mkdir -p "$target"
-    rsync -a --delete "$backup_target_dir/" "$target/"
+    while IFS= read -r -d '' path; do
+      if [[ -L "$target/$path" ]]; then
+        rm -f "$target/$path"
+      elif [[ -e "$target/$path" ]]; then
+        rm -rf -- "${target:?}/$path"
+      fi
+      mkdir -p "$target/$(dirname "$path")"
+      cp -a "$backup_target_dir/$path" "$target/$path"
+    done < "$backup_symlink_manifest"
+    while IFS= read -r -d '' path; do
+      skip_path=false
+      for root in "${managed_snapshot_roots[@]}"; do
+        if [[ "$path" == "$root/"* && -L "$backup_target_dir/$root" ]]; then
+          skip_path=true
+          break
+        fi
+      done
+      [[ "$skip_path" = "true" ]] && continue
+      if [[ -d "$backup_target_dir/$path" && ! -L "$backup_target_dir/$path" ]]; then
+        mkdir -p "$target/$path"
+        rsync -a --delete "$backup_target_dir/$path"/ "$target/$path"/
+      elif [[ -e "$backup_target_dir/$path" || -L "$backup_target_dir/$path" ]]; then
+        mkdir -p "$(dirname "$target/$path")"
+        rsync -a "$backup_target_dir/$path" "$target/$path"
+      else
+        rm -rf -- "${target:?}/$path"
+      fi
+    done < "$backup_manifest"
   else
     rm -rf "$target"
   fi
