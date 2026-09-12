@@ -142,6 +142,8 @@ class PrWalkthroughContractTest < Minitest::Test
     assert_includes workflow, "Direct chat requests use live, read-only interaction."
     coordination = File.read(COORDINATION).gsub(/\s+/, " ")
     assert_includes coordination, "Direct chat requests remain live and read-only."
+    assert_includes coordination, "comment"
+    assert_includes coordination, "walkthrough-thread mutation"
     assert_includes coordination, "A publication-authority blocker is not an explicit skip."
   end
 
@@ -175,7 +177,7 @@ class PrWalkthroughContractTest < Minitest::Test
     assert_includes checkpoint_validation, "walkthrough_reply_representative_ids"
 
     derivation = File.read(ADDRESS_REVIEW_FETCH).split("SOURCE_PR_IDENTITY_JSON=", 2).last
-                       .split("if [ -n \"${SOURCE_REVIEW_ACTOR}\" ]", 2).first
+                     .split("if [ -n \"${SOURCE_REVIEW_ACTOR}\" ]", 2).first
     assert_includes derivation, 'select(.state == "COMMENTED")'
     assert_includes derivation, "legacy_v1_marker"
     assert_includes derivation, "$marker.publisher"
@@ -186,7 +188,8 @@ class PrWalkthroughContractTest < Minitest::Test
     assert_includes derivation, "DECODED_BASE_REF"
     assert_includes derivation, "DERIVED_DIFF"
     assert_includes derivation, '[ "${DERIVED_DIFF}" = "${MARKER_DIFF}" ]'
-
+    assert_includes derivation, "jq -cr"
+    refute_includes derivation, "jq -cer"
   end
 
   def test_async_reply_consumption_needs_no_undefined_cutoff

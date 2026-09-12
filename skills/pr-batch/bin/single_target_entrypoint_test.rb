@@ -46,6 +46,18 @@ def extract_source_wait_checkpoint_filter(text)
   filter_tail[0...terminator.begin(0)]
 end
 
+def extract_source_walkthrough_derivation(text)
+  start_marker = 'SOURCE_PR_IDENTITY_JSON="$(gh api'
+  start_offset = text.index(start_marker)
+  abort("FAIL: source walkthrough derivation start missing") unless start_offset
+
+  tail = text[start_offset..]
+  terminator = tail.match(/\n\s+: "\$\{SOURCE_WALKTHROUGH_REVIEW_IDS_JSON:\?[^\n]+/)
+  abort("FAIL: source walkthrough derivation terminator missing") unless terminator
+
+  tail[0...terminator.end(0)]
+end
+
 def extract_source_template_awk(text)
   marker = %q{SOURCE_STATE_ROW_COUNT="$(printf '%s\n' "${SOURCE_STATE_ROWS}" | awk -F '\t' -v source="${SOURCE_PR_NUMBER}" '}
   marker_offset = text.index(marker)
@@ -612,6 +624,12 @@ workflow_checkpoint_filter = extract_source_checkpoint_filter(address_review_wor
 assert(
   skill_checkpoint_filter.lines.map(&:strip) == workflow_checkpoint_filter.lines.map(&:strip),
   "address-review source checkpoint validators must stay mirrored"
+)
+skill_walkthrough_derivation = extract_source_walkthrough_derivation(address_review)
+workflow_walkthrough_derivation = extract_source_walkthrough_derivation(address_review_workflow)
+assert(
+  skill_walkthrough_derivation.lines.map(&:strip) == workflow_walkthrough_derivation.lines.map(&:strip),
+  "address-review source walkthrough derivations must stay mirrored"
 )
 skill_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review)
 workflow_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review_workflow)

@@ -50,7 +50,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
   SOURCE_DIFF_BASE_SHA="$(gh api "repos/${REPO}/compare/${SOURCE_BASE_SHA}...${SOURCE_HEAD_SHA}" --jq .merge_base_commit.sha)"
   PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
   SOURCE_DIFF_IDENTITY="$("${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref "${SOURCE_BASE_REF}" --diff-base-sha "${SOURCE_DIFF_BASE_SHA}" --head-sha "${SOURCE_HEAD_SHA}")"
-  jq -cer --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
+  jq -cr --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
     def v2_marker: "^<!-- pr-walkthrough:v2 pr=(?<pr>[1-9][0-9]*) publisher=(?<publisher>[A-Za-z0-9_-]+(?:\\[bot\\])?) base-ref-b64url=(?<base>[A-Za-z0-9_-]+) diff-base=(?<diff_base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) diff=(?<diff>[0-9a-f]{64}) -->$";
     def legacy_v1_marker: "^<!-- pr-walkthrough:v1 pr=(?<pr>[1-9][0-9]*) diff=(?<diff>[0-9a-f]{64}) head=(?<head>[0-9a-f]{40}) -->$";
     .review_summaries[]? |
