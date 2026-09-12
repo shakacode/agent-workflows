@@ -14,6 +14,7 @@ require "yaml"
 require_relative "agent_doctor/autonomous_merge_policy"
 require_relative "agent_doctor/ci_readiness_policy"
 require_relative "agent_doctor/hosted_qa_policy"
+require_relative "agent_doctor/init_command_shell"
 writing_style_resolver = File.expand_path("agent-workflow-writing-style", __dir__)
 unless File.file?(writing_style_resolver)
   warn "agent-workflow-seam-doctor: missing required companion agent-workflow-writing-style; " \
@@ -23,6 +24,7 @@ end
 load writing_style_resolver
 
 module AgentWorkflowSeamDoctor
+  extend InitCommandShell
   SECTION = "Agent Workflow Configuration"
   SECTION_HEADING = /^##\s+#{Regexp.escape(SECTION)}\s*$/
   POINTER_SECTION = <<~MARKDOWN.chomp
@@ -456,44 +458,6 @@ module AgentWorkflowSeamDoctor
     false
   end
 
-  def shell_comment_index(command)
-    quote = nil
-    escaped = false
-    token_start = true
-
-    command.each_char.with_index do |character, index|
-      if escaped
-        escaped = false
-        token_start = false
-        next
-      end
-      if quote
-        if quote == '"' && character == "\\"
-          escaped = true
-        elsif character == quote
-          quote = nil
-        end
-        token_start = false
-        next
-      end
-
-      case character
-      when "\\"
-        escaped = true
-      when "'", '"'
-        quote = character
-        token_start = false
-      when "#"
-        return index if token_start
-
-        token_start = false
-      else
-        token_start = character.match?(/\s/)
-      end
-    end
-    nil
-  end
-
   def shell_c_forwarding_error(command)
     tokens = shell_word_spans(command)
     unless strip_command_prefixes!(tokens)
@@ -575,169 +539,6 @@ module AgentWorkflowSeamDoctor
 
   def supported_shell_command?(shell)
     SHELL_COMMANDS.include?(shell) || shell.match?(VERSIONED_BASH_SHELL)
-  end
-
-  def unquoted_shell_boundary?(raw)
-    quote = nil
-    escaped = false
-
-    raw.each_char do |character|
-      if escaped
-        escaped = false
-      elsif quote
-        if quote == '"' && character == "\\"
-          escaped = true
-        elsif character == quote
-          quote = nil
-        end
-      elsif character == "\\"
-        escaped = true
-      elsif ["'", '"'].include?(character)
-        quote = character
-      elsif character.match?(/[|&;()<>]/)
-        return true
-      end
-    end
-
-    false
-  end
-
-  def shell_c_placeholder_word?(raw)
-    return false if raw.empty? || raw.match?(/\A[#|&;()<>]/)
-    return false if raw.match?(/\A(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})[<>]/)
-
-    quote = nil
-    escaped = false
-    raw.each_char do |character|
-      if escaped
-        escaped = false
-      elsif quote == "'"
-        quote = nil if character == quote
-      elsif character == "\\"
-        escaped = true
-      elsif quote == '"'
-        return false if ["$", "`"].include?(character)
-
-        quote = nil if character == quote
-      elsif ["'", '"'].include?(character)
-        quote = character
-      elsif ["$", "`", "*", "?", "[", "]", "{", "}", "(", ")", "|", "&", ";", "<", ">"].include?(character)
-        return false
-      end
-    end
-
-    true
-  end
-
-  def ansi_c_decoded_shell_word(raw)
-    rewritten = +""
-    found = false
-    quote = nil
-    index = 0
-
-    while index < raw.length
-      character = raw[index]
-      if quote
-        rewritten << character
-        if quote == '"' && character == "\\"
-          index += 1
-          rewritten << raw[index].to_s
-        elsif character == quote
-          quote = nil
-        end
-      elsif character == "\\"
-        rewritten << character
-        index += 1
-        rewritten << raw[index].to_s
-      elsif ["'", '"'].include?(character)
-        quote = character
-        rewritten << character
-      elsif character == "$" && raw[index + 1] == "'"
-        decoded, finish = decode_ansi_c_segment(raw, index + 2)
-        rewritten << Shellwords.escape(decoded)
-        found = true
-        index = finish
-      else
-        rewritten << character
-      end
-      index += 1
-    end
-    return nil unless found
-
-    words = Shellwords.shellsplit(rewritten)
-    raise ArgumentError, "ANSI-C shell tokenization mismatch" unless words.one?
-
-    words.fetch(0)
-  end
-
-  def decode_ansi_c_segment(raw, index)
-    decoded = +""
-    truncated = false
-    while index < raw.length
-      character = raw[index]
-      return [decoded, index] if character == "'"
-
-      unless character == "\\"
-        decoded << character unless truncated
-        index += 1
-        next
-      end
-
-      index += 1
-      escape = raw[index]
-      raise AnsiCDecodeError, "trailing backslash escape" unless escape
-
-      if escape.match?(/[0-7]/)
-        digits = raw[index, 3].to_s[/\A[0-7]{1,3}/]
-        value = digits.to_i(8)
-        truncated = true if (value & 0xff).zero?
-        decoded << ansi_c_byte_for_syntax(value) unless truncated
-        index += digits.length
-      elsif escape == "x"
-        digits = raw[index + 1, 2].to_s[/\A[0-9A-Fa-f]{1,2}/]
-        raise AnsiCDecodeError, "hex escape requires at least one digit" unless digits
-
-        value = digits.to_i(16)
-        truncated = true if (value & 0xff).zero?
-        decoded << ansi_c_byte_for_syntax(value) unless truncated
-        index += digits.length + 1
-      elsif %w[u U].include?(escape)
-        limit = escape == "u" ? 4 : 8
-        digits = raw[index + 1, limit].to_s[/\A[0-9A-Fa-f]{1,#{limit}}/]
-        raise AnsiCDecodeError, "Unicode escape requires at least one digit" unless digits
-
-        value = digits.to_i(16)
-        if value > 0x10ffff || value.between?(0xd800, 0xdfff)
-          raise AnsiCDecodeError, "Unicode escape is not a scalar value"
-        end
-
-        truncated = true if value.zero?
-        decoded << value.chr(Encoding::UTF_8) unless truncated
-        index += digits.length + 1
-      elsif (value = {
-        "a" => "\a", "b" => "\b", "e" => "\e", "E" => "\e", "f" => "\f", "n" => "\n",
-        "r" => "\r", "t" => "\t", "v" => "\v", '"' => '"', "?" => "?"
-      }[escape])
-        decoded << value unless truncated
-        index += 1
-      elsif ["\\", "'"].include?(escape)
-        decoded << escape unless truncated
-        index += 1
-      else
-        raise AnsiCDecodeError, "unsupported escape \\#{escape}"
-      end
-    end
-    raise AnsiCDecodeError, "unterminated ANSI-C quote"
-  end
-
-  def ansi_c_byte_for_syntax(value)
-    byte = value & 0xff
-    return "" if byte.zero?
-    return byte.chr if byte < 0x80
-
-    # High bytes cannot introduce ASCII shell syntax. A valid UTF-8 sentinel keeps analysis safe
-    # while the original ANSI-C command remains byte-for-byte unchanged in the generated wrapper.
-    "\ufffd"
   end
 
   def shell_command_string_index(tokens)
@@ -899,45 +700,6 @@ module AgentWorkflowSeamDoctor
     false
   end
 
-  def active_outer_command_substitution?(command)
-    characters = command.chars
-    quote = nil
-    escaped = false
-
-    characters.each_with_index do |character, index|
-      if escaped
-        escaped = false
-        next
-      end
-      if quote == "'"
-        quote = nil if character == quote
-        next
-      end
-      if quote == '"'
-        if character == "\\"
-          escaped = true
-        elsif character == quote
-          quote = nil
-        elsif character == "`" || (character == "$" && characters[index + 1] == "(")
-          return true
-        end
-        next
-      end
-
-      if character == "\\"
-        escaped = true
-      elsif character == "'"
-        quote = character
-      elsif character == '"'
-        quote = character
-      elsif character == "`" || (character == "$" && characters[index + 1] == "(")
-        return true
-      end
-    end
-
-    false
-  end
-
   def outer_argument_forwarding?(command)
     shell_word_spans(command).any? do |token|
       COMPLETE_ARGUMENT_FORWARDING_WORDS.include?(token.fetch(:raw))
@@ -950,81 +712,6 @@ module AgentWorkflowSeamDoctor
     shell_word_spans(command).any? do |token|
       token.fetch(:start) >= boundary && COMPLETE_ARGUMENT_FORWARDING_WORDS.include?(token.fetch(:raw))
     end
-  end
-
-  def positional_state_reference?(command)
-    active_dollar_expansion?(command) do |characters, index|
-      positional_argument_expansion_at?(characters, index) ||
-        bash_outer_argument_state_expansion_at?(characters, index)
-    end
-  end
-
-  def bash_outer_argument_state_expansion_at?(characters, index)
-    return true if characters[index + 1, 2] == ["{", "!"]
-
-    %w[BASH_ARGV BASH_ARGC BASH_ARGV0].any? do |name|
-      named_parameter_expansion_at?(characters, index, name)
-    end
-  end
-
-  def named_parameter_expansion_at?(characters, index, name)
-    offset = index + 1
-    if characters[offset] == "{"
-      offset += 1
-      offset += 1 if characters[offset] == "#"
-    end
-    return false unless characters[offset, name.length].join == name
-
-    !characters[offset + name.length]&.match?(/\A[A-Za-z0-9_]\z/)
-  end
-
-  def active_dollar_expansion?(command)
-    characters = command.chars
-    quote = nil
-    escaped = false
-
-    characters.each_with_index do |character, index|
-      if escaped
-        escaped = false
-        next
-      end
-
-      if quote == "'"
-        quote = nil if character == quote
-        next
-      end
-
-      if character == "\\"
-        escaped = true
-      elsif quote == '"'
-        quote = nil if character == quote
-      elsif ["'", '"'].include?(character)
-        quote = character
-      end
-
-      next unless character == "$"
-
-      return true if yield(characters, index)
-    end
-
-    false
-  end
-
-  def positional_argument_expansion_at?(characters, index)
-    marker = characters[index + 1]
-    return true if marker&.match?(/\A[@*#0-9]\z/)
-    return false unless marker == "{"
-
-    parameter = characters[index + 2]
-    return true if parameter&.match?(/\A[@*0-9]\z/)
-    if parameter == "!"
-      return characters[index + 3]&.match?(/\A[@*#0-9]\z/)
-    end
-    return false unless parameter == "#"
-
-    # `${#name}` is the length of a named variable; other `${#...}` forms address
-    # the positional-count parameter or the length of a positional parameter.
-    !characters[index + 3]&.match?(/\A[A-Za-z_]\z/)
   end
 
   def env_split_string_operand_boundary(command)
@@ -1334,51 +1021,6 @@ module AgentWorkflowSeamDoctor
       token.is_a?(String) ? token : token.fetch(:raw)
     end
     "#{command[...operand.fetch(:finish)]} #{arguments.join(' ')}"
-  end
-
-  def shell_word_spans(command)
-    values = Shellwords.shellsplit(command)
-    spans = []
-    token_start = nil
-    quote = nil
-    escaped = false
-
-    command.each_char.with_index do |character, index|
-      if escaped
-        escaped = false
-        next
-      end
-
-      if quote
-        if quote == '"' && character == "\\"
-          escaped = true
-        elsif character == quote
-          quote = nil
-        end
-        next
-      end
-
-      if character.match?(/\s/)
-        if token_start
-          spans << { start: token_start, finish: index }
-          token_start = nil
-        end
-      else
-        token_start ||= index
-        case character
-        when "\\"
-          escaped = true
-        when "'", '"'
-          quote = character
-        end
-      end
-    end
-    spans << { start: token_start, finish: command.length } if token_start
-    raise ArgumentError, "shell tokenization mismatch" unless values.length == spans.length
-
-    values.zip(spans).map do |value, span|
-      span.merge(value:, raw: command[span.fetch(:start)...span.fetch(:finish)])
-    end
   end
 
   def discard_env_options!(words, value_key: nil)
