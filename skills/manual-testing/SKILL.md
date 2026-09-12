@@ -78,23 +78,39 @@ blocker. Do not fake a manual pass from static inspection.
      `../../workflows/pr-processing.md` relative to the loaded skill pack. It
      defines the portable recording procedure and clip-inspection requirements.
    - Put the artifacts where every intended reviewer can open them. For
-     GitHub-only or public work, prefer GitHub PR attachments. Use GitHub CLI
-     2.99.0+'s repeatable `--attach` flag with `gh pr create`, `gh pr edit`, or
-     `gh pr comment`
-     when the actor has write access through OAuth, a classic PAT, or a
-     fine-grained PAT, and the user has already authorized that GitHub mutation;
+     GitHub-only or public work, prefer GitHub PR attachments. GitHub CLI 2.99.0+
+     supports repeatable `--attach` flags when creating or editing a PR. For an
+     existing PR, default to a dedicated comment and route it through the shared
+     attribution boundary. Resolve `PR_BATCH_SKILL_DIR` from an explicit
+     environment value, the `pr-batch` sibling of the exact loaded skill
+     directory, or repo-local `.agents/skills/pr-batch`, in that order; stop with
+     a precise blocker if none exists. Write the comment body to
+     `comment_body_file`. Set `AGENT_COMMENT_RUNNER` to exactly `codex` or
+     `claude`, `AGENT_COMMENT_HOST` to the actual non-empty single-line host
+     label, and `AGENT_COMMENT_TASK_OR_RUN` to the stable task or run identifier.
+     Stop if any value is unavailable; do not invent attribution values. Then post
+     the comment with any local evidence attachments:
+
+     ```bash
+     "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
+       --repo "${REPO}" --number "${PR_NUMBER}" \
+       --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+       --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" \
+       --attach 'path#useful alt text' < "${comment_body_file}"
+     ```
+
+     Repeat `--attach` for each file and omit `#alt text` for video. This upload
+     path requires repository write access through OAuth, a classic PAT, or a
+     fine-grained PAT, plus the user's authorization for the GitHub mutation;
      otherwise confirm before posting. GitHub Actions and App tokens cannot use
-     this upload path. For an
-     existing PR, default to a dedicated comment; use `gh pr edit` only when the
-     body file preserves the complete current PR description. Put local media
-     references and useful image alt text in `--body-file`, attach those same
-     paths, and read the posted body/comment back to retain the rewritten stable
-     GitHub attachment URLs. Attach no more than 50 files per command. A nonzero
-     exit can still leave successful earlier attachments in a created or updated
-     resource, so read the printed/resulting URL and body before retrying; retain
-     successful URLs and retry only failed or unattempted files. Fall back to an
-     authenticated browser/file-upload flow when CLI upload is unsupported. A
-     configured linked tracker or artifact store is also valid when every
+     it. Use `gh pr edit` only when the body file preserves the complete current
+     PR description. Read the posted body/comment back to retain the rewritten
+     stable GitHub attachment URLs. Attach no more than 50 files per command. A
+     nonzero exit can still leave successful earlier attachments in a created or
+     updated resource, so read the printed/resulting URL and body before retrying;
+     retain successful URLs and retry only failed or unattempted files. Fall back
+     to an authenticated browser/file-upload flow when CLI upload is unsupported.
+     A configured linked tracker or artifact store is also valid when every
      intended reviewer has access; link that evidence from the PR.
    - Do not use an undocumented direct-upload endpoint. GitHub CLI 2.99.0+
      provides the supported command-line upload path on GitHub.com and GitHub

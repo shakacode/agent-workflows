@@ -24,6 +24,7 @@ require "set"
 
 require_relative "../../pr-batch/lib/git_probe_env"
 require_relative "../../pr-batch/lib/github_actor_trust"
+require_relative "../../pr-batch/lib/github_comment_envelope"
 
 # Pure data shaping (no I/O) plus the gh-backed runner. The pure methods take the
 # raw `gh --paginate --slurp` output strings so they can be unit-tested directly.
@@ -195,6 +196,7 @@ module FetchPrReviewData
         "id" => review["id"],
         "type" => "review_summary",
         "body" => review["body"],
+        "payload_body" => GitHubCommentEnvelope.payload(review["body"].to_s),
         "state" => review["state"],
         "user" => review.dig("user", "login"),
         "created_at" => review["submitted_at"],
@@ -226,6 +228,7 @@ module FetchPrReviewData
         "type" => "review",
         "path" => comment["path"],
         "body" => comment["body"],
+        "payload_body" => GitHubCommentEnvelope.payload(comment["body"].to_s),
         "line" => comment["line"],
         "start_line" => comment["start_line"],
         "user" => comment.dig("user", "login"),
@@ -274,6 +277,7 @@ module FetchPrReviewData
         "node_id" => comment["node_id"],
         "type" => "issue",
         "body" => comment["body"],
+        "payload_body" => GitHubCommentEnvelope.payload(comment["body"].to_s),
         "user" => comment.dig("user", "login"),
         "created_at" => comment["created_at"],
         "html_url" => comment["html_url"]
@@ -282,13 +286,13 @@ module FetchPrReviewData
     [kept, excluded]
   end
 
-  # Most recent trusted issue comment whose body starts with the summary
+  # Most recent trusted issue comment whose payload starts with the summary
   # marker. Only trusted comments count: the cutoff decides which review
   # comments are treated as already addressed, so honouring a forged marker
   # would let an untrusted actor hide real review feedback.
   def compute_cutoff(trusted_issue_comments)
     trusted_issue_comments
-      .select { |comment| comment["body"].to_s.start_with?(SUMMARY_MARKER) }
+      .select { |comment| comment.fetch("payload_body", comment["body"].to_s).start_with?(SUMMARY_MARKER) }
       .filter_map { |comment| comment["created_at"] }
       .reject(&:empty?)
       .max
@@ -353,6 +357,8 @@ module FetchPrReviewData
 
     Options:
           --repo REPO          GitHub repo in OWNER/REPO form. Defaults to gh repo view.
+          --issue-comments-only
+                               Fetch only issue comments for a narrow checkpoint probe.
           --trust-config PATH  Absolute path to the trusted GitHub actor allowlist
                                selected by trusted-base preflight (required).
           --trust-config-source SOURCE
@@ -382,7 +388,7 @@ module FetchPrReviewData
     under a different authority boundary.
 
     review_cutoff_at is the created_at of the most recent trusted issue comment
-    whose body starts with "#{SUMMARY_MARKER}", or "" when none
+    whose unwrapped payload starts with "#{SUMMARY_MARKER}", or "" when none
     exists. Summary and status marker comments are still included in
     issue_comments so consumers can filter them; computing the cutoff here does
     not drop them.
@@ -411,7 +417,7 @@ module FetchPrReviewData
         trust = trust_boundary(repo, opts[:trust_config], opts[:trust_config_scope], opts[:trust_config_source])
         verify_trust_digest!(trust, opts[:expected_trust_digest])
         verify_authenticated_actor!(trust)
-        print_result(fetch(repo, pr_number, trust), opts[:format])
+        print_result(fetch(repo, pr_number, trust, issue_comments_only: opts[:issue_comments_only]), opts[:format])
       end
       0
     rescue Error => e
@@ -423,7 +429,7 @@ module FetchPrReviewData
 
     def parse_args(argv)
       opts = {
-        format: "json", help: false, self_check: false, pr: nil, repo: nil,
+        format: "json", help: false, self_check: false, issue_comments_only: false, pr: nil, repo: nil,
         trust_config: nil, trust_config_source: nil, trust_config_scope: nil, expected_trust_digest: nil
       }
       args = argv.dup
@@ -431,6 +437,7 @@ module FetchPrReviewData
         arg = args.shift
         case arg
         when "--repo" then opts[:repo] = take_value!(args, "--repo")
+        when "--issue-comments-only" then opts[:issue_comments_only] = true
         when "--trust-config" then opts[:trust_config] = take_value!(args, "--trust-config")
         when "--trust-config-source" then opts[:trust_config_source] = take_value!(args, "--trust-config-source")
         when "--trust-config-scope" then opts[:trust_config_scope] = take_value!(args, "--trust-config-scope")
@@ -670,12 +677,19 @@ module FetchPrReviewData
       out.scan(%r{^HTTP/\S+\s+(\d{3})}).last&.first
     end
 
-    def fetch(repo, pr_number, trust)
+    def fetch(repo, pr_number, trust, issue_comments_only: false)
+      issue_raw = rest("repos/#{repo}/issues/#{pr_number}/comments")
+      if issue_comments_only
+        return FetchPrReviewData.assemble(
+          repo:, pr_number:, issue_raw:, reviews_raw: "[]", inline_raw: "[]", threads_raw: "[]", trust:
+        )
+      end
+
       owner, name = repo.split("/", 2)
       FetchPrReviewData.assemble(
         repo:,
         pr_number:,
-        issue_raw: rest("repos/#{repo}/issues/#{pr_number}/comments"),
+        issue_raw:,
         reviews_raw: rest("repos/#{repo}/pulls/#{pr_number}/reviews"),
         inline_raw: rest("repos/#{repo}/pulls/#{pr_number}/comments"),
         threads_raw: capture!(

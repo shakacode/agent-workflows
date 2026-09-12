@@ -216,7 +216,32 @@ class HostedQaReadinessTest < Minitest::Test
     end
   end
 
-  def test_trusted_base_claim_reports_all_eight_byte_identical_runtime_sources
+  # Production break: the publication preflight loads the comment-envelope
+  # library, so a trusted-base claim must reject different envelope bytes.
+  def test_trusted_base_claim_binds_the_comment_envelope_library
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
+      copy_runtime_sources(root)
+      write(root, "skills/pr-batch/lib/github_comment_envelope.rb", "# different envelope authority\n")
+      base_sha = commit!(root, "base with different comment envelope")
+      write(root, "README.md", "documentation only\n")
+      head_sha = commit!(root, "head")
+
+      result, status = run_readiness(
+        root,
+        base_sha:,
+        head_sha:,
+        helper_provenance: "trusted-base:#{base_sha}"
+      )
+
+      refute status.success?
+      assert_equal "UNKNOWN", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "comment-envelope-library is not byte-identical to any required source in trusted base #{base_sha}"
+    end
+  end
+
+  def test_trusted_base_claim_reports_all_nine_byte_identical_runtime_sources
     with_repo do |root|
       write(root, ".agents/agent-workflow.yml", "---\nhosted_qa_gate: n/a\n")
       copy_runtime_sources(root)
@@ -234,7 +259,7 @@ class HostedQaReadinessTest < Minitest::Test
       assert status.success?, result
       assert_equal "NOT_APPLICABLE", result.fetch("verdict")
       assert_equal "trusted-base:#{base_sha}", result.fetch("helper_provenance")
-      assert_equal 8, result.dig("helper_trust", "manifest").length
+      assert_equal 9, result.dig("helper_trust", "manifest").length
       assert_equal HostedQaRuntimeTrust::RUNTIME_SOURCES.transform_values { |source| source.fetch(:tree_paths).first },
                    result.dig("helper_trust", "manifest")
     end
@@ -260,7 +285,7 @@ class HostedQaReadinessTest < Minitest::Test
       assert_equal "mechanically-verified", result.dig("helper_trust", "status")
       assert_equal HostedQaRuntimeTrust::RUNTIME_SOURCES.keys.sort,
                    result.dig("helper_trust", "manifest").keys.sort
-      assert_equal 8, result.dig("helper_trust", "manifest").length
+      assert_equal 9, result.dig("helper_trust", "manifest").length
     end
   end
 
@@ -1699,6 +1724,56 @@ class HostedQaReadinessTest < Minitest::Test
         assert_includes invalid_result.fetch("blockers"),
                         "maintainer hosted QA waiver is not authenticated and replayable for the exact current head"
       end
+    end
+  end
+
+  def test_agent_attributed_comment_cannot_grant_a_hosted_qa_waiver
+    with_repo do |root|
+      write(root, ".agents/agent-workflow.yml", hosted_policy(waiver_mode: "maintainer"))
+      write(root, ".agents/bin/verify-hosted-deployment", "#!/usr/bin/env ruby\n", executable: true)
+      write(root, "app/model.rb", "base\n")
+      base_sha = commit!(root, "base with maintainer waivers")
+      write(root, "app/model.rb", "runtime change\n")
+      head_sha = commit!(root, "runtime change")
+      review_target_url = "https://github.com/example/repo/pull/123"
+      waiver_url = "#{review_target_url}#issuecomment-456"
+      waiver_marker = <<~MARKDOWN.chomp
+        <!-- hosted-qa-maintainer-waiver v1
+        target: #{review_target_url}
+        head_sha: #{head_sha}
+        hosted_target: production
+        decision: waived
+        -->
+      MARKDOWN
+      authenticated_comment = {
+        "id" => 456,
+        "html_url" => waiver_url,
+        "issue_url" => "https://api.github.com/repos/example/repo/issues/123",
+        "created_at" => "2026-08-08T12:00:00Z",
+        "updated_at" => "2026-08-08T12:00:00Z",
+        "author_association" => "MEMBER",
+        "user" => { "login" => "maintainer", "type" => "User" },
+        "body" => GitHubCommentEnvelope.render(
+          body: waiver_marker,
+          runner: "codex",
+          host: "M5",
+          task_or_run: "hosted-waiver-review"
+        )
+      }
+
+      result = HostedQaReadiness.assess(
+        repo: root,
+        base_sha:,
+        head_sha:,
+        evidence: hosted_waiver_evidence(head_sha:, waiver_url:),
+        review_target_url:,
+        waiver_verifier: ->(**_keywords) { authenticated_comment }
+      )
+
+      refute result.fetch("eligible"), result
+      assert_equal "BLOCKED", result.fetch("verdict")
+      assert_includes result.fetch("blockers"),
+                      "maintainer hosted QA waiver is not authenticated and replayable for the exact current head"
     end
   end
 

@@ -36,6 +36,11 @@ instruction before making code changes unless I initiated the run with
 below.
 
 Behavior rules:
+- Before any GitHub post, require the trusted caller to export
+  `AGENT_COMMENT_RUNNER` as exactly `codex` or `claude`,
+  `AGENT_COMMENT_HOST` as the actual runner host, and
+  `AGENT_COMMENT_TASK_OR_RUN` as the stable task/run identifier. Missing or
+  invalid context blocks posting; never invent a generic runner identity.
 - Apply `workflows/pr-processing.md` → **Initial-Pass Optional-Nit Cutoff**
   before triage, menus, worklists, and every Step 8 action below. Its phase and
   authority rules take precedence over optional action defaults, including
@@ -229,9 +234,16 @@ Execution flow when terminal access is available:
        exit 1
      fi
      if [ "${SPECIFIC_TARGET}" != "1" ]; then
+       # The normalized helper unwraps authenticated agent envelopes into
+       # `payload_body`; raw issue-comment JSON cannot identify checkpoints.
+       ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"
        SOURCE_HAS_CHECKPOINT=0
        if [ -n "${SOURCE_PR_NUMBER}" ]; then
-         if SOURCE_CHECKPOINT_JSON="$(gh api --paginate --slurp "repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments" 2>/dev/null)"; then
+         if SOURCE_CHECKPOINT_JSON="$("${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" \
+           "${SOURCE_PR_NUMBER}" --repo "${REPO}" --issue-comments-only \
+           --trust-config "${TRUST_CONFIG_PATH}" --trust-config-source "${TRUST_CONFIG_SOURCE}" \
+           --trust-config-scope "${TRUST_CONFIG_SCOPE}" \
+           --expected-trust-digest "${TRUST_CONFIG_DIGEST}" 2>/dev/null)"; then
            SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
            SOURCE_CHECKPOINT_COUNT="$(printf '%s' "${SOURCE_CHECKPOINT_JSON}" | jq --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
              def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";
@@ -259,9 +271,9 @@ Execution flow when terminal access is available:
                    (($body | startswith("<!-- address-review-status -->")) or
                     (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
                    (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
-             [.[][] |
-               select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase)) |
-               select((.body // "") | valid_body)] | length
+             [.issue_comments[] |
+               select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
+               select((.payload_body // .body // "") | valid_body)] | length
            ' 2>/dev/null || echo 0)"
            case "${SOURCE_CHECKPOINT_COUNT}" in
              ''|*[!0-9]*) SOURCE_CHECKPOINT_COUNT=0 ;;
@@ -497,7 +509,7 @@ Execution flow when terminal access is available:
              startswith("<!-- address-review-status -->") or
              startswith("<!-- codex-claim v1");
            def generated_source_reply($comment):
-             (($comment.body // "") | startswith("<!-- address-review-source-reply -->")) and
+             (($comment.payload_body // $comment.body // "") | startswith("<!-- address-review-source-reply -->")) and
              ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
            def item_key($kind; $id; $thread_id):
              [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
@@ -521,7 +533,7 @@ Execution flow when terminal access is available:
                $inventory.issue_comments[]? |
                . as $comment |
                select((.created_at // "") <= $checkpoint_created_at) |
-               select((((.body // "") | marker_body) or generated_source_reply($comment)) | not) |
+               select((((.payload_body // .body // "") | marker_body) or generated_source_reply($comment)) | not) |
                candidate_state("issue-comment"; .id; "-"; (.created_at // ""))
              ] + [
                $inventory.review_summaries[]? |
@@ -555,11 +567,11 @@ Execution flow when terminal access is available:
            [.issue_comments[] |
              select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
              . as $checkpoint |
-             select(($checkpoint.body // "") | valid_body($checkpoint.created_at // ""))] |
+             select(($checkpoint.payload_body // $checkpoint.body // "") | valid_body($checkpoint.created_at // ""))] |
            sort_by(.created_at) | reverse
          ' source-review-data.json)"; then
-           SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"
-           SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
+           SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].payload_body // .[0].body // ""')"
+           SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.payload_body // .body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
          else
            echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
          fi
@@ -624,6 +636,23 @@ rollback, heartbeat, and fail-closed behavior below.
 Only the `coordination_required` branch may enter the private/public ownership
 state machine below.
 
+Resolve the shared `pr-batch` skill directory before selecting either
+applicability branch because standalone review replies and checkpoint comments
+also use its comment-envelope helper:
+
+```bash
+if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
+  if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
+    PR_BATCH_SKILL_DIR="$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch"
+  elif [ -d ".agents/skills/pr-batch" ]; then
+    PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
+  else
+    echo "Refusing to continue: set PR_BATCH_SKILL_DIR or install/pin the pr-batch skill." >&2
+    exit 1
+  fi
+fi
+```
+
 Do not create todos, present an unattended `autopilot` action, commit, push,
 post replies, resolve threads, or post a summary checkpoint until the required
 ownership gate passes: the private claim gate for `coordination_required`, or
@@ -648,16 +677,6 @@ before mutating GitHub or the branch.
   thread/session when possible; set `AGENT_ID` explicitly when running multiple
   concurrent sessions against the same PR:
   ```bash
-  if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
-    if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
-      PR_BATCH_SKILL_DIR="$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch"
-    elif [ -d ".agents/skills/pr-batch" ]; then
-      PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
-    else
-      echo "Refusing to continue: set PR_BATCH_SKILL_DIR or install/pin the pr-batch skill." >&2
-      exit 1
-    fi
-  fi
   machine_id="${MACHINE_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf machine)}"
   AGENT_ID="${AGENT_ID:-address-review-${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${USER:-agent}-${machine_id}-pr-${PR_NUMBER}}}}"
   coord_read_degraded=0
@@ -753,6 +772,17 @@ before mutating GitHub or the branch.
   expires_at: <ISO8601_UTC>
   -->
   ```
+  Post a new fallback claim through `github-comment-envelope post-issue` and
+  retain the returned issue-comment ID. Route every refresh and terminal
+  fallback-claim update through `github-comment-envelope edit-issue`; pipe the
+  complete replacement claim body on stdin and pass the retained ID:
+  ```bash
+  printf '%s' "${CLAIM_BODY}" |
+    "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" edit-issue \
+      --repo "${REPO}" --comment-id "${CLAIM_COMMENT_ID}" \
+      --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+      --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}"
+  ```
   Use any stable session, thread, or machine identifier available; if none is
   available, use `thread: unavailable`. Set a short bounded advisory lease,
   usually 2-4 hours for an active review run, and refresh the same comment if
@@ -766,7 +796,7 @@ before mutating GitHub or the branch.
   not be the only cleanup step.
 
 5. Filter comments:
-   - Never triage prior workflow summary/status/claim comments. Skip any issue comment whose body starts with `<!-- address-review-summary -->`, `<!-- address-review-status -->`, or `<!-- codex-claim v1` on its very first line; only the summary marker is a cutoff checkpoint.
+   - Never triage prior workflow summary/status/claim comments. For normalized issue comments, inspect `.payload_body // .body // ""` so an attribution envelope cannot hide the workflow marker. Skip any issue comment whose unwrapped payload starts with `<!-- address-review-summary -->`, `<!-- address-review-status -->`, or `<!-- codex-claim v1` on its very first line; only the summary marker is a cutoff checkpoint.
    - On a source PR, also skip `<!-- address-review-source-reply -->` comments only when their author matches `SOURCE_REVIEW_ACTOR`; a different author using that marker remains a source candidate.
    - Skip resolved threads.
    - Triage the first retained trusted reply marked `root_excluded: true` as its own item because its root was excluded by the trust boundary. This non-blocking representative may be an acknowledgment, so later trusted replies are required classification context. Otherwise, use comments with `in_reply_to_id` only as the latest thread context when they update or narrow the unresolved concern.
@@ -939,9 +969,9 @@ before mutating GitHub or the branch.
      `<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked
      reply from source triage and snapshot completeness; another actor cannot use
      the marker to suppress a source candidate.
-     - Issue comments: set `RESPONSE_BODY="<response>"`; when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, set `RESPONSE_BODY="$(printf '<!-- address-review-source-reply -->\n%s' "${RESPONSE_BODY}")"`; then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
-     - Review comment replies: for every item assign `REVIEW_COMMENT_ID="<current-item-id>"` and `CURRENT_ITEM_IN_REPLY_TO_ID="<current-item-in_reply_to_id-or-null>"`; reset `REVIEW_COMMENT_IN_REPLY_TO_ID=""`, then overwrite it from `CURRENT_ITEM_IN_REPLY_TO_ID` only when that value is not `null`. Run `REVIEW_REPLY_TARGET_ID="${REVIEW_COMMENT_IN_REPLY_TO_ID:-${REVIEW_COMMENT_ID}}"` followed by `gh api repos/${REPO}/pulls/${ITEM_SOURCE_PR}/comments/${REVIEW_REPLY_TARGET_ID}/replies -X POST -f body="<response>"`. Never inherit item variables from a prior persistent-shell iteration or pass a literal `null`. This posts a promoted `root_excluded` reply through its top-level parent without changing the item's tracked identity; never substitute the parsed input `COMMENT_ID`.
-     - Review summary body replies: apply the same source-only `RESPONSE_BODY` marker rule as issue comments, then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
+     - Issue comments: set `RESPONSE_BODY="<response>"`; when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, set `RESPONSE_BODY="$(printf '<!-- address-review-source-reply -->\n%s' "${RESPONSE_BODY}")"`; then pipe it to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue` with `--repo`, `--number`, `--runner`, `--host`, and `--task-or-run`.
+     - Review comment replies: for every item assign `REVIEW_COMMENT_ID="<current-item-id>"` and `CURRENT_ITEM_IN_REPLY_TO_ID="<current-item-in_reply_to_id-or-null>"`; reset `REVIEW_COMMENT_IN_REPLY_TO_ID=""`, then overwrite it from `CURRENT_ITEM_IN_REPLY_TO_ID` only when that value is not `null`. Set `REVIEW_REPLY_TARGET_ID="${REVIEW_COMMENT_IN_REPLY_TO_ID:-${REVIEW_COMMENT_ID}}"`, then pipe the response to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-reply` with the same attribution fields plus `--comment-id "${REVIEW_REPLY_TARGET_ID}"`. Never inherit item variables from a prior persistent-shell iteration or pass a literal `null`. This posts a promoted `root_excluded` reply through its top-level parent without changing the item's tracked identity; never substitute the parsed input `COMMENT_ID`.
+     - Review summary body replies: apply the same source-only `RESPONSE_BODY` marker rule as issue comments, then pipe it to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue`.
    - Resolve threads only when the issue is actually handled, explicitly declined with my approval, autonomously declined under a trusted `COORDINATED_AUTOFIX=1` evidence-backed recommendation with the rationale recorded, or autonomously deferred/declined as a low-risk behavior-preserving `OPTIONAL` item under the Maintainer Attention Contract with rationale recorded. Generic handled/declined thread resolution must exclude coordinated `defer`; it follows the ordered durable-evidence path above. Autonomous deferred/declined optional replies must use the `AGENTS.md` tag format: include `[auto-deferred]` on its own line plus a one-line rationale before the thread is resolved. An auto-resolved optional thread that lacks that tag is a spec violation; do not resolve the thread if you cannot post the tag and rationale first:
      `gh api graphql -f query='mutation($threadId:ID!) { resolveReviewThread(input:{threadId:$threadId}) { thread { id isResolved } } }' -f threadId="<THREAD_ID>"`
    - Do not resolve anything still in progress or uncertain.
@@ -970,7 +1000,7 @@ before mutating GitHub or the branch.
    - After any chosen action or completed action chain except `a` and inspect-only bare `o` (`f`, `f+i`, `f+o`, `d`, selected `o`, `r`, `m`, or direct item selection), post either a marked cutoff-safe summary comment or, when the cutoff guard below is not satisfied, a non-cutoff status comment. Make it the next default review cutoff only when every older review item is addressed, resolved, deferred/tracked, declined with rationale, or explicitly left pending by user choice on the original thread.
    - For `a`, do not post a GitHub PR summary comment automatically; return the local summary to the user with the staged-file list and detailed `DISCUSS` recommendations.
    - Include the exact marker `<!-- address-review-summary -->` as the first line only for cutoff-safe summaries. If older optional items remain pending/unselected without a thread-level outcome, use `<!-- address-review-status -->` as the first line, call the comment a non-cutoff status, and tell the next run to use `check all reviews`.
-   - Keep the marker first for automation, then start the visible comment with `🤖 **<client> · <model family>**`, using the posting runtime's real identity (for example, `Codex · Astra` or `Claude · Opus 5`) rather than guessing. Use `UNKNOWN` for a runtime field the host does not expose; unavailable identity metadata alone must not block workflow progress. State the useful result in simple, concise language. Put scan metadata, itemized outcomes, tracking receipts, and rescan instructions in one closed `<details>` block with the exact summary `Agent details` (never `<details open>`). Hidden workflow markers may remain outside the disclosure where parsers require them. Keep source-state data structurally complete for its parser.
+   - Keep the marker first in the payload for automation and let `github-comment-envelope` provide the sole visible agent header. Record the posting runtime's real client and model family (for example, `Codex · Astra` or `Claude · Opus 5`) inside `Agent details`; do not guess. Use `UNKNOWN` for a runtime field the host does not expose; unavailable identity metadata alone must not block workflow progress. State the useful result in simple, concise language. Put scan metadata, itemized outcomes, tracking receipts, and rescan instructions in one closed `<details>` block with the exact summary `Agent details` (never `<details open>`). Hidden workflow markers may remain outside the disclosure where parsers require them. Keep source-state data structurally complete for its parser.
    - Use a `Findings that mattered` section for `MUST-FIX` and `DISCUSS` items, including whether each item was addressed, deferred, or left pending by user choice.
    - Use an `Optional suggestions` section when any `OPTIONAL` item has a recorded outcome or is intentionally left pending/unselected by the chosen action. Include whether each acted-on item was addressed inline, deferred to a follow-up issue, deferred/declined under the attention contract, declined, or still pending after a selected optional action. Use a count-only line such as `- N optional items remain pending/unselected from triage; no action taken this run.` only in a non-cutoff status comment, or after each pending/unselected optional thread has an explicit reply/resolve/defer/decline outcome that makes it safe to skip on later default scans. Do not apply this rule to inspect-only bare `o`, which posts no checkpoint.
    - Use a `Skipped items` section for `SKIPPED` items with short reasons.
@@ -979,7 +1009,7 @@ before mutating GitHub or the branch.
    - For marked summaries, end with a note that future full-PR scans should start after this comment unless I say `check all reviews`. For non-cutoff status comments, end with a note that the next run must use `check all reviews`.
    - Use exact timestamps in the summary when referring to the scan window.
    - When replacement carryover is inactive, post it directly with:
-     `gh api repos/${REPO}/issues/${PR_NUMBER}/comments -X POST -F body=@"${summary_body_file}"`
+     `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue --repo "${REPO}" --number "${PR_NUMBER}" --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" < "${summary_body_file}"`
      When replacement carryover is active, do not run that direct post; delegate
      both checkpoint posts to the Step 10 template below.
    - In replacement carryover, build `source_summary_body_file` through

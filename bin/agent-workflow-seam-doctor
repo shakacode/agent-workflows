@@ -138,6 +138,8 @@ module AgentWorkflowSeamDoctor
   ].freeze
   REPO_PREFIX_POLICY_KEY = "repo_prefix"
   REPO_PREFIX_PATTERN = /\A[A-Z0-9]{1,6}\z/
+  HUMAN_ATTENTION_STATES = %w[walkthrough merge].freeze
+  HUMAN_ATTENTION_REPOSITORY_PATTERN = %r{\A[^/\s]+/[^/\s]+\z}
   COORDINATION_BACKEND_CONTRACT_POLICY_KEY = "coordination_backend_contract"
   COORDINATION_BACKEND_CONTRACT_KEYS = %w[version allowed_identifiers].freeze
   MERGE_SUBMISSION_POLICY_KEY = "merge_submission"
@@ -1786,6 +1788,7 @@ module AgentWorkflowSeamDoctor
     issues.concat(selected_hosted_ci_receipts_policy_issues(root, config))
     issues.concat(ci_readiness_policy_issues(config, yaml))
     issues.concat(hosted_qa_policy_issues(root, yaml))
+    issues.concat(human_attention_policy_issues(config))
     if config.key?("autonomous_merge")
       autonomous_policy = AutonomousMergePolicy.parse(yaml)
       autonomous_policy.errors.each do |error|
@@ -1796,6 +1799,73 @@ module AgentWorkflowSeamDoctor
     issues
   rescue Psych::Exception
     ["invalid policy config: #{POLICY_CONFIG}"]
+  end
+
+  def human_attention_policy_issues(config)
+    return [] unless config.key?("human_attention")
+
+    human_attention = config["human_attention"]
+    return ["invalid human_attention policy: human_attention must be a mapping"] unless human_attention.is_a?(Hash)
+
+    errors = []
+    base_labels = validate_human_attention_labels(human_attention.fetch("labels", {}), required: true)
+    errors.concat(base_labels.fetch(:errors))
+    repositories = human_attention.fetch("repositories", {})
+    values = repositories.is_a?(Hash) ? repositories.keys : repositories
+    unless values.is_a?(Array)
+      errors << "human_attention.repositories must be a mapping or list"
+      return errors.map { |error| "invalid human_attention policy: #{error}" }
+    end
+    unless values.all? { |repo| repo.is_a?(String) && repo.match?(HUMAN_ATTENTION_REPOSITORY_PATTERN) }
+      errors << "every human-attention repository must use OWNER/REPO form"
+    end
+    if values.select { |repo| repo.is_a?(String) }.map(&:downcase).uniq.length != values.length
+      errors << "human-attention repositories must be unique ignoring case"
+    end
+
+    if repositories.is_a?(Hash)
+      repositories.each do |repo, entry|
+        unless entry.nil? || entry.is_a?(Hash)
+          errors << "repository configuration for #{repo} must be a mapping"
+          next
+        end
+        override = validate_human_attention_labels((entry || {}).fetch("labels", {}), required: false)
+        errors.concat(override.fetch(:errors))
+        effective = base_labels.fetch(:labels).merge(override.fetch(:labels))
+        if effective.length == HUMAN_ATTENTION_STATES.length &&
+           effective.values.map(&:downcase).uniq.length != effective.length
+          errors << "human-attention labels must be distinct"
+        end
+      end
+    end
+
+    errors.uniq.map { |error| "invalid human_attention policy: #{error}" }
+  end
+
+  def validate_human_attention_labels(value, required:)
+    errors = []
+    unless value.is_a?(Hash)
+      return { labels: {}, errors: ["human_attention labels must be a mapping"] }
+    end
+
+    unknown = value.keys - HUMAN_ATTENTION_STATES
+    errors << "unknown human-attention label keys: #{unknown.join(', ')}" unless unknown.empty?
+    missing = HUMAN_ATTENTION_STATES - value.keys
+    errors << "human_attention labels must define walkthrough and merge" if required && !missing.empty?
+    unless value.values.all? { |label| label.is_a?(String) && !label.strip.empty? && !label.include?("\n") }
+      errors << "human-attention label names must be nonempty single-line strings"
+    end
+    unless value.values.all? { |label| !label.is_a?(String) || label == label.strip }
+      errors << "human-attention label names must not have leading or trailing whitespace"
+    end
+    errors << "human-attention label names must not contain commas" if value.values.any? { |label| label.is_a?(String) && label.include?(",") }
+    if value.length == HUMAN_ATTENTION_STATES.length &&
+       value.values.all? { |label| label.is_a?(String) } &&
+       value.values.map(&:downcase).uniq.length != value.length
+      errors << "human-attention labels must be distinct"
+    end
+
+    { labels: value.select { |key, label| HUMAN_ATTENTION_STATES.include?(key) && label.is_a?(String) }, errors: }
   end
 
   def writing_style_policy_issues(root, config, yaml)

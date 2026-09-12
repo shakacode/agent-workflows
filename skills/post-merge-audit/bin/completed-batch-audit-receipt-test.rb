@@ -17,6 +17,19 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   WORKFLOW_CONFIG = File.expand_path("../../../.agents/agent-workflow.yml", __dir__)
   REAL_BACKEND = "agent-coord private backend"
 
+  def setup
+    @attribution_environment = %w[AGENT_COMMENT_RUNNER AGENT_COMMENT_HOST AGENT_COMMENT_TASK_OR_RUN].to_h do |name|
+      [name, ENV[name]]
+    end
+    ENV["AGENT_COMMENT_RUNNER"] = "codex"
+    ENV["AGENT_COMMENT_HOST"] = "test-host"
+    ENV["AGENT_COMMENT_TASK_OR_RUN"] = "test-receipt"
+  end
+
+  def teardown
+    @attribution_environment.each { |name, value| value ? ENV[name] = value : ENV.delete(name) }
+  end
+
   def marker(body)
     "<!-- completed-batch-audit v1\n#{body.chomp}\n-->\n"
   end
@@ -1025,6 +1038,51 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         end
       end
     end
+  end
+
+  # Production break: a valid agent-attribution envelope posted through a
+  # human account could be mistaken for a human accepted-deferral decision.
+  def test_accepted_deferral_rejects_an_agent_attributed_decision
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"),
+      encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    calls = []
+    base_api = accepted_deferral_api(
+      preflight,
+      mutate_decision: lambda do |body|
+        GitHubCommentEnvelope.render(
+          body:,
+          runner: "codex",
+          host: "test-host",
+          task_or_run: "accepted-deferral-test"
+        )
+      end
+    )
+    api = lambda do |host, endpoint, **options|
+      calls << endpoint
+      base_api.call(host, endpoint, **options)
+    end
+
+    with_accepted_deferral_api(preflight, api) do
+      assert_raises(CompletedBatchAuditReceipt::Error) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
+        )
+      end
+    end
+    refute_includes calls, "repos/shakacode/react_on_rails/collaborators/justin808/permission"
   end
 
   def test_accepted_deferral_rejects_substantive_or_unknown_product_blockers
@@ -2075,6 +2133,56 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_equal 64, status.exitstatus
   end
 
+  def test_cli_usage_documents_required_comment_attribution_context
+    usage = CompletedBatchAuditReceipt.usage
+
+    %w[AGENT_COMMENT_RUNNER AGENT_COMMENT_HOST AGENT_COMMENT_TASK_OR_RUN].each do |variable|
+      assert_includes usage, variable
+    end
+  end
+
+  # Production break: publish could authenticate targets through GitHub before
+  # discovering that its outbound agent comment lacked valid attribution.
+  def test_publish_cli_rejects_missing_or_invalid_comment_attribution_before_github
+    with_fake_gh do |env, directory|
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
+      command = [
+        "ruby", SCRIPT, "publish", "--expected-batch-id", "batch-184",
+        "--targets-json", targets_path, "--receipt", receipt_path,
+        "--workflow-config", env.fetch("FAKE_WORKFLOW_CONFIG"),
+        "--applicability-proof", env.fetch("FAKE_APPLICABILITY_PROOF"),
+        "--applicability-proof-sha256", env.fetch("FAKE_APPLICABILITY_PROOF_DIGEST")
+      ]
+      cases = {
+        "missing" => {
+          "AGENT_COMMENT_RUNNER" => nil,
+          "AGENT_COMMENT_HOST" => nil,
+          "AGENT_COMMENT_TASK_OR_RUN" => nil
+        },
+        "invalid" => {
+          "AGENT_COMMENT_RUNNER" => "automation",
+          "AGENT_COMMENT_HOST" => "test-host",
+          "AGENT_COMMENT_TASK_OR_RUN" => "test-receipt"
+        }
+      }
+
+      cases.each do |label, attribution|
+        File.delete(env.fetch("FAKE_GH_LOG")) if File.exist?(env.fetch("FAKE_GH_LOG"))
+        out, _err, status = Open3.capture3(env.merge(attribution), *command)
+
+        assert_equal 1, status.exitstatus, label
+        assert_includes JSON.parse(out).fetch("errors").join("\n"), "cannot attribute agent-authored comment", label
+        refute File.exist?(env.fetch("FAKE_GH_LOG")), label
+      end
+    end
+  end
+
   def test_complete_publish_cli_requires_explicit_workflow_config
     with_fake_gh do |env, directory|
       targets_path = write_json(
@@ -2583,7 +2691,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert_match(/SHA-256 `[0-9a-f]{64}`/, reference)
       refute_includes reference, "<!-- completed-batch-audit"
       posted_comment = File.read(env.fetch("FAKE_GH_BODY"))
-      assert posted_comment.start_with?("Completed-batch audit: replay evidence follows.\n\n")
+      assert posted_comment.start_with?("🤖 Codex\n")
+      assert GitHubCommentEnvelope.payload(posted_comment).start_with?("Completed-batch audit: replay evidence follows.\n\n")
       summary = result.fetch("pr_description_summary")
       assert_equal "https://github.com/acme/widgets/pull/184", summary.fetch("url")
       assert_includes summary.fetch("section"), CompletedBatchAuditReceipt::PR_SUMMARY_START
@@ -2629,7 +2738,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         result = JSON.parse(out)
         assert result.fetch("ready")
         posted_body = File.read(env.fetch("FAKE_GH_BODY"))
-        assert posted_body.start_with?("#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n")
+        assert GitHubCommentEnvelope.payload(posted_body).start_with?(
+          "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n"
+        )
         bound_marker = CompletedBatchAuditReceipt.comment_marker(posted_body)
         assert_includes bound_marker, "publication_snapshot: sha256:"
         assert_equal "batch-184", CompletedBatchAuditReceipt.marker_fields(bound_marker).fetch("batch_id")
@@ -2679,7 +2790,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
       assert status.success?, err
       posted_body = File.read(env.fetch("FAKE_GH_BODY"))
-      assert posted_body.start_with?("#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n")
+      assert GitHubCommentEnvelope.payload(posted_body).start_with?(
+        "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n"
+      )
       refute_includes posted_body, CompletedBatchAuditReceipt::LEGACY_COMMENT_HEADER
     end
   end
@@ -3993,8 +4106,16 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   def capture_receipt_cli(*arguments)
     command = arguments.dup
     script_index = command.index(SCRIPT)
-    receipt_command = script_index && %w[publish replay supersede].include?(command[script_index + 1])
     environment = command.first.is_a?(Hash) ? command.first : {}
+    unless command.first.is_a?(Hash)
+      environment = {}
+      command.unshift(environment)
+      script_index += 1 if script_index
+    end
+    environment["AGENT_COMMENT_RUNNER"] ||= "codex"
+    environment["AGENT_COMMENT_HOST"] ||= "test-host"
+    environment["AGENT_COMMENT_TASK_OR_RUN"] ||= "test-receipt"
+    receipt_command = script_index && %w[publish replay supersede].include?(command[script_index + 1])
     if receipt_command && !command.include?("--workflow-config")
       workflow_config = environment.fetch("FAKE_WORKFLOW_CONFIG", WORKFLOW_CONFIG)
       command.concat(["--workflow-config", workflow_config])

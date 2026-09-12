@@ -1327,6 +1327,82 @@ Do not create separate tracking issues for these metrics. Keep them in the PR
 evidence or final batch report. They are directional and informational, not an
 accounting ledger or readiness gate.
 
+## GitHub Human Attention
+
+Use two mutually exclusive semantic states when an Agent Workflows run has
+finished all agent-owned work and the next action genuinely belongs to a human:
+
+- `walkthrough` — the complete exact-head walkthrough is ready
+  for human review.
+- `merge` — every ordinary exact-head gate has passed and the
+  remaining decision is whether to merge.
+
+These are queue states, not permanent PR classifications. Remove them when the
+human responds, the head changes, a gate fails, the PR merges or closes, or an
+agent resumes ownership. A PR must never carry both labels. Resolve the labels
+from the consumer's `.agents/agent-workflow.yml`; both semantic labels are
+required, and repository-specific overrides are optional:
+
+```yaml
+human_attention:
+  labels:
+    walkthrough: <consumer-defined walkthrough label>
+    merge: <consumer-defined merge label>
+  repositories:
+    OWNER/REPO:
+      labels:
+        walkthrough: <optional repository walkthrough label>
+        merge: <optional repository merge label>
+```
+
+Resolve `PR_BATCH_SKILL_DIR` through the normal installed/shared or repo-pinned
+helper boundary and bind the trusted consumer checkout as
+`TRUSTED_CONSUMER_REPO_ROOT`. Invoke
+`${PR_BATCH_SKILL_DIR}/bin/human-attention transition --repo-root
+"${TRUSTED_CONSUMER_REPO_ROOT}"` with the repository, PR, requested state, and
+expected full head SHA to apply or clear a state. It fails closed if the PR is
+not open, its head moved, or both semantic labels are present. Invoke
+`${PR_BATCH_SKILL_DIR}/bin/human-attention desk --repo-root
+"${TRUSTED_CONSUMER_REPO_ROOT}"` to query the configured repository set and
+render a numbered mirror with the requested action,
+repository, PR title and link, reason, current head, refresh time, and any
+degraded repository. A label alone does not prove that its transition applied to
+the current head, so the desk keeps exact-head readiness unverified until the
+label-lifecycle cleanup removes stale states. Zero human decisions does not
+imply zero agent-owned work.
+
+Publish a walkthrough in full before applying the walkthrough state. Questions
+and answers may continue asynchronously in GitHub comments; do not make the
+human wait in a live agent session for each section. Control Plane Flow
+[PR #451](https://github.com/shakacode/control-plane-flow/pull/451) is the
+reference interaction pattern.
+
+All Agent Workflows-authored top-level comments and review replies must cross
+the `github-comment-envelope` boundary. Its visible first line is exactly
+`🤖 Codex` for Codex or `🤖 Claude` for Claude. Machine, host, task, run, and
+automation details stay out of the visible prefix. A hidden versioned marker
+records the runner, host, and task-or-run identifier. Use `post-issue` for a
+top-level PR or issue comment and `post-reply` for an inline review reply.
+Consumer code must not bypass this boundary.
+
+Before any posting path, export all three execution-context values:
+`AGENT_COMMENT_RUNNER` (`codex` or `claude`), `AGENT_COMMENT_HOST` (a non-empty
+single-line host label such as `Codex desktop`), and
+`AGENT_COMMENT_TASK_OR_RUN` (a stable task or run identifier).
+Unattended publishers must fail closed when any value is absent or invalid;
+they must not invent an `agent-workflows` runner or reuse an arbitrary batch ID.
+
+Agent-attributed comments never establish human approval or merge authority.
+Authority checks must exclude every comment with a valid attribution envelope;
+unattributed human comments retain their ordinary meaning under repository
+policy.
+
+For rollout, create the two resolved labels in every configured repository,
+add each repository under the policy seam, upgrade or reinstall the shared
+skill pack in existing consumer homes, and run the consumer seam doctor. Query
+the desk once before relying on it; any degraded repository remains a visible
+failure until refreshed successfully.
+
 ## Human Attention Notifications
 
 Apply [`HST-v1`](pr-processing.md#human-status-translation-contract) before sending any Slack

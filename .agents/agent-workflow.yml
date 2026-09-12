@@ -22,6 +22,12 @@ coordination_backend_contract:
   allowed_identifiers:
     - "agent-coord private backend"
 agent_claimed_label: "agent-claimed"
+human_attention:
+  labels:
+    walkthrough: "human-attention:walkthrough"
+    merge: "human-attention:merge"
+  repositories:
+    - "shakacode/agent-workflows"
 changelog: "CHANGELOG.md"
 benchmark_labels: "n/a"
 merge_ledger: "n/a"

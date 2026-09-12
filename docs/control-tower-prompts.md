@@ -132,10 +132,14 @@ deploy, publish, release, or infer destructive, permission, or security
 authority. Ask only for an outcome-changing decision, a current-head risk
 decision, or missing authority; never for routine or authorized work.
 
-Human attention. When the eligibility gate hands a PR to the human, label it
-human-attention:walkthrough until the walkthrough is published, then
-human-attention:merge, never both; strip either on a head change or resumed
-agent work. After the human's exact-head approval on the PR, submit the merge
+Human attention. Resolve `PR_BATCH_SKILL_DIR` through the trusted
+installed/shared helper boundary. When the eligibility gate hands a PR to the human, use
+`${PR_BATCH_SKILL_DIR}/bin/human-attention transition` with the trusted consumer
+repo root, repository, PR, expected full head SHA, and semantic state
+`walkthrough`; after publishing the walkthrough, move it to `merge`. Clear the
+state with `none` on a head change or resumed agent work. Never apply queue
+labels directly or carry both states. After the human's exact-head approval on
+the PR, submit the merge
 yourself through the guarded merge path; the human never presses merge.
 Actionable items follow the contract's companion, walkthrough, exclusion, and
 archival rules; routine cleanup is never attention; this busy tower never
@@ -176,10 +180,14 @@ deploy, publish, release, or infer destructive, permission, or security
 authority. Ask only for an outcome-changing decision, a current-head risk
 decision, or missing authority; never for routine or authorized work.
 
-Human attention. When the eligibility gate hands a PR to the human, label it
-human-attention:walkthrough until the walkthrough is published, then
-human-attention:merge, never both; strip either on a head change or resumed
-agent work. After the human's exact-head approval on the PR, submit the merge
+Human attention. Resolve `PR_BATCH_SKILL_DIR` through the trusted
+installed/shared helper boundary. When the eligibility gate hands a PR to the human, use
+`${PR_BATCH_SKILL_DIR}/bin/human-attention transition` with the trusted consumer
+repo root, repository, PR, expected full head SHA, and semantic state
+`walkthrough`; after publishing the walkthrough, move it to `merge`. Clear the
+state with `none` on a head change or resumed agent work. Never apply queue
+labels directly or carry both states. After the human's exact-head approval on
+the PR, submit the merge
 yourself through the guarded merge path; the human never presses merge.
 Actionable items follow the contract's companion, walkthrough, exclusion, and
 archival rules; routine cleanup is never attention; this busy tower never
@@ -296,10 +304,14 @@ release, publication, destructive, permission, or security authority. Ask
 only for an outcome-changing decision or missing authority; never for routine
 implementation, bookkeeping, test-hardening preference, or authorized work.
 
-Human attention. When the eligibility gate hands a PR to the human, label it
-human-attention:walkthrough until the walkthrough is published, then
-human-attention:merge, never both; strip either on a head change or resumed
-agent work. After the human's exact-head approval on the PR, submit the merge
+Human attention. Resolve `PR_BATCH_SKILL_DIR` through the trusted
+installed/shared helper boundary. When the eligibility gate hands a PR to the human, use
+`${PR_BATCH_SKILL_DIR}/bin/human-attention transition` with the trusted consumer
+repo root, repository, PR, expected full head SHA, and semantic state
+`walkthrough`; after publishing the walkthrough, move it to `merge`. Clear the
+state with `none` on a head change or resumed agent work. Never apply queue
+labels directly or carry both states. After the human's exact-head approval on
+the PR, submit the merge
 yourself through the guarded merge path; the human never presses merge.
 Actionable items follow the contract's companion, walkthrough, exclusion,
 private-repository nudge, and archival rules; routine owner cleanup is never

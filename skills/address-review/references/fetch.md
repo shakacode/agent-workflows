@@ -63,7 +63,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         startswith("<!-- address-review-status -->") or
         startswith("<!-- codex-claim v1");
       def generated_source_reply($comment):
-        (($comment.body // "") | startswith("<!-- address-review-source-reply -->")) and
+        (($comment.payload_body // $comment.body // "") | startswith("<!-- address-review-source-reply -->")) and
         ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
       def item_key($kind; $id; $thread_id):
         [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
@@ -87,7 +87,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
           $inventory.issue_comments[]? |
           . as $comment |
           select((.created_at // "") <= $checkpoint_created_at) |
-          select((((.body // "") | marker_body) or generated_source_reply($comment)) | not) |
+          select((((.payload_body // .body // "") | marker_body) or generated_source_reply($comment)) | not) |
           candidate_state("issue-comment"; .id; "-"; (.created_at // ""))
         ] + [
           $inventory.review_summaries[]? |
@@ -121,11 +121,11 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
       [.issue_comments[] |
         select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
         . as $checkpoint |
-        select(($checkpoint.body // "") | valid_body($checkpoint.created_at // ""))] |
+        select(($checkpoint.payload_body // $checkpoint.body // "") | valid_body($checkpoint.created_at // ""))] |
       sort_by(.created_at) | reverse
     ' source-review-data.json)"; then
-      SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"
-      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
+      SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].payload_body // .[0].body // ""')"
+      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.payload_body // .body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
     else
       echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
     fi
@@ -185,9 +185,9 @@ normalization is unavailable or incomplete, stop with readiness `UNKNOWN`.
 This single read-only call replaces the per-endpoint `gh api ... | jq` blocks and the `reviewThreads` GraphQL query. It emits one normalized JSON document:
 
 - `review_cutoff_at` — the cutoff timestamp described in Step 3 (empty when no prior summary comment exists).
-- `review_summaries` — review bodies with non-empty text: `{id, type: "review_summary", body, state, user, created_at, html_url}`. Treat actionable ones as general comments; like specific review bodies they cannot be replied to via the `/replies` endpoint and must be answered as general PR comments (see Step 8).
-- `inline_comments` — inline review comments: `{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved, root_excluded?}`. The `thread_id` and `is_resolved` fields are already joined from the review threads by `node_id`, so no separate GraphQL query is needed for the full-PR path. Comments with no matching thread get `thread_id: null` and `is_resolved: false`. The first retained trusted reply whose root was excluded has `root_excluded: true`; its own `id` remains the item identity and its `in_reply_to_id` is the top-level reply target. Selecting the first retained reply is a deliberate non-blocking representative heuristic: it may be an acknowledgment, so later trusted replies remain required context for classification.
-- `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, user, created_at, html_url}`. Summary/status/claim/source-reply marker comments are included so you can filter them (see Filtering comments below).
+- `review_summaries` — review bodies with non-empty text: `{id, type: "review_summary", body, payload_body, state, user, created_at, html_url}`. `payload_body` contains the unwrapped body for a valid agent-attribution envelope and otherwise matches `body`. Treat actionable ones as general comments; like specific review bodies they cannot be replied to via the `/replies` endpoint and must be answered as general PR comments (see Step 8).
+- `inline_comments` — inline review comments: `{id, node_id, type: "review", path, body, payload_body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved, root_excluded?}`. `payload_body` contains the unwrapped body for a valid agent-attribution envelope and otherwise matches `body`. The `thread_id` and `is_resolved` fields are already joined from the review threads by `node_id`, so no separate GraphQL query is needed for the full-PR path. Comments with no matching thread get `thread_id: null` and `is_resolved: false`. The first retained trusted reply whose root was excluded has `root_excluded: true`; its own `id` remains the item identity and its `in_reply_to_id` is the top-level reply target. Selecting the first retained reply is a deliberate non-blocking representative heuristic: it may be an acknowledgment, so later trusted replies remain required context for classification.
+- `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, payload_body, user, created_at, html_url}`. `payload_body` contains the unwrapped body for a valid agent-attribution envelope and otherwise matches `body`. Summary/status/claim/source-reply marker comments are included so you can filter them (see Filtering comments below).
 - `review_threads` — `{thread_id, is_resolved, comments: [{node_id, id}]}` for any thread-level work.
 - `excluded_interactions` — bounded audit metadata `{kind, id, node_id, user, trust, body_withheld, created_at, html_url, state?, thread_id?}` with no body or path. `body_withheld` is true only when non-empty text was removed; use excluded review timestamps when computing thread activity so checkpoint identities remain stable without exposing text.
 
@@ -211,8 +211,10 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 
 **Filtering comments:**
 
-- Never triage prior workflow summary/status/claim comments. Skip any issue comment
-  whose body starts with `<!-- address-review-summary -->` or
+- Never triage prior workflow summary/status/claim comments. For normalized issue
+  comments, inspect `.payload_body // .body // ""` so an attribution envelope cannot
+  hide the workflow marker. Skip any issue comment whose unwrapped payload starts
+  with `<!-- address-review-summary -->` or
   `<!-- address-review-status -->` or `<!-- codex-claim v1`; only the summary
   marker is a cutoff checkpoint.
 - On a source PR, also skip `<!-- address-review-source-reply -->` comments
