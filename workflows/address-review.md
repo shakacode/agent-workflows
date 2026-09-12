@@ -418,8 +418,8 @@ Execution flow when terminal access is available:
              echo "Review-artifact usage/capacity waiver for PR #${REVIEW_WAIT_PR} at ${REVIEW_WAIT_HEAD_SHA}: ${REVIEW_WAIVER_EVIDENCE}"
              REVIEW_REPORTED_WAIVER_HEAD_SHA="${REVIEW_WAIT_HEAD_SHA}"
            fi
-      # Compare exact check-run names from `gh pr checks --json name`.
-      REVIEW_WAVE_STATUS_JSON="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
+           # Compare exact check-run names from `gh pr checks --json name`.
+           REVIEW_WAVE_STATUS_JSON="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
              jq -c --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson waived "${REVIEW_WAIVED_CHECK_NAMES_JSON}" '
                [ $expected[] as $name |
                  ([.[] | select(.name == $name)]) as $checks |
