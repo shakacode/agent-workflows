@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 
 PR_BODY_CONTRACT_ROOT = File.expand_path("../../..", __dir__)
@@ -16,7 +18,7 @@ class PrBodyHumanFirstContractTest < Minitest::Test
     workflow_route = File.read(PR_BODY_CONTRACT_WORKFLOW_PATH, encoding: "UTF-8")
     workflow_component = File.read(PR_BODY_CONTRACT_COMPONENT_PATH, encoding: "UTF-8")
     workflow = "#{workflow_component}\n#{workflow_route}"
-    pr_batch_skill = File.read(PR_BODY_CONTRACT_PR_BATCH_SKILL_PATH, encoding: "UTF-8")
+    pr_batch_skill = SkillStageSource.read(PR_BODY_CONTRACT_PR_BATCH_SKILL_PATH, encoding: "UTF-8")
     audit_receipt = File.read(PR_BODY_CONTRACT_AUDIT_RECEIPT_PATH, encoding: "UTF-8")
     validation = File.read(PR_BODY_CONTRACT_VALIDATE_PATH, encoding: "UTF-8")
     goal_test = File.read(PR_BODY_CONTRACT_GOAL_TEST_PATH, encoding: "UTF-8")

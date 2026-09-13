@@ -1,6 +1,10 @@
 # ShakaCode Agent Workflows
 
-Portable Codex and Claude workflow pack for ShakaCode repositories.
+Portable Codex, Claude, and Cursor workflow pack.
+
+[![ShakaCode Agent Workflows — Run AI coding agents in fleets, safely](https://agents.shakacode.com/og.png)](https://agents.shakacode.com)
+
+**[Documentation →](https://agents.shakacode.com)**
 
 This repository packages reusable agent skills, workflow prompts, and helper
 scripts for PR batches, review triage, merge readiness, CI routing, changelog
@@ -40,7 +44,7 @@ default.
 
 ## What You Get
 
-- Portable Codex and Claude skills for planning, running, reviewing, and
+- Portable Codex, Claude, and Cursor skills for planning, running, reviewing, and
   verifying agent-assisted PR work, from one coordinated PR lane through
   multi-lane batches.
 - A repo contract so shared workflows can resolve base branches, validation
@@ -90,8 +94,14 @@ cd "$HOME/src/agent-workflows"
 bin/install-agent-workflows --host codex
 ```
 
-Use `--host claude` for Claude Code, or `--target "$HOME/.agents"` for an
-explicit shared agent home.
+Use `--host claude` for Claude Code, `--host cursor` for Cursor, or
+`--target "$HOME/.agents"` for an explicit shared agent home.
+
+Cursor installs into `${CURSOR_HOME:-$HOME/.cursor}`. Never install into
+`~/.cursor/skills-cursor`; that directory is reserved for Cursor builtins.
+Only `~/.cursor/skills` syncs to Cloud Agents. Add
+`export PATH="$HOME/.cursor/bin:$PATH"` if you want the Cursor-installed
+helpers on `PATH`.
 
 New to the pack? Follow [Getting Started](docs/getting-started.md) for
 prerequisites with versions, one host install, one repo adoption, and a first
@@ -132,6 +142,12 @@ Install into the default Claude Code home:
 bin/install-agent-workflows --host claude
 ```
 
+Install into the default Cursor home:
+
+```bash
+bin/install-agent-workflows --host cursor
+```
+
 Install into a different agent home, such as `~/.agents`:
 
 ```bash
@@ -160,7 +176,7 @@ The selected delivery mode is durable install state. Repeated installs,
 explicit `--delivery-mode` changes it.
 
 Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor`,
-`agent-workflows-doctor`, `agent-workflows-status`,
+`agent-workflows-doctor`, `agent-workflows-refresh`, `agent-workflows-status`,
 `agent-workflows-trust-audit`, and `upgrade-agent-workflows` available as normal
 commands.
 
@@ -170,10 +186,13 @@ notes.
 
 ### Native Plugin Paths
 
-Codex and Claude Code can also consume this source pack through native plugin
-metadata. Both native paths publish the semantic skills under the short `scw`
-plugin namespace without renaming anything under `skills/`. For example, Claude
-Code exposes `skills/verify/SKILL.md` as `/scw:verify`.
+Codex and Claude Code consume this source pack through native plugin
+metadata. Cursor can load the same pack from a local plugin symlink at
+`~/.cursor/plugins/local/scw` plus `--delivery-mode plugin-companion`, or from
+the flat Cursor install. Public Cursor Marketplace listing is a later
+decision. Both Codex and Claude native paths publish the semantic skills under
+the short `scw` plugin namespace without renaming anything under `skills/`. For
+example, Claude Code exposes `skills/verify/SKILL.md` as `/scw:verify`.
 
 Add and install the Claude Code marketplace plugin with:
 
@@ -214,6 +233,22 @@ Use a native plugin path for a host-qualified skill surface. Pair it with
 binaries, workflows, docs, metadata, status, or upgrades. The installer fails
 closed instead of creating native-plus-flat duplicates. Native plugin updates
 remain owned by the host plugin flow, not `upgrade-agent-workflows`.
+
+Request an immediate native-plugin refresh when you need the latest shared
+workflows without waiting for the host's normal update cycle:
+
+```bash
+agent-workflows-refresh --host codex
+agent-workflows-refresh --host claude
+```
+
+This uses the host's native marketplace and plugin update commands, so the
+newest marketplace commit does not need a separate Agent Workflows release.
+Codex already refreshes configured Git marketplaces when it starts. Claude can
+check third-party marketplaces after startup when auto-update is enabled, but
+that setting is off by default and the check may be delayed. After a Claude
+refresh, run `/reload-plugins` to load the update in the current session. Restart
+Codex when an existing session must rediscover changed skills or instructions.
 
 ## Consumer Repo Adoption
 
@@ -267,6 +302,10 @@ Use [docs/source-pack-glossary.md](docs/source-pack-glossary.md) for canonical
 vocabulary around source-pack distribution, install paths, seams, readiness
 states, review findings, and state-machine fixtures.
 
+### Examples and adopters
+
+- [shakacode/shakaperf](https://github.com/shakacode/shakaperf): TypeScript/yarn monorepo with `.agents/agent-workflow.yml` in the `.agents/` seam.
+
 ## Maintainer Sync Reference
 
 Most teams can adopt the source pack with the Quick Start and Consumer Repo
@@ -292,6 +331,9 @@ The docs for this pack are the
 [ShakaCode Agent Workflow Playbook](docs/README.md). Start there when deciding
 which workflow to use, how to install the pack, how to adopt it in a consumer
 repo, or how to validate the agent workflow contract.
+
+To report a suspected vulnerability, follow the
+[Security Policy](SECURITY.md).
 
 ## License
 
@@ -360,6 +402,17 @@ Run the full local validation gate before publishing changes:
 ```bash
 bin/validate
 ```
+
+PR CI has a narrow fast path for the four ordinary documentation files listed
+in `bin/pr-validation-scope`, including this README. It runs Markdown and link
+checks plus the applicable README contracts, and reports selected and omitted
+coverage with the tested SHA and base SHA in the Validate job summary. The
+policy comes from the PR base commit. Instruction Markdown, code, configuration,
+unknown paths, renames, deletions, changed embedded code or commands, or missing
+diff evidence run the full suite. README prose changes can use the fast path;
+edits to its installation commands retain full coverage.
+Draft PRs test their head; ready PRs test the current-base integration. Main
+pushes and the local `bin/validate` command always use full validation.
 
 The gate checks skill frontmatter, helper script tests, prompt-size invariants,
 the GitHub Actions policy scanner, and the seam doctor against a fixture

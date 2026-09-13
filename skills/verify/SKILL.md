@@ -17,21 +17,37 @@ Use `/verify` for local pre-PR checks. Use `/run-ci` when you need `.agents/bin/
    `git diff --stat "origin/${BASE_BRANCH}...HEAD"`.
 3. Decide the required verification set that covers the changed surface area using the **Scope Guide** below. Always
    include `.agents/bin/lint` when present, and always include `.agents/bin/validate` before
-   creating a commit, even when the changed surface is documentation-only, because that gate can scan all files of its
-   language, not just changed or staged ones, so docs-only commits can still expose pre-existing offenses that CI will
-   catch.
-4. Run each command in order and stop on the first failure. Report the failing command, the relevant error output, and the next fix to attempt.
+   creating a commit, including documentation-only changes. The repository wrapper owns its required coverage;
+   execute selection through its trusted-base wrapper or protected entry point under the
+   [delivery coverage contract](references/verification-evidence.md#delivery-coverage).
+   Do not infer reduced coverage from file extensions, project labels, or a candidate's changed policy.
+4. Run each command in order; on failure, pause the command sequence to diagnose and fix it. Record the failing command, relevant error output, and next fix to attempt.
 5. For formatting failures (auto-fixable formatter or lint offenses), run the repo's documented autofix command or `.agents/bin/lint` mode when it supports fixes; do not manually edit formatting-only changes.
 6. After one or more edits for a failure, restart at the failed command and continue forward. Track a loop counter per
    command:
    - Increment the counter when the same command fails on the same first item (test name, lint offense, or formatter
      file) as the previous run.
    - Reset the counter when the first failing item changes or when you advance to a different command.
-   - Stop and report after three consecutive cycles on the same item, unless the user asks you to keep going.
-   - Stop immediately and report a regression if a later fix causes a command that previously passed to fail again on
-     the same file, symbol, or test item. Ask the user how to proceed rather than attempting a blind revert.
+   - After three consecutive cycles on the same item, stop blind retries. Perform one bounded diagnosis pass:
+     reproduce/minimize the failure, compare a supported hypothesis with evidence, and try a scoped correction
+     only if justified. If it still fails or no safe correction is supported, return the evidence and smallest next
+     action to the coordinator; a solo agent acts as coordinator. Do not reset the counter to repeat this pass.
+   - If a later fix regresses a previously passing file, symbol, or test, pause edits and isolate the cause.
+     Preserve unrelated work; use a supported correction or independent review rather than a blind revert.
+   - The coordinator resolves decisions within existing authority. Ask the user only when a required scope,
+     permission, product, or consequential tradeoff decision cannot be resolved from available evidence.
+     A failed check stays failed until it passes; diagnosis or escalation never waives a required gate.
    - Do not claim a failure is fixed until the command passes locally.
-7. Finish with the exact commands run and their pass/fail status.
+7. Report required commands, results, and any escalation reason. When the wrapper reports delivery
+   coverage, preserve its phase, candidate/base identity, selected or full coverage, omitted checks,
+   and selection reason. A selected pass does not qualify an omitted
+   promotion check. Once the required checks pass, continue
+   the authorized task; repeat or broaden verification only after relevant changes, failures, unresolved
+   concerns, or an explicit repository requirement.
+
+For evidence passed between verification, review, and closeout, read
+[Verification evidence reuse](references/verification-evidence.md). Reuse is conservative and
+never overrides a required repeat, current-head CI, or independent review.
 
 ## Default Verification Order
 
@@ -41,7 +57,7 @@ Use this order unless the changed files make a narrower or broader set clearly a
    - `git diff --check "origin/${BASE_BRANCH}...HEAD"` for committed branch content before creating or updating a PR; detects trailing whitespace and conflict markers, not source formatting
    - `.agents/bin/lint` when present, or the repo's documented formatter check
 2. Mandatory pre-commit gate:
-   - `.agents/bin/validate` - **mandatory gate before every commit/PR update**; see Instructions step 3 for why this still applies to documentation-only commits
+   - `.agents/bin/validate` - **mandatory gate before every commit/PR update**, using the repository's documented coverage; promotion requires its complete invocation
 3. Ruby (or the repo's equivalent backend language):
    - the repo's type/signature validation command when signatures or public APIs changed
    - the repo's targeted unit-test command for the changed backend behavior
@@ -83,12 +99,15 @@ Use this order unless the changed files make a narrower or broader set clearly a
 
 ## Output Format
 
-Use this concise summary:
+Use this concise summary. Include delivery coverage and omissions only when
+the wrapper reports them; always include required results and any escalation:
 
 ```text
 Verification:
+- Delivery coverage: <phase; candidate/base identities; selected|full>
 - PASS git diff --check "origin/${BASE_BRANCH}...HEAD"
 - FAIL <repo formatter check>
+- Omissions: <checks or none>; reason: <trusted selection or escalation>
 
 Next fix:
 - Run the repo's format/autofix command to fix formatting, then rerun the formatter check.

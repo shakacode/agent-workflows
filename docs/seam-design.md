@@ -78,9 +78,13 @@ cd "$root"
 "$root/.agents/bin/test"
 ```
 
-`validate` is the authoritative comprehensive pre-push gate. `test`, `lint`,
-`build`, `docs`, and `ci-detect` are convenience subsets. An absent optional
-script means that capability is n/a in that repo.
+`validate` is the authoritative pre-push gate and retains each repository's
+existing coverage by default. A repository can explicitly define selected
+integration checks and a complete promotion invocation through its wrappers;
+[Delivery Policy](delivery-policy.md) describes the coverage, trust, and failure
+reporting contract. A selected success does not establish complete coverage.
+`test`, `lint`, `build`, `docs`, and `ci-detect` are convenience entry points. An
+absent optional script means that capability is n/a in that repo.
 
 ## Policy Contract
 
@@ -89,6 +93,7 @@ script means that capability is n/a in that repo.
 - `base_branch`
 - `follow_up_prefix`
 - `review_gate`
+- `automation_reviewers`
 - `approval_exempt`
 - `coordination_backend`
 - `changelog`
@@ -97,6 +102,13 @@ script means that capability is n/a in that repo.
 - `ci_parity_environment`
 - `hosted_ci_trigger`
 - `ci_change_detector`
+
+`automation_reviewers` is optional only when no automated reviewer is expected;
+omit the key instead of using the `n/a` sentinel. When repository policy expects
+an automated reviewer, the key must map each reviewer's GitHub actor base login,
+with any `[bot]` suffix omitted, to its exact `gh pr checks --json name` value,
+and `review_gate` must describe the requirement. Keys and values must be
+non-empty strings, and check-name values must be unique.
 
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.

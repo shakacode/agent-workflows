@@ -1,0 +1,135 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "open3"
+
+# CI extracts this file from the PR base commit before executing it. A PR may
+# change this policy, but cannot use its own new policy to select less coverage.
+module PrValidationScope
+  DOCUMENTS = %w[
+    README.md
+    docs/problems-solved.md
+    docs/postmortems/2026-09-05-ror-4980-review-churn.md
+    docs/postmortems/2026-09-05-verification-backlog-case-study.md
+  ].freeze
+  DOC_SUITES = ["Markdown lint", "routing doc links", "ordinary documentation links",
+                "native plugin manifests", "secure GitHub Actions README contract",
+                "user-facing coordination README contract", "contributor intake README contract",
+                "public documentation entrypoint contract"].freeze
+  SHA = /\A[0-9a-f]{40}\z/
+
+  module_function
+
+  def git(root, *args)
+    stdout, stderr, status = Open3.capture3("git", "-C", root, *args)
+    raise "Git evidence unavailable: #{stderr.strip}" unless status.success?
+
+    stdout
+  end
+
+  def classify(raw)
+    return ["full", "empty diff"] if raw.empty?
+    return ["full", "incomplete diff"] unless raw.end_with?("\0")
+
+    records = raw.split("\0")
+    return ["full", "incomplete diff"] unless records.length.even?
+
+    records.each_slice(2) do |header, path|
+      # --no-renames makes moves a deletion plus addition; deletions fail closed.
+      match = /\A:(100644|000000) 100644 [0-9a-f]{40} [0-9a-f]{40} ([AM])\z/.match(header)
+      return ["full", "non-ordinary change or unknown path"] unless match && DOCUMENTS.include?(path)
+      return ["full", "inconsistent diff status"] unless (match[1] == "000000") == (match[2] == "A")
+    end
+    ["docs", "only allowlisted ordinary documentation changed"]
+  end
+
+  def select(root, event:, base:, head:, target:, draft:)
+    return ["full", "main push or non-PR event"] unless event == "pull_request"
+    return ["full", "missing or invalid revision"] unless [base, head, target].all? { |sha| SHA.match?(sha.to_s) }
+    return ["full", "checkout does not match tested SHA"] unless git(root, "rev-parse", "HEAD").strip == target
+
+    [base, head, target].each { |sha| git(root, "cat-file", "-e", "#{sha}^{commit}") }
+    if draft == "true"
+      return ["full", "draft checkout is not the PR head"] unless target == head
+    else
+      parents = git(root, "show", "-s", "--format=%P", target).strip.split
+      return ["full", "integration parents do not match base and head"] unless parents == [base, head]
+    end
+    # Compare complete trees, not a paginated PR API file list. A draft behind
+    # base also includes base drift and therefore conservatively selects full.
+    raw = git(root, "diff", "--raw", "-z", "--no-abbrev", "--no-renames", base, target, "--")
+    result = classify(raw)
+    return result unless result.first == "docs"
+
+    raw.split("\0").each_slice(2) do |header, path|
+      before = header.start_with?(":000000 ") ? "" : git(root, "show", "#{base}:#{path}")
+      after = git(root, "show", "#{target}:#{path}")
+      return ["full", "embedded code or command changed"] unless code_lines(before) == code_lines(after)
+    end
+    result
+  rescue RuntimeError, Errno::ENOENT => e
+    ["full", e.message.lines.first.to_s.strip]
+  end
+
+  # A conservative projection, not a Markdown parser: keep whole inline-code
+  # lines, indented lines, and fences with their contents and line positions.
+  # Moving unchanged commands between sections must retain full coverage. Unusual/unclosed
+  # fences over-collect through EOF. Raw HTML retains the whole file.
+  def code_lines(text)
+    text = text.b
+    fence = nil
+    text.lines.each_with_index.select do |line, _index|
+      if fence
+        fence = nil if line.chomp.match?(/\A {0,3}#{Regexp.escape(fence[0])}{#{fence.length},}[ \t]*\z/)
+        true
+      else
+        opening = line.match(/\A {0,3}(`{3,}|~{3,})(.*)/)
+        fence = opening && opening[1]
+        # Backticks in a backtick fence's info string make it ambiguous inline
+        # content. Protect the document rather than enter a false fence state.
+        return text.lines if fence&.start_with?("`") && opening[2].include?("`")
+
+        # Multiline or mismatched inline delimiters are ambiguous: any change
+        # to that document uses full coverage instead of guessing its grammar.
+        unless fence
+          return text.lines if line.include?("\\`") || line.scan(/`+/).each_slice(2).any? { |left, right| left != right }
+
+          # Only clearly paired same-line code was admitted above. Ignore its
+          # placeholders (such as `<target>`) when looking for raw HTML.
+          prose = line.split(/`+/).each_slice(2).map(&:first).join
+          return text.lines if prose.match?(%r{<[a-z/!?]}i)
+        end
+
+        fence || line.include?("`") || line.match?(/\A[ \t]/) || line.match?(/\A\s*(?:>|[-+*]\s|\d+[.)]\s)/)
+      end
+    end
+  end
+
+  def run(root, env)
+    base = env["PR_BASE_SHA"]
+    target = git(root, "rev-parse", "HEAD").strip
+    scope, reason = select(root, event: env["GITHUB_EVENT_NAME"], base: base,
+                                 head: env["PR_HEAD_SHA"], target: target, draft: env["PR_DRAFT"])
+    full_suites = File.read(File.join(root, "bin/validate")).scan(/^echo "== (.+?) =="$/).flatten
+    selected = scope == "docs" ? DOC_SUITES : full_suites
+    omitted = scope == "docs" ? full_suites - DOC_SUITES : []
+    summary = <<~MARKDOWN
+      ### Validation coverage: #{scope}
+
+      - Reason: #{reason}
+      - Tested SHA: `#{target}`
+      - PR head: `#{env['PR_HEAD_SHA'] || 'n/a'}`
+      - Base SHA / selector policy: `#{base || 'n/a (main push)'}`
+      - Selected suites: #{selected.join('; ')}
+      - Omitted suites: #{omitted.empty? ? 'none' : omitted.join('; ')}
+
+      This is the selected coverage, not a success result. A failed selected check fails Validate.
+    MARKDOWN
+    puts summary
+    File.write(env.fetch("GITHUB_STEP_SUMMARY"), summary, mode: "a") if env["GITHUB_STEP_SUMMARY"]
+    File.write(env.fetch("GITHUB_OUTPUT"), "scope=#{scope}\n", mode: "a") if env["GITHUB_OUTPUT"]
+    0
+  end
+end
+
+exit PrValidationScope.run(Dir.pwd, ENV) if $PROGRAM_NAME == __FILE__

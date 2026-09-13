@@ -1,0 +1,38 @@
+name: CodeRabbit Lifecycle Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+# This workflow only adds a configured PR label. It does not check out or run
+# pull-request code, and it intentionally skips forks because their token is
+# read-only.
+permissions:
+  pull-requests: write
+
+jobs:
+  request-review:
+    if: github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply the lifecycle review label
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const labelsByAction = {
+              opened: 'coderabbit:first-pass',
+              ready_for_review: 'coderabbit:ready'
+            };
+            const label = labelsByAction[context.payload.action];
+
+            if (!label) {
+              core.setFailed(`Unexpected pull-request action: ${context.payload.action}`);
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: [label]
+            });

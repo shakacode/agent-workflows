@@ -160,11 +160,16 @@ module PrMergeSubmit
       }
     GRAPHQL
 
-    def initialize(system_tools: {})
+    def initialize(system_tools: {}, ci_readiness_runner: nil)
       @system_tools = system_tools
+      @ci_readiness_runner = ci_readiness_runner || PrCiReadiness::Runner.new(
+        read_transport: ->(*args, host:) { run_gh(*args, host:) }
+      )
     end
 
     def run(argv)
+      @repo_root = nil
+      @trusted_ci_policy = nil
       @pending_signal = nil
       @cancellation_signal = nil
       @mutation_attempted = false
@@ -184,6 +189,7 @@ module PrMergeSubmit
                else
                  validate_receipt_live_bindings!(pull_request, options)
                  validate_pr!(pull_request, options)
+                 validate_current_policy_aware_ci!
                  submit(pull_request, options)
                end
 
@@ -290,7 +296,7 @@ module PrMergeSubmit
       freshness issued_at verdict version
     ].freeze
     RECEIPT_BINDING_KEYS = %w[
-      authority base current_integration diff_identity head_sha host pr repo
+      authority base current_integration diff_base_sha diff_identity head_sha host pr repo
     ].freeze
     RECEIPT_EVIDENCE_KEYS = %w[
       authenticated_tracker_reads autonomous_result ci_result context
@@ -326,11 +332,14 @@ module PrMergeSubmit
       now = Time.now.utc
       validate_receipt_evidence!(receipt, evidence)
       validate_receipt_freshness!(receipt, now)
+      @trusted_ci_policy = trusted_ci_policy_for_receipt!(evidence)
       reassessed = MergeAssurance.assess(
         ci_result: evidence["ci_result"],
         autonomous_result: evidence["autonomous_result"],
         context: evidence["context"],
         selected_hosted_ci_receipts: evidence["selected_hosted_ci_receipts"],
+        trusted_ci_policy: @trusted_ci_policy,
+        trusted_repo_root: @repo_root, ci_readiness_runner: @ci_readiness_runner,
         now:
       )
       unless reassessed["eligible"] == true
@@ -354,6 +363,61 @@ module PrMergeSubmit
       receipt
     rescue Errno::ENOENT, Errno::EACCES => e
       raise Error, "merge-assurance receipt is unavailable: #{e.message}"
+    end
+
+    def trusted_ci_policy_for_receipt!(evidence)
+      context = evidence["context"]
+      base = context["base"] if context.is_a?(Hash)
+      raise Error, "merge-assurance receipt base is unavailable for ci_readiness policy" unless
+        base.is_a?(Hash)
+
+      @repo_root ||= trusted_repo_root!
+      PrCiReadiness.trusted_ci_policy_at(
+        repo_root: @repo_root, base_ref: base["ref"], base_sha: base["sha"]
+      )
+    rescue PrCiReadiness::Error => e
+      raise Error, "trusted-base ci_readiness policy could not be authenticated: #{e.message}"
+    end
+
+    def validate_current_policy_aware_ci!
+      evidence = @merge_assurance_receipt.fetch("evidence")
+      original_ci = evidence.fetch("ci_result")
+      exception = original_ci["configured_review_exception"]
+      return if @trusted_ci_policy.nil? && exception.nil?
+
+      requested_runs = original_ci.dig("requested_hosted", "run_ids")
+      requested_runs = [] unless requested_runs.is_a?(Array)
+      context = evidence.fetch("context")
+      exception_options = exception ? { configured_review_exception: exception } : {}
+      refreshed_ci = @ci_readiness_runner.assess_authenticated(
+        repo: context.fetch("repo"), pr_number: context.fetch("pr"),
+        host: context.fetch("host"), requested_hosted_runs: requested_runs,
+        trusted_repo_root: @repo_root, diff_base_sha: context.fetch("diff_base_sha"), **exception_options
+      )
+      reassessed = MergeAssurance.assess(
+        ci_result: refreshed_ci,
+        autonomous_result: evidence.fetch("autonomous_result"),
+        context:,
+        selected_hosted_ci_receipts: evidence.fetch("selected_hosted_ci_receipts"),
+        trusted_ci_policy: @trusted_ci_policy,
+        trusted_repo_root: @repo_root, ci_readiness_runner: @ci_readiness_runner
+      )
+      unless reassessed["eligible"] == true
+        raise Error, "current policy-aware CI evidence does not qualify: " \
+                     "#{Array(reassessed['failures']).join('; ')}"
+      end
+      return if @merge_assurance_receipt["bindings"] == reassessed["bindings"] &&
+                @merge_assurance_receipt["follow_up_accounting"] == reassessed["follow_up_accounting"]
+
+      raise Error, "current policy-aware CI reassessment changed merge-assurance bindings or accounting"
+    rescue PrCiReadiness::Error => e
+      raise Error, "current policy-aware CI evidence is unavailable: #{e.message}"
+    end
+
+    def reauthenticate_review_exception_before_mutation!
+      return unless @merge_assurance_receipt.dig("evidence", "ci_result", "configured_review_exception")
+
+      validate_current_policy_aware_ci!
     end
 
     def validate_receipt_evidence!(receipt, evidence)
@@ -462,7 +526,7 @@ module PrMergeSubmit
 
     def load_merge_submission_policy!
       base_sha = @merge_assurance_receipt.dig("bindings", "base", "sha").to_s
-      @repo_root = trusted_repo_root!
+      @repo_root ||= trusted_repo_root!
       raw = trusted_blob!(
         base_sha, POLICY_CONFIG, "trusted-base merge-submission policy", allow_missing: true
       )
@@ -901,6 +965,7 @@ module PrMergeSubmit
         raise Error, "PR merge-queue state became missing, inconsistent, or UNKNOWN before direct submission"
       end
 
+      reauthenticate_review_exception_before_mutation!
       stdout, stderr, status = run_gh(
         *direct_merge_args(refreshed, options), host: options[:host], mutation: true
       )
@@ -1081,6 +1146,7 @@ module PrMergeSubmit
         )
         policy.fetch("identity")["interpreter"] = interpreter_identity if interpreter_identity
         begin
+          reauthenticate_review_exception_before_mutation!
           guard_result = run_process(
             guarded_direct_environment(options),
             *launch_command, *args,
@@ -1316,6 +1382,7 @@ module PrMergeSubmit
     end
 
     def enqueue_result(pull_request, options)
+      reauthenticate_review_exception_before_mutation!
       stdout, stderr, status = run_gh(
         "api", "graphql",
         "-H", GRAPHQL_FEATURE_HEADER,

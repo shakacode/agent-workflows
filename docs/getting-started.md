@@ -30,8 +30,9 @@ paths the examples use. The exceptions are the agent transcripts in Steps 3,
 | Git | 2.41 or newer recommended; verified with 2.50.1 | Cloning the pack and reading repository state. Any recent Git completes this guide; the optional pinned-copy drift checker needs 2.41+ for full-fidelity checks (see [adoption.md](adoption.md)). |
 | Bash | 3.2 or newer; verified with macOS stock bash 3.2.57 | The installer and the shell helper scripts. |
 | Ruby | Ruby 3 series; verified with 3.3.6, and this repo's CI pins 3.4 | The seam doctor, status, and upgrade helpers. Plain Ruby only — no gems to install. |
-| GitHub CLI (`gh`) | 2.x, authenticated (walkthrough machine: 2.89.0) | Workflows that read GitHub, such as `$pr-batch` and `$address-review`. Not needed for install or adoption. Run `gh auth status` to confirm login. |
-| An agent host | A current release of Codex CLI or Claude Code | Actually loads and runs the installed skills. |
+| SQLite CLI (`sqlite3`) | With `-json` output support | The optional `$audit-chats` local inventory helper and this repo's validation suite. The helper uses Ruby's standard library and reads databases without modifying them. |
+| GitHub CLI (`gh`) | 2.x, authenticated; 2.99.0+ for image/video `--attach` (walkthrough machine: 2.89.0) | Workflows that read GitHub, such as `$pr-batch` and `$address-review`. Not needed for install or adoption. Run `gh auth status` to confirm login. Attachment upload requires repository write access plus an OAuth, classic PAT, or fine-grained PAT credential; GitHub Actions and App tokens are unsupported. It works on GitHub.com and GitHub Enterprise Cloud, but not GitHub Enterprise Server in this release. |
+| An agent host | A current release of Codex CLI, Claude Code, or Cursor | Actually loads and runs the installed skills. |
 
 Contributing changes back to this pack needs additional pinned lint tools; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) and `bin/lint`. None of them are needed
@@ -55,9 +56,9 @@ cd "$HOME/src/agent-workflows"
 bin/install-agent-workflows --host codex
 ```
 
-Use `--host claude` for Claude Code instead. The installer copies skills,
-workflow prompts, and helper commands into the host's home (`~/.codex` or
-`~/.claude`) and prints what to do next:
+Use `--host claude` for Claude Code or `--host cursor` for Cursor. The installer
+copies skills, workflow prompts, and helper commands into the host's home
+(`~/.codex`, `~/.claude`, or `~/.cursor`) and prints what to do next:
 
 ```text
 Installed ShakaCode agent workflows into:
@@ -244,7 +245,9 @@ All selected checks passed. The branch is ready for a PR update.
 
 The shape is what matters: the agent reads the seam first, picks checks that
 cover the changed files, runs them in order, and reports each command with a
-PASS or FAIL line, stopping on the first failure. That reporting contract is
+PASS or FAIL line. On failure, pause the sequence for bounded diagnosis and
+correction, then continue within the authorized scope; required checks remain
+gates until they pass. That reporting contract is
 defined in `skills/verify/SKILL.md`.
 
 If the agent cannot find the skill, re-check Step 1 (`agent-workflows-status`
@@ -273,12 +276,13 @@ Four plain-word definitions first:
   a default for you.
 
 For a first lane, choose `ask`. Here is what `ask` actually does: once the
-PR's ordinary gates are clean, the coordinator automatically starts a
-`$pr-walkthrough` — an exact-diff explanation of the PR, one conceptual
-change at a time, with room for your questions between changes — and only
-then asks one final merge question. The walkthrough itself is not approval:
+PR's ordinary gates are clean, the coordinator automatically publishes a
+`$pr-walkthrough` — a complete exact-diff explanation whose conceptual sections
+are separately replyable on GitHub — and only then asks one final merge
+question. The owning task consumes your thread replies asynchronously; live
+exploration remains available when you explicitly ask for it. The walkthrough itself is not approval:
 if the diff changes or a gate starts failing in the meantime, the merge
-question is withheld and the walkthrough restarts or stops.
+question is withheld: rebuild and republish the walkthrough or stop.
 
 Invoke the skill in your agent host from the adopted repository, naming one
 exact issue — in Codex, type the prompt below; in Claude Code, ask for the
@@ -309,25 +313,31 @@ Worker: branch 42-fix-empty-config-crash pushed with 2 commits.
 .agents/bin/validate PASS, .agents/bin/test PASS. PR #57 opened.
 
 Checks on PR #57: all green. merge_authority is ask, so starting the
-walkthrough.
+GitHub-native walkthrough.
 
-Walkthrough (1/2): the config loader now returns a documented default when
-the file is empty instead of raising. Questions before the next change?
-> no
+GitHub walkthrough published on PR #57 for the exact comparison
+`main@0123456` -> `89abcde`:
+- Orientation and complete two-section agenda: COMMENT review
+- Section 1/2: the config loader now returns a documented default when the
+  file is empty instead of raising — separately replyable review thread
+- Section 2/2: a regression test covering the empty-file case — separately
+  replyable review thread
 
-Walkthrough (2/2): a regression test covering the empty-file case.
-Questions?
-> no
+All conceptual sections were posted in one pass. The owning task will consume
+PR replies asynchronously. Live exploration is available only when you
+explicitly request it.
 
-Diff identity unchanged since the walkthrough; checks still green.
+Diff identity unchanged since publication; checks still green.
 One final question: merge PR #57 into main? (yes/no)
 ```
 
 The shape to notice: the issue body is treated as untrusted input (work to
 describe, never instructions to obey), the worker and the coordinator are
-separate roles, gates come before the walkthrough, and there is exactly one
-merge question at the end — asked only while the explained diff is still the
-exact diff on the PR.
+separate roles, gates come before the walkthrough, every conceptual section is
+published before the task waits, and there is exactly one merge question at
+the end — asked only while the explained diff is still the exact diff on the
+PR. Focused follow-up questions stay in the separately replyable GitHub
+threads unless you explicitly request live exploration.
 
 Before running this against a public repository, read
 [Trust And Preflight](trust-and-preflight.md) and fill in the
@@ -397,13 +407,14 @@ For an unreviewed PR on a branch inside your own repository, written by a
 person you already trust to push there, use two skills in order: understand
 first, judge second.
 
-First, ask for the `pr-walkthrough` skill — the same guided tour that
-Step 4's `ask` merge authority starts automatically. It is read-only: the
-agent maps the whole exact diff into conceptual changes, then explains one
-change at a time — problem, what changed, why this approach, effect and
-risk, proof — and pauses for your questions before continuing. It is
-explicitly not a code review and not approval; finishing the tour approves
-nothing. Step 4's transcript shows what those pauses look like.
+First, ask for the `pr-walkthrough` skill — the same exact-diff tour that
+Step 4's `ask` merge authority publishes automatically. Asked for in chat, it
+runs live and read-only: the agent maps the whole exact diff into conceptual
+changes, then explains one change at a time — problem, what changed, why
+this approach, effect and risk, proof — and pauses for your questions before
+continuing. It is explicitly not a code review and not approval; finishing
+the tour approves nothing. Ask for a published walkthrough instead when you
+want every section as a replyable GitHub thread in one pass, as in Step 4.
 
 Then, ask for the `adversarial-pr-review` skill. It is a skeptical,
 report-only red-team pass over correctness, security, compatibility,
@@ -498,7 +509,8 @@ skill or document that implements it.
   ([tdd skill](../skills/tdd/SKILL.md)).
 - **Run `verify` before every PR create or update** — the same Step 3
   loop: checks chosen from the repo seam, one PASS or FAIL line per
-  command, stop on the first failure.
+  command, pause on failure for bounded diagnosis and correction, then continue
+  within the authorized scope. Required checks must still pass.
 - **Prove a bug fix, do not assert it.** The `verify-pr-fix` skill
   reproduces the failure before the fix, confirms it is gone after, and
   states plainly what was not exercised — evidence before assertions
@@ -531,11 +543,12 @@ skill or document that implements it.
   merged PRs and fills in missing entries — use it before releases instead
   of reconstructing history later
   ([update-changelog skill](../skills/update-changelog/SKILL.md)).
-- **Audit after parallel work.** After concurrent agent work, before a
-  release candidate, or after a suspected bad merge, the
-  `post-merge-audit` skill checks for missed reviews, missing changelog
-  entries, cross-PR interactions, and release risk
-  ([post-merge-audit skill](../skills/post-merge-audit/SKILL.md)).
+- **Audit when a trigger requires it.** Apply the canonical
+  [audit applicability rules](../workflows/pr-batch-integration-closeout.md#audit-applicability)
+  for release assurance, verified cross-PR integration risk, suspected bad
+  merges, and other required audits. The
+  [post-merge-audit skill](../skills/post-merge-audit/SKILL.md) checks missed
+  reviews, changelog coverage, cross-PR interactions, and release risk.
 - **The habit underneath all of these:** record what you cannot verify as
   `UNKNOWN` instead of guessing, and never present constructed output as a
   real run — the same honesty rule this guide follows for its own output
@@ -608,7 +621,7 @@ list](installation-and-upgrades.md#troubleshooting):
 | --- | --- |
 | `agent-workflows-status` prints `NOT_INSTALLED` | Run `bin/install-agent-workflows --host <host>` from the pack clone, or pass the correct `--target`. ([details](installation-and-upgrades.md#troubleshooting)) |
 | `agent-workflows-status` prints `UPGRADE_AVAILABLE` | Run `upgrade-agent-workflows` as shown above, or manually update the source clone and reinstall. ([details](installation-and-upgrades.md#troubleshooting)) |
-| `Auto host detection found both Codex and Claude homes` | You have both hosts installed, so rerun the command with an explicit `--host codex` or `--host claude`. ([details](installation-and-upgrades.md#troubleshooting)) |
+| `Auto host detection found multiple agent homes` | You have more than one host installed, so rerun the command with an explicit `--host codex`, `--host claude`, or `--host cursor`. ([details](installation-and-upgrades.md#troubleshooting)) |
 | `DELIVERY_MODE_CONFLICT` | Both delivery routes are active and the pack refuses to guess which skill copy wins; keep exactly one — disable or remove the native `scw` plugin before a flat install, or use `--delivery-mode plugin-companion`. ([details](installation-and-upgrades.md#troubleshooting)) |
 | `invalid byte sequence in US-ASCII` or other `Encoding::` errors from a Ruby helper | An older install is running under a non-UTF-8 locale (`LANG=C` / `LC_ALL=C`, common in CI and headless agents); the pack's Ruby tools now read UTF-8 regardless of locale, so run `upgrade-agent-workflows --host <host>` to pick up the fix. ([details](installation-and-upgrades.md#troubleshooting)) |
 | The agent cannot find an installed skill | Check `agent-workflows-status --host <host>` says `UP_TO_DATE`, then restart the agent host so it reloads its skill directory. |

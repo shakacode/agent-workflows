@@ -70,6 +70,16 @@ which composes with the mode above. The canonical phase-to-gate table is in
 branching runbook is
 [release-branching.md](../docs/release-branching.md).
 
+Before the doctor/status preference below, consume the trusted outcome of the
+**Coordination Applicability Gate** in the resolved processing workflow.
+Missing, `UNKNOWN`, or contradictory applicability stops before either probe.
+For `coordination_not_applicable`, skip both doctor and status probes and derive
+phase only from deterministic trusted `AGENTS.md` branch rules; unresolved phase
+remains `UNKNOWN`. Only `coordination_required` uses the backend preference and
+fallback in step 1. Neither outcome removes release-policy branch restrictions,
+tracker conflict handling, forward-port requirements, human sign-off, or the
+separate production/release authority below.
+
 1. Determine the PR's target branch and resolve its phase. Prefer the published
    phase from bounded targeted `agent-coord` status for that branch (available
    only when bounded `agent-coord doctor --json` and targeted status probes exit
@@ -153,7 +163,7 @@ Auto-merge requires all of the following:
 - Score is at least `8/10`; `7/10` permits human merge after review, but not auto-merge.
 - Before triggering auto-merge, the merge actor re-fetches the current PR body, its `lastEditedAt`, and the current head, then verifies the bound finalizer record against an authenticated GitHub review, check, or comment rather than trusting PR-body text alone.
 - All GitHub checks for the current head SHA are complete. An empty full `gh pr checks <PR>` list is `UNKNOWN` / not ready. Skipped checks count as complete only when CI selector output explains them or a maintainer explicitly waives them.
-- The configured Claude review check for the current head SHA completed with an acceptable conclusion, or a qualifying fallback review completed with the same blocker-triage bar. The portable default check name is `claude-review`; consumer repos that use a differently named review check must define that name under their `AGENTS.md` `Review gate` policy and keep every helper or workflow that polls review status aligned with it before relying on that override. Other repo-configured reviewers, including Cursor Bugbot or Codex review, qualify only when visible as a current-head GitHub check/app result or when they satisfy the reviewer-identity and attestation rules in **Ordinary Review Fallback** in the resolved processing workflow. Acceptable conclusions are `success`, or `skipped` / `neutral` only when CI selector output or a maintainer waiver explains why the run did not review code. A `failure`, `cancelled`, `timed_out`, or unknown conclusion does not satisfy this gate and must route through the fallback/error-evidence rules. An `action_required` conclusion is an external approval gate; it blocks auto-merge until the approval is satisfied or a maintainer leaves an explicit waiver, and it is not a fallback trigger by itself.
+- The configured Claude review check for the current head SHA completed with an acceptable conclusion, or a qualifying fallback review completed with the same blocker-triage bar. Resolve its exact check-run name from the `claude` reviewer base-login key in the repository seam's typed `automation_reviewers` mapping; do not infer it from `review_gate`, display names, or PR prose. Other repo-configured reviewers, including Cursor Bugbot or Codex review, qualify only when visible as a current-head GitHub check/app result or when they satisfy the reviewer-identity and attestation rules in **Ordinary Review Fallback** in the resolved processing workflow. Acceptable conclusions are `success`, or `skipped` / `neutral` only when CI selector output or a maintainer waiver explains why the run did not review code. A `failure`, `cancelled`, `timed_out`, or unknown conclusion does not satisfy this gate and must route through the fallback/error-evidence rules. An `action_required` conclusion is an external approval gate; it blocks auto-merge until the approval is satisfied or a maintainer leaves an explicit waiver, and it is not a fallback trigger by itself.
 - **Fallback safety and attestation.** Apply every trigger, final re-poll,
   exact-diff invocation, isolation, budget, reviewer-identity, and attestation
   requirement in

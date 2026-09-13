@@ -1,0 +1,85 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "open3"
+
+# Customer and durable-data impact require every check, even for overview prose.
+# Execute the trusted-base copy; see the delivery-policy example command table.
+def git(*args)
+  output, error, status = Open3.capture3("git", *args)
+  raise(error.empty? ? "git command failed" : error) unless status.success?
+
+  output
+end
+
+def candidate_file(path)
+  stat = File.lstat(path)
+  return ["120000", File.readlink(path).b] if stat.symlink?
+
+  unless stat.file?
+    abort "Non-file entries require repository-owned candidate capture; example validation blocked"
+  end
+
+  [(stat.mode & 0o100).zero? ? "100644" : "100755", File.binread(path)]
+rescue Errno::ENOENT, Errno::ENOTDIR
+  nil
+end
+
+def candidate_state
+  if git("ls-files", "--stage", "-z").split("\0").any? { |entry| entry.start_with?("160000 ") }
+    abort "Submodules require repository-owned candidate capture; example validation blocked"
+  end
+  head = git("rev-parse", "HEAD")
+  expected = git("ls-tree", "-r", "-z", head.strip).split("\0").map do |entry|
+    metadata, path = entry.split("\t", 2)
+    mode, type, oid = metadata.split
+    abort "Submodules require repository-owned candidate capture; example validation blocked" unless type == "blob"
+
+    [path, [mode, git("cat-file", "blob", oid).b]]
+  end.sort_by(&:first)
+  paths = (git("ls-files", "-z").split("\0") + expected.map(&:first)).uniq.sort
+  tracked = paths.map { |path| [path, candidate_file(path)] }
+  untracked = git("ls-files", "--others", "--exclude-standard", "-z").split("\0").map do |path|
+    [path, File.lstat(path).mode, candidate_file(path)]
+  end
+  dirty = git("status", "--porcelain", "--untracked-files=all")
+  dirty = "tracked filesystem differs from HEAD" if dirty.empty? && tracked != expected
+  [head, dirty,
+   git("diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "--"),
+   git("diff", "--binary", "--no-ext-diff", "--no-textconv", "--"), untracked, expected.to_h[".agents/bin/validate"], tracked]
+end
+
+phase = ARGV.shift || "integration"
+abort "Unsupported example invocation" unless %w[integration promotion].include?(phase) && ARGV.empty?
+initial_state = candidate_state
+head_policy = initial_state[-2]
+worktree_policy = initial_state.last.to_h[".agents/bin/validate"]
+staged_policy_changes = git("diff", "--cached", "--name-only", "--no-ext-diff", "--no-textconv",
+                            initial_state.first.strip, "--", ".agents/bin/validate")
+trusted_policy = File.binread(__FILE__)
+policy_matches = [head_policy, worktree_policy].all? do |policy|
+  policy && %w[100644 100755].include?(policy.first) && policy.last == trusted_policy
+end
+unless staged_policy_changes.empty? && policy_matches
+  abort "Validator policy changed; independently verify the complete current policy before claiming coverage"
+end
+head, dirty = initial_state
+base = ENV.fetch("EXAMPLE_BASE_SHA", "")
+puts "phase: #{phase}\nhead: #{head.strip}\nbase: #{base.empty? ? 'UNKNOWN' : base}"
+puts "working tree: #{dirty.empty? ? 'clean' : 'dirty'}\ncoverage: full"
+puts "reason: critical service requires complete checks at integration and promotion\nomitted: none"
+passed = true
+%w[lint docs test].each do |check|
+  success = system(".agents/bin/#{check}")
+  puts "required #{check}: #{success ? 'PASS' : 'FAIL'}"
+  passed = false unless success
+end
+if candidate_state != initial_state
+  warn "Candidate changed during validation; rerun for the resulting tree"
+  passed = false
+end
+if phase == "promotion" && !dirty.empty?
+  warn "Promotion blocked: candidate has uncommitted changes"
+  passed = false
+end
+exit(passed ? 0 : 1)

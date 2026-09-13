@@ -5,6 +5,7 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tmpdir"
 require "timeout"
 require_relative "lib/hook_support"
@@ -80,6 +81,46 @@ class CloseLaneOnSessionEndTest < Minitest::Test
       assert_equal 0, status.exitstatus
       assert_includes stderr, "conditional drain transport: unavailable"
       assert_empty emitter_calls(calls)
+    end
+  end
+
+  def test_host_start_off_prevents_backend_calls_even_if_a_child_enables_hooks
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      status, stderr = run_host_session(
+        repo, hooks: "off", advertisement: [emitter, "event"],
+              child_env: { "AGENT_WORKFLOWS_HOOKS" => "on" }
+      )
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "disabled"
+      assert_empty emitter_calls(calls)
+    end
+  end
+
+  def test_host_start_absent_advertisement_prevents_backend_calls_even_if_a_child_advertises
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      status, stderr = run_host_session(
+        repo, hooks: "on", advertisement: nil,
+              child_env: { "AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV" => [emitter, "event"].to_json }
+      )
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "conditional drain transport: unavailable"
+      assert_empty emitter_calls(calls)
+    end
+  end
+
+  def test_child_only_disable_does_not_stop_an_enabled_parent_host_backend_call
+    with_repo(backend: "private-http") do |repo, emitter, calls|
+      argv = [emitter, "event", "--expected-holder", "worker-a"]
+      status, stderr = run_host_session(
+        repo, hooks: "on", advertisement: argv,
+              child_env: { "AGENT_WORKFLOWS_HOOKS" => "off", "AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV" => nil }
+      )
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "emitted human_intervention kind: drain"
+      assert_equal [argv.drop(1)], emitter_calls(calls)
     end
   end
 
@@ -617,6 +658,27 @@ class CloseLaneOnSessionEndTest < Minitest::Test
     return [] unless File.file?(calls_path)
 
     File.readlines(calls_path, chomp: true).map { |line| line.split("\t") }
+  end
+
+  # Synthetic host-process inheritance, not a live Claude integration. The child
+  # tool process changes its own environment; the parent's later hook inherits
+  # only the operator/launcher environment supplied when that host started.
+  def run_host_session(repo, hooks:, advertisement:, child_env:)
+    host_env = {
+      "AGENT_WORKFLOWS_HOOKS" => hooks,
+      "AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV" => advertisement&.to_json,
+      CloseLaneOnSessionEnd::TIMEOUT_ENV => NON_DEADLINE_HOOK_TIMEOUT_SECONDS
+    }
+    host_program = <<~RUBY
+      system(RbConfig.ruby, "-rjson", "-e", "ENV.update(JSON.parse(ARGV.fetch(0)))", ARGV.shift, exception: true)
+      exec(*ARGV)
+    RUBY
+    payload = { "hook_event_name" => "SessionEnd", "reason" => "clear", "cwd" => repo }
+    _stdout, stderr, status = Open3.capture3(
+      host_env, RbConfig.ruby, "-rrbconfig", "-e", host_program, child_env.to_json,
+      SESSION_END_HOOK, "--project-dir", repo, stdin_data: payload.to_json
+    )
+    [status, stderr]
   end
 
   def run_hook(repo, advertisement: nil, plain_advertisement: nil, raw_advertisement: nil, reason: "clear", env: {},

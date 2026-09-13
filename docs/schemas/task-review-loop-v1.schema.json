@@ -1,0 +1,350 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shakacode.github.io/agent-workflows/schemas/task-review-loop-v1.schema.json",
+  "title": "Task Review Loop v1",
+  "type": "object",
+  "required": [
+    "contract",
+    "version",
+    "identity",
+    "expected_current_head_sha",
+    "task_brief",
+    "worker_report",
+    "review_package",
+    "review_state",
+    "rounds",
+    "open_findings",
+    "finding_controls",
+    "replacement_evidence",
+    "cap_adjudication"
+  ],
+  "properties": {
+    "contract": {"const": "task-review-loop"},
+    "version": {"const": 1},
+    "identity": {"$ref": "#/$defs/identity"},
+    "expected_current_head_sha": {"$ref": "#/$defs/sha"},
+    "task_brief": {"$ref": "#/$defs/taskBrief"},
+    "worker_report": {"$ref": "#/$defs/workerReport"},
+    "review_package": {"$ref": "#/$defs/reviewPackage"},
+    "review_state": {"enum": ["pending", "complete"]},
+    "rounds": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {"$ref": "#/$defs/roundRecord"}
+    },
+    "open_findings": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/openFindings"}
+      ]
+    },
+    "finding_controls": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/findingControl"}
+    },
+    "replacement_evidence": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/replacementEvidence"}
+    },
+    "cap_adjudication": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/capAdjudication"}
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "stringArray": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/nonEmptyString"}
+    },
+    "uniqueStringArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/nonEmptyString"}
+    },
+    "identity": {
+      "type": "object",
+      "required": ["batch_id", "lane_id", "plan_id", "plan_digest", "task_id"],
+      "properties": {
+        "batch_id": {"$ref": "#/$defs/nonEmptyString"},
+        "lane_id": {"$ref": "#/$defs/nonEmptyString"},
+        "plan_id": {"$ref": "#/$defs/nonEmptyString"},
+        "plan_digest": {"$ref": "#/$defs/digest"},
+        "task_id": {"$ref": "#/$defs/nonEmptyString"}
+      },
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["path", "digest", "byte_count"],
+      "properties": {
+        "path": {"$ref": "#/$defs/nonEmptyString"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "byte_count": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "exactDiff": {
+      "type": "object",
+      "required": ["path", "digest", "byte_count", "truncated"],
+      "properties": {
+        "path": {"$ref": "#/$defs/nonEmptyString"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "byte_count": {"type": "integer", "minimum": 1},
+        "truncated": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "taskBrief": {
+      "type": "object",
+      "required": [
+        "identity",
+        "requirements",
+        "global_constraints",
+        "interfaces",
+        "resolved_ambiguities",
+        "digest"
+      ],
+      "properties": {
+        "identity": {"$ref": "#/$defs/identity"},
+        "requirements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        },
+        "global_constraints": {"$ref": "#/$defs/stringArray"},
+        "interfaces": {"$ref": "#/$defs/stringArray"},
+        "resolved_ambiguities": {"$ref": "#/$defs/stringArray"},
+        "digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "verification": {
+      "type": "object",
+      "required": ["command", "status", "outcome"],
+      "properties": {
+        "command": {"$ref": "#/$defs/nonEmptyString"},
+        "status": {"enum": ["passed", "failed", "not_run", "UNKNOWN"]},
+        "outcome": {"$ref": "#/$defs/nonEmptyString"}
+      },
+      "additionalProperties": false
+    },
+    "workerReport": {
+      "type": "object",
+      "required": [
+        "identity",
+        "brief_digest",
+        "initial_implementer_id",
+        "current_implementer_id",
+        "status",
+        "base_sha",
+        "head_sha",
+        "commits",
+        "changed_paths",
+        "verification",
+        "concerns",
+        "open_context_needs",
+        "digest"
+      ],
+      "properties": {
+        "identity": {"$ref": "#/$defs/identity"},
+        "brief_digest": {"$ref": "#/$defs/digest"},
+        "initial_implementer_id": {"$ref": "#/$defs/nonEmptyString"},
+        "current_implementer_id": {"$ref": "#/$defs/nonEmptyString"},
+        "status": {"enum": ["done", "done_with_concerns", "needs_context", "blocked"]},
+        "base_sha": {"$ref": "#/$defs/sha"},
+        "head_sha": {"$ref": "#/$defs/sha"},
+        "commits": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/sha"}
+        },
+        "changed_paths": {"$ref": "#/$defs/uniqueStringArray"},
+        "verification": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/verification"}
+        },
+        "concerns": {"$ref": "#/$defs/stringArray"},
+        "open_context_needs": {"$ref": "#/$defs/stringArray"},
+        "digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "reviewPackage": {
+      "type": "object",
+      "required": [
+        "identity",
+        "brief_digest",
+        "worker_report_digest",
+        "scope",
+        "base_sha",
+        "head_sha",
+        "expected_current_head_sha",
+        "implementer_id",
+        "reviewer_id",
+        "commit_list",
+        "diff_stat",
+        "exact_diff",
+        "prior_round_digest",
+        "digest"
+      ],
+      "properties": {
+        "identity": {"$ref": "#/$defs/identity"},
+        "brief_digest": {"$ref": "#/$defs/digest"},
+        "worker_report_digest": {"$ref": "#/$defs/digest"},
+        "scope": {"enum": ["task", "fix"]},
+        "base_sha": {"$ref": "#/$defs/sha"},
+        "head_sha": {"$ref": "#/$defs/sha"},
+        "expected_current_head_sha": {"$ref": "#/$defs/sha"},
+        "implementer_id": {"$ref": "#/$defs/nonEmptyString"},
+        "reviewer_id": {"$ref": "#/$defs/nonEmptyString"},
+        "commit_list": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/sha"}
+        },
+        "diff_stat": {"$ref": "#/$defs/nonEmptyString"},
+        "exact_diff": {"$ref": "#/$defs/exactDiff"},
+        "prior_round_digest": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/digest"}
+          ]
+        },
+        "digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "roundRecord": {
+      "type": "object",
+      "required": [
+        "number",
+        "kind",
+        "package_digest",
+        "review_package",
+        "worker_report",
+        "base_sha",
+        "head_sha",
+        "implementer_id",
+        "reviewer_id",
+        "prior_round_digest",
+        "review_findings",
+        "addressed_finding_ids",
+        "open_finding_ids",
+        "new_consequential_finding_ids",
+        "digest"
+      ],
+      "properties": {
+        "number": {"type": "integer", "minimum": 0, "maximum": 5},
+        "kind": {"enum": ["initial_review", "fix_re_review"]},
+        "package_digest": {"$ref": "#/$defs/digest"},
+        "review_package": {"$ref": "#/$defs/reviewPackage"},
+        "worker_report": {"$ref": "#/$defs/workerReport"},
+        "base_sha": {"$ref": "#/$defs/sha"},
+        "head_sha": {"$ref": "#/$defs/sha"},
+        "implementer_id": {"$ref": "#/$defs/nonEmptyString"},
+        "reviewer_id": {"$ref": "#/$defs/nonEmptyString"},
+        "prior_round_digest": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/digest"}
+          ]
+        },
+        "review_findings": {"$ref": "#/$defs/artifact"},
+        "addressed_finding_ids": {"$ref": "#/$defs/uniqueStringArray"},
+        "open_finding_ids": {"$ref": "#/$defs/uniqueStringArray"},
+        "new_consequential_finding_ids": {"$ref": "#/$defs/uniqueStringArray"},
+        "digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "openFindings": {
+      "type": "object",
+      "required": ["path", "digest", "byte_count", "ids"],
+      "properties": {
+        "path": {"$ref": "#/$defs/nonEmptyString"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "byte_count": {"type": "integer", "minimum": 1},
+        "ids": {"$ref": "#/$defs/uniqueStringArray"}
+      },
+      "additionalProperties": false
+    },
+    "findingControl": {
+      "type": "object",
+      "required": ["finding_id", "load_bearing", "cap_piercing"],
+      "properties": {
+        "finding_id": {"$ref": "#/$defs/nonEmptyString"},
+        "load_bearing": {"type": "boolean"},
+        "cap_piercing": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "replacementEvidence": {
+      "type": "object",
+      "required": [
+        "identity",
+        "round",
+        "prior_implementer_id",
+        "replacement_implementer_id",
+        "reason",
+        "prior_instance_stopped",
+        "ownership_reconciled",
+        "evidence"
+      ],
+      "properties": {
+        "identity": {"$ref": "#/$defs/identity"},
+        "round": {"type": "integer", "minimum": 0, "maximum": 5},
+        "prior_implementer_id": {"$ref": "#/$defs/nonEmptyString"},
+        "replacement_implementer_id": {"$ref": "#/$defs/nonEmptyString"},
+        "reason": {
+          "enum": ["continuation_unavailable", "implementer_unavailable", "bounded_escalation"]
+        },
+        "prior_instance_stopped": {"const": true},
+        "ownership_reconciled": {"const": true},
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "capAdjudicationRecord": {
+      "type": "object",
+      "required": ["finding_id", "disposition", "evidence"],
+      "properties": {
+        "finding_id": {"$ref": "#/$defs/nonEmptyString"},
+        "disposition": {"enum": ["disproven", "waived", "deferred", "blocked"]},
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        },
+        "tracking_ref": {"$ref": "#/$defs/nonEmptyString"},
+        "authority_ref": {"$ref": "#/$defs/nonEmptyString"}
+      },
+      "additionalProperties": false
+    },
+    "capAdjudication": {
+      "type": "object",
+      "required": ["round", "coordinator_id", "findings"],
+      "properties": {
+        "round": {"const": 5},
+        "coordinator_id": {"$ref": "#/$defs/nonEmptyString"},
+        "findings": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/capAdjudicationRecord"}
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

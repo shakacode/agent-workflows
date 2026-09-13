@@ -1,7 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
+require "json"
 
 ROOT = File.expand_path("../../..", __dir__)
 load File.join(ROOT, "bin/validate-execution-provenance")
@@ -81,11 +84,11 @@ CHECKER_SURFACES = %w[
 
 ROUTE_DISQUALIFICATION_PATTERNS = {
   "named route forbidden from qualifying verdict" =>
-    /\b(?:Sol|Terra|Opus|Sonnet)\b.{0,160}(?:may not|must not|does not) issue.{0,80}qualifying/im,
+    /\b(?:Astra|Sol|Terra|Opus|Sonnet)\b.{0,160}(?:may not|must not|does not) issue.{0,80}qualifying/im,
   "qualifying verdict assigned to a named route" =>
-    /qualifying.{0,120}\b(?:uses|is)\b.{0,80}\b(?:Sol|Terra|Opus|Sonnet)\b/im,
+    /qualifying.{0,120}\b(?:uses|is)\b.{0,80}\b(?:Astra|Sol|Terra|Opus|Sonnet)\b/im,
   "named route limited below qualifying review" =>
-    /\b(?:Sol|Terra|Opus|Sonnet)\b.{0,80}limited to routine deterministic QA/im,
+    /\b(?:Astra|Sol|Terra|Opus|Sonnet)\b.{0,80}limited to routine deterministic QA/im,
   "cheaper route forbidden from qualifying verdict" =>
     /cheaper route.{0,120}(?:may not|must not|does not).{0,80}qualifying/im,
   "route compliance used as checker qualification" => /checker_route_compliance/i,
@@ -96,13 +99,13 @@ ROUTE_DISQUALIFICATION_PATTERNS = {
 
 NAMED_EXECUTION_ENFORCEMENT_PATTERNS = {
   "named model denied coordinator or initiator work" =>
-    /\b(?:Sol|Terra|Opus|Sonnet|Fable|Luna|Haiku|GPT-5\.5)\b.{0,100}may not initiate or coordinate/im,
+    /\b(?:Astra|Sol|Terra|Opus|Sonnet|Fable|Luna|Haiku|GPT-5\.5)\b.{0,100}may not initiate or coordinate/im,
   "named model allowed only for a worker class" =>
-    /\b(?:Sol|Terra|Opus|Sonnet|Fable|Luna|Haiku|GPT-5\.5)\b.{0,40}(?:is |remains )?(?:allowed|available) only/im,
+    /\b(?:Astra|Sol|Terra|Opus|Sonnet|Fable|Luna|Haiku|GPT-5\.5)\b.{0,40}(?:is |remains )?(?:allowed|available) only/im,
   "named model required to stop editing" =>
-    /\b(?:Sol|Terra|Opus|Sonnet|Fable|Luna|Haiku|GPT-5\.5)\b.{0,40}stops without editing/im,
+    /\b(?:Astra|Sol|Terra|Opus|Sonnet|Fable|Luna|Haiku|GPT-5\.5)\b.{0,40}stops without editing/im,
   "execution envelope approved by a named model" =>
-    /\b(?:Sol|Opus)-approved execution envelope/im,
+    /\b(?:Astra|Sol|Opus)-approved execution envelope/im,
   "named worker route requires simple classification" =>
     %r{\b(?:Terra|Sonnet)(?: 5)?/high requires\b}im,
   "named route forced by risk classification" =>
@@ -157,12 +160,12 @@ SINGLE_TARGET_PLANNER_SURFACES = %w[
   skills/plan-pr-batch/SKILL.md
   workflows/pr-processing.md
 ].freeze
-PLANNING_PASS_ROUTE_EXPECTATIONS = {
-  "affirmatively-simple" => ["balanced/medium", "Terra/medium", "Sonnet 5/medium"],
-  "routine-multi-lane" => ["balanced/high", "Terra/high", "Sonnet 5/high"],
-  "default-or-uncertain-single-target" => ["strongest/high", "Sol/high", "Opus 5/high"],
-  "pinned-high-risk-or-escalation" => ["strongest/xhigh", "Sol/xhigh", "Opus 5/xhigh"]
-}.freeze
+PLANNING_PASS_ROUTE_EXPECTATIONS = JSON.parse(
+  File.read(File.join(ROOT, "skills/plan-pr-batch/references/model-routing-profiles.json"))
+).fetch("legacy_planning_cases").to_h do |entry|
+  [entry.fetch("classification"), entry.values_at("neutral", "codex", "claude")]
+end.freeze
+
 PLANNING_PASS_DISPOSITION_EXPECTATIONS = {
   "stronger-current" => %w[future-cost-advisory 0 yes no],
   "weaker-current-host-supported" => %w[bounded-independent-review 1 yes no],
@@ -320,7 +323,7 @@ INDEPENDENT_GATE_FIRST_BLOCKS_EXECUTION_PATTERN =
 CONCRETE_INDEPENDENT_BLOCKER_SENTENCE_PATTERN =
   /\b(?:exact-head\s+CI\s+gate|(?:credential|security|risk|scope|evidence|authority)\s+(?:check|gate))\s+(?:fails?|blocks?)\b/i
 def read_repo_file(path)
-  File.read(File.join(ROOT, path), encoding: "UTF-8")
+  SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
 end
 
 def extract_markdown_section(text, heading)
@@ -945,6 +948,17 @@ def assert_recommended_profiles(test, text, label)
   test.assert_includes guide, "advisory", label
 end
 
+def assert_single_target_coordinator_baseline(test, text, label)
+  guide = normalized(strip_html_comments(text))
+  [
+    "Default single-target future coordinator: Sol/high",
+    "Affirmatively simple single-target future coordinator: Terra/high",
+    "Default single-target future coordinator: Opus 5/high",
+    "Affirmatively simple single-target future coordinator: Sonnet 5/high",
+    "claude-profile v1"
+  ].each { |rule| test.assert_includes guide, rule, "#{label}: missing baseline #{rule}" }
+end
+
 def assert_constrained_routine_routing(test, text, label)
   guide = normalized(strip_html_comments(text))
   [
@@ -1171,6 +1185,15 @@ class ModelRoutingContractTest < Minitest::Test
     end
   end
 
+  def test_astra_is_covered_by_named_route_safety_guards
+    assert_match NAMED_EXECUTION_ENFORCEMENT_PATTERNS.fetch("named model denied coordinator or initiator work"),
+                 "Astra may not initiate or coordinate"
+    assert_match ROUTE_DISQUALIFICATION_PATTERNS.fetch("named route forbidden from qualifying verdict"),
+                 "Astra must not issue a qualifying verdict"
+    refute_match ROUTE_DISQUALIFICATION_PATTERNS.fetch("named route forbidden from qualifying verdict"),
+                 "Astra is an advisory preference; independent evidence qualifies a verdict"
+  end
+
   def test_active_execution_surfaces_never_enforce_named_model_routes
     ROUTING_SURFACES.each do |path|
       text = normalized(read_repo_file(path))
@@ -1256,10 +1279,18 @@ class ModelRoutingContractTest < Minitest::Test
     SINGLE_TARGET_PLANNER_SURFACES.each do |path|
       text = read_repo_file(path)
       assert_planning_pass_contract(self, text, path)
-      assert_includes text, "claude-profile v1", path
+      assert_single_target_coordinator_baseline(self, text, path)
     end
 
     assert_includes read_repo_file(MODEL_ROUTING_GUIDE_PATH), "claude-opus-5"
+  end
+
+  def test_single_target_coordinator_baseline_rejects_missing_or_changed_routes
+    text = read_repo_file("docs/pr-batch-skills.md")
+    ["Sol/high", "Terra/high", "Opus 5/high", "Sonnet 5/high", "claude-profile v1"].each do |route|
+      mutant = text.gsub(route, "unverified-route")
+      assert_raises(Minitest::Assertion) { assert_single_target_coordinator_baseline(self, mutant, "baseline mutant") }
+    end
   end
 
   def test_intake_keeps_future_coordinator_policy_separate_from_current_planning_pass
@@ -2110,6 +2141,24 @@ class ModelRoutingContractTest < Minitest::Test
     refute_equal changelog, mutant, "Codex routing release-note mutant did not change the changelog"
     assert_raises(Minitest::Assertion, "changelog accepted unconditional Sol/xhigh Codex multi-lane coordination") do
       assert_codex_changelog_routing_note(self, mutant, "CHANGELOG.md Codex routing release-note mutant")
+    end
+  end
+
+  def test_source_astra_overview_never_turns_routes_into_authority
+    skip "source-pack docs are not installed" unless ENV[SOURCE_CHECKOUT_ENV] == "1"
+
+    text = normalized(read_repo_file("docs/astra-tuning.md"))
+    assert_safe = lambda do |candidate|
+      patterns = ROUTE_DISQUALIFICATION_PATTERNS.merge(NAMED_EXECUTION_ENFORCEMENT_PATTERNS)
+                                                .merge(ROUTE_AUTHORITY_ENFORCEMENT_PATTERNS)
+      patterns.each do |label, pattern|
+        refute_match pattern, candidate, "docs/astra-tuning.md: #{label}"
+      end
+      assert_no_route_only_contradiction(self, candidate, "docs/astra-tuning.md")
+    end
+    assert_safe.call(text)
+    ["Astra must not issue a qualifying verdict.", "A route mismatch blocks execution."].each do |mutation|
+      assert_raises(Minitest::Assertion) { assert_safe.call("#{text} #{mutation}") }
     end
   end
 

@@ -19,6 +19,9 @@ clean" loop on top.
 - **Alternative engine: Claude review tooling** when the current Claude Code environment provides
   it, such as `/code-review` or `/code-review ultra`. Treat these as environment-specific, not
   repo-local commands.
+- **Cursor review tooling** when the current Cursor session provides `/review`,
+  `/review-bugbot`, or `/review-security`. Treat these as availability-checked
+  host tools, not portable requirements.
 - For PR-comment triage (reacting to review comments already on a GitHub PR), use
   `.agents/skills/address-review/SKILL.md`; Claude Code exposes it as `/address-review`.
 <!-- host-branch: available-tool end -->
@@ -33,6 +36,11 @@ Use when:
 ## Contract
 
 This is the portable core. Hold it regardless of which engine runs.
+
+Apply [Initial-Pass Optional-Nit Cutoff](../../workflows/pr-processing.md#initial-pass-optional-nit-cutoff)
+before accepting findings in every engine/pass, including a final whole-branch
+or second-engine review. Carry the existing phase into the review prompt and
+triage; a rerun cannot create another optional repair pass.
 
 - Treat review output as **advisory**. Never blindly apply it.
 - Verify every finding by reading the real code path and adjacent files before acting.
@@ -108,6 +116,19 @@ elsewhere in this skill.
 Tell the user which target you picked and why.
 
 ## Step 2 - Format and lint first
+
+Consume applicable local results using
+[Verification evidence reuse](../verify/references/verification-evidence.md).
+Do not repeat a passing check merely because workflow stages changed; rerun
+affected checks after changes and honor every repository-required repeat.
+This reuses local command results only, not independent review verdicts.
+
+Carry the same reference's delivery coverage report into review: phase,
+candidate/base identity, selected/full checks, required results, omissions,
+and the trusted selection reason. A repository-selected local gate does not
+reduce independent review or current-head CI requirements. Promotion requires
+complete candidate evidence and separate authority. Existing repair limits
+pause for disposition with unresolved findings still blocking.
 
 Formatting that moves line locations will stale the review and the engine's line references.
 Use `AGENTS.md`, `.agents/bin/README.md`, and `/verify` for the actual check set. Before a closeout review:
@@ -193,8 +214,9 @@ For each finding the engine returns:
 
 1. Open the real code path and adjacent files. Confirm the finding is true here, not generic.
 2. Accept only concrete, actionable findings (correctness bugs, real regressions, genuine
-   security gaps, clear inconsistencies with adjacent code). Reject speculation, nits, and
-   broad rewrites; note briefly why. Severity alone does not authorize a broader mechanism.
+   security gaps, clear inconsistencies with adjacent code). Consider useful cheap initial
+   nits only under the canonical cutoff; reject late optional churn, speculation, and
+   broad rewrites. Severity alone does not authorize a broader mechanism.
 3. Before acting on a consequential finding, use a fresh independent reviewer or validator
    context to check it against the same diff and cited code path. Give it the finding,
    target/base/head, and relevant diff, but do not present agreement as the desired outcome.

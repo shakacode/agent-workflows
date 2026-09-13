@@ -4,6 +4,11 @@ This pack includes an optional Claude Code `SessionEnd` adapter that records
 when a coordinated lane stops. It lives under `plugins/claude-hooks/hooks/` and
 is **off by default**: installing or enabling the pack does not activate it.
 
+Cursor already exposes a `stop` hook surface. A SessionEnd-equivalent lane drain
+for Cursor is optional and later, mirroring this Claude opt-in adapter. Do not
+enable a Cursor drain hook by default. Existing user `~/.cursor/hooks.json`
+entries are unrelated to this pack.
+
 For the portable host model the adapter plugs into, see the
 [Host Adapter Contract](contract.md).
 
@@ -37,6 +42,19 @@ currently documents the SessionEnd reasons `clear`, `resume`, `logout`,
 `prompt_input_exit`, and `other`. The registration covers every documented
 stopping reason except `resume`. The script also checks `resume` defensively, so
 a hand-edited installation cannot drain a session that is merely resuming.
+
+## No merge-command gate
+
+This pack does not ship the `PreToolUse` merge-command gate proposed in
+issue #276 and later withdrawn from PR #343. The old shell-text recognizer was
+retired rather than extended. If a future host-owned merge gate is ever
+reintroduced, it should use structured host tool/argv identity or a positive
+receipt boundary, not arbitrary shell parsing. Direct `gh pr merge` can remain
+usable when the host presents the exact argv. Wrapper invocations (`env`,
+`sh -c`, `bash -lc`, `nohup`,
+`timeout`, `command`, `xargs`, `eval`), command substitution/backticks, quoted
+subcommand tokens, arithmetic expansion, heredocs, URL selectors, redirections,
+unknown flags, and NUL-bearing argv/cwd values must fail closed.
 
 ## Enable the adapter
 
@@ -74,6 +92,28 @@ Restart Claude Code, or re-read settings, for the change to take effect.
 The explicit `args` array selects the host's exec form, so spaces or shell
 metacharacters in either path are not parsed as shell syntax. Claude Code
 substitutes its stable session-start project root for `${CLAUDE_PROJECT_DIR}`.
+
+## Coordination-not-applicable sessions
+
+Before selecting `coordination_not_applicable`, the operator or launcher must
+verify at host-session start that `AGENT_WORKFLOWS_HOOKS=off`, that
+`AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV` is absent, or that the adapter is not
+registered. These existing controls prevent backend invocation even when the
+repository has a real configured backend. Record the trusted host configuration
+with the [applicability decision](../../workflows/pr-processing.md#coordination-applicability-gate);
+if it cannot be verified, stop before N/A launch. Do not change live user settings
+implicitly to satisfy the precondition.
+
+Setting environment only in a child tool shell cannot change an already-running
+parent host hook. Configure the host through its operator or launcher before
+starting the session; a child-only export is not evidence of the parent hook's
+configuration. Coordination applicability is prompt-driven, and the adapter does
+not consume applicability. An enabled adapter with a conditional-drain
+advertisement can therefore invoke the backend regardless of the recorded
+applicability outcome. The backend's conditional claim check prevents a phantom
+event without a matching live claim, but does not satisfy the N/A no-call rule.
+This precondition is not runtime enforcement and does not remove any existing
+`coordination_required` condition.
 
 ## Configuration
 

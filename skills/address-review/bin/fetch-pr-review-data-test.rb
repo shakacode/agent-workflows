@@ -23,14 +23,14 @@ class FetchPrReviewDataTest < Minitest::Test
 
   REVIEWS_RAW = <<~JSON
     [[
-      {"id":10,"body":"fix the nil guard","state":"COMMENTED","user":{"login":"alice"},"submitted_at":"2026-01-04T00:00:00Z"},
+      {"id":10,"body":"fix the nil guard","state":"COMMENTED","user":{"login":"alice"},"submitted_at":"2026-01-04T00:00:00Z","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
       {"id":11,"body":"","state":"APPROVED","user":{"login":"bob"}}
     ]]
   JSON
 
   INLINE_RAW = <<~JSON
     [[
-      {"id":20,"node_id":"RC_20","path":"a.rb","user":{"login":"alice"}},
+      {"id":20,"node_id":"RC_20","path":"a.rb","user":{"login":"alice"},"pull_request_review_id":10,"commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
       {"id":21,"node_id":"RC_21","path":"b.rb","user":{"login":"alice"}},
       {"id":22,"node_id":"RC_22","path":"c.rb","user":{"login":"alice"}}
     ]]
@@ -43,10 +43,21 @@ class FetchPrReviewDataTest < Minitest::Test
     ]}}}}}]
   JSON
 
+  # These cases are about shaping, not trust, so every fixture actor is
+  # actionable; the trust boundary itself is covered in the -trust-test suite.
+  def trust
+    config = GithubActorTrust.build_config(
+      { "trusted_users" => %w[alice bob bot] },
+      contents: "trusted_users: [alice, bob, bot]\n", path: "(test)", global: false
+    )
+    FetchPrReviewData::TrustBoundary.new(repo: "owner/repo", config:, source: "test")
+  end
+
   def assembled
     FetchPrReviewData.assemble(
       repo: "owner/repo", pr_number: 1234,
-      issue_raw: ISSUE_RAW, reviews_raw: REVIEWS_RAW, inline_raw: INLINE_RAW, threads_raw: THREADS_RAW
+      issue_raw: ISSUE_RAW, reviews_raw: REVIEWS_RAW, inline_raw: INLINE_RAW, threads_raw: THREADS_RAW,
+      trust:
     )
   end
 
@@ -56,6 +67,17 @@ class FetchPrReviewDataTest < Minitest::Test
 
   def test_drops_empty_review_summaries
     assert_equal([10], assembled["review_summaries"].map { |r| r["id"] })
+  end
+
+  # Production break: address-review cannot associate an inline concept with
+  # its current walkthrough review, so it replies to and resolves that thread.
+  def test_preserves_review_and_commit_identity_for_walkthrough_filtering
+    summary = assembled["review_summaries"].fetch(0)
+    comment = assembled["inline_comments"].find { |row| row["id"] == 20 }
+
+    assert_equal "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", summary["commit_id"]
+    assert_equal 10, comment["pull_request_review_id"]
+    assert_equal "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", comment["commit_id"]
   end
 
   def test_joins_thread_metadata_by_node_id
@@ -75,7 +97,8 @@ class FetchPrReviewDataTest < Minitest::Test
 
   def test_handles_empty_and_blank_inputs
     out = FetchPrReviewData.assemble(
-      repo: "o/r", pr_number: 7, issue_raw: "", reviews_raw: "[]", inline_raw: "[[]]", threads_raw: nil
+      repo: "o/r", pr_number: 7, issue_raw: "", reviews_raw: "[]", inline_raw: "[[]]", threads_raw: nil,
+      trust:
     )
     assert_equal "", out["review_cutoff_at"]
     assert_equal 0, out["inline_comments"].length

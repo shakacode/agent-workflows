@@ -19,6 +19,10 @@ Those components consume the facts produced here without redefining them.
 ## Canonical Launch Target Gate
 
 Ordinary implementation launch requires an exact GitHub issue or an existing PR as its canonical launch target.
+An occasional quality task must also satisfy
+[Quality Maintenance Admission](../skills/evaluate-issue/SKILL.md#quality-maintenance-admission).
+Retaining optional review candidates, their age, or generic "fix issues"
+wording cannot admit that task; canonical identity alone is not scope approval.
 Pass the repository-qualified canonical issue/PR identity unchanged through planning, plan preflight, dispatch, coordination claims, the Lane Card, and final handoff.
 A direct prompt without either target must stop before branch creation, editing, implementation or coordination mutation, or worker dispatch and route to planning/reconciliation.
 Planning/reconciliation searches for and reuses the exact existing issue or PR. Equivalent prompt wording cannot create an independently claimable synthetic lane.
@@ -70,10 +74,11 @@ exact value already supplied:
 - **Goal name:** a concrete outcome such as `Process issues #1/#2 into
   PRs/no-PR decisions`, not pasted prompt text.
 - **Mode:** plan-only, create a host goal prompt, or launch workers now.
-- **`merge_authority`:** `none`, `ask`, or `auto_merge_when_gates_pass`. Resolve
-  it before worker launch from visible authority or ask. `ask` automatically
-  walks through the exact-diff PR one conceptual change at a time before its
-  one final merge decision; never silently default it.
+- **`merge_authority`:** `none`, `ask`, or the editable alias `auto`. Continue
+  accepting `auto_merge_when_gates_pass` for compatibility. Resolve it before
+  worker launch from visible authority or ask. `ask` automatically
+  publishes the complete exact-diff walkthrough as separately replyable GitHub
+  concepts before its one final merge decision; never silently default it.
 - **Concurrency:** one machine, multiple machines, or single-threaded.
 - **Batch size target:** `codex`, `claude`, or `generic`; explicit paste
   destination or runner wins, otherwise use reliable host detection or
@@ -92,6 +97,25 @@ exact value already supplied:
 Batch-specific planning may collect extra shaping facts such as model/effort
 preferences or a dependency partition. Those are consumers of intake, not
 alternate definitions of target, authority, or verified title identity.
+
+### Merge Authority Input Normalization
+
+At the human-editable input boundary, accept `none`, `ask`, `auto`, and the
+compatible canonical value `auto_merge_when_gates_pass`. Immediately after
+resolving the visible value, normalize only `auto` to
+`auto_merge_when_gates_pass`; preserve `none`, `ask`, and an already-canonical
+`auto_merge_when_gates_pass` unchanged. A missing value, an unresolved
+placeholder, or any other value is invalid and fails closed before plan
+preflight, dispatcher selection, or worker launch.
+
+The short alias exists only in editable prompt input. Before constructing any
+worker prompts, manifests, handoffs, merge-assurance contexts or receipts,
+audits, helper inputs, or other durable evidence, reject unnormalized `auto`;
+preserve `none`, `ask`, and an already-canonical
+`auto_merge_when_gates_pass` unchanged. Never persist `auto`, and never infer a
+default from an omitted or unresolved field. In prompt-generation mode only,
+no supplied authority emits the editable `merge_authority: <none|ask|auto>`
+placeholder; the executor must resolve it before worker launch.
 
 ## Verified Batch Title Selection
 
@@ -141,9 +165,11 @@ no verified source issue remain identifier-free; never guess a primary issue.
 For continuation intake, evidence, blocker, dependency, next-action, comment,
 and example references are not targets and cannot supply title identifiers.
 
-Render exactly one empty line immediately before and after the `Batch title:`
-line. Keep the target-specific invocation above that title block and
-`Thread handle:` below it.
+Primary pasteable prompts put `Batch title:` directly after the target-specific
+invocation, followed immediately by `Repo:`, `Objective:`, and
+`merge_authority:`. Render exactly one empty line after `merge_authority:`
+before `Thread handle:`. Specialized continuation prompts keep their own title
+and handle spacing.
 
 ## Trust Handoff
 

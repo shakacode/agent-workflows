@@ -12,6 +12,7 @@ require "tmpdir"
 require "yaml"
 
 load File.expand_path("agent-workflow-seam-doctor", __dir__)
+require_relative "../skills/pr-batch/lib/github_actor_trust"
 require_relative "../skills/secure-github-actions/lib/secure_github_actions_scanner"
 
 module PushDownstream
@@ -582,13 +583,17 @@ module PushDownstream
       raw_values =
         case key
         when "trusted_bots", "trusted_metadata_bots"
-          TrustConfigShape.strict_string_list(trust[key], name: key)
+          GithubActorTrust.strict_string_list(trust[key], name: key)
         else
           Array(trust[key])
         end
       values = raw_values.map { |value| normalize_trust_value(key, value) }.reject(&:empty?)
       [key, values.uniq]
     end
+  rescue GithubActorTrust::Error => e
+    # Fleet callers rescue RuntimeError per repository; preserve that public
+    # failure boundary so one malformed consumer contract cannot abort the run.
+    raise e.message.to_s
   end
 
   def normalize_trust_value(key, value)
@@ -2648,87 +2653,92 @@ if $PROGRAM_NAME == __FILE__
   end.parse!
 
   code =
-    if options[:audit]
-      if options[:root] || options[:policy_fleet]
-        warn "--audit cannot be combined with --root or --policy-fleet"
-        1
+    begin
+      if options[:audit]
+        if options[:root] || options[:policy_fleet]
+          warn "--audit cannot be combined with --root or --policy-fleet"
+          1
+        elsif options[:security_audit_fleet]
+          warn "--audit cannot be combined with --security-audit-fleet"
+          1
+        elsif options[:apply]
+          warn "--audit is read-only and cannot be combined with --apply"
+          1
+        elsif !PushDownstream.trust_config_empty?(options[:trust])
+          warn "--trusted-* flags require --root; --audit never writes to a consumer"
+          1
+        else
+          PushDownstream.run_audit(
+            options[:config],
+            options[:presets],
+            only: options[:only],
+            include_disabled: options[:include_disabled]
+          )
+        end
+      elsif options[:root]
+        if options[:policy_fleet] || options[:security_audit_fleet]
+          warn "--policy-fleet and --security-audit-fleet cannot be combined with --root"
+          1
+        else
+          PushDownstream.run_local(
+            options[:root],
+            base_branch: options[:base_branch],
+            trust: options[:trust],
+            apply: options[:apply]
+          )
+        end
       elsif options[:security_audit_fleet]
-        warn "--audit cannot be combined with --security-audit-fleet"
-        1
-      elsif options[:apply]
-        warn "--audit is read-only and cannot be combined with --apply"
-        1
-      elsif !PushDownstream.trust_config_empty?(options[:trust])
-        warn "--trusted-* flags require --root; --audit never writes to a consumer"
-        1
+        if options[:apply]
+          warn "--apply cannot be combined with --security-audit-fleet"
+          1
+        elsif options[:policy_fleet]
+          warn "--policy-fleet cannot be combined with --security-audit-fleet"
+          1
+        elsif options[:include_disabled]
+          warn "--all cannot be combined with --security-audit-fleet; fleet membership is explicit"
+          1
+        elsif !PushDownstream.trust_config_empty?(options[:trust])
+          warn "--trusted-* flags cannot be combined with --security-audit-fleet"
+          1
+        else
+          PushDownstream.run_security_audit_fleet(
+            options[:config],
+            fleet_name: options[:security_audit_fleet],
+            only: options[:only]
+          )
+        end
+      elsif options[:policy_fleet]
+        if options[:include_disabled]
+          warn "--all cannot be combined with --policy-fleet; fleet membership is explicit"
+          1
+        elsif !PushDownstream.trust_config_empty?(options[:trust])
+          warn "--trusted-* flags require --root; policy fleets read only their registered policy values"
+          1
+        else
+          PushDownstream.run_policy_fleet(
+            options[:config],
+            fleet_name: options[:policy_fleet],
+            only: options[:only],
+            apply: options[:apply]
+          )
+        end
       else
-        PushDownstream.run_audit(
+        unless PushDownstream.trust_config_empty?(options[:trust])
+          warn "--trusted-* flags require --root; use downstream.yml or seam-presets.yml trust blocks in registry mode"
+          exit 1
+        end
+
+        PushDownstream.run_registry(
           options[:config],
           options[:presets],
           only: options[:only],
-          include_disabled: options[:include_disabled]
-        )
-      end
-    elsif options[:root]
-      if options[:policy_fleet] || options[:security_audit_fleet]
-        warn "--policy-fleet and --security-audit-fleet cannot be combined with --root"
-        1
-      else
-        PushDownstream.run_local(
-          options[:root],
-          base_branch: options[:base_branch],
-          trust: options[:trust],
+          include_disabled: options[:include_disabled],
           apply: options[:apply]
         )
       end
-    elsif options[:security_audit_fleet]
-      if options[:apply]
-        warn "--apply cannot be combined with --security-audit-fleet"
-        1
-      elsif options[:policy_fleet]
-        warn "--policy-fleet cannot be combined with --security-audit-fleet"
-        1
-      elsif options[:include_disabled]
-        warn "--all cannot be combined with --security-audit-fleet; fleet membership is explicit"
-        1
-      elsif !PushDownstream.trust_config_empty?(options[:trust])
-        warn "--trusted-* flags cannot be combined with --security-audit-fleet"
-        1
-      else
-        PushDownstream.run_security_audit_fleet(
-          options[:config],
-          fleet_name: options[:security_audit_fleet],
-          only: options[:only]
-        )
-      end
-    elsif options[:policy_fleet]
-      if options[:include_disabled]
-        warn "--all cannot be combined with --policy-fleet; fleet membership is explicit"
-        1
-      elsif !PushDownstream.trust_config_empty?(options[:trust])
-        warn "--trusted-* flags require --root; policy fleets read only their registered policy values"
-        1
-      else
-        PushDownstream.run_policy_fleet(
-          options[:config],
-          fleet_name: options[:policy_fleet],
-          only: options[:only],
-          apply: options[:apply]
-        )
-      end
-    else
-      unless PushDownstream.trust_config_empty?(options[:trust])
-        warn "--trusted-* flags require --root; use downstream.yml or seam-presets.yml trust blocks in registry mode"
-        exit 1
-      end
-
-      PushDownstream.run_registry(
-        options[:config],
-        options[:presets],
-        only: options[:only],
-        include_disabled: options[:include_disabled],
-        apply: options[:apply]
-      )
+    rescue RuntimeError => e
+      warn "FAIL: #{e.message}"
+      1
     end
 
   exit code

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "json"
 require "minitest/autorun"
 require "rbconfig"
 require "tmpdir"
@@ -10,6 +11,32 @@ require_relative "../../bin/agent_doctor/sanitizer"
 require_relative "../../bin/agent_doctor/timeout_budget"
 
 class AgentDoctorOrchestratorTrustTest < Minitest::Test
+  class RecordingDelegateRunner
+    attr_reader :commands
+
+    def initialize(delegate, executable)
+      @delegate = delegate
+      @executable = executable
+      @commands = []
+    end
+
+    def capture(command, **options)
+      return @delegate.capture(command, **options) unless command.first == @executable
+
+      @commands << command
+      {
+        stdout: JSON.generate(
+          "schema_version" => 1,
+          "component" => "agent-workflows",
+          "status" => "healthy",
+          "checks" => [{ "id" => "workflows.installation", "status" => "healthy", "summary" => "ready",
+                         "details" => {}, "guidance" => nil }]
+        ),
+        stderr: "", exit: 0, failure: nil
+      }
+    end
+  end
+
   COMPONENTS = %w[agent-workflows agent-coordination agent-coordination-dashboard].freeze
   # These tests verify source/delegate trust decisions, not timeout behavior.
   # Use the largest production-supported budget so concurrent validators do
@@ -261,19 +288,21 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
   end
 
   def test_healthy_source_allows_hardlinked_installed_delegate
-    sentinel = path("healthy-hardlinked-workflow-executed")
     source_helper = path("src/agent-workflows/bin/agent-workflows-doctor")
     installed = path("target/bin/agent-workflows-doctor")
     FileUtils.mkdir_p(File.dirname(source_helper))
-    write_delegate(source_helper, "agent-workflows", "workflows.installation", sentinel: sentinel)
-    system("git", "-C", path("src/agent-workflows"), "add", "bin/agent-workflows-doctor", exception: true)
-    system("git", "-C", path("src/agent-workflows"), "commit", "--quiet", "-m", "delegate fixture", exception: true)
+    write_delegate(source_helper, "agent-workflows", "workflows.installation")
     FileUtils.rm_f(installed)
     File.link(source_helper, installed)
+    system("git", "-C", path("src/agent-workflows"), "add", "bin/agent-workflows-doctor", exception: true)
+    system("git", "-C", path("src/agent-workflows"), "commit", "--quiet", "-m", "delegate fixture", exception: true)
+    runner = RecordingDelegateRunner.new(non_deadline_runner, installed)
 
-    payload = orchestrator.call
+    payload = orchestrator(runner: runner).call
 
-    assert_path_exists sentinel
+    assert File.identical?(source_helper, installed), "fixture is not hardlinked"
+    assert_equal 1, runner.commands.length
+    assert_equal installed, runner.commands.fetch(0).first
     assert_equal "healthy", payload.fetch("components").first.fetch("status")
   end
 
@@ -342,9 +371,9 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
                    "agent-coordination-dashboard", "dashboard.health", sentinel: @sentinel)
   end
 
-  def orchestrator(selected_options = options)
+  def orchestrator(selected_options = options, runner: non_deadline_runner)
     AgentDoctor::Orchestrator.new(selected_options.merge(source_git_timeout: nil),
-                                  runner: non_deadline_runner,
+                                  runner: runner,
                                   sanitizer: AgentDoctor::Sanitizer.new,
                                   environment: @environment)
   end

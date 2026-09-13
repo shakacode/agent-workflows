@@ -242,8 +242,7 @@ class PushDownstreamConfigTest < Minitest::Test
         - repo: bad
           overrides:
             trust:
-              trusted_bots: [github-actions]
-              trusted_metadata_bots: [github-actions]
+              trusted_metadata_bots: [github-actions, 42]
     YAML
 
     with_config(yaml) do |path|
@@ -255,7 +254,7 @@ class PushDownstreamConfigTest < Minitest::Test
       assert_equal 1, @registry_status
       assert_includes out, "shakacode/good"
       refute_includes out, "shakacode/bad"
-      assert_includes err, "FAIL shakacode/bad: invalid trust config"
+      assert_includes err, "FAIL shakacode/bad: trusted_metadata_bots must be a nonempty string or an array of nonempty strings"
     end
   end
 
@@ -270,8 +269,7 @@ class PushDownstreamConfigTest < Minitest::Test
         - repo: bad
           overrides:
             trust:
-              trusted_bots: [github-actions]
-              trusted_metadata_bots: [github-actions]
+              trusted_metadata_bots: [github-actions, 42]
     YAML
 
     with_config(yaml) do |path|
@@ -289,7 +287,7 @@ class PushDownstreamConfigTest < Minitest::Test
 
         assert_equal 1, @registry_status
         assert_equal ["shakacode/good"], calls
-        assert_includes err, "FAIL shakacode/bad: invalid trust config"
+        assert_includes err, "FAIL shakacode/bad: trusted_metadata_bots must be a nonempty string or an array of nonempty strings"
       end
     end
   end
@@ -910,7 +908,7 @@ class PushDownstreamAdapterTest < Minitest::Test
       overrides: { "trust" => {} }
     }
 
-    error = assert_raises(ArgumentError) do
+    error = assert_raises(RuntimeError) do
       PushDownstream.resolve_contract(repo, presets)
     end
 
@@ -3876,6 +3874,14 @@ class PushDownstreamCliTest < Minitest::Test
 
     refute status.success?, out
     assert_includes out, "--trusted-* flags require --root"
+  end
+
+  def test_empty_trusted_bot_flag_fails_without_a_backtrace
+    out, status = run_cli("--trusted-bot", "")
+
+    refute status.success?, out
+    assert_includes out, "FAIL: trusted_bots must be a nonempty string or an array of nonempty strings"
+    refute_match(/(?:RuntimeError|Traceback|from .*push-downstream)/, out)
   end
 
   def test_local_apply_reports_invalid_trust_config_without_backtrace

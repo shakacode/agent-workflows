@@ -25,14 +25,18 @@ skills, but they are the exception. The default path is:
 
 ## Host Targets
 
-`bin/install-agent-workflows` supports the same installed layout for Codex and
-Claude:
+`bin/install-agent-workflows` supports the same installed layout for Codex,
+Claude, and Cursor:
 
 | Host | Default target |
 | --- | --- |
 | `codex` | `${CODEX_HOME:-$HOME/.codex}` |
 | `claude` | `${CLAUDE_HOME:-$HOME/.claude}` |
-| `auto` | An existing Codex or Claude home, only when exactly one is detectable |
+| `cursor` | `${CURSOR_HOME:-$HOME/.cursor}` |
+| `auto` | An existing Codex, Claude, or Cursor home, only when exactly one is detectable |
+
+Never install into `~/.cursor/skills-cursor`. That directory is reserved for
+Cursor builtins. Only `~/.cursor/skills` syncs to Cloud Agents.
 
 The installer also supplies `agent-workflow-writing-style`,
 [the packaged default guide](writing-style.md), and the opt-in
@@ -122,13 +126,14 @@ tracked separately from this generic installer default.
 ## Native Plugin Paths
 
 This repository ships native plugin metadata for Codex at
-`.codex-plugin/plugin.json` and for Claude Code under `.claude-plugin/`. Both
-paths expose the source pack's existing semantic `./skills/` tree through the
-plugin identifier `scw`; the skill directories and frontmatter names remain
-unprefixed. Claude Code therefore exposes `skills/verify/SKILL.md` as
-`/scw:verify`. Claude's plugin manifest publishes `ShakaCode Agent Workflows`
-as the UI display name without changing the `scw` install or namespace
-identifier.
+`.codex-plugin/plugin.json`, for Claude Code under `.claude-plugin/`, and for
+Cursor at `.cursor-plugin/plugin.json`. Codex and Claude expose the source
+pack's existing semantic `./skills/` tree through the plugin identifier `scw`;
+the skill directories and frontmatter names remain unprefixed. Claude Code
+therefore exposes `skills/verify/SKILL.md` as `/scw:verify`. Claude's plugin
+manifest publishes `ShakaCode Agent Workflows` as the UI display name without
+changing the `scw` install or namespace identifier. Cursor loads `/<skill>`
+from the local plugin or from the flat `~/.cursor/skills` install.
 
 Install the Claude Code plugin from the repository marketplace:
 
@@ -136,6 +141,16 @@ Install the Claude Code plugin from the repository marketplace:
 /plugin marketplace add shakacode/agent-workflows
 /plugin install scw@agent-workflows
 ```
+
+The Claude plugin deliberately omits an explicit `version`. Claude therefore
+uses the Git commit SHA as the plugin version, so every commit on the
+marketplace's tracked branch is updateable without maintaining duplicate
+release numbers. Enable auto-update for the `agent-workflows` marketplace in
+Claude's **Plugins → Marketplaces** UI when the installation should follow that
+branch automatically; third-party marketplace auto-update is disabled by
+default. Claude checks after startup and may delay the check by up to ten
+minutes. Run `/reload-plugins` to load an installed update in the current
+session, or start a new session.
 
 For Codex, point the current marketplace or plugin-source flow at this cloned or
 released source pack and select `scw`:
@@ -210,13 +225,19 @@ Install for Claude Code:
 bin/install-agent-workflows --host claude
 ```
 
+Install for Cursor:
+
+```bash
+bin/install-agent-workflows --host cursor
+```
+
 Install into an explicit shared agent home:
 
 ```bash
 bin/install-agent-workflows --host codex --target "$HOME/.agents"
 ```
 
-A clean Codex or Claude installation can plan and launch ordinary batches as
+A clean Codex, Claude, or Cursor installation can plan and launch ordinary batches as
 installed. Do not generate project signing keys or provision fixed launch trust
 anchors: assignment activation and lane progression use ordinary durable
 lifecycle state. Model/effort values are advisory preferences, while any
@@ -229,6 +250,21 @@ Install companion assets for an already-enabled native plugin:
 bin/install-agent-workflows \
   --host codex \
   --delivery-mode plugin-companion
+```
+
+```bash
+bin/install-agent-workflows \
+  --host cursor \
+  --delivery-mode plugin-companion
+```
+
+For a local Cursor plugin test, symlink the checkout and keep companion
+delivery so flat skills are not a second auto-invocable tree:
+
+```bash
+mkdir -p "$HOME/.cursor/plugins/local"
+ln -sfn /path/to/agent-workflows "$HOME/.cursor/plugins/local/scw"
+bin/install-agent-workflows --host cursor --delivery-mode plugin-companion
 ```
 
 When migrating a previous flat install, the installer inventories every known
@@ -423,8 +459,8 @@ creating any missing directory:
 | `--source-root DIR` | `~/src` |
 | `--compat-root DIR` | `~/codex/agent-repos` |
 | `--runtime-root DIR` | `${AGENT_STACK_RUNTIME_ROOT:-~/.agent-workflows}` |
-| `--host codex\|claude\|auto` | `codex` |
-| `--target DIR` | The selected host's normal home (`$CODEX_HOME`, `$CLAUDE_HOME`, or its standard fallback) |
+| `--host codex\|claude\|cursor\|auto` | `codex` |
+| `--target DIR` | The selected host's normal home (`$CODEX_HOME`, `$CLAUDE_HOME`, `$CURSOR_HOME`, or its standard fallback) |
 | `--agent-coord-install-dir DIR` | `~/.local/bin` |
 | `--dashboard-url URL` | `http://127.0.0.1:${PORT:-4319}` |
 
@@ -467,6 +503,7 @@ The installer writes:
 - `<target>/LICENSE`
 - `<target>/THIRD_PARTY-NOTICES.md`
 - `<target>/workflows/*`
+- `<target>/rules/agent-workflows.mdc` for Cursor installs
 - `<target>/docs/coordination-backend.md`
 - `<target>/docs/execution-provenance-schema.md`
 - `<target>/docs/review-finding-schema.md`
@@ -481,6 +518,7 @@ The installer writes:
 - `<target>/bin/agent_doctor/*` (focused runtime modules shared by the workflow and master doctors)
 - `<target>/bin/agent-workflows-delivery-state`
 - `<target>/bin/agent-workflows-doctor`
+- `<target>/bin/agent-workflows-refresh`
 - `<target>/bin/agent-workflows-status`
 - `<target>/bin/agent-workflows-trust-audit`
 - `<target>/bin/install-agent-workflows`
@@ -495,7 +533,8 @@ consumer-owned docs under `<target>/docs`.
 The metadata file records host, artifact mode, skill delivery mode, source
 clone, pack version, source revision, branch, remote, and install time. Copy
 installs also record `managed_skill_copy_fingerprints`,
-`managed_pack_doc_copy_fingerprints`, and `managed_pack_root_copy_fingerprints`,
+`managed_pack_doc_copy_fingerprints`, `managed_pack_helper_copy_fingerprints`,
+and `managed_pack_root_copy_fingerprints`,
 including every installed `<target>/docs/solutions/*` document and the
 third-party notice. On repeat installation, these fingerprints
 prove that an installed managed copy has not been edited even when the recorded
@@ -543,6 +582,33 @@ evidence, and flat-skill inventory. A collision, ambiguous native state, or an
 invalid companion layout returns `CHECK_FAILED` with cleanup guidance.
 
 ## Upgrade
+
+### Refresh a native plugin
+
+Use the installed refresh helper when you need the newest shared workflow
+behavior immediately rather than waiting for the host's normal update cycle:
+
+```bash
+agent-workflows-refresh --host codex
+agent-workflows-refresh --host claude
+```
+
+For Codex, the helper upgrades the configured `agent-workflows` marketplace.
+For Claude, it updates that marketplace and then updates
+`scw@agent-workflows`. The newest marketplace commit is therefore available
+without creating a separate Agent Workflows release. The helper does not add a
+missing marketplace or install a missing plugin; follow the selected host's
+setup guidance first.
+
+This command is an explicit on-demand refresh; it does not replace native
+automatic updates. Codex refreshes configured Git marketplaces when it starts.
+Claude can check third-party marketplaces after startup when marketplace
+auto-update is enabled, but that setting is off by default and the check may be
+delayed. After refreshing Claude, run `/reload-plugins` to load the update in the
+current session. Restart Codex when an existing session must rediscover changed
+skills or instructions.
+
+### Upgrade an installer-managed pack
 
 Upgrade the source clone, reinstall the pack, and validate a consumer repo seam:
 
@@ -599,6 +665,32 @@ cd /path/to/consumer/repo
 agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
 ```
 
+Consumers that intentionally leave named, non-required CircleCI workflows on
+their provider approval hold may opt into the closed trusted-base policy:
+
+```yaml
+ci_readiness:
+  version: 1
+  optional_approval_held_checks:
+    - id: storybook-review-app
+      app_slug: circleci-checks
+      name: storybook-review-app
+```
+
+List only exact hosted workflow names whose approval hold is informational for
+that repository. The seam doctor rejects malformed, unknown, or ambiguous
+rules. Readiness still blocks required or explicitly selected workflows,
+active jobs, incomplete inventories, and stale or unrecognized provider
+evidence. The helper retains the raw check row and authenticates the policy from
+the live base commit; editing the working tree or a receipt cannot create a
+waiver.
+
+After upgrading, update authoritative readiness and assurance callers to pass
+the trusted consumer root and reviewed effective merge-base SHA. Walkthroughs
+and decisions must use `skills/pr-batch/bin/diff-identity` to bind the base ref,
+reviewed diff-base SHA, and full head SHA. Previously accepted caller-supplied
+opaque digests are intentionally rejected.
+
 The autonomous-merge gate takes effect from the installed workflow pack even
 when a consumer has no `autonomous_merge` mapping; omission uses portable
 defaults rather than a permissive grace period. Preset-based downstream sync
@@ -652,12 +744,13 @@ Then dry-run one installed workflow, such as `$plan-pr-batch` or
 review-gate, changelog, and follow-up values from the repo seam without making
 code changes.
 
-## Codex And Claude
+## Codex, Claude, And Cursor
 
-The skill Markdown is host-neutral. Codex and Claude both use the same
+The skill Markdown is host-neutral. Codex, Claude, and Cursor all use the same
 `skills/`, `workflows/`, `docs/`, and `bin/` layout after installation. Files under
 `skills/*/agents/openai.yaml` are optional Codex UI metadata and are ignored by
-Claude.
+Claude and Cursor. Cursor also installs `rules/agent-workflows.mdc` so Grok and
+other Cursor models Read the matching skill when the skill catalog is truncated.
 
 Some workflow steps name host-specific tools, such as `codex review`, Claude
 Code slash commands, or `/simplify`. Treat those as available-tool branches:
@@ -686,8 +779,8 @@ the session must avoid network access.
   `--source /path/to/agent-workflows`.
 - `UPGRADE_AVAILABLE`: run `upgrade-agent-workflows` or manually update the
   source clone and reinstall.
-- `Auto host detection found both Codex and Claude homes`: rerun with
-  `--host codex` or `--host claude`.
+- `Auto host detection found multiple agent homes`: rerun with
+  `--host codex`, `--host claude`, or `--host cursor`.
 - `Refusing to replace non-symlink path`: symlink mode will not overwrite a real
   file or directory. Use copy mode or remove the conflicting path deliberately.
 - `DELIVERY_MODE_CONFLICT`: keep one skill delivery route. Disable/remove the
