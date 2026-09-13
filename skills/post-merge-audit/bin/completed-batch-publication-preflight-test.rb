@@ -3722,5 +3722,24 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                                    "user" => { "login" => "maintainer", "type" => "User" },
                                    "author_association" => "MEMBER", "body" => quoted } }
     )
+
+    {
+      "unclosed HTML comment" => visible.sub("needed.", "needed. <!--"),
+      "raw HTML code container" => visible.sub("needed.", "needed. <pre>")
+    }.each do |context, hidden|
+      assert_nil CompletedBatchPublicationPreflight.waiver_marker_fields(
+        hidden,
+        marker_name: CompletedBatchPublicationPreflight::HOSTED_QA_WAIVER_MARKER,
+        marker_bindings: { "hosted_target" => "staging" }
+      ), context
+      assert_nil CompletedBatchPublicationPreflight.canonical_hosted_qa_waiver(
+        { "url" => waiver_url }, target, waiver_url, head_sha:, hosted_target: "staging",
+        verifier: ->(**_keywords) { { "id" => 817, "html_url" => waiver_url,
+                                     "issue_url" => "https://api.github.com/repos/shakacode/agent-workflows/issues/817",
+                                     "created_at" => "2026-09-12T00:00:00Z", "updated_at" => "2026-09-12T00:00:00Z",
+                                     "user" => { "login" => "maintainer", "type" => "User" },
+                                     "author_association" => "MEMBER", "body" => hidden } }
+      ), context
+    end
   end
 end

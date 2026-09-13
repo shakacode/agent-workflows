@@ -115,6 +115,39 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     end
   end
 
+  def test_source_writer_envelope_and_cutoff_round_trip
+    source = section_after(
+      "  SOURCE_STATE_HAS_PENDING=0",
+      '} > "${source_summary_body_file}"'
+    )
+
+    Dir.mktmpdir do |dir|
+      output = File.join(dir, "source-summary.md")
+      environment = {
+        "SOURCE_CUTOFF_SAFE" => "1",
+        "SOURCE_STATE_ROWS" => "item\t160\tissue-comment\t1\t-\t2026-09-13T00:00:00Z\thandled",
+        "REPLACEMENT_PR_URL" => "https://github.com/shakacode/agent-workflows/pull/817",
+        "SOURCE_OUTCOMES" => "- Source feedback handled.",
+        "POSTING_CLIENT" => "Codex",
+        "POSTING_MODEL_FAMILY" => "Astra"
+      }
+      _stdout, stderr, status = Open3.capture3(
+        environment, "sh", "-c", "source_summary_body_file=#{Shellwords.escape(output)}\n#{source}"
+      )
+      assert status.success?, stderr
+
+      payload = File.read(output)
+      body = GitHubCommentEnvelope.render(body: payload, runner: "codex", host: "test-host", task_or_run: "template")
+      normalized_payload = GitHubCommentEnvelope.payload(body)
+
+      assert_equal payload, normalized_payload
+      assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(normalized_payload)
+      assert_equal "2026-09-13T00:00:00Z", FetchPrReviewData.compute_cutoff([
+        { "body" => body, "payload_body" => normalized_payload, "created_at" => "2026-09-13T00:00:00Z" }
+      ])
+    end
+  end
+
   def test_posting_identity_uses_unknown_when_runtime_metadata_is_unavailable
     assert_includes template, 'POSTING_CLIENT="${POSTING_CLIENT:-UNKNOWN}"'
     assert_includes template, 'POSTING_MODEL_FAMILY="${POSTING_MODEL_FAMILY:-UNKNOWN}"'
