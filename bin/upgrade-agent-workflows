@@ -196,10 +196,17 @@ backup_target() {
   backup_symlink_manifest="$backup_dir/managed-symlinks"
   backup_followed_dir="$backup_dir/followed-symlink-roots"
   backup_followed_manifest="$backup_dir/followed-symlink-paths"
+  backup_absent_container_manifest="$backup_dir/absent-containers"
+  : > "$backup_absent_container_manifest"
   target_existed=false
   if [[ -d "$target" ]]; then
     target_existed=true
     mkdir -p "$backup_target_dir"
+    for path in "${managed_snapshot_roots[@]}"; do
+      if [[ ! -e "$target/$path" && ! -L "$target/$path" ]]; then
+        printf '%s\0' "$path" >> "$backup_absent_container_manifest"
+      fi
+    done
     # The agent home can contain hundreds of thousands of unrelated files
     # under worktrees/, tmp/, and sessions/. Snapshot only paths the installer
     # can replace so rollback remains bounded by the pack installation.
@@ -362,6 +369,8 @@ backup_target() {
 }
 
 restore_target() {
+  local path index
+  local -a absent_containers=()
   if [[ "${target_existed:-false}" = "true" ]]; then
     mkdir -p "$target"
     while IFS= read -r -d '' path; do
@@ -401,6 +410,12 @@ restore_target() {
         cp -a "$backup_followed_dir/$path" "$target/$path"
       fi
     done < "$backup_followed_manifest"
+    while IFS= read -r -d '' path; do
+      absent_containers+=("$path")
+    done < "$backup_absent_container_manifest"
+    for ((index = ${#absent_containers[@]} - 1; index >= 0; index--)); do
+      rmdir "$target/${absent_containers[index]}" 2>/dev/null || true
+    done
   else
     rm -rf "$target"
   fi

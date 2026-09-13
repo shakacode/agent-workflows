@@ -7991,6 +7991,31 @@ PATCH
     fail "rollback removed the stack-owned doctor marker"
 }
 
+test_failed_upgrade_removes_new_empty_container_directories() {
+  local tmp source target consumer output status path
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/cursor-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$target/sessions" "$consumer"
+  new_source_repo "$source"
+  printf 'consumer session\n' > "$target/sessions/state"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host cursor --target "$target" --source "$source" \
+    --mode copy --delivery-mode flat --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  for path in bin docs docs/schemas docs/solutions rules skills workflows; do
+    [[ ! -e "$target/$path" && ! -L "$target/$path" ]] || fail "rollback left new container directory: $path"
+  done
+  [[ "$(cat "$target/sessions/state")" = "consumer session" ]] || fail "rollback touched unrelated target content"
+}
+
 test_upgrade_snapshot_managed_lists_match_installer() {
   ruby -e '
     installer, upgrade = ARGV.map { |path| File.read(path) }
@@ -9371,6 +9396,7 @@ main() {
     test_failed_upgrade_restores_nested_skill_files
     test_failed_companion_upgrade_preserves_consumer_owned_lib_sibling
     test_failed_upgrade_preserves_new_stack_doctor_marker
+    test_failed_upgrade_removes_new_empty_container_directories
     test_upgrade_snapshot_managed_lists_match_installer
     test_failed_upgrade_preserves_consumer_owned_workflow
     test_upgrade_snapshot_ignores_unmanaged_metadata_root
