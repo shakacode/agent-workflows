@@ -8580,6 +8580,78 @@ PATCH
   assert_not_contains "$output" "ROLLBACK_COMPLETE"
 }
 
+test_failed_upgrade_rejects_new_recovery_artifacts() {
+  local tmp source target output status residue
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  residue="$target/.agent-workflows-install.json.recovery-review-fixture"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+mkdir $(printf '%q' "$residue")
+printf 'preserved recovery evidence\n' > $(printf '%q' "$residue/metadata")
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" \
+    --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "recovery residue replaced original exit 7 with $status: $output"
+  assert_contains "$output" "ROLLBACK_RECOVERY_ARTIFACTS_CHANGED"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+  assert_file "$residue/metadata"
+}
+
+test_failed_upgrade_restores_preexisting_recovery_artifacts() {
+  local tmp source target quarantine receipt output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  quarantine="$target/.agent-workflows-install.json.recovery-review-fixture"
+  receipt="$target/.agent-workflows-install.json.cleanup-complete-review-fixture"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  mkdir "$quarantine"
+  printf 'original recovery evidence\n' > "$quarantine/metadata"
+  printf 'original cleanup receipt\n' > "$receipt"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+rm -rf $(printf '%q' "$quarantine")
+mkdir $(printf '%q' "$quarantine")
+printf 'changed recovery evidence\n' > $(printf '%q' "$quarantine/metadata")
+printf 'changed cleanup receipt\n' > $(printf '%q' "$receipt")
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" \
+    --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "recovery artifact restore replaced original exit 7 with $status: $output"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$quarantine/metadata")" = "original recovery evidence" ]] || \
+    fail "rollback did not restore pre-existing recovery evidence"
+  [[ "$(cat "$receipt")" = "original cleanup receipt" ]] || \
+    fail "rollback did not restore pre-existing cleanup receipt"
+}
+
 test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants() {
   local tmp source next_source target consumer external_bin output status
   tmp="$(mktemp -d)"
@@ -9804,6 +9876,8 @@ main() {
     test_flat_skill_snapshot_manifest_excludes_dot_entries
     test_failed_upgrade_reports_incomplete_rollback_and_preserves_original_status
     test_failed_upgrade_rejects_source_inventory_change_after_snapshot
+    test_failed_upgrade_rejects_new_recovery_artifacts
+    test_failed_upgrade_restores_preexisting_recovery_artifacts
     test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants
     test_failed_copy_upgrade_does_not_restore_through_symlinked_bin_root
     test_failed_copy_upgrade_does_not_restore_through_symlinked_skills_root

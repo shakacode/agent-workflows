@@ -226,6 +226,22 @@ source_managed_inventory_fingerprint() {
   ' "$source" "$include_flat_skills"
 }
 
+recovery_artifact_inventory() {
+  ruby -e '
+    target = ARGV.fetch(0)
+    patterns = [
+      ".agent-workflows-install.json.recovery-*",
+      ".agent-workflows-install.json.cleanup-complete-*"
+    ]
+    paths = patterns.flat_map { |pattern| Dir.glob(File.join(target, pattern), File::FNM_DOTMATCH) }
+    paths.map! { |path| File.basename(path) }
+    paths.uniq.sort.each do |path|
+      STDOUT.write(path)
+      STDOUT.write("\0")
+    end
+  ' "$target"
+}
+
 backup_target() {
   backup_dir="$(mktemp -d)"
   backup_target_dir="$backup_dir/target"
@@ -237,6 +253,7 @@ backup_target() {
   backup_absent_container_manifest="$backup_dir/absent-containers"
   backup_migration_receipt="$backup_dir/migration-staging-receipt"
   backup_migration_staging_dir="$backup_dir/migration-staging"
+  backup_recovery_artifact_manifest="$backup_dir/recovery-artifacts"
   : > "$backup_absent_container_manifest"
   backup_migration_staging_path=""
   migration_receipt_existed=false
@@ -254,6 +271,7 @@ backup_target() {
       backup_includes_companion=true
     fi
     backup_source_inventory_fingerprint="$(source_managed_inventory_fingerprint "$backup_includes_flat_skills")"
+    recovery_artifact_inventory > "$backup_recovery_artifact_manifest"
     if [[ -e "$target/.agent-workflows-migration-staging" ||
           -L "$target/.agent-workflows-migration-staging" ]]; then
       migration_receipt_existed=true
@@ -445,6 +463,7 @@ backup_target() {
         STDOUT.write("\0")
       end
     ' "$target" "$source" "$host" "$delivery_mode" "$metadata_path" > "$backup_manifest"
+    cat "$backup_recovery_artifact_manifest" >> "$backup_manifest"
     : > "$backup_symlink_manifest"
     snapshot_symlink_roots=()
     for path in "${managed_snapshot_roots[@]}"; do
@@ -579,6 +598,13 @@ restore_target() {
     current_source_inventory_fingerprint="$(source_managed_inventory_fingerprint "$backup_includes_flat_skills")"
     if [[ "$current_source_inventory_fingerprint" != "$backup_source_inventory_fingerprint" ]]; then
       echo "ROLLBACK_SOURCE_CHANGED: managed source inventory changed after the rollback snapshot." >&2
+      rollback_complete=false
+    fi
+    current_recovery_artifact_manifest="$backup_dir/current-recovery-artifacts"
+    if ! recovery_artifact_inventory > "$current_recovery_artifact_manifest"; then
+      rollback_complete=false
+    elif ! cmp -s "$backup_recovery_artifact_manifest" "$current_recovery_artifact_manifest"; then
+      echo "ROLLBACK_RECOVERY_ARTIFACTS_CHANGED: installer recovery artifacts changed after the rollback snapshot." >&2
       rollback_complete=false
     fi
   else
