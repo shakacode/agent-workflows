@@ -173,6 +173,21 @@ path_is_snapshot_symlink_root() {
   return 1
 }
 
+path_is_within_traversed_snapshot_symlink_root() {
+  local path="$1"
+  local root
+  for root in "${snapshot_symlink_roots[@]}"; do
+    # Symlink mode writes children through these container roots. Other managed
+    # directory symlinks are replaced as leaves before descendant writes.
+    case "$root" in
+      bin|skills)
+        [[ "$path" = "$root" || "$path" = "$root/"* ]] && return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 backup_target() {
   backup_dir="$(mktemp -d)"
   backup_target_dir="$backup_dir/target"
@@ -327,10 +342,12 @@ backup_target() {
       path_is_snapshot_symlink_root "$path" && continue
       if path_is_within_snapshot_symlink_root "$path"; then
         path="${path%/}"
-        printf '%s\0' "$path" >> "$backup_followed_manifest"
-        if [[ -e "$target/$path" || -L "$target/$path" ]]; then
-          mkdir -p "$backup_followed_dir/$(dirname "$path")"
-          cp -a "$target/$path" "$backup_followed_dir/$path"
+        if path_is_within_traversed_snapshot_symlink_root "$path"; then
+          printf '%s\0' "$path" >> "$backup_followed_manifest"
+          if [[ -e "$target/$path" || -L "$target/$path" ]]; then
+            mkdir -p "$backup_followed_dir/$(dirname "$path")"
+            cp -a "$target/$path" "$backup_followed_dir/$path"
+          fi
         fi
         continue
       fi

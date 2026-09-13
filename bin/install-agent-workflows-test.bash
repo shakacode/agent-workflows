@@ -8065,6 +8065,31 @@ test_failed_symlink_upgrade_removes_new_workflows_root_before_children() {
   [[ ! -e "$target/workflows" && ! -L "$target/workflows" ]] || fail "rollback left a newly created workflows root"
 }
 
+test_failed_repeat_symlink_upgrade_does_not_replace_source_workflows() {
+  local tmp source target consumer source_workflow inode_before inode_after output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+  source_workflow="$source/workflows/pr-batch-intake.md"
+  inode_before="$(ruby -e 'print File.stat(ARGV.fetch(0)).ino' "$source_workflow")"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected repeat symlink upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  inode_after="$(ruby -e 'print File.stat(ARGV.fetch(0)).ino' "$source_workflow")"
+  [[ "$inode_after" = "$inode_before" ]] || fail "rollback replaced a workflow in the source checkout"
+}
+
 test_failed_flat_upgrade_restores_skill_removed_from_new_source() {
   local tmp source target consumer output exit_code
   tmp="$(mktemp -d)"
@@ -9300,6 +9325,7 @@ main() {
     test_failed_upgrade_preserves_consumer_owned_workflow
     test_upgrade_snapshot_ignores_unmanaged_metadata_root
     test_failed_symlink_upgrade_removes_new_workflows_root_before_children
+    test_failed_repeat_symlink_upgrade_does_not_replace_source_workflows
     test_failed_flat_upgrade_restores_skill_removed_from_new_source
     test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion
     test_flat_skill_snapshot_manifest_excludes_dot_entries
