@@ -195,7 +195,6 @@ backup_target() {
         "LICENSE",
         "THIRD_PARTY-NOTICES.md",
         "docs/model-routing.md",
-        "workflows/",
         "bin/agent_doctor/",
         "bin/agent-workflow-seam-doctor",
         "bin/agent-workflow-writing-style",
@@ -224,6 +223,9 @@ backup_target() {
       Dir.glob(File.join(source, "docs/solutions", "*"), File::FNM_DOTMATCH).each do |path|
         managed << "docs/solutions/#{File.basename(path)}" if File.file?(path) && !File.symlink?(path)
       end
+      Dir.children(File.join(source, "workflows")).each do |name|
+        managed << "workflows/#{name}"
+      end
       metadata = begin
         JSON.parse(File.binread(metadata_path))
       rescue StandardError
@@ -244,6 +246,18 @@ backup_target() {
           managed << "#{prefix}#{name}"
         end
       end
+      revision = metadata["source_revision"]
+      roots = [metadata["source"], source].compact.uniq
+      workflow_git_root = roots.find do |root|
+        File.directory?(root) && revision.to_s.match?(/\A[0-9a-f]{40}\z/i) &&
+          system("git", "-C", root, "cat-file", "-e", "#{revision}:workflows", out: File::NULL, err: File::NULL)
+      end
+      if workflow_git_root
+        IO.popen(["git", "-C", workflow_git_root, "ls-tree", "--name-only", "#{revision}:workflows"], &:read).lines.each do |name|
+          name = name.strip
+          managed << "workflows/#{name}" unless name.empty? || name.include?("/") || [".", ".."].include?(name)
+        end
+      end
       if metadata["delivery_mode"] == "flat" || delivery_mode == "flat"
         Dir.children(File.join(source, "skills")).each do |name|
           path = File.join(source, "skills", name)
@@ -251,8 +265,6 @@ backup_target() {
         end
       end
       if metadata["delivery_mode"] == "flat"
-        revision = metadata["source_revision"]
-        roots = [metadata["source"], source].compact.uniq
         git_root = roots.find do |root|
           File.directory?(root) && revision.to_s.match?(/\A[0-9a-f]{40}\z/i) &&
             system("git", "-C", root, "cat-file", "-e", "#{revision}:skills", out: File::NULL, err: File::NULL)

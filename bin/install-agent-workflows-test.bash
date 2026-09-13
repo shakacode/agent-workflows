@@ -7959,6 +7959,40 @@ PATCH
     fail "rollback reverted a consumer-owned companion library file"
 }
 
+test_failed_upgrade_preserves_consumer_owned_workflow() {
+  local tmp source target workflow output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  workflow="$target/workflows/consumer-owned.md"
+  printf 'before upgrade\n' > "$workflow"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+printf 'changed during upgrade\\n' > $(printf '%q' "$workflow")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$workflow")" = "changed during upgrade" ]] || \
+    fail "rollback reverted a consumer-owned workflow"
+}
+
 test_failed_flat_upgrade_restores_skill_removed_from_new_source() {
   local tmp source target consumer output exit_code
   tmp="$(mktemp -d)"
@@ -9191,6 +9225,7 @@ main() {
     test_companion_to_flat_upgrade_preserves_unowned_same_named_skill
     test_failed_upgrade_restores_nested_skill_files
     test_failed_companion_upgrade_preserves_consumer_owned_lib_sibling
+    test_failed_upgrade_preserves_consumer_owned_workflow
     test_failed_flat_upgrade_restores_skill_removed_from_new_source
     test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion
     test_flat_skill_snapshot_manifest_excludes_dot_entries
