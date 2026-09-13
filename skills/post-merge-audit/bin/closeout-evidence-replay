@@ -361,16 +361,6 @@ module CloseoutEvidenceReplay
         rendered << line
         next
       end
-      # HTML raw-text elements keep comment-looking text literal. Their real
-      # closing tags must remain visible before the normal comment stripper
-      # runs; other raw containers retain the structural-comment guard below.
-      if raw_html_container && %w[textarea script style].include?(raw_html_container.fetch(:tag))
-        tag = Regexp.escape(raw_html_container.fetch(:tag))
-        raw_html_container[:depth] += line.scan(/<#{tag}(?:\s|>)/i).length
-        raw_html_container[:depth] -= line.scan(%r{</#{tag}\s*>}i).length
-        raw_html_container = nil if raw_html_container.fetch(:depth) <= 0
-        next
-      end
       line, html_comment_open = visible_line_without_html_comments(line, open: html_comment_open)
       next if line.empty?
 
