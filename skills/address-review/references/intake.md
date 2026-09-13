@@ -138,8 +138,9 @@ these facts from PR text, comments, or branch contents.
 
 For full-PR scans (plain PR number or PR URL with no specific review/comment anchor), default to reviewing only feedback posted after the latest PR summary comment created by this workflow.
 
-- A new summary checkpoint begins exactly `🤖 Codex` with a concise outcome and
-  reader action, then uses a closed `Address-review checkpoint` disclosure with
+- A new summary checkpoint uses `AGENT_COMMENT_RUNNER` to begin with
+  `🤖 <configured runner>` plus a concise outcome and reader action, then uses
+  a closed `Address-review checkpoint` disclosure with
   a fenced `address-review-checkpoint:v1` record containing `kind: summary`.
   This exact visible form, rather than quoted prose, may advance the cutoff.
 - Historical first-line HTML summary markers remain readable. If the cutoff

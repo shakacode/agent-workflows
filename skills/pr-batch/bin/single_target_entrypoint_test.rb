@@ -868,7 +868,7 @@ template_source_payload = Dir.mktmpdir do |dir|
     "SOURCE_CUTOFF_SAFE" => "1",
     "SOURCE_STATE_ROWS" => source_writer_rows,
     "REPLACEMENT_PR_URL" => "https://github.com/shakacode/agent-workflows/pull/260",
-    "SOURCE_OUTCOMES" => "- Source feedback handled; old marker is `<!-- address-review-summary -->`.",
+    "SOURCE_OUTCOMES" => "- Source feedback handled; old marker is \\\\`<!-- address-review-summary -->`.",
     "POSTING_CLIENT" => "Codex",
     "POSTING_MODEL_FAMILY" => "Astra"
   }
@@ -1253,6 +1253,41 @@ end
   assert(status.success?, "source wait checkpoint jq validator must execute with a #{description}: #{stderr}")
   assert(Integer(stdout, 10).zero?,
          "source wait checkpoint validator must reject a source-state record inside a #{description}")
+end
+
+source_outcome = "- Source feedback handled; old marker is \\\\`<!-- address-review-summary -->`."
+{
+  "escaped opening delimiter" => "- Source feedback handled; old marker is \\`<!-- address-review-summary -->`.",
+  "escaped closing delimiter" => "- Source feedback handled; old marker is `<!-- address-review-summary -->\\`.",
+  "four-space indented literal" => "    `<!-- address-review-summary -->`",
+  "tab-indented literal" => "\t`<!-- address-review-summary -->`",
+  "unequal delimiters" => "- Source feedback handled; old marker is ``<!-- address-review-summary -->`."
+}.each_with_index do |(description, outcome), index|
+  payload = template_source_payload.sub(source_outcome, outcome)
+  body = GitHubCommentEnvelope.render(body: payload, runner: "claude", host: "M5", task_or_run: "address-review")
+  comment = {
+    "id" => 240 + index,
+    "user" => "trusted-reviewer",
+    "created_at" => "2026-07-15T00:07:36Z",
+    "body" => body,
+    "payload_body" => GitHubCommentEnvelope.payload(body)
+  }
+
+  stdout, stderr, status = Open3.capture3(
+    "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+    "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
+    stdin_data: JSON.generate("issue_comments" => [comment])
+  )
+  assert(status.success?, "source checkpoint jq validator must execute with an #{description}: #{stderr}")
+  assert(JSON.parse(stdout).empty?,
+         "source checkpoint jq validator must reject an #{description}")
+  stdout, stderr, status = Open3.capture3(
+    "jq", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_wait_checkpoint_filter,
+    stdin_data: JSON.generate("issue_comments" => [comment])
+  )
+  assert(status.success?, "source wait checkpoint jq validator must execute with an #{description}: #{stderr}")
+  assert(Integer(stdout, 10).zero?,
+         "source wait checkpoint validator must reject an #{description}")
 end
 
 walkthrough_fixture = checkpoint_fixture.merge(

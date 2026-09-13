@@ -167,6 +167,42 @@ class FetchPrReviewDataTest < Minitest::Test
     end
   end
 
+  def test_visible_checkpoint_only_strips_eligible_inline_code_marker_literals
+    checkpoint = lambda do |detail|
+      <<~MARKDOWN.chomp
+        Address-review follow-up is complete.
+
+        <details>
+        <summary>Address-review checkpoint</summary>
+
+        ```text
+        address-review-checkpoint:v1
+        kind: summary
+        ```
+
+        #{detail}
+        </details>
+      MARKDOWN
+    end
+
+    {
+      "escaped opening delimiter" => "- Literal: \\`<!-- address-review-summary -->`.",
+      "escaped closing delimiter" => "- Literal: `<!-- address-review-summary -->\\`.",
+      "four-space indented literal" => "    `<!-- address-review-summary -->`",
+      "tab-indented literal" => "\t`<!-- address-review-summary -->`",
+      "unequal delimiters" => "- Literal: ``<!-- address-review-summary -->`."
+    }.each do |description, detail|
+      body = checkpoint.call(detail)
+
+      assert_nil FetchPrReviewData.visible_checkpoint_kind(body), description
+      assert_equal "", FetchPrReviewData.compute_cutoff([{ "body" => body, "created_at" => "2026-09-13T00:00:00Z" }]), description
+    end
+
+    assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(
+      checkpoint.call("- Literal: \\\\`<!-- address-review-summary -->`.")
+    )
+  end
+
   REVIEWS_RAW = <<~JSON
     [[
       {"id":10,"body":"fix the nil guard","state":"COMMENTED","user":{"login":"alice"},"submitted_at":"2026-01-04T00:00:00Z","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},

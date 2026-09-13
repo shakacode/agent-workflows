@@ -257,7 +257,7 @@ Execution flow when terminal access is available:
              def terminal_row: split("\t") | .[6] | terminal_outcome;
              def visible_checkpoint_body:
                split("\n") |
-               map(if test("^[ \\t]{0,3}`{3,}") then . else gsub("(?<!`)(`+)(?!`)[^\\r\\n]*?(?<!`)\\1(?!`)"; "inline-code") end) |
+               map(if test("^(?:[\\t]| {4}|[ \\t]{0,3}`{3,})") then . else gsub("(^|[^\\\\`])((?:\\\\\\\\)*)(`+)(?!`)[^\\r\\n]*?(?:^|[^\\\\`])(?:\\\\\\\\)*\\3(?!`)"; ((.captures[0].string // "") + (.captures[1].string // "") + "inline-code")) end) |
                join("\n");
              def checkpoint_kind:
                if startswith("<!-- address-review-summary -->") then "summary"
@@ -585,7 +585,7 @@ Execution flow when terminal access is available:
            . as $inventory |
            def visible_checkpoint_body:
              split("\n") |
-             map(if test("^[ \\t]{0,3}`{3,}") then . else gsub("(?<!`)(`+)(?!`)[^\\r\\n]*?(?<!`)\\1(?!`)"; "inline-code") end) |
+             map(if test("^(?:[\\t]| {4}|[ \\t]{0,3}`{3,})") then . else gsub("(^|[^\\\\`])((?:\\\\\\\\)*)(`+)(?!`)[^\\r\\n]*?(?:^|[^\\\\`])(?:\\\\\\\\)*\\3(?!`)"; ((.captures[0].string // "") + (.captures[1].string // "") + "inline-code")) end) |
              join("\n");
            def visible_checkpoint_kind:
              visible_checkpoint_body as $body |
@@ -1106,7 +1106,8 @@ before mutating GitHub or the branch.
      `THREAD_ID`. Never use `ITEM_SOURCE_PR` for code, commit, or push work.
      Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
      issue comment or review summary must use `github-comment-envelope`, whose
-     public comment begins exactly `🤖 Codex`; its payload begins with a fixed source-reply
+     public comment begins with the `🤖 <configured runner>` prefix from `AGENT_COMMENT_RUNNER`;
+     its payload begins with a fixed source-reply
      receipt and contains an `address-review-source-reply:v1` record before the original response. Exclude only a same-actor marked
      reply from source triage and snapshot completeness; another actor cannot use
      the marker to suppress a source candidate.
