@@ -235,17 +235,23 @@ class HumanAttentionTest < Minitest::Test
         #!/usr/bin/env ruby
         require "json"
         repo = ARGV.fetch(ARGV.index("--repo") + 1)
-        sleep 10 if repo.end_with?("a-slow")
+        if repo.end_with?("a-slow")
+          fork { trap("TERM", "IGNORE"); sleep 10 }
+          sleep 10
+        end
         puts JSON.generate([{"number" => 7, "title" => repo, "url" => "https://example.test/7", "headRefOid" => "#{'a' * 40}", "labels" => [{"name" => "human-attention:merge"}]}])
       RUBY
       File.chmod(0o755, fake_gh)
 
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       entries, degraded = HumanAttention.desk(
         config: config.fetch("human_attention"), github_cli: fake_gh, query_timeout_seconds: 0.5
       )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
 
       assert_equal(["acme/z-healthy"], entries.map { |entry| entry.fetch("repo") })
       assert_equal ["acme/a-slow"], degraded
+      assert_operator elapsed, :<, 3
     end
   end
 

@@ -116,8 +116,7 @@ module HumanAttention
 
   def terminate_process_group(wait_thread)
     Process.kill("TERM", -wait_thread.pid)
-    return if wait_thread.join(1)
-
+    wait_thread.join(1)
     Process.kill("KILL", -wait_thread.pid)
     wait_thread.join
   rescue Errno::ESRCH
