@@ -665,6 +665,38 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  def test_transition_clears_preexisting_conflicting_labels_before_assignment
+    with_repo_config(LABEL_POLICY) do |root|
+      fake_gh = File.join(root, "gh")
+      calls = File.join(root, "calls")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        calls = ENV.fetch("CALLS")
+        File.open(calls, "a") { |file| file.puts(ARGV.join("\t")) }
+        if ARGV[0, 2] == ["pr", "view"]
+          edited = File.read(calls).include?("pr\tedit")
+          labels = edited ? [] : ["human-attention:walkthrough", "human-attention:merge"]
+          puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}",
+                              "labels" => labels.map { |name| {"name" => name} }})
+        end
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "transition", "--repo-root", root, "--repo", "acme/widgets", "--pr", "7",
+        "--state", "merge", "--expected-head", ("a" * 40).to_s,
+        env: { "HUMAN_ATTENTION_GH" => fake_gh, "CALLS" => calls }
+      )
+
+      refute_predicate result[:status], :success?
+      assert_includes result[:stderr], "pre-existing human-attention state is invalid; attention state cleared"
+      edit = File.readlines(calls, chomp: true).find { |line| line.start_with?("pr\tedit") }
+      assert_includes edit, "--remove-label\thuman-attention:walkthrough"
+      assert_includes edit, "--remove-label\thuman-attention:merge"
+    end
+  end
+
   def test_transition_does_not_assign_attention_labels_on_a_closed_pr
     with_repo_config(LABEL_POLICY) do |root|
       fake_gh = File.join(root, "gh")
@@ -900,6 +932,53 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  def test_transition_clears_both_labels_when_failed_edit_cannot_be_reconciled
+    assert_failed_edit_reconciliation_cleared("unavailable")
+  end
+
+  def test_transition_clears_both_labels_when_failed_edit_reconciliation_is_malformed
+    assert_failed_edit_reconciliation_cleared("malformed")
+  end
+
+  def test_transition_clears_attention_state_when_edit_times_out
+    with_repo_config(LABEL_POLICY) do |root|
+      fake_gh = File.join(root, "gh")
+      calls = File.join(root, "calls")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        calls = ENV.fetch("CALLS")
+        File.open(calls, "a") { |file| file.puts(ARGV.join("\t")) }
+        lines = File.readlines(calls)
+        if ARGV[0, 2] == ["pr", "view"]
+          view_count = lines.count { |line| line.start_with?("pr\tview") }
+          labels = view_count == 1 ? ["human-attention:walkthrough"] : []
+          puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}",
+                              "labels" => labels.map { |name| {"name" => name} }})
+        elsif ARGV[0, 2] == ["pr", "edit"]
+          edit_count = lines.count { |line| line.start_with?("pr\tedit") }
+          sleep 5 if edit_count == 1
+        end
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      error = with_environment("CALLS" => calls) do
+        assert_raises(HumanAttention::Error) do
+          HumanAttention.transition(
+            config: HumanAttention.load_config(root), repo: "acme/widgets", pr_number: 7,
+            state: "merge", expected_head: "a" * 40, github_cli: fake_gh, query_timeout_seconds: 0.5
+          )
+        end
+      end
+
+      assert_includes error.message, "transition timed out; attention state cleared"
+      edits = File.readlines(calls, chomp: true).select { |line| line.start_with?("pr\tedit") }
+      assert_equal 2, edits.length
+      assert_includes edits.last, "--remove-label\thuman-attention:walkthrough"
+      assert_includes edits.last, "--remove-label\thuman-attention:merge"
+    end
+  end
+
   # Production break: malformed CLI values escape the error boundary and expose
   # a Ruby backtrace instead of one actionable parser message.
   def test_invalid_numeric_option_fails_without_a_backtrace
@@ -911,6 +990,55 @@ class HumanAttentionTest < Minitest::Test
   end
 
   private
+
+  def assert_failed_edit_reconciliation_cleared(mode)
+    with_repo_config(LABEL_POLICY) do |root|
+      fake_gh = File.join(root, "gh")
+      calls = File.join(root, "calls")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        calls = ENV.fetch("CALLS")
+        File.open(calls, "a") { |file| file.puts(ARGV.join("\t")) }
+        lines = File.readlines(calls)
+        if ARGV[0, 2] == ["pr", "view"]
+          view_count = lines.count { |line| line.start_with?("pr\tview") }
+          if view_count == 1
+            puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}",
+                                "labels" => [{"name" => "human-attention:walkthrough"}]})
+          elsif view_count == 2
+            ENV.fetch("MODE") == "malformed" ? puts("{") : abort("reconciliation unavailable")
+          else
+            puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}", "labels" => []})
+          end
+        elsif ARGV[0, 2] == ["pr", "edit"] && lines.count { |line| line.start_with?("pr\tedit") } == 1
+          abort("partial label update")
+        end
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "transition", "--repo-root", root, "--repo", "acme/widgets", "--pr", "7",
+        "--state", "merge", "--expected-head", ("a" * 40).to_s,
+        env: { "HUMAN_ATTENTION_GH" => fake_gh, "CALLS" => calls, "MODE" => mode }
+      )
+
+      refute_predicate result[:status], :success?, mode
+      assert_includes result[:stderr], "attention state cleared"
+      edits = File.readlines(calls, chomp: true).select { |line| line.start_with?("pr\tedit") }
+      assert_equal 2, edits.length, mode
+      assert_includes edits.last, "--remove-label\thuman-attention:walkthrough"
+      assert_includes edits.last, "--remove-label\thuman-attention:merge"
+    end
+  end
+
+  def with_environment(values)
+    previous = values.to_h { |key, _value| [key, ENV[key]] }
+    values.each { |key, value| ENV[key] = value }
+    yield
+  ensure
+    previous.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+  end
 
   def assert_verification_mismatch_cleared(mismatch)
     with_repo_config(LABEL_POLICY) do |root|

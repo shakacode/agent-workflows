@@ -124,10 +124,19 @@ module HumanAttention
   end
 
   def terminate_process_group(wait_thread)
-    signal_process_group("TERM", wait_thread.pid)
+    signal_process_group("TERM", wait_thread.pid) if process_group_alive?(wait_thread.pid)
     wait_thread.join(0.5)
-    signal_process_group("KILL", wait_thread.pid)
+    signal_process_group("KILL", wait_thread.pid) if process_group_alive?(wait_thread.pid)
     wait_thread.join(0.5)
+  end
+
+  def process_group_alive?(pid)
+    Process.kill(0, -pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
   end
 
   def signal_process_group(signal, pid)
@@ -201,14 +210,16 @@ module HumanAttention
   end
 
   def transition(config:, repo:, pr_number:, state:, expected_head:,
-                 github_cli: ENV.fetch("HUMAN_ATTENTION_GH", "gh"))
+                 github_cli: ENV.fetch("HUMAN_ATTENTION_GH", "gh"),
+                 query_timeout_seconds: REPOSITORY_QUERY_TIMEOUT_SECONDS)
     raise Error, "state must be walkthrough, merge, or none" unless (STATES + ["none"]).include?(state)
     raise Error, "PR number must be positive" unless pr_number.is_a?(Integer) && pr_number.positive?
     raise Error, "expected head must be a full lowercase SHA" unless expected_head.match?(/\A[0-9a-f]{40}\z/)
 
     labels = labels_for(config, repo)
-    stdout, stderr, status = Open3.capture3(
-      github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels"
+    stdout, stderr, status = capture3_bounded(
+      github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels",
+      timeout_seconds: query_timeout_seconds
     )
     raise Error, "cannot read PR state: #{stderr.lines.first.to_s.strip}" unless status.success?
 
@@ -218,7 +229,17 @@ module HumanAttention
     raise Error, "PR head changed" unless detail["headRefOid"] == expected_head
 
     current = Array(detail["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
-    classify(labels: current, configured_labels: labels) unless state == "none"
+    if state != "none"
+      begin
+        classify(labels: current, configured_labels: labels)
+      rescue Error
+        clear_attention_state!(
+          github_cli:, repo:, pr_number:, labels:, current_labels: current,
+          error_prefix: "pre-existing human-attention state is invalid", query_timeout_seconds:
+        )
+        raise Error, "pre-existing human-attention state is invalid; attention state cleared"
+      end
+    end
     arguments = [github_cli, "pr", "edit", pr_number.to_s, "--repo", repo]
     labels.each do |semantic, label|
       desired = semantic == state
@@ -227,36 +248,51 @@ module HumanAttention
     end
     edit_attempted = arguments.length > 6
     if edit_attempted
-      _edit_stdout, edit_stderr, edit_status = Open3.capture3(*arguments)
+      _edit_stdout, edit_stderr, edit_status = capture3_bounded(*arguments, timeout_seconds: query_timeout_seconds)
       unless edit_status.success?
-        reconcile_stdout, reconcile_stderr, reconcile_status = Open3.capture3(
-          github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels"
+        reconcile_stdout, reconcile_stderr, reconcile_status = capture3_bounded(
+          github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels",
+          timeout_seconds: query_timeout_seconds
         )
         unless reconcile_status.success?
-          raise Error, "cannot reconcile failed human-attention update: #{reconcile_stderr.lines.first.to_s.strip}"
+          clear_attention_state!(
+            github_cli:, repo:, pr_number:, labels:, current_labels: labels.values,
+            error_prefix: "cannot reconcile failed human-attention update", query_timeout_seconds:
+          )
+          raise Error, "cannot reconcile failed human-attention update; attention state cleared: " \
+                       "#{reconcile_stderr.lines.first.to_s.strip}"
         end
 
-        reconciled = JSON.parse(reconcile_stdout)
+        reconciled = begin
+          JSON.parse(reconcile_stdout)
+        rescue JSON::ParserError
+          clear_attention_state!(
+            github_cli:, repo:, pr_number:, labels:, current_labels: labels.values,
+            error_prefix: "cannot parse failed-update reconciliation", query_timeout_seconds:
+          )
+          raise Error, "cannot parse failed-update reconciliation; attention state cleared"
+        end
         reconciled_labels = Array(reconciled["labels"]).filter_map do |label|
           label["name"] if label.is_a?(Hash)
         end
         clear_attention_state!(
           github_cli:, repo:, pr_number:, labels:, current_labels: reconciled_labels,
-          error_prefix: "human-attention label update failed"
+          error_prefix: "human-attention label update failed", query_timeout_seconds:
         )
         raise Error,
               "human-attention label update failed; attention state cleared: #{edit_stderr.lines.first.to_s.strip}"
       end
     end
 
-    verify_stdout, verify_stderr, verify_status = Open3.capture3(
-      github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels"
+    verify_stdout, verify_stderr, verify_status = capture3_bounded(
+      github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels",
+      timeout_seconds: query_timeout_seconds
     )
     unless verify_status.success?
       if edit_attempted
         clear_attention_state!(
           github_cli:, repo:, pr_number:, labels:, current_labels: labels.values,
-          error_prefix: "cannot verify human-attention labels"
+          error_prefix: "cannot verify human-attention labels", query_timeout_seconds:
         )
         raise Error, "cannot verify human-attention labels; attention state cleared: " \
                      "#{verify_stderr.lines.first.to_s.strip}"
@@ -271,7 +307,7 @@ module HumanAttention
       if edit_attempted
         clear_attention_state!(
           github_cli:, repo:, pr_number:, labels:, current_labels: labels.values,
-          error_prefix: "cannot parse human-attention verification"
+          error_prefix: "cannot parse human-attention verification", query_timeout_seconds:
         )
         raise Error, "cannot parse human-attention verification; attention state cleared"
       end
@@ -283,7 +319,7 @@ module HumanAttention
     unless unchanged
       clear_attention_state!(
         github_cli:, repo:, pr_number:, labels:, current_labels: verified_labels,
-        error_prefix: "PR changed while updating human-attention labels"
+        error_prefix: "PR changed while updating human-attention labels", query_timeout_seconds:
       )
       raise Error, "PR changed while updating human-attention labels; attention state cleared"
     end
@@ -297,30 +333,44 @@ module HumanAttention
     if verification_error
       clear_attention_state!(
         github_cli:, repo:, pr_number:, labels:, current_labels: verified_labels,
-        error_prefix: "human-attention label verification mismatch"
+        error_prefix: "human-attention label verification mismatch", query_timeout_seconds:
       )
       raise Error, "human-attention label verification mismatch; attention state cleared: #{verification_error}"
     end
 
     { "repo" => repo, "pr" => pr_number, "head_sha" => expected_head, "state" => state, "labels" => labels }
+  rescue Timeout::Error
+    if defined?(edit_attempted) && edit_attempted
+      clear_attention_state!(
+        github_cli:, repo:, pr_number:, labels:, current_labels: labels.values,
+        error_prefix: "human-attention transition timed out", query_timeout_seconds:
+      )
+      raise Error, "human-attention transition timed out; attention state cleared"
+    end
+
+    raise Error, "human-attention transition timed out"
   rescue JSON::ParserError
     raise Error, "PR state response is malformed"
   end
 
-  def clear_attention_state!(github_cli:, repo:, pr_number:, labels:, current_labels:, error_prefix:)
+  def clear_attention_state!(github_cli:, repo:, pr_number:, labels:, current_labels:, error_prefix:,
+                             query_timeout_seconds: REPOSITORY_QUERY_TIMEOUT_SECONDS)
     cleanup = [github_cli, "pr", "edit", pr_number.to_s, "--repo", repo]
     labels.each_value do |label|
       cleanup.concat(["--remove-label", label]) if label_present?(current_labels, label)
     end
     if cleanup.length > 6
-      _cleanup_stdout, cleanup_stderr, cleanup_status = Open3.capture3(*cleanup)
+      _cleanup_stdout, cleanup_stderr, cleanup_status = capture3_bounded(
+        *cleanup, timeout_seconds: query_timeout_seconds
+      )
       unless cleanup_status.success?
         raise Error, "#{error_prefix}; cleanup failed: #{cleanup_stderr.lines.first.to_s.strip}"
       end
     end
 
-    cleanup_stdout, cleanup_stderr, cleanup_status = Open3.capture3(
-      github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels"
+    cleanup_stdout, cleanup_stderr, cleanup_status = capture3_bounded(
+      github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels",
+      timeout_seconds: query_timeout_seconds
     )
     unless cleanup_status.success?
       raise Error, "#{error_prefix}; cleanup verification failed: #{cleanup_stderr.lines.first.to_s.strip}"
@@ -331,6 +381,10 @@ module HumanAttention
     return if classify(labels: cleaned_labels, configured_labels: labels) == "none"
 
     raise Error, "#{error_prefix}; cleanup did not clear the attention state"
+  rescue Timeout::Error
+    raise Error, "#{error_prefix}; cleanup timed out"
+  rescue JSON::ParserError
+    raise Error, "#{error_prefix}; cleanup verification response is malformed"
   end
 
   def validate_labels(value)

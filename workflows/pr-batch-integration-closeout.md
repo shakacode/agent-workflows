@@ -1411,9 +1411,9 @@ Resolve `PR_BATCH_SKILL_DIR` through the normal installed/shared or repo-pinned
 helper boundary and bind the trusted consumer checkout as
 `TRUSTED_CONSUMER_REPO_ROOT`. Invoke
 `${PR_BATCH_SKILL_DIR}/bin/human-attention transition --repo-root
-"${TRUSTED_CONSUMER_REPO_ROOT}"` with the repository, PR, requested state, and
-expected full head SHA to apply or clear a state. It fails closed if the PR is
-not open, its head moved, or both semantic labels are present. Invoke
+"${TRUSTED_CONSUMER_REPO_ROOT}"` with repository, PR, state, and
+expected head SHA. Applying a state requires open PR, matching head, and
+at most one label; `none` cleanup works after close or merge. Invoke
 `${PR_BATCH_SKILL_DIR}/bin/human-attention desk --repo-root
 "${TRUSTED_CONSUMER_REPO_ROOT}"` to query the configured repository set and
 render a numbered mirror with the requested action,
