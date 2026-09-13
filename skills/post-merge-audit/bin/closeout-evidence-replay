@@ -418,6 +418,11 @@ module CloseoutEvidenceReplay
     [match[:closing] ? :close : :open, match[:tag].downcase, nil]
   end
 
+  def html_tag_start?(text)
+    text.match?(%r{\A</?[A-Za-z][A-Za-z0-9:-]*(?=\s|/?>|\z)}) ||
+      text.match?(/\A<![A-Za-z]/) || text.start_with?("<?")
+  end
+
   def structural_html_tags(line, open_tag: nil)
     tags = []
     index = 0
@@ -430,6 +435,11 @@ module CloseoutEvidenceReplay
         if (summary = remaining.match(%r{\A<summary>(?<text>[^<]+)</summary>}i))
           tags << [:summary, "summary", summary[:text].strip]
           index = opening + summary[0].length
+          next
+        end
+
+        unless html_tag_start?(remaining)
+          index = opening + 1
           next
         end
 
@@ -454,6 +464,9 @@ module CloseoutEvidenceReplay
         index += 1
       end
     end
+    # A bare tag-like token is literal Markdown unless it has entered a quoted
+    # attribute. Only the latter can validly continue across a line boundary.
+    open_tag = nil if open_tag && !open_tag[:quote]
     [tags, open_tag]
   end
 

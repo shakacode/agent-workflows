@@ -790,6 +790,40 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_literal_less_than_text_does_not_hide_a_following_raw_blockquote
+    head_sha = "1" * 40
+    ["1 < 2.", "1 <\t2.", "1 <= 2.", "1 <3."].each do |literal_text|
+      body = <<~MARKDOWN
+        #{literal_text}
+
+        <blockquote>
+
+        #{visible_qa_details(head_sha:, scope: 'literal less-than text')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), literal_text
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", literal_text
+    end
+  end
+
+  def test_unfinished_unquoted_tag_like_text_does_not_cross_a_paragraph
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      A literal <word
+
+      <blockquote>
+
+      #{visible_qa_details(head_sha:, scope: 'unfinished unquoted tag')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
   def test_multiline_quoted_details_attributes_remain_nested
     head_sha = "1" * 40
     [["\"", "\""], ["'", "'"]].each do |opening_quote, closing_quote|
