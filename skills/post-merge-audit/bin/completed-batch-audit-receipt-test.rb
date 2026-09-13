@@ -1662,7 +1662,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   end
 
   def test_complete_publication_blocks_public_claim_fallback_without_private_coordination
-    backend = " Public　claim-comment \n fallback. "
+    backend = "public claim-comment fallback"
     preflight = publication_preflight(coordination_backend: backend)
     target = {
       "host" => "github.com",
@@ -1697,6 +1697,55 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       end
     end
     assert_empty capture_calls
+  end
+
+  def test_publication_preflight_reassessment_whitespace_fallback_variants_invoke_private_coordination
+    # Normalizing configured whitespace in the receipt wrapper can skip private coordination.
+    variants = [
+      "public  claim-comment fallback",
+      " public claim-comment fallback "
+    ]
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/widgets",
+      "type" => "pull_request",
+      "number" => 184
+    }
+    preflights = variants.map { |backend| publication_preflight(coordination_backend: backend) }
+    capture_calls = []
+    capture = lambda do |command, input:, timeout:|
+      capture_calls << { "command" => command, "input" => input, "timeout" => timeout }
+      status = preflights.first.dig("source_input", "coordination_status")
+      [JSON.generate(status), "", Struct.new(:success?).new(true)]
+    end
+    target_payload = publication_target_payload
+    authenticated_api = lambda do |_host, endpoint, **_options|
+      raise "unexpected endpoint: #{endpoint}" unless endpoint == "repos/acme/widgets/pulls/184"
+
+      target_payload
+    end
+
+    Dir.mktmpdir("completed-batch-audit-receipt") do |directory|
+      workflow_config = File.join(directory, "agent-workflow.yml")
+      with_stubbed_gh_api(authenticated_api) do
+        with_stubbed_preflight_capture_process(capture) do
+          preflights.zip(variants).each do |preflight, backend|
+            File.write(workflow_config, "coordination_backend: #{backend.inspect}\n")
+            raw_backend = CompletedBatchAuditReceipt.trusted_coordination_backend(workflow_config)
+
+            assert_equal backend, raw_backend
+            assert CompletedBatchAuditReceipt.publication_preflight_reassessed?(
+              preflight,
+              expected_batch_id: "batch-184",
+              expected_targets: [target],
+              coordination_backend: raw_backend,
+              **trusted_applicability(preflight)
+            )
+          end
+        end
+      end
+    end
+    assert_equal variants.length, capture_calls.length
   end
 
   def test_complete_publication_accepts_matching_no_backend_without_live_coordination_call

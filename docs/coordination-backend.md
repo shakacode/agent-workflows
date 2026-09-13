@@ -171,6 +171,12 @@ is fail-closed: reduce and reverify the topology before reclassifying, or stop.
   structured `codex-claim` marker described in
   [workflows/pr-processing.md](../workflows/pr-processing.md#coordination-state)
   when no private backend is available.
+
+  The canonical identifier is `public claim-comment fallback` (without a
+  trailing period). The legacy dotted spelling is not a public-fallback
+  identifier; update an existing seam to the canonical value. Public
+  claim-comment fallback self-renewal requires the repository agent identity to
+  be in configured `trusted_users`, `trusted_bots`, or `trusted_teams`.
 - **No coordination backend**: acceptable only when trusted topology records
   `coordination_not_applicable`; write `n/a` in `coordination_backend` and keep
   work under one controller with serial mutation.

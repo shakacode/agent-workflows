@@ -20,7 +20,7 @@ module AgentWorkflowSeamDoctorTestHelpers
     "follow_up_prefix" => "Follow-up:",
     "review_gate" => "AI reviewers are advisory; merge gate is green checks plus resolved threads.",
     "approval_exempt" => "docs and workflow text when portable.",
-    "coordination_backend" => "public claim-comment fallback.",
+    "coordination_backend" => "public claim-comment fallback",
     "changelog" => "CHANGELOG.md; user-visible changes only.",
     "benchmark_labels" => "n/a",
     "merge_ledger" => "n/a",
@@ -1253,9 +1253,9 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     with_repo do |root|
       write_valid_binstub_contract(root)
       yaml = POLICY.to_yaml.sub(
-        "coordination_backend: public claim-comment fallback.\n",
+        "coordination_backend: public claim-comment fallback\n",
         "coordination_backend: another private backend\n" \
-        "coordination_backend: public claim-comment fallback.\n"
+        "coordination_backend: public claim-comment fallback\n"
       )
       File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
       write_skill(root, "No commands here.\n")
