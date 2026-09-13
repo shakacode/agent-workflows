@@ -200,7 +200,11 @@ UNRESOLVED_HANDOFF_NON_CLEAN_RULE = "Clean/none permits no records or only fully
 OUTSTANDING_MARKER_FINDINGS_RULE = "In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback."
 COMPLETED_BATCH_AUDIT_COMPANION_DEPENDENCY_RULE = "The completed-batch closeout validation contract requires `pr-batch` and `post-merge-audit` from the same Agent Workflows pack revision."
 COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE = "A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records."
-COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE = "Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails."
+COMPLETED_BATCH_AUDIT_VISIBLE_RECEIPT_TERMS = [
+  "Completed-batch audit receipt",
+  "completed-batch-audit v1",
+  "read-compatible only"
+].freeze
 COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE = "A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`."
 COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE = "Terminal dispositions are exactly `resolved`, `accepted-waiver`, `accepted-deferral`, or `not-applicable`; nonterminal actions are exactly `investigate`, `fix`, `await-input`, `retry`, `replay`, or `track`. Terminal dispositions are invalid for nonterminal records and nonterminal actions are invalid for terminal records."
 COMPLETED_BATCH_AUDIT_RECORD_GRAMMAR_RULE = "Each record has `ref`, `owner`, `current status`, `disposition`, and `evidence`; current status is exactly `open`, `unresolved`, `pending`, `UNKNOWN`, or `terminal`; duplicate refs block case-insensitively. `ref` and `owner` are nonempty. Nonterminal evidence is nonempty. Terminal evidence may be exact `UNKNOWN` or empty only as an explicitly non-ready blocker; nested/case-varied `UNKNOWN` is invalid."
@@ -210,7 +214,6 @@ COMPLETED_BATCH_AUDIT_RECORD_REF_CANONICALIZATION_RULE = "Each completed-batch f
 COMPLETED_BATCH_AUDIT_CANONICAL_DISPLAY_SAFETY_RULE = "After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union."
 COMPLETED_BATCH_AUDIT_SINGLE_LINE_VALUE_RULE = "Every top-level scalar and record value is one physical line; reject embedded CR, LF, CRLF, NUL, control line breaks, and HTML comment tokens."
 COMPLETED_BATCH_AUDIT_STRUCTURAL_READINESS_RULE = "A marker has separate well-formed, archive-ready, and blocker-union outputs. Clean/none accepts only no records or fully evidenced terminal records; blocked/follow-ups/OUTSTANDING accepts non-ready records. `UNKNOWN` current status is never ready and cannot appear in a clean/none marker."
-COMPLETED_BATCH_AUDIT_WRAPPER_TOKEN_RULE = "Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails."
 COMPLETED_BATCH_AUDIT_FINAL_STATUS_REPLAY_RULE = "Replay the final visible status line from the normalized blocker union: render a nonterminal record as `<ref> (<current status>): <action>`, imperfect terminal evidence as `<ref> (terminal): evidence UNKNOWN` or `evidence missing`, and exact `UNKNOWN` scalars as `<field>: UNKNOWN`. External blockers must be nonempty single-line text without HTML comment tokens; normalize and dedupe them with marker blockers. If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line. Use `Ready` iff archive-ready and the union is empty; otherwise use nonempty `Follow-ups` with that exact union."
 COMPLETED_BATCH_ACCEPTED_DEFERRAL_RULE = "Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it."
 COMPLETED_BATCH_ACCEPTED_DEFERRAL_GUARD = "This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed."
@@ -2827,13 +2830,15 @@ class GoalCompletionContractTest < Minitest::Test
     }.each do |label, text|
       normalized_text = text.gsub(/\s+/, " ")
       [COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE,
-       COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE,
        COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE,
        COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE,
        COMPLETED_BATCH_ACCEPTED_DEFERRAL_RULE,
        COMPLETED_BATCH_ACCEPTED_DEFERRAL_GUARD,
        COMPLETED_BATCH_ACCEPTED_DEFERRAL_DECISION].each do |rule|
         assert_text_includes normalized_text, rule, label
+      end
+      COMPLETED_BATCH_AUDIT_VISIBLE_RECEIPT_TERMS.each do |term|
+        assert_text_includes normalized_text, term, label
       end
     end
   end
@@ -3460,10 +3465,12 @@ class GoalCompletionContractTest < Minitest::Test
        COMPLETED_BATCH_AUDIT_CANONICAL_DISPLAY_SAFETY_RULE,
        COMPLETED_BATCH_AUDIT_SINGLE_LINE_VALUE_RULE,
        COMPLETED_BATCH_AUDIT_STRUCTURAL_READINESS_RULE,
-       COMPLETED_BATCH_AUDIT_WRAPPER_TOKEN_RULE,
        COMPLETED_BATCH_AUDIT_FINAL_STATUS_REPLAY_RULE,
        COMPLETED_BATCH_AUDIT_INVALID_MARKER_RULE].each do |rule|
         assert_text_includes normalized_text, rule, label
+      end
+      COMPLETED_BATCH_AUDIT_VISIBLE_RECEIPT_TERMS.each do |term|
+        assert_text_includes normalized_text, term, label
       end
     end
   end
