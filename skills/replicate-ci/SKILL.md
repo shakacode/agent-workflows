@@ -66,10 +66,10 @@ An equivalent hosted invocation has matching controlled invocation parameters
 and selected or known pre-run hosted environment identity: event, trigger ref,
 inputs, matrix, runner image, toolchain/runtime, and relevant environment or
 configuration selection. It compares those pre-run facts, not runtime behavior
-or outcomes.
-In the GitHub Actions default, `headBranch` is only the available ref
-discriminator. If it cannot establish the exact runtime `github.ref`, record the
-trigger-ref dimension as `UNKNOWN`.
+or outcomes. The shipped default captures `headBranch`, but that value alone
+does not establish the exact runtime `github.ref`, including a pull request's
+synthetic merge ref. Unless the job log independently records that runtime ref,
+record the trigger-ref dimension as `UNKNOWN`.
 
 ## Preflight
 

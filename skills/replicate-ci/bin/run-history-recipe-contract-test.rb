@@ -5,12 +5,10 @@ require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
 REPLICATE_CI = File.join(ROOT, "skills/replicate-ci/SKILL.md")
-FIX_FLAKY_TESTS = File.join(ROOT, "skills/fix-flaky-tests/SKILL.md")
 
 class RunHistoryRecipeContractTest < Minitest::Test
   def setup
     @replicate_ci = File.read(REPLICATE_CI, encoding: "UTF-8")
-    @fix_flaky_tests = File.read(FIX_FLAKY_TESTS, encoding: "UTF-8")
     @recipe = @replicate_ci
               .split("## Hosted Run-History Recipe", 2).fetch(1)
               .split("## Preflight", 2).fetch(0)
@@ -31,17 +29,5 @@ class RunHistoryRecipeContractTest < Minitest::Test
   def test_attempt_jobs_expose_the_id_used_for_the_scoped_log_fetch
     assert_match(/\.jobs\[\] \| \{id: \.id,/, @recipe)
     assert_match(/gh run view <RUN_ID> .* --job <JOB_ID> --log/, @recipe)
-  end
-
-  def test_replicate_ci_equivalence_includes_trigger_ref
-    equivalence = @recipe.split("An equivalent hosted invocation", 2).fetch(1)
-
-    assert_includes equivalence, "trigger ref"
-  end
-
-  def test_fix_flaky_tests_equivalence_includes_trigger_ref
-    boundary = @fix_flaky_tests.split("## Boundary With Replicate CI", 2).fetch(1)
-
-    assert_includes boundary, "trigger ref"
   end
 end

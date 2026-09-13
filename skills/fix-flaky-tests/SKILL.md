@@ -84,11 +84,11 @@ and use the conservative outcome defined below.
    failure logs and history for the failure identity, then record the local
    result separately. An equivalent hosted invocation has matching controlled
    invocation parameters and selected or known pre-run hosted environment
-   identity—event, trigger ref, inputs, matrix, runner image,
-   toolchain/runtime, and relevant environment or configuration selection—not
-   runtime behavior or outcomes. If the GitHub Actions `headBranch` value cannot
-   establish the exact runtime `github.ref`, record the trigger-ref dimension as
-   `UNKNOWN`. If equivalence is unverifiable,
+   identity—event, trigger ref, inputs, matrix, runner image, toolchain/runtime,
+   and relevant environment or configuration selection—not runtime behavior or
+   outcomes. If the GitHub Actions `headBranch` value cannot establish the exact
+   runtime `github.ref`, record the trigger-ref dimension as `UNKNOWN`. If
+   equivalence is unverifiable,
    exit 3 does not fire. Record `UNKNOWN`, do not classify or route the failure,
    and continue only evidence collection that does not depend on a
    deterministic/intermittent classification. If the missing evidence cannot
