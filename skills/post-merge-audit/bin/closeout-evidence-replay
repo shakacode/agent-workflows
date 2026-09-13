@@ -365,6 +365,10 @@ module CloseoutEvidenceReplay
         next
       end
 
+      if line[index, 6] == "<!--->"
+        index += 6
+        next
+      end
       if line[index, 5] == "<!-->"
         index += 5
         next
@@ -457,6 +461,10 @@ module CloseoutEvidenceReplay
         break unless opening
 
         remaining = line[opening..]
+        if remaining.start_with?("<!--->")
+          index = opening + 6
+          next
+        end
         if remaining.start_with?("<!-->")
           index = opening + 5
           next
@@ -629,7 +637,7 @@ module CloseoutEvidenceReplay
     return structural_line unless structural_line.strip.empty?
     return "" if html_comment_was_open || html_comment_open
 
-    line.gsub(/<!-->|<!--.*?(?:-->|--!>|\z)/, "").strip.empty? ? "" : line
+    line.gsub(/<!--->|<!-->|<!--.*?(?:-->|--!>|\z)/, "").strip.empty? ? "" : line
   end
 
   def advance_details_stack(details_stack, discard_details_depth, tags)

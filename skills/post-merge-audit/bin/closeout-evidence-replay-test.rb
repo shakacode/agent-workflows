@@ -780,7 +780,10 @@ class CloseoutEvidenceReplayTest < Minitest::Test
         "<!-- </#{tag}> -->\n</#{tag}>",
         "<!-- </#{tag}> --></#{tag}>",
         "<!-- ordinary --!>\n</#{tag}>",
-        "<!--></#{tag}>"
+        "<!--></#{tag}>",
+        "<!---></#{tag}>",
+        "<!----></#{tag}>",
+        "<!----!></#{tag}>"
       ].each do |completed_comment|
         head_sha = "1" * 40
         body = <<~MARKDOWN
@@ -929,7 +932,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     assert_equal "SATISFIED", run_replay(whitespace_only, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
 
-    ["<!-- explanatory comment -->", "<!-- ordinary --!>", "<!-->"].each do |comment|
+    ["<!-- explanatory comment -->", "<!-- ordinary --!>", "<!-->", "<!--->", "<!---->", "<!----!>"].each do |comment|
       comment_only = <<~MARKDOWN
         <details>
         #{comment}
