@@ -673,6 +673,60 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
+  def test_unmatched_backtick_runs_are_not_retried_as_shorter_delimiters
+    head_sha = "1" * 40
+    [["``", "`"], ["```", "``"]].each do |opening, later_run|
+      scope = "#{opening.length} unmatched backticks"
+      body = <<~MARKDOWN
+        This #{opening} unmatched <blockquote> #{later_run} text.
+
+        #{visible_qa_details(head_sha:, scope:)}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), [opening, later_run].inspect
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", [opening, later_run].inspect
+    end
+  end
+
+  def test_multiple_details_tags_on_one_line_keep_nested_examples_discarded
+    head_sha = "1" * 40
+    bodies = [
+      <<~MARKDOWN,
+        <details>
+        <summary>Agent details</summary>
+
+        <details>
+        <summary>Example</summary>
+        <details><details>
+        </details>
+        </details>
+        #{visible_qa_details(head_sha:, scope: 'same-line nested details')}
+        </details>
+        </details>
+      MARKDOWN
+      <<~MARKDOWN
+        <details>
+        <summary>Agent details</summary>
+
+        <details>
+        <summary>Example</summary>
+        <details><details></details>
+        </details>
+        #{visible_qa_details(head_sha:, scope: 'mixed-order nested details')}
+        </details>
+        </details>
+      MARKDOWN
+    ]
+
+    bodies.each do |body|
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict")
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+    end
+  end
+
   def test_unmatched_backticks_do_not_cross_paragraph_or_raw_html_boundaries
     head_sha = "1" * 40
     body = <<~MARKDOWN

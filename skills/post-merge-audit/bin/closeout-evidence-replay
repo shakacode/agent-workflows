@@ -389,12 +389,69 @@ module CloseoutEvidenceReplay
           code_delimiter = delimiter
           break
         end
+
+        # An unmatched delimiter run is literal text. Consume the whole run so
+        # an interior tick cannot be retried as a shorter, fabricated span.
+        rendered << delimiter
+        index += delimiter.length
+        next
       end
 
       rendered << line[index]
       index += 1
     end
     [rendered, code_delimiter]
+  end
+
+  def details_tags(line)
+    line.to_enum(:scan, %r{
+      (?<open><details(?:\s[^>]*)?>)
+      |(?<close></details\s*>)
+      |<summary>(?<summary>[^<]+)</summary>
+    }ix).map do
+      match = Regexp.last_match
+      if match[:open]
+        [:open, nil]
+      elsif match[:close]
+        [:close, nil]
+      else
+        [:summary, match[:summary].strip]
+      end
+    end
+  end
+
+  def advance_details_stack(details_stack, discard_details_depth, line)
+    details_tags(line).each do |type, text|
+      if discard_details_depth
+        case type
+        when :open
+          details_stack << nil
+        when :close
+          details_stack.pop unless details_stack.empty?
+          discard_details_depth = nil if details_stack.length < discard_details_depth
+        end
+        next
+      end
+
+      case type
+      when :open
+        # PR bodies place trusted evidence directly in the canonical Agent
+        # details disclosure. Deeper nested details remain explanatory examples
+        # and cannot grant authority.
+        if details_stack.empty? || (details_stack.length == 1 && details_stack.last == "Agent details")
+          details_stack << nil
+        else
+          details_stack << nil
+          discard_details_depth = details_stack.length
+        end
+      when :summary
+        details_stack[-1] = text unless details_stack.empty?
+      when :close
+        details_stack.pop unless details_stack.empty?
+      end
+    end
+
+    discard_details_depth
   end
 
   def visible_markdown(text)
@@ -441,11 +498,7 @@ module CloseoutEvidenceReplay
         allow_new_code_span: opener.nil?
       )
       if discard_details_depth
-        details_stack << nil if structural_line.match?(/<details(?:\s|>)/)
-        if structural_line.match?(%r{</details>}) && !details_stack.empty?
-          details_stack.pop
-          discard_details_depth = nil if details_stack.length < discard_details_depth
-        end
+        discard_details_depth = advance_details_stack(details_stack, discard_details_depth, structural_line)
         next
       end
       if raw_html_container
@@ -482,22 +535,9 @@ module CloseoutEvidenceReplay
       # example, not an authoritative published record.
       next if line.match?(/\A[ \t]{0,3}>/)
 
-      if structural_line.match?(/<details(?:\s|>)/)
-        # PR bodies place trusted evidence directly in the canonical Agent
-        # details disclosure. Deeper nested details remain explanatory
-        # examples and cannot grant authority.
-        if details_stack.empty? || (details_stack.length == 1 && details_stack.last == "Agent details")
-          details_stack << nil
-        else
-          details_stack << nil
-          discard_details_depth = details_stack.length
-          next
-        end
-      end
-      if (summary = structural_line.match(%r{<summary>(?<text>[^<]+)</summary>})) && !details_stack.empty?
-        details_stack[-1] = summary[:text].strip
-      end
-      details_stack.pop if structural_line.match?(%r{</details>}) && !details_stack.empty?
+      discard_details_depth = advance_details_stack(details_stack, discard_details_depth, structural_line)
+      next if discard_details_depth
+
       rendered << line
     end
     rendered.join
