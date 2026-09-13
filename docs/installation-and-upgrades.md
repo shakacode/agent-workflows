@@ -558,7 +558,10 @@ case "$rc" in
   0 | 1) ;; # Only these states are eligible for a digest check.
   *) echo "install state is unusable; do not source a digest from it" >&2; exit 1 ;;
 esac
-digest="$(printf '%s' "$status" | jq -er '.runtime_manifest_digests["autonomous-merge"]')"
+digest="$(printf '%s' "$status" | jq -er '.runtime_manifest_digests["autonomous-merge"]')" || {
+  echo "no eligible autonomous-merge runtime digest was published" >&2
+  exit 1
+}
 provenance="verified-installed-pack:${digest}"
 ```
 
