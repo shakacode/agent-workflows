@@ -79,6 +79,74 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
     end
   end
 
+  def test_already_integrated_head_uses_effective_diff_without_claiming_replay_savings
+    ["lib/other.rb", ".github/workflows/ci.yml", HEAD_FILE].each do |base_delta_path|
+      with_repository(
+        base_delta_path:, base_delta_content: "line one\nline two\nbase-side\n", integrated: true
+      ) do |fixture|
+        result = collect(fixture)
+
+        assert_equal "current-head-integrated", result.dig("reuse", "decision")
+        assert_equal %w[current-base-ancestor head-tree-matches-candidate], result.dig("reuse", "reasons")
+        assert_equal fixture.fetch(:candidate_tree), result.dig("candidate", "tree_oid")
+        assert_equal [fixture.fetch(:current_base), fixture.fetch(:head)], result.dig("candidate", "parents")
+        assert_equal 0, result.dig("telemetry", "validator_replays_avoided")
+        assert_equal 0, result.dig("telemetry", "review_replays_avoided")
+        assert_nil result.dig("telemetry", "elapsed_seconds_saved")
+      end
+    end
+  end
+
+  def test_integrated_head_rejects_wrong_candidate_tree_and_incomplete_paths
+    with_repository(base_delta_path: "lib/other.rb", integrated: true) do |fixture|
+      value = snapshot(fixture)
+      value.fetch("candidate")["tree_oid"] = "f" * 40
+      error = assert_raises(CurrentIntegrationEvidence::Error) do
+        collect(fixture, snapshot_reader: ->(**) { value })
+      end
+      assert_includes error.message, "tree does not match already-integrated PR head"
+
+      error = assert_raises(CurrentIntegrationEvidence::Error) { collect(fixture, pr_paths: []) }
+      assert_includes error.message, "complete GitHub changed-file evidence"
+      error = assert_raises(CurrentIntegrationEvidence::Error) do
+        collect(fixture, pr_paths: [HEAD_FILE, "lib/other.rb"])
+      end
+      assert_includes error.message, "complete GitHub changed-file evidence"
+    end
+  end
+
+  def test_integrated_head_preserves_snapshot_and_candidate_identity_guards
+    with_repository(base_delta_path: "lib/other.rb", integrated: true) do |fixture|
+      %w[head_sha base_sha candidate].each do |field|
+        reads = 0
+        reader = lambda do |**|
+          value = snapshot(fixture)
+          reads += 1
+          value[field] = field == "candidate" ? {} : "f" * 40 if reads == 2
+          value
+        end
+        assert_raises(CurrentIntegrationEvidence::Error) { collect(fixture, snapshot_reader: reader) }
+      end
+
+      value = snapshot(fixture)
+      value.fetch("candidate")["parents"].reverse!
+      result = collect(fixture, snapshot_reader: ->(**) { value })
+      assert_equal "git-merge-tree", result.dig("candidate", "source")
+      assert_equal [fixture.fetch(:current_base), fixture.fetch(:head)], result.dig("candidate", "parents")
+      assert_equal "current-head-integrated", result.dig("reuse", "decision")
+    end
+  end
+
+  def test_matching_tree_without_current_base_ancestry_does_not_establish_integrated_identity
+    with_repository(base_delta_path: nil, base_empty_commit: true) do |fixture|
+      result = collect(fixture)
+
+      assert_equal git!(fixture.fetch(:root), "rev-parse", "#{fixture.fetch(:head)}^{tree}").strip,
+                   result.dig("candidate", "tree_oid")
+      assert_equal "fresh-integration-required", result.dig("reuse", "decision")
+    end
+  end
+
   def test_disjoint_safe_pr_delta_reuses_exact_head_evidence
     with_repository(base_delta_path: "lib/other.rb", head_path: "docs/feature.md") do |fixture|
       result = collect(fixture)
@@ -480,6 +548,7 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
 
   def collect(
     fixture, policy: AutonomousMergePolicy.parse("{}"),
+    pr_paths: [fixture.fetch(:head_path)],
     snapshot_reader: ->(**) { snapshot(fixture) }
   )
     CurrentIntegrationEvidence.collect(
@@ -489,7 +558,7 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
       recorded_base_sha: fixture.fetch(:recorded_base),
       head_sha: fixture.fetch(:head),
       trusted_base_sha: fixture.fetch(:current_base),
-      pr_paths: [fixture.fetch(:head_path)],
+      pr_paths:,
       policy:,
       changelog_path: "CHANGELOG.md",
       snapshot_reader:
@@ -497,7 +566,8 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
   end
 
   def with_repository(
-    base_delta_path:, base_delta_content: "base delta\n", head_path: HEAD_FILE, base_empty_commit: false
+    base_delta_path:, base_delta_content: "base delta\n", head_path: HEAD_FILE, base_empty_commit: false,
+    integrated: false
   )
     Dir.mktmpdir("current-integration-evidence-test") do |root|
       git!(root, "init", "--quiet", "-b", "main")
@@ -526,6 +596,11 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
         git!(root, "commit", "--quiet", "--allow-empty", "-m", "advance base without a tree change")
       end
       current_base = git!(root, "rev-parse", "HEAD").strip
+      if integrated
+        git!(root, "switch", "--quiet", "feature")
+        git!(root, "merge", "--quiet", "--no-edit", current_base)
+        head = git!(root, "rev-parse", "HEAD").strip
+      end
       candidate_tree = git!(root, "merge-tree", "--write-tree", current_base, head).lines.first.strip
 
       yield(

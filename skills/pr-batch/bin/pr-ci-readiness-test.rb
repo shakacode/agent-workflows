@@ -1060,7 +1060,7 @@ class PrCiReadinessCliTest < Minitest::Test
                    exact_check_runs: [], exact_statuses: [], exact_inventory_error: nil,
                    exact_actions_total_count: nil, expected_host: nil,
                    exact_status_sha: :echo, exact_status_total_count: nil,
-                   exact_status_pages: nil)
+                   exact_status_pages: nil, live_refs: :recorded)
     pr_identity = add_default_base_identity(pr_identity)
     Dir.mktmpdir("pr-ci-readiness-test") do |dir|
       gh = File.join(dir, "gh")
@@ -1072,7 +1072,7 @@ class PrCiReadinessCliTest < Minitest::Test
           required_check_error, full_check_error, exact_actions, exact_check_runs,
           exact_statuses, exact_inventory_error, exact_actions_total_count,
           File.join(dir, "pr-head-state"), File.join(dir, "pr-identity-state"), expected_host,
-          exact_status_sha, exact_status_total_count, exact_status_pages
+          exact_status_sha, exact_status_total_count, exact_status_pages, live_refs
         )
       )
       FileUtils.chmod(0o755, gh)
@@ -1170,7 +1170,16 @@ class PrCiReadinessCliTest < Minitest::Test
                      required_check_error, full_check_error, exact_actions, exact_check_runs,
                      exact_statuses, exact_inventory_error, exact_actions_total_count,
                      pr_head_state_path, pr_identity_state_path, expected_host,
-                     exact_status_sha, exact_status_total_count, exact_status_pages)
+                     exact_status_sha, exact_status_total_count, exact_status_pages, live_refs)
+    if live_refs == :recorded
+      base = pr_identity.is_a?(Hash) ? pr_identity.fetch("base") : { "ref" => "main", "sha" => "b" * 40 }
+      live_refs = [{ "ref" => "refs/heads/#{base.fetch('ref')}",
+                     "object" => { "type" => "commit", "sha" => base.fetch("sha") } }]
+    end
+    live_ref_cases = live_refs.each_with_index.map do |value, index|
+      "#{index}) #{value.nil? ? 'exit 1' : shell_json_printf(value)} ;;"
+    end.join("\n")
+    live_ref_fallback = live_refs.last.nil? ? "exit 1" : shell_json_printf(live_refs.last)
     host_guard =
       if expected_host
         <<~BASH
@@ -1376,6 +1385,18 @@ class PrCiReadinessCliTest < Minitest::Test
         exit #{check_status}
       fi
       if [ "$1" = "api" ]; then
+        if [[ "$2" = repos/*/git/ref/heads/* ]]; then
+          count=0
+          if [ -f #{"#{pr_identity_state_path}.live-ref".inspect} ]; then
+            count=$(cat #{"#{pr_identity_state_path}.live-ref".inspect})
+          fi
+          printf '%s' "$((count + 1))" > #{"#{pr_identity_state_path}.live-ref".inspect}
+          case "$count" in
+          #{live_ref_cases}
+          *) #{live_ref_fallback} ;;
+          esac
+          exit 0
+        fi
         if [[ "$2" = repos/*/pulls/* ]]; then
         #{pr_identity_command}
           exit 0
@@ -1589,6 +1610,57 @@ class PrCiReadinessCliTest < Minitest::Test
         ),
         data.fetch("diff_identity")
       )
+    end
+  end
+
+  def test_current_policy_comes_from_live_ref_not_recorded_base_diff_base_or_working_tree
+    with_trusted_ci_policy_repo do |root, live_base|
+      File.write(File.join(root, PrCiReadiness::POLICY_PATH), "ci_readiness: malicious working tree\n")
+      live_ref = { "ref" => "refs/heads/main", "object" => { "type" => "commit", "sha" => live_base } }
+      %w[a b c].each do |prefix|
+        with_fake_gh(
+          required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+          full_json: "[]", live_refs: [live_ref]
+        ) do |env|
+          out, status = run_script(
+            env, "123", "--repo", "owner/repo", "--trusted-repo-root", root,
+            "--diff-base-sha", prefix * 40
+          )
+          assert status.success?, out
+          result = JSON.parse(out)
+          assert_equal "READY", result.fetch("verdict")
+          assert_equal "b" * 40, result.dig("base", "sha")
+          assert_equal prefix * 40, result.fetch("diff_base_sha")
+          assert_equal live_base, result.dig("ci_policy", "base", "sha")
+          assert_match(/\Agit:#{live_base}:/, result.dig("ci_policy", "provenance"))
+        end
+      end
+    end
+  end
+
+  def test_live_policy_ref_missing_malformed_or_moved_fails_closed
+    with_trusted_ci_policy_repo do |root, live_base|
+      live_ref = { "ref" => "refs/heads/main", "object" => { "type" => "commit", "sha" => live_base } }
+      invalid_refs = [
+        nil, {}, [live_ref], live_ref.merge("ref" => "refs/heads/other"),
+        live_ref.merge("object" => { "type" => "tag", "sha" => live_base }),
+        live_ref.merge("object" => { "type" => "commit", "sha" => "not-a-sha" })
+      ]
+      invalid_refs.map { |value| [value] }.concat([
+                                                    [live_ref, nil],
+                                                    [live_ref, live_ref.merge("object" => { "type" => "commit", "sha" => "f" * 40 })]
+                                                  ]).each do |live_refs|
+        with_fake_gh(
+          required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+          full_json: "[]", live_refs:
+        ) do |env|
+          out, status = run_script(env, "123", "--repo", "owner/repo", "--trusted-repo-root", root)
+          assert status.success?, out
+          result = JSON.parse(out)
+          assert_equal "UNKNOWN", result.fetch("verdict"), live_refs.inspect
+          result.fetch("scopes").each_value { |scope| assert_equal false, scope.fetch("complete") }
+        end
+      end
     end
   end
 
