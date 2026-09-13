@@ -7889,6 +7889,76 @@ test_companion_to_flat_upgrade_preserves_unowned_same_named_skill() {
     fail "companion-to-flat rollback did not preserve the unowned same-named skill"
 }
 
+test_failed_upgrade_restores_nested_skill_files() {
+  local tmp source target nested_file before output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  nested_file="$target/skills/address-review/references/intake.md"
+  before="$(cat "$nested_file")"
+  printf '\nchanged upstream\n' >> "$source/skills/address-review/references/intake.md"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION skills/address-review/references/intake.md
+  git -C "$source" commit --quiet -m "change nested skill file"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+"$(dirname "$0")/install-agent-workflows-real" "$@"
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -f "$nested_file" ]] || fail "rollback removed a nested skill file"
+  [[ "$(cat "$nested_file")" = "$before" ]] || fail "rollback did not restore a nested skill file"
+}
+
+test_failed_companion_upgrade_preserves_consumer_owned_lib_sibling() {
+  local tmp source target sibling output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion >"$tmp/install.out"
+  sibling="$target/lib/agent-workflows/consumer_owned.rb"
+  printf 'before upgrade\n' > "$sibling"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+printf 'changed during upgrade\\n' > $(printf '%q' "$sibling")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode plugin-companion --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected companion upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$sibling")" = "changed during upgrade" ]] || \
+    fail "rollback reverted a consumer-owned companion library file"
+}
+
 test_failed_flat_upgrade_restores_skill_removed_from_new_source() {
   local tmp source target consumer output exit_code
   tmp="$(mktemp -d)"
@@ -9119,6 +9189,8 @@ main() {
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills
     test_companion_to_flat_upgrade_preserves_unowned_same_named_skill
+    test_failed_upgrade_restores_nested_skill_files
+    test_failed_companion_upgrade_preserves_consumer_owned_lib_sibling
     test_failed_flat_upgrade_restores_skill_removed_from_new_source
     test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion
     test_flat_skill_snapshot_manifest_excludes_dot_entries

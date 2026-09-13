@@ -210,7 +210,7 @@ backup_target() {
         "bin/validate-review-findings"
       ]
       managed << "rules/agent-workflows.mdc" if host == "cursor"
-      managed << "lib/agent-workflows/"
+      managed << "lib/agent-workflows/secure_github_actions_scanner.rb"
       managed.concat(%w[
         docs/coordination-backend.md
         docs/execution-provenance-schema.md
@@ -300,7 +300,8 @@ backup_target() {
         printf '%s\0' "$path" >> "$backup_existing_manifest"
       fi
     done < "$backup_manifest"
-    rsync -a --from0 --files-from="$backup_existing_manifest" "$target/" "$backup_target_dir/"
+    # --files-from changes rsync's -a behavior: recursion must be explicit.
+    rsync -a -r --from0 --files-from="$backup_existing_manifest" "$target/" "$backup_target_dir/"
   fi
 }
 
