@@ -518,7 +518,7 @@ Execution flow when terminal access is available:
        SOURCE_DIFF_IDENTITY="$("${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref "${SOURCE_BASE_REF}" --diff-base-sha "${SOURCE_DIFF_BASE_SHA}" --head-sha "${SOURCE_HEAD_SHA}")"
        jq -cr --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
          def v2_marker: "pr-walkthrough:v2 pr=(?<pr>[1-9][0-9]*) publisher=(?<publisher>[A-Za-z0-9_-]+(?:\\[bot\\])?) base-ref-b64url=(?<base>[A-Za-z0-9_-]+) diff-base=(?<diff_base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) diff=(?<diff>[0-9a-f]{64})";
-         def visible_v2_marker: "(?ms)\\A🤖 Codex [^\\r\\n]+\\r?\\n\\r?\\n.*?<details>\\r?\\n<summary>Walkthrough details</summary>\\r?\\n.*?^```text\\r?\\n" + v2_marker + "\\r?\\n```\\r?\\n</details>\\r?\\n?\\z";
+         def visible_v2_marker: "(?ms)\\A🤖 Codex [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Walkthrough details</summary>\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\n" + v2_marker + "\\r?\\n```\\r?\\n</details>\\r?\\n?\\z";
          def legacy_v2_marker: "^<!-- " + v2_marker + " -->$";
          def legacy_v1_marker: "^<!-- pr-walkthrough:v1 pr=(?<pr>[1-9][0-9]*) diff=(?<diff>[0-9a-f]{64}) head=(?<head>[0-9a-f]{40}) -->$";
          .review_summaries[]? |

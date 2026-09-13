@@ -75,6 +75,21 @@ def extract_source_walkthrough_derivation(text)
   tail[0...terminator.end(0)]
 end
 
+def extract_source_walkthrough_marker_filter(text)
+  marker = 'jq -cr --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
+  marker_offset = text.index(marker)
+  abort("FAIL: source walkthrough marker jq filter start missing") unless marker_offset
+
+  filter_offset = text.index("'\n", marker_offset)
+  abort("FAIL: source walkthrough marker jq filter body missing") unless filter_offset
+
+  filter_tail = text[(filter_offset + 2)..]
+  terminator = filter_tail.match(/\n\s+' source-review-data\.json/)
+  abort("FAIL: source walkthrough marker jq filter terminator missing") unless terminator
+
+  filter_tail[0...terminator.begin(0)]
+end
+
 def extract_source_template_awk(text)
   marker = %q{SOURCE_STATE_ROW_COUNT="$(printf '%s\n' "${SOURCE_STATE_ROWS}" | awk -F '\t' -v source="${SOURCE_PR_NUMBER}" '}
   marker_offset = text.index(marker)
@@ -702,6 +717,48 @@ assert(
   skill_walkthrough_derivation.lines.map(&:strip) == workflow_walkthrough_derivation.lines.map(&:strip),
   "address-review source walkthrough derivations must stay mirrored"
 )
+skill_walkthrough_marker_filter = extract_source_walkthrough_marker_filter(address_review)
+workflow_walkthrough_marker_filter = extract_source_walkthrough_marker_filter(address_review_workflow)
+assert(
+  skill_walkthrough_marker_filter.lines.map(&:strip) == workflow_walkthrough_marker_filter.lines.map(&:strip),
+  "address-review source walkthrough marker readers must stay mirrored"
+)
+walkthrough_head = "b" * 40
+walkthrough_body = <<~BODY.chomp
+  🤖 Codex walkthrough published for the source review.
+
+  <details>
+  <summary>Walkthrough details</summary>
+
+  ```text
+  pr-walkthrough:v2 pr=160 publisher=codex base-ref-b64url=bWFpbg diff-base=#{'a' * 40} head=#{walkthrough_head} diff=#{'c' * 64}
+  ```
+  </details>
+BODY
+walkthrough_summary = {
+  "id" => 777,
+  "state" => "COMMENTED",
+  "user" => "codex",
+  "commit_id" => walkthrough_head,
+  "body" => walkthrough_body
+}
+stdout, stderr, status = Open3.capture3(
+  "jq", "-r", "--arg", "actor", "codex", "--arg", "source", "160", skill_walkthrough_marker_filter,
+  stdin_data: JSON.generate("review_summaries" => [walkthrough_summary])
+)
+assert(status.success?, "source walkthrough marker reader must execute: #{stderr}")
+assert(stdout.start_with?("v2\t777\tcodex\t"),
+       "source walkthrough marker reader must accept a canonical visible walkthrough: #{stdout.inspect}")
+hidden_walkthrough_summary = walkthrough_summary.merge(
+  "id" => 778,
+  "body" => walkthrough_body.sub("\n<details>", "\n````markdown\n<details>")
+)
+stdout, stderr, status = Open3.capture3(
+  "jq", "-r", "--arg", "actor", "codex", "--arg", "source", "160", skill_walkthrough_marker_filter,
+  stdin_data: JSON.generate("review_summaries" => [hidden_walkthrough_summary])
+)
+assert(status.success?, "source walkthrough marker reader must execute with an outer example: #{stderr}")
+assert(stdout.empty?, "source walkthrough marker reader must reject a walkthrough hidden in an unclosed outer fence")
 skill_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review)
 workflow_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review_workflow)
 review_wave_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review_review_wave)
