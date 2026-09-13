@@ -45,8 +45,8 @@ class PrBodyHumanFirstContractTest < Minitest::Test
     assert_includes workflow, "Human-authored product or design detail may use its own"
     assert_includes workflow, "Include `## Maintainer attention` before"
     assert_includes workflow, "do not add a `None.` placeholder"
-    assert_includes normalized_workflow, "When the evidence destination is a PR description"
-    assert_includes normalized_workflow, "In a handoff, issue comment, or saved evidence file"
+    assert_includes workflow_component, "the PR body, handoff comment, or saved evidence file"
+    assert_includes workflow_route, "issue and comment destinations keep concise evidence suited to that destination"
 
     ["### Commands and results", "### Exact-head and replay evidence",
      "### Coordination and reviewer telemetry", "### Decision log",

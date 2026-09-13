@@ -213,10 +213,12 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   coordination state cannot be verified, record
   `worked_issue_scope: UNKNOWN (setup)` or
   `worked_issue_scope: UNKNOWN (access)` with the exact command/error. Use
-  structured public `codex-claim` comments (GitHub comments containing a
-  `codex-claim` HTML comment with key/value fields in the "Public claim
-  comment" format from `.agents/workflows/pr-processing.md`) as advisory
-  recovery evidence when available before reducing unknown scope to merged PRs.
+  structured public `codex-claim` comments (GitHub comments whose visible
+  payload has a closed `Claim details` disclosure containing a fenced
+  `codex-claim v1` record with key/value fields in the "Public claim comment"
+  format from `.agents/workflows/pr-processing.md`; historical HTML forms are
+  read-compatible only) as advisory recovery evidence when available before
+  reducing unknown scope to merged PRs.
   If the batch id itself is unknown, scope advisory public-claim discovery to
   issues and open PRs active within the audit time window; use claim `batch:`
   fields to surface candidate ids until the user confirms one.

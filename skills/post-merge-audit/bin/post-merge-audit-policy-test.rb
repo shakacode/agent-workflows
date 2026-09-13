@@ -621,6 +621,25 @@ class PostMergeAuditPolicyTest < Minitest::Test
     end
   end
 
+  def test_advisory_public_claim_recovery_uses_visible_records_and_legacy_reads_only
+    {
+      "skills/post-merge-audit/references/scope.md" => File.read(
+        File.join(ROOT, "skills/post-merge-audit/references/scope.md"), encoding: "UTF-8"
+      ),
+      "workflows/post-merge-audit.md" => File.read(
+        File.join(ROOT, "workflows/post-merge-audit.md"), encoding: "UTF-8"
+      )
+    }.each do |relative_path, text|
+      normalized_text = text.gsub(/\s+/, " ")
+      assert_includes text, "Claim details", "#{relative_path} should name the visible claim disclosure"
+      assert_includes text, "codex-claim v1", "#{relative_path} should name the visible claim record"
+      assert_includes normalized_text.downcase, "historical html forms are read-compatible only",
+                      "#{relative_path} should retain legacy claim reads without prescribing hidden writes"
+      refute_match(/containing a\s+`codex-claim` HTML comment/i, text,
+                   "#{relative_path} should not prescribe an HTML-only public claim")
+    end
+  end
+
   def test_issue_targeted_lanes_project_only_to_one_authenticated_result_pr
     ISSUE_RESULT_PR_PROJECTION_FILES.each do |relative_path|
       normalized_text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
