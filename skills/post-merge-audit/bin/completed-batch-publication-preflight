@@ -1477,7 +1477,7 @@ module CompletedBatchPublicationPreflight
     return if body.include?("<!--")
 
     match = body.match(
-      %r{\A[^<\r\n]+\r?\n\r?\n<details>\r?\n<summary>Hosted QA waiver details</summary>\r?\n\r?\n```text\r?\n#{Regexp.escape(marker_name)}\r?\n(?<payload>(?:(?!<)[\s\S])*?)^```\r?\n</details>\r?\n?\z}m
+      %r{\AHosted QA waiver is recorded\. No reader action is needed\.\r?\n\r?\n<details>\r?\n<summary>Hosted QA waiver details</summary>\r?\n\r?\n```text\r?\n#{Regexp.escape(marker_name)}\r?\n(?<payload>(?:(?!<)[\s\S])*?)^```\r?\n</details>\r?\n?\z}m
     )
     match && match[:payload]
   end

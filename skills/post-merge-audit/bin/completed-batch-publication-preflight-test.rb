@@ -3725,7 +3725,9 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
 
     {
       "unclosed HTML comment" => visible.sub("needed.", "needed. <!--"),
-      "raw HTML code container" => visible.sub("needed.", "needed. <pre>")
+      "raw HTML code container" => visible.sub("needed.", "needed. <pre>"),
+      "four-backtick example closed at EOF" => visible.sub("Hosted QA waiver is recorded. No reader action is needed.", "````markdown"),
+      "tilde example closed at EOF" => visible.sub("Hosted QA waiver is recorded. No reader action is needed.", "~~~~markdown")
     }.each do |context, hidden|
       assert_nil CompletedBatchPublicationPreflight.waiver_marker_fields(
         hidden,
