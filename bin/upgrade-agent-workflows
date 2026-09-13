@@ -218,7 +218,7 @@ snapshot_root_is_active() {
 source_managed_inventory_fingerprint() {
   local include_flat_skills="$1"
   ruby -rdigest -e '
-    source, include_flat_skills = ARGV
+    source, include_flat_skills, install_mode = ARGV
     paths = []
     Dir.glob(File.join(source, "docs/solutions", "*")).each do |path|
       paths << "docs/solutions/#{File.basename(path)}" if File.file?(path) && !File.symlink?(path)
@@ -228,11 +228,11 @@ source_managed_inventory_fingerprint() {
     end
     if include_flat_skills == "true"
       Dir.glob(File.join(source, "skills", "*")).each do |path|
-        paths << "skills/#{File.basename(path)}"
+        paths << "skills/#{File.basename(path)}" if install_mode == "copy" || File.directory?(path)
       end
     end
     print Digest::SHA256.hexdigest(paths.sort.join("\0"))
-  ' "$source" "$include_flat_skills"
+  ' "$source" "$include_flat_skills" "$mode"
 }
 
 recovery_artifact_inventory() {
@@ -323,7 +323,7 @@ backup_target() {
     # under worktrees/, tmp/, and sessions/. Snapshot only paths the installer
     # can replace so rollback remains bounded by the pack installation.
     ruby -rjson -e '
-      target, source, host, delivery_mode, metadata_path = ARGV
+      target, source, host, delivery_mode, metadata_path, mode = ARGV
       bin_helpers = %w[
         agent-workflow-seam-doctor
         agent-workflow-writing-style
@@ -455,7 +455,7 @@ backup_target() {
       end
       if metadata["delivery_mode"] == "flat" || delivery_mode == "flat"
         Dir.glob(File.join(source, "skills", "*")).each do |path|
-          managed << "skills/#{File.basename(path) }"
+          managed << "skills/#{File.basename(path) }" if mode == "copy" || File.directory?(path)
         end
       end
       if metadata["delivery_mode"] == "flat"
@@ -477,7 +477,7 @@ backup_target() {
         STDOUT.write(path)
         STDOUT.write("\0")
       end
-    ' "$target" "$source" "$host" "$delivery_mode" "$metadata_path" > "$backup_manifest"
+    ' "$target" "$source" "$host" "$delivery_mode" "$metadata_path" "$mode" > "$backup_manifest"
     cat "$backup_recovery_artifact_manifest" >> "$backup_manifest"
     : > "$backup_symlink_manifest"
     snapshot_symlink_roots=()

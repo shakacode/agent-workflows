@@ -8229,6 +8229,39 @@ PATCH
     fail "rollback retained a newly installed symlinked skill"
 }
 
+test_failed_symlink_upgrade_ignores_non_directory_skill() {
+  local tmp source target consumer_file output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+  printf 'source scratch file\n' > "$source/skills/local-note"
+  consumer_file="$target/skills/local-note"
+  printf 'consumer before upgrade\n' > "$consumer_file"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+printf 'consumer changed during upgrade\n' > $(printf '%q' "$consumer_file")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --mode symlink --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$consumer_file")" = "consumer changed during upgrade" ]] || \
+    fail "rollback treated a non-directory symlink-mode skill as managed"
+}
+
 test_failed_upgrade_ignores_directory_fingerprint_keys() {
   local tmp source target consumer_file output status
   tmp="$(mktemp -d)"
@@ -10010,6 +10043,7 @@ main() {
     test_failed_companion_upgrade_preserves_replaced_consumer_lib_symlink
     test_failed_upgrade_ignores_recorded_hidden_workflows
     test_failed_flat_upgrade_removes_new_symlinked_skill
+    test_failed_symlink_upgrade_ignores_non_directory_skill
     test_failed_upgrade_ignores_directory_fingerprint_keys
     test_failed_upgrade_preserves_new_stack_doctor_marker
     test_failed_upgrade_removes_new_empty_container_directories
