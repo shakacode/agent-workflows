@@ -180,7 +180,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       qa-evidence v1
       required: yes
       status: satisfied
-      head_sha: #{"1" * 40}
+      head_sha: #{'1' * 40}
       ```
       </details>
       -->
@@ -193,7 +193,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       qa-evidence v1
       required: yes
       status: satisfied
-      head_sha: #{"1" * 40}
+      head_sha: #{'1' * 40}
       ```
       </details>
       ````

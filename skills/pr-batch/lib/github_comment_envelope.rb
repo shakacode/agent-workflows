@@ -65,6 +65,7 @@ module GitHubCommentEnvelope
   def parse_legacy(body)
     lines = body.lines(chomp: true).first(6).map { |line| line.delete_suffix("\r") }
     return if lines.length < 6
+
     visible = lines[0]
     return unless lines[1] == "<!-- #{MARKER}" && lines[5] == "-->"
 
@@ -72,6 +73,7 @@ module GitHubCommentEnvelope
     host = lines[3].delete_prefix("host: ")
     task_or_run = lines[4].delete_prefix("task_or_run: ")
     return unless valid_fields?(visible, runner, host, task_or_run)
+
     payload_offset = body.lines.first(6).join.length
     payload_offset += 2 if body[payload_offset, 2] == "\r\n"
     payload_offset += 1 if body[payload_offset, 1] == "\n"

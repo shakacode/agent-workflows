@@ -3694,18 +3694,20 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       }
       refute_nil CompletedBatchPublicationPreflight.canonical_hosted_qa_waiver(
         { "url" => waiver_url }, target, waiver_url, head_sha:, hosted_target: "staging",
-        verifier: ->(**_keywords) { comment }
+                                                     verifier: ->(**_keywords) { comment }
       )
     end
 
     agent_visible = visible.sub("Hosted QA waiver", "🤖 Codex hosted QA waiver")
     assert_nil CompletedBatchPublicationPreflight.canonical_hosted_qa_waiver(
       { "url" => waiver_url }, target, waiver_url, head_sha:, hosted_target: "staging",
-      verifier: ->(**_keywords) { { "id" => 817, "html_url" => waiver_url,
-                                   "issue_url" => "https://api.github.com/repos/shakacode/agent-workflows/issues/817",
-                                   "created_at" => "2026-09-12T00:00:00Z", "updated_at" => "2026-09-12T00:00:00Z",
-                                   "user" => { "login" => "maintainer", "type" => "User" },
-                                   "author_association" => "MEMBER", "body" => agent_visible } }
+                                                   verifier: lambda { |**_keywords|
+                                                     { "id" => 817, "html_url" => waiver_url,
+                                                       "issue_url" => "https://api.github.com/repos/shakacode/agent-workflows/issues/817",
+                                                       "created_at" => "2026-09-12T00:00:00Z", "updated_at" => "2026-09-12T00:00:00Z",
+                                                       "user" => { "login" => "maintainer", "type" => "User" },
+                                                       "author_association" => "MEMBER", "body" => agent_visible }
+                                                   }
     )
 
     quoted = "Example:\n\n````markdown\n#{visible}\n````"
@@ -3716,11 +3718,13 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     )
     assert_nil CompletedBatchPublicationPreflight.canonical_hosted_qa_waiver(
       { "url" => waiver_url }, target, waiver_url, head_sha:, hosted_target: "staging",
-      verifier: ->(**_keywords) { { "id" => 817, "html_url" => waiver_url,
-                                   "issue_url" => "https://api.github.com/repos/shakacode/agent-workflows/issues/817",
-                                   "created_at" => "2026-09-12T00:00:00Z", "updated_at" => "2026-09-12T00:00:00Z",
-                                   "user" => { "login" => "maintainer", "type" => "User" },
-                                   "author_association" => "MEMBER", "body" => quoted } }
+                                                   verifier: lambda { |**_keywords|
+                                                     { "id" => 817, "html_url" => waiver_url,
+                                                       "issue_url" => "https://api.github.com/repos/shakacode/agent-workflows/issues/817",
+                                                       "created_at" => "2026-09-12T00:00:00Z", "updated_at" => "2026-09-12T00:00:00Z",
+                                                       "user" => { "login" => "maintainer", "type" => "User" },
+                                                       "author_association" => "MEMBER", "body" => quoted }
+                                                   }
     )
 
     {
@@ -3736,11 +3740,13 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       ), context
       assert_nil CompletedBatchPublicationPreflight.canonical_hosted_qa_waiver(
         { "url" => waiver_url }, target, waiver_url, head_sha:, hosted_target: "staging",
-        verifier: ->(**_keywords) { { "id" => 817, "html_url" => waiver_url,
-                                     "issue_url" => "https://api.github.com/repos/shakacode/agent-workflows/issues/817",
-                                     "created_at" => "2026-09-12T00:00:00Z", "updated_at" => "2026-09-12T00:00:00Z",
-                                     "user" => { "login" => "maintainer", "type" => "User" },
-                                     "author_association" => "MEMBER", "body" => hidden } }
+                                                     verifier: lambda { |**_keywords|
+                                                       { "id" => 817, "html_url" => waiver_url,
+                                                         "issue_url" => "https://api.github.com/repos/shakacode/agent-workflows/issues/817",
+                                                         "created_at" => "2026-09-12T00:00:00Z", "updated_at" => "2026-09-12T00:00:00Z",
+                                                         "user" => { "login" => "maintainer", "type" => "User" },
+                                                         "author_association" => "MEMBER", "body" => hidden }
+                                                     }
       ), context
     end
   end

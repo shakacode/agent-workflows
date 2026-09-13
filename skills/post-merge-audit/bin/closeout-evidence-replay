@@ -373,7 +373,8 @@ module CloseoutEvidenceReplay
       # A blockquote nested in an otherwise canonical disclosure is still an
       # example, not an authoritative published record.
       next if line.match?(/\A[ \t]{0,3}>/)
-      details_stack << nil if line.match?(%r{<details(?:\s|>)})
+
+      details_stack << nil if line.match?(/<details(?:\s|>)/)
       if (summary = line.match(%r{<summary>(?<text>[^<]+)</summary>})) && !details_stack.empty?
         details_stack[-1] = summary[:text].strip
       end

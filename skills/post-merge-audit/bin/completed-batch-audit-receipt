@@ -746,7 +746,7 @@ module CompletedBatchAuditReceipt
     payload = marker_payload(marker)
     return unless payload
 
-    <<~MARKDOWN.chomp + "\n"
+    "#{<<~MARKDOWN.chomp}\n"
       #{outcome}
 
       <details>

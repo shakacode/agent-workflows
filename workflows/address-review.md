@@ -25,7 +25,7 @@ If the assistant has terminal access with `gh`, it should execute the workflow d
 
 ## Prompt
 
-````text
+``````text
 Act as a pull request review triage assistant.
 
 I want the equivalent of Claude Code's `/address-review` command, using this prompt as the fallback when that command is unavailable, for this input: `{{PR_REFERENCE}}`.
@@ -868,7 +868,7 @@ before mutating GitHub or the branch.
   update on either PR blocks mutations on both. Otherwise post a PR issue
   comment using this marker shape only when a
   GitHub-mutating action is selected:
-  ````markdown
+  `````markdown
   Claim is active. Do not start competing work.
 
   <details>
@@ -884,12 +884,14 @@ before mutating GitHub or the branch.
   expires_at: <ISO8601_UTC>
   ```
   </details>
-  ````
+  `````
+
   Post a new fallback claim through `github-comment-envelope post-issue` and
   retain its returned comment ID. Route every refresh and terminal update through
   `github-comment-envelope edit-issue`, piping the complete visible claim body
   with `--repo`, `--comment-id`, `--runner`, `--host`, and `--task-or-run`.
   The runner/host/task values come from authenticated runtime context.
+
   ```bash
   CLAIM_COMMENT_ID="$(printf '%s' "${CLAIM_BODY}" |
     "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
@@ -903,6 +905,7 @@ before mutating GitHub or the branch.
       --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
       --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}"
   ```
+
   Use any stable session, thread, or machine identifier available; if none is
   available, use `thread: unavailable`. Set a short bounded advisory lease,
   usually 2-4 hours for an active review run, and refresh the same comment if
@@ -968,7 +971,8 @@ before mutating GitHub or the branch.
    - When `COORDINATED_AUTOFIX=1`, present triage for transparency but do not display the quick-action menu; immediately execute coordinated action `f` after the verification checkpoint.
    - For normal interactive runs, present the quick-action menu after the triage list.
    - The normal interactive quick-action menu is:
-     ```
+
+     ```text
      Quick actions:
       f     — Fix must-fix items, autonomously handle low-risk optional nits, then prompt for skipped rationale replies and discuss decisions
       f+i   — Fix must-fix, autonomously handle low-risk optional nits, then prepare one deferred-work bundle for discuss/remaining optional items (and non-trivial skipped items)
@@ -981,6 +985,7 @@ before mutating GitHub or the branch.
 
      Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
      ```
+
    - Support range syntax: `N-M` expands to individual items (e.g., `3-5` → `3,4,5`). Ranges work everywhere: item selection, `d`, `o`, and `r`.
    - If a range is malformed, reversed, or out of bounds, show a validation message and ask the user to retry (do not silently coerce it).
    - Dynamic menu: generate `f`, `f+i`, `f+o`, and `a` descriptions using actual item numbers and deferred targets from the current triage set. Only show `f+o` and `o` when there is at least one `OPTIONAL` item. Show `a` when there is at least one `MUST-FIX`, `OPTIONAL`, or `DISCUSS` item. When there are no `DISCUSS`, `OPTIONAL`, or `SKIPPED` items, only show `f`, `a`, and direct item selection.
@@ -1119,38 +1124,38 @@ before mutating GitHub or the branch.
    - Return the selected tracking outcome and issue URL if one was created
 
 10. Post a PR summary comment:
-   - After any chosen action or completed action chain except `a` and inspect-only bare `o` (`f`, `f+i`, `f+o`, `d`, selected `o`, `r`, `m`, or direct item selection), post either a marked cutoff-safe summary comment or, when the cutoff guard below is not satisfied, a non-cutoff status comment. Make it the next default review cutoff only when every older review item is addressed, resolved, deferred/tracked, declined with rationale, or explicitly left pending by user choice on the original thread.
-   - For `a`, do not post a GitHub PR summary comment automatically; return the local summary to the user with the staged-file list and detailed `DISCUSS` recommendations.
-   - New summaries and statuses begin exactly `🤖 Codex` with the useful outcome and reader action. Put runtime identity, scan metadata, itemized outcomes, tracking receipts, and rescan instructions in one closed `Address-review checkpoint` disclosure (never `<details open>`), with `address-review-checkpoint:v1` inside a `text` fence. Historical HTML markers remain read-compatible only. Keep source-state data structurally complete for its parser in the same disclosure.
-   - Use a `Findings that mattered` section for `MUST-FIX` and `DISCUSS` items, including whether each item was addressed, deferred, or left pending by user choice.
-   - Use an `Optional suggestions` section when any `OPTIONAL` item has a recorded outcome or is intentionally left pending/unselected by the chosen action. Include whether each acted-on item was addressed inline, deferred to a follow-up issue, deferred/declined under the attention contract, declined, or still pending after a selected optional action. Use a count-only line such as `- N optional items remain pending/unselected from triage; no action taken this run.` only in a non-cutoff status comment, or after each pending/unselected optional thread has an explicit reply/resolve/defer/decline outcome that makes it safe to skip on later default scans. Do not apply this rule to inspect-only bare `o`, which posts no checkpoint.
-   - Use a `Skipped items` section for `SKIPPED` items with short reasons.
-   - Mention any deferred-work tracking outcome and follow-up issue URL that was created.
-   - Mention whether the run used the default cutoff or the explicit `check all reviews` override.
-   - For marked summaries, end with a note that future full-PR scans should start after this comment unless I say `check all reviews`. For non-cutoff status comments, end with a note that the next run must use `check all reviews`.
-   - Use exact timestamps in the summary when referring to the scan window.
-   - When replacement carryover is inactive, pipe it through
-     `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue` with the
-     target repo/number and required runner/host/task context.
-     When replacement carryover is active, do not post it outside the template; delegate
-     both checkpoint posts to the Step 10 template below.
-   - In replacement carryover, build `source_summary_body_file` through
-     `references/templates.md` with the replacement link and every original-item
-     outcome. Use its separate `SOURCE_CUTOFF_SAFE` guard.
-     The Step 10 template constructs and posts the primary checkpoint and, when source carryover is active, the source checkpoint exactly once before its cleanup trap runs.
-     Do not post either checkpoint again outside that template.
+    - After any chosen action or completed action chain except `a` and inspect-only bare `o` (`f`, `f+i`, `f+o`, `d`, selected `o`, `r`, `m`, or direct item selection), post either a marked cutoff-safe summary comment or, when the cutoff guard below is not satisfied, a non-cutoff status comment. Make it the next default review cutoff only when every older review item is addressed, resolved, deferred/tracked, declined with rationale, or explicitly left pending by user choice on the original thread.
+    - For `a`, do not post a GitHub PR summary comment automatically; return the local summary to the user with the staged-file list and detailed `DISCUSS` recommendations.
+    - New summaries and statuses begin exactly `🤖 Codex` with the useful outcome and reader action. Put runtime identity, scan metadata, itemized outcomes, tracking receipts, and rescan instructions in one closed `Address-review checkpoint` disclosure (never `<details open>`), with `address-review-checkpoint:v1` inside a `text` fence. Historical HTML markers remain read-compatible only. Keep source-state data structurally complete for its parser in the same disclosure.
+    - Use a `Findings that mattered` section for `MUST-FIX` and `DISCUSS` items, including whether each item was addressed, deferred, or left pending by user choice.
+    - Use an `Optional suggestions` section when any `OPTIONAL` item has a recorded outcome or is intentionally left pending/unselected by the chosen action. Include whether each acted-on item was addressed inline, deferred to a follow-up issue, deferred/declined under the attention contract, declined, or still pending after a selected optional action. Use a count-only line such as `- N optional items remain pending/unselected from triage; no action taken this run.` only in a non-cutoff status comment, or after each pending/unselected optional thread has an explicit reply/resolve/defer/decline outcome that makes it safe to skip on later default scans. Do not apply this rule to inspect-only bare `o`, which posts no checkpoint.
+    - Use a `Skipped items` section for `SKIPPED` items with short reasons.
+    - Mention any deferred-work tracking outcome and follow-up issue URL that was created.
+    - Mention whether the run used the default cutoff or the explicit `check all reviews` override.
+    - For marked summaries, end with a note that future full-PR scans should start after this comment unless I say `check all reviews`. For non-cutoff status comments, end with a note that the next run must use `check all reviews`.
+    - Use exact timestamps in the summary when referring to the scan window.
+    - When replacement carryover is inactive, pipe it through
+      `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue` with the
+      target repo/number and required runner/host/task context.
+      When replacement carryover is active, do not post it outside the template; delegate
+      both checkpoint posts to the Step 10 template below.
+    - In replacement carryover, build `source_summary_body_file` through
+      `references/templates.md` with the replacement link and every original-item
+      outcome. Use its separate `SOURCE_CUTOFF_SAFE` guard.
+      The Step 10 template constructs and posts the primary checkpoint and, when source carryover is active, the source checkpoint exactly once before its cleanup trap runs.
+      Do not post either checkpoint again outside that template.
 
 11. Merge-ready signal:
-   - After `f`, tell me the PR is merge-ready after `DISCUSS` items are resolved or explicitly deferred. `OPTIONAL` items do not block merge-readiness.
-   - After `f+i`, tell me the PR is merge-ready only after the deferred bundle has an explicit tracking/drop decision, any dropped `DISCUSS` items are explicitly declined/resolved, and any optional items excluded from the bundle are handled inline, deferred with rationale/tracking outcome, or declined/resolved; if there were zero deferred items, skip tracking and use the `f` merge-ready rule after `f`'s remaining prompts are complete
-   - After `f+o`, tell me the PR is merge-ready once all selected work is pushed and `DISCUSS` items are resolved or explicitly deferred
-   - After `a`, do not signal merge-ready automatically. Report that files are staged for review and list the remaining GitHub actions needed, such as commit, push, replies/resolutions, and decisions on `DISCUSS` recommendations.
-   - After `m`, only tell me the PR is merge-ready when no must-fix items were deferred, the deferred bundle has an explicit tracking/drop decision, and any dropped `DISCUSS` items are explicitly declined/resolved; if there were zero deferred items, skip tracking and use the no-must-fix merge-ready rule; otherwise explicitly say it is not merge-ready
-   - After direct selection, do not signal merge-ready automatically; first evaluate remaining `MUST-FIX`/`DISCUSS` items and ask whether to continue with `f`, `f+i`, `f+o`, `d`, `o`, `r`, or `m`. Unresolved `OPTIONAL` items do not block the merge-ready signal.
-   - After `d`, `o`, or `r`, if unresolved `MUST-FIX`/`DISCUSS` items remain, do not signal merge-ready automatically; re-offer `f`, `f+i`, `f+o`, `d`, `o`, `r`, or `m`. Unresolved `OPTIONAL` items do not block the merge-ready signal.
-   - After inspect-only bare `o`, stop after presenting optional items; do not post a summary checkpoint or make a merge-readiness claim.
-   - Show the deferred-work tracking outcome if one was chosen
-   - Do not auto-merge
+    - After `f`, tell me the PR is merge-ready after `DISCUSS` items are resolved or explicitly deferred. `OPTIONAL` items do not block merge-readiness.
+    - After `f+i`, tell me the PR is merge-ready only after the deferred bundle has an explicit tracking/drop decision, any dropped `DISCUSS` items are explicitly declined/resolved, and any optional items excluded from the bundle are handled inline, deferred with rationale/tracking outcome, or declined/resolved; if there were zero deferred items, skip tracking and use the `f` merge-ready rule after `f`'s remaining prompts are complete
+    - After `f+o`, tell me the PR is merge-ready once all selected work is pushed and `DISCUSS` items are resolved or explicitly deferred
+    - After `a`, do not signal merge-ready automatically. Report that files are staged for review and list the remaining GitHub actions needed, such as commit, push, replies/resolutions, and decisions on `DISCUSS` recommendations.
+    - After `m`, only tell me the PR is merge-ready when no must-fix items were deferred, the deferred bundle has an explicit tracking/drop decision, and any dropped `DISCUSS` items are explicitly declined/resolved; if there were zero deferred items, skip tracking and use the no-must-fix merge-ready rule; otherwise explicitly say it is not merge-ready
+    - After direct selection, do not signal merge-ready automatically; first evaluate remaining `MUST-FIX`/`DISCUSS` items and ask whether to continue with `f`, `f+i`, `f+o`, `d`, `o`, `r`, or `m`. Unresolved `OPTIONAL` items do not block the merge-ready signal.
+    - After `d`, `o`, or `r`, if unresolved `MUST-FIX`/`DISCUSS` items remain, do not signal merge-ready automatically; re-offer `f`, `f+i`, `f+o`, `d`, `o`, `r`, or `m`. Unresolved `OPTIONAL` items do not block the merge-ready signal.
+    - After inspect-only bare `o`, stop after presenting optional items; do not post a summary checkpoint or make a merge-readiness claim.
+    - Show the deferred-work tracking outcome if one was chosen
+    - Do not auto-merge
 
 Output format for the triage:
 
@@ -1179,4 +1184,5 @@ Quick actions:
   m     — No code changes, prepare one deferred-work bundle for must-fix/discuss/optional/non-trivial skipped items
 
 Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
-````
+
+``````

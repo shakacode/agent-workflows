@@ -186,7 +186,7 @@ In published-review mode:
    `pr-walkthrough:v2 pr=<PR_NUMBER> publisher=<GITHUB_LOGIN> base-ref-b64url=<BASE_REF_BASE64URL> diff-base=<REVIEWED_DIFF_BASE_SHA> head=<FULL_HEAD_SHA> diff=<CANONICAL_DIFF_IDENTITY>`.
    Use a `text` fence inside the disclosure; never emit the record as an HTML
    comment: `<details>`, `<summary>Walkthrough details</summary>`, then
-   ````text` / the record / ```` and `</details>`.
+   the opening `text` fence, the record, its closing fence, and `</details>`.
    Encode the UTF-8 base ref as unpadded base64url so ref characters cannot end
    or corrupt the HTML comment. Bind `publisher` to the authenticated GitHub
    actor that submits the review. Populate every placeholder from the verified target and canonical

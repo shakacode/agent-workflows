@@ -97,8 +97,8 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
 
       assert_equal payload, normalized_payload
       assert_equal "2026-09-13T00:00:00Z", FetchPrReviewData.compute_cutoff([
-        { "body" => body, "payload_body" => normalized_payload, "created_at" => "2026-09-13T00:00:00Z" }
-      ])
+                                                                              { "body" => body, "payload_body" => normalized_payload, "created_at" => "2026-09-13T00:00:00Z" }
+                                                                            ])
 
       {
         "before the disclosure" => payload.sub("\n<details>", "\n<pre>\n<details>"),
@@ -109,8 +109,8 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
         )
         assert_nil FetchPrReviewData.visible_checkpoint_kind(malformed_body), placement
         assert_equal "", FetchPrReviewData.compute_cutoff([
-          { "body" => malformed_body, "payload_body" => malformed_payload, "created_at" => "2026-09-13T00:00:00Z" }
-        ]), placement
+                                                            { "body" => malformed_body, "payload_body" => malformed_payload, "created_at" => "2026-09-13T00:00:00Z" }
+                                                          ]), placement
       end
     end
   end
@@ -143,8 +143,8 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
       assert_equal payload, normalized_payload
       assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(normalized_payload)
       assert_equal "2026-09-13T00:00:00Z", FetchPrReviewData.compute_cutoff([
-        { "body" => body, "payload_body" => normalized_payload, "created_at" => "2026-09-13T00:00:00Z" }
-      ])
+                                                                              { "body" => body, "payload_body" => normalized_payload, "created_at" => "2026-09-13T00:00:00Z" }
+                                                                            ])
     end
   end
 

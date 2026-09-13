@@ -652,10 +652,10 @@ assert(address_review_actions.include?(source_post_ownership), "address-review a
 assert(address_review_workflow.include?(source_post_ownership), "address-review workflow mirror must delegate both checkpoint posts to the template")
 legacy_unconditional_primary_post = '- Post it with: `gh api repos/${REPO}/issues/${PR_NUMBER}/comments -X POST -F body=@"${summary_body_file}"`'
 assert(!address_review_workflow.include?(legacy_unconditional_primary_post), "address-review workflow must not post the primary checkpoint before template delegation")
-scoped_primary_post = "When replacement carryover is inactive, pipe it through\n     `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue`"
-assert(address_review_workflow.include?(scoped_primary_post), "address-review workflow must route primary checkpoints through the envelope")
-template_primary_ownership = "When replacement carryover is active, do not post it outside the template; delegate\n     both checkpoint posts to the Step 10 template below."
-assert(address_review_workflow.include?(template_primary_ownership), "address-review workflow must give the template sole checkpoint-post ownership during carryover")
+scoped_primary_post = %r{When replacement carryover is inactive, pipe it through\s+`\$\{PR_BATCH_SKILL_DIR\}/bin/github-comment-envelope post-issue`}
+assert(address_review_workflow.match?(scoped_primary_post), "address-review workflow must route primary checkpoints through the envelope")
+template_primary_ownership = /When replacement carryover is active, do not post it outside the template; delegate\s+both checkpoint posts to the Step 10 template below\./
+assert(address_review_workflow.match?(template_primary_ownership), "address-review workflow must give the template sole checkpoint-post ownership during carryover")
 source_state_format = "Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` in the visible fenced `address-review-source-state:v1` record inside the closed `Address-review checkpoint` disclosure; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`. Historical HTML records are read-compatible only."
 assert(address_review.include?(source_state_format), "address-review must define deterministic source restart state")
 assert(address_review_actions.include?(source_state_format), "address-review actions must preserve deterministic source restart state")
@@ -809,20 +809,20 @@ template_source_body = GitHubCommentEnvelope.render(
   body: template_source_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
 raw_html_source_state_payload = template_source_payload
-  .sub("```text\naddress-review-source-state:v1", "<pre>\n```text\naddress-review-source-state:v1")
-  .sub("\n```\n\n</details>", "\n```\n</pre>\n\n</details>")
+                                .sub("```text\naddress-review-source-state:v1", "<pre>\n```text\naddress-review-source-state:v1")
+                                .sub("\n```\n\n</details>", "\n```\n</pre>\n\n</details>")
 raw_html_source_state_body = GitHubCommentEnvelope.render(
   body: raw_html_source_state_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
 multiline_raw_html_source_state_payload = template_source_payload
-  .sub("```text\naddress-review-source-state:v1", "<pre\n>\n```text\naddress-review-source-state:v1")
-  .sub("\n```\n\n</details>", "\n```\n</pre>\n\n</details>")
+                                          .sub("```text\naddress-review-source-state:v1", "<pre\n>\n```text\naddress-review-source-state:v1")
+                                          .sub("\n```\n\n</details>", "\n```\n</pre>\n\n</details>")
 multiline_raw_html_source_state_body = GitHubCommentEnvelope.render(
   body: multiline_raw_html_source_state_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
 nested_raw_html_source_state_payload = template_source_payload
-  .sub("```text\naddress-review-source-state:v1", "<div><pre>\n```text\naddress-review-source-state:v1")
-  .sub("\n```\n\n</details>", "\n```\n</pre></div>\n\n</details>")
+                                       .sub("```text\naddress-review-source-state:v1", "<div><pre>\n```text\naddress-review-source-state:v1")
+                                       .sub("\n```\n\n</details>", "\n```\n</pre></div>\n\n</details>")
 nested_raw_html_source_state_body = GitHubCommentEnvelope.render(
   body: nested_raw_html_source_state_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
@@ -850,13 +850,13 @@ unclosed_commented_visible_summary_payload = visible_enveloped_summary_payload.s
 unclosed_commented_visible_summary_body = GitHubCommentEnvelope.render(
   body: unclosed_commented_visible_summary_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
-truncated_visible_summary_payload = visible_enveloped_summary_payload.sub(/\n<\/details>\z/, "")
+truncated_visible_summary_payload = visible_enveloped_summary_payload.sub(%r{\n</details>\z}, "")
 truncated_visible_summary_body = GitHubCommentEnvelope.render(
   body: truncated_visible_summary_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
 outer_example_source_state_payload = visible_enveloped_summary_payload
-  .sub("```text\naddress-review-source-state:v1", "````markdown\n```text\naddress-review-source-state:v1")
-  .sub("\n```\n</details>", "\n```\n````\n</details>")
+                                     .sub("```text\naddress-review-source-state:v1", "````markdown\n```text\naddress-review-source-state:v1")
+                                     .sub("\n```\n</details>", "\n```\n````\n</details>")
 outer_example_source_state_body = GitHubCommentEnvelope.render(
   body: outer_example_source_state_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
