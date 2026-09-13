@@ -226,7 +226,8 @@ class HumanAttentionTest < Minitest::Test
           walkthrough: human-attention:walkthrough
           merge: human-attention:merge
         repositories:
-          acme/a-slow: {}
+          acme/a-leaky: {}
+          acme/b-slow: {}
           acme/z-healthy: {}
     YAML
     Dir.mktmpdir("human-attention-timeout") do |root|
@@ -235,8 +236,15 @@ class HumanAttentionTest < Minitest::Test
         #!/usr/bin/env ruby
         require "json"
         repo = ARGV.fetch(ARGV.index("--repo") + 1)
-        if repo.end_with?("a-slow")
-          fork { trap("TERM", "IGNORE"); sleep 10 }
+        if repo.end_with?("a-leaky")
+          ready = File.join(__dir__, "leaky.ready")
+          fork { trap("TERM", "IGNORE"); File.write(ready, "ready"); sleep 10 }
+          sleep 0.01 until File.exist?(ready)
+          exit 0
+        elsif repo.end_with?("b-slow")
+          ready = File.join(__dir__, "slow.ready")
+          fork { trap("TERM", "IGNORE"); File.write(ready, "ready"); sleep 10 }
+          sleep 0.01 until File.exist?(ready)
           sleep 10
         end
         puts JSON.generate([{"number" => 7, "title" => repo, "url" => "https://example.test/7", "headRefOid" => "#{'a' * 40}", "labels" => [{"name" => "human-attention:merge"}]}])
@@ -250,8 +258,8 @@ class HumanAttentionTest < Minitest::Test
       elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
 
       assert_equal(["acme/z-healthy"], entries.map { |entry| entry.fetch("repo") })
-      assert_equal ["acme/a-slow"], degraded
-      assert_operator elapsed, :<, 3
+      assert_equal ["acme/a-leaky", "acme/b-slow"], degraded
+      assert_operator elapsed, :<, 5
     end
   end
 

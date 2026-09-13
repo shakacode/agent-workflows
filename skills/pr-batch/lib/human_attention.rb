@@ -104,8 +104,10 @@ module HumanAttention
       stdin.close
       stdout_reader = Thread.new { stdout.read }
       stderr_reader = Thread.new { stderr.read }
-      status = Timeout.timeout(timeout_seconds) { wait_thread.value }
-      [stdout_reader.value, stderr_reader.value, status]
+      Timeout.timeout(timeout_seconds) do
+        status = wait_thread.value
+        [stdout_reader.value, stderr_reader.value, status]
+      end
     rescue Timeout::Error
       terminate_process_group(wait_thread)
       stdout_reader.join
