@@ -62,6 +62,7 @@ module HumanAttention
 
       repository_key = matching_repositories.first
     end
+    self.repositories(config)
     if repository_key
       entry = repositories.fetch(repository_key) || {}
       raise Error, "repository configuration for #{repo} must be a mapping" unless entry.is_a?(Hash)

@@ -1134,7 +1134,7 @@ For each user-visible UI change:
    unreferenced attachment is appended to the body. For an existing PR, resolve
    `PR_BATCH_SKILL_DIR` from an explicit environment value, the `pr-batch` sibling
    of the exact loaded skill directory, or repo-local `.agents/skills/pr-batch`,
-   in that order. Set `AGENT_COMMENT_RUNNER` to exactly `codex` or `claude`,
+   in that order. Set `AGENT_COMMENT_RUNNER` to exactly `codex`, `claude`, or `cursor`,
    `AGENT_COMMENT_HOST` to the actual non-empty single-line host label, and
    `AGENT_COMMENT_TASK_OR_RUN` to the stable task or run identifier. Stop if the
    helper or any attribution value is unavailable. Post a dedicated comment

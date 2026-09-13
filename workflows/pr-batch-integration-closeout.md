@@ -1431,8 +1431,8 @@ reference interaction pattern.
 
 Route every Agent Workflows-authored top-level comment and review reply through
 `github-comment-envelope`: `post-issue` for PR or issue comments and
-`post-reply` for inline replies. The first line identifies Codex,
-Claude, or Cursor; a hidden marker records the runner, host, and task-or-run ID.
+`post-reply` for inline replies. First line identifies Codex, Claude, or Cursor;
+a marker records the runner, host, and task-or-run ID.
 
 Export the real execution context as `AGENT_COMMENT_RUNNER` (`codex`, `claude`,
 or `cursor`), `AGENT_COMMENT_HOST` (a non-empty single-line label), and

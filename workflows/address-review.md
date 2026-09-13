@@ -37,7 +37,7 @@ below.
 
 Behavior rules:
 - Before any GitHub post, require the trusted caller to export
-  `AGENT_COMMENT_RUNNER` as exactly `codex` or `claude`,
+  `AGENT_COMMENT_RUNNER` as exactly `codex`, `claude`, or `cursor`,
   `AGENT_COMMENT_HOST` as the actual runner host, and
   `AGENT_COMMENT_TASK_OR_RUN` as the stable task/run identifier. Missing or
   invalid context blocks posting; never invent a generic runner identity.

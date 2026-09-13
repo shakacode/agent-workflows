@@ -122,22 +122,20 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
-  def test_labels_for_rejects_a_scalar_repository_policy_before_transition
-    policy = <<~YAML
-      ---
-      human_attention:
-        labels:
-          walkthrough: human-attention:walkthrough
-          merge: human-attention:merge
-        repositories: acme/widgets
-    YAML
-    with_repo_config(policy) do |root|
-      config = HumanAttention.load_config(root)
-      error = assert_raises(HumanAttention::Error) do
+  def test_labels_for_rejects_malformed_repository_policy_before_transition
+    ["acme/widgets", [7], ["widgets"], { 7 => {} }].each do |repository_policy|
+      config = {
+        "labels" => {
+          "walkthrough" => "human-attention:walkthrough",
+          "merge" => "human-attention:merge"
+        },
+        "repositories" => repository_policy
+      }
+      error = assert_raises(HumanAttention::Error, repository_policy.inspect) do
         HumanAttention.labels_for(config, "acme/widgets")
       end
 
-      assert_equal "human_attention.repositories must be a mapping or list", error.message
+      assert_match(/repositories must be a mapping or list|every human-attention repository/, error.message)
     end
   end
 

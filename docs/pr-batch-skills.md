@@ -193,7 +193,7 @@ analog of the coordination backend's agent heartbeat leases.
   `--trust-config`. Inject the reference clock with `--now` or
   `STALE_ASSIGNMENT_SWEEP_NOW`; bound gh with
   `STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS`. Mutating `--apply` runs also
-  require `AGENT_COMMENT_RUNNER` (`codex` or `claude`), `AGENT_COMMENT_HOST`, and
+  require `AGENT_COMMENT_RUNNER` (`codex`, `claude`, or `cursor`), `AGENT_COMMENT_HOST`, and
   `AGENT_COMMENT_TASK_OR_RUN`; invalid or missing attribution fails before any
   GitHub call. Run it on a schedule (Actions cron or the coordination daemon).
 - **Resilient reads.** A gh failure while reading/classifying one item is
