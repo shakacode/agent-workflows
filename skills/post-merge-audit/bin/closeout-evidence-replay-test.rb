@@ -613,6 +613,27 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "UNKNOWN", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
   end
 
+  def test_inline_or_escaped_details_closers_cannot_escape_a_nested_example
+    head_sha = "1" * 40
+    ["`</details>`", "\\</details>"].each do |literal_closer|
+      body = <<~MARKDOWN
+        <details>
+        <summary>Agent details</summary>
+
+        <details>
+        <summary>Example</summary>
+        This literal #{literal_closer} is not an HTML closer.
+        #{visible_qa_details(head_sha:, scope: "#{literal_closer} nested closer")}
+        </details>
+        </details>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), literal_closer
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", literal_closer
+    end
+  end
+
   def test_unclosed_html_comment_in_raw_text_container_hides_following_visible_evidence
     head_sha = "1" * 40
     %w[textarea script style].each do |tag|

@@ -194,8 +194,9 @@ tell the next run to use `check all reviews`; do not advance the cutoff.
 Rules for the summary comment:
 
 - Always post it as a general PR issue comment, never as a review-thread reply.
-- New comments begin exactly `🤖 Codex` with their outcome and reader action.
-  Put `address-review-checkpoint:v1` with `kind: summary` or `kind: status` in
+- The posting envelope uses `AGENT_COMMENT_RUNNER` to begin the public comment
+  with `🤖 <configured runner>` plus its outcome and reader action. Put
+  `address-review-checkpoint:v1` with `kind: summary` or `kind: status` in
   the visible closed checkpoint disclosure. Historical HTML markers are
   read-compatible only.
 - Put the posting runtime's real client and model family inside that disclosure;

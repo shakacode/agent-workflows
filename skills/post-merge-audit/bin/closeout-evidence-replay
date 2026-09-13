@@ -330,6 +330,12 @@ module CloseoutEvidenceReplay
     end
   end
 
+  # Structural HTML tags inside a Markdown code span or escaped as literal text
+  # are not rendered tags. Keep those literals from changing disclosure depth.
+  def html_context_line(line)
+    line.gsub(/(?<!\\)(`+).*?\1/, "").gsub(/\\</, "")
+  end
+
   def visible_markdown(text)
     fence = nil
     record_fence = false
@@ -364,10 +370,11 @@ module CloseoutEvidenceReplay
       line, html_comment_open = visible_line_without_html_comments(line, open: html_comment_open)
       next if line.empty?
 
+      structural_line = html_context_line(line)
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
       if discard_details_depth
-        details_stack << nil if line.match?(/<details(?:\s|>)/)
-        if line.match?(%r{</details>}) && !details_stack.empty?
+        details_stack << nil if structural_line.match?(/<details(?:\s|>)/)
+        if structural_line.match?(%r{</details>}) && !details_stack.empty?
           details_stack.pop
           discard_details_depth = nil if details_stack.length < discard_details_depth
         end
@@ -384,9 +391,9 @@ module CloseoutEvidenceReplay
       # preserving that discard is intentionally fail-closed: later apparent
       # evidence is not rendered authority. Blockquotes are excluded too because
       # a canonical disclosure must be top-level published content.
-      if (container = line.match(/<(?<tag>pre|code|script|style|textarea|blockquote)(?:\s|>)/i))
+      if (container = structural_line.match(/<(?<tag>pre|code|script|style|textarea|blockquote)(?:\s|>)/i))
         tag = container[:tag].downcase
-        depth = line.scan(/<#{Regexp.escape(tag)}(?:\s|>)/i).length - line.scan(%r{</#{Regexp.escape(tag)}\s*>}i).length
+        depth = structural_line.scan(/<#{Regexp.escape(tag)}(?:\s|>)/i).length - structural_line.scan(%r{</#{Regexp.escape(tag)}\s*>}i).length
         raw_html_container = { tag:, depth: } if depth.positive?
         next
       end
@@ -407,7 +414,7 @@ module CloseoutEvidenceReplay
       # example, not an authoritative published record.
       next if line.match?(/\A[ \t]{0,3}>/)
 
-      if line.match?(/<details(?:\s|>)/)
+      if structural_line.match?(/<details(?:\s|>)/)
         # PR bodies place trusted evidence directly in the canonical Agent
         # details disclosure. Deeper nested details remain explanatory
         # examples and cannot grant authority.
@@ -419,10 +426,10 @@ module CloseoutEvidenceReplay
           next
         end
       end
-      if (summary = line.match(%r{<summary>(?<text>[^<]+)</summary>})) && !details_stack.empty?
+      if (summary = structural_line.match(%r{<summary>(?<text>[^<]+)</summary>})) && !details_stack.empty?
         details_stack[-1] = summary[:text].strip
       end
-      details_stack.pop if line.match?(%r{</details>}) && !details_stack.empty?
+      details_stack.pop if structural_line.match?(%r{</details>}) && !details_stack.empty?
       rendered << line
     end
     rendered.join

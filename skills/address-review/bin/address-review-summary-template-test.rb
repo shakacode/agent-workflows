@@ -96,6 +96,12 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
       normalized_payload = GitHubCommentEnvelope.payload(body)
 
       assert_equal payload, normalized_payload
+      { "codex" => "Codex", "claude" => "Claude", "cursor" => "Cursor" }.each do |runner, display|
+        rendered = GitHubCommentEnvelope.render(body: payload, runner:, host: "test-host", task_or_run: "template")
+
+        assert rendered.start_with?("🤖 #{display} Address-review follow-up is complete."), runner
+        assert_equal payload, GitHubCommentEnvelope.payload(rendered), runner
+      end
       assert_equal "2026-09-13T00:00:00Z", FetchPrReviewData.compute_cutoff([
                                                                               { "body" => body, "payload_body" => normalized_payload, "created_at" => "2026-09-13T00:00:00Z" }
                                                                             ])
