@@ -189,6 +189,26 @@ path_is_within_traversed_snapshot_symlink_root() {
   return 1
 }
 
+source_managed_inventory_fingerprint() {
+  local include_flat_skills="$1"
+  ruby -rdigest -e '
+    source, include_flat_skills = ARGV
+    paths = []
+    Dir.glob(File.join(source, "docs/solutions", "*")).each do |path|
+      paths << "docs/solutions/#{File.basename(path)}" if File.file?(path) && !File.symlink?(path)
+    end
+    Dir.glob(File.join(source, "workflows", "*")).each do |path|
+      paths << "workflows/#{File.basename(path)}"
+    end
+    if include_flat_skills == "true"
+      Dir.glob(File.join(source, "skills", "*")).each do |path|
+        paths << "skills/#{File.basename(path)}" if File.directory?(path) && !File.symlink?(path)
+      end
+    end
+    print Digest::SHA256.hexdigest(paths.sort.join("\0"))
+  ' "$source" "$include_flat_skills"
+}
+
 backup_target() {
   backup_dir="$(mktemp -d)"
   backup_target_dir="$backup_dir/target"
@@ -207,6 +227,12 @@ backup_target() {
   if [[ -d "$target" ]]; then
     target_existed=true
     backup_canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+    backup_includes_flat_skills=false
+    if [[ "$delivery_mode" = "flat" ||
+          "$(metadata_value "$metadata_path" delivery_mode 2>/dev/null || printf 'flat\n')" = "flat" ]]; then
+      backup_includes_flat_skills=true
+    fi
+    backup_source_inventory_fingerprint="$(source_managed_inventory_fingerprint "$backup_includes_flat_skills")"
     if [[ -e "$target/.agent-workflows-migration-staging" ||
           -L "$target/.agent-workflows-migration-staging" ]]; then
       migration_receipt_existed=true
@@ -456,7 +482,7 @@ cleanup_new_migration_staging() {
 }
 
 restore_target() {
-  local path index
+  local path index current_source_inventory_fingerprint
   local -a absent_containers=()
   local rollback_complete=true
   # Rollback is best-effort across every managed path. Record individual I/O
@@ -516,6 +542,11 @@ restore_target() {
       cp -a "$backup_migration_staging_dir" "$backup_migration_staging_path"
       rm -f -- "$target/.agent-workflows-migration-staging"
       cp -a "$backup_migration_receipt" "$target/.agent-workflows-migration-staging"
+    fi
+    current_source_inventory_fingerprint="$(source_managed_inventory_fingerprint "$backup_includes_flat_skills")"
+    if [[ "$current_source_inventory_fingerprint" != "$backup_source_inventory_fingerprint" ]]; then
+      echo "ROLLBACK_SOURCE_CHANGED: managed source inventory changed after the rollback snapshot." >&2
+      rollback_complete=false
     fi
   else
     rm -rf "$target"

@@ -8486,6 +8486,39 @@ BASH_ENV
   assert_not_contains "$output" "ROLLBACK_COMPLETE"
 }
 
+test_failed_upgrade_rejects_source_inventory_change_after_snapshot() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+mkdir -p "$root/skills/appeared-after-snapshot"
+printf '%s\n' '---' 'name: appeared-after-snapshot' 'description: race fixture' '---' \
+  > "$root/skills/appeared-after-snapshot/SKILL.md"
+"$root/bin/install-agent-workflows-real" "$@"
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" \
+    --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "source race replaced original exit 7 with $status: $output"
+  assert_contains "$output" "ROLLBACK_SOURCE_CHANGED"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+}
+
 test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants() {
   local tmp source next_source target consumer external_bin output status
   tmp="$(mktemp -d)"
@@ -9707,6 +9740,7 @@ main() {
     test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion
     test_flat_skill_snapshot_manifest_excludes_dot_entries
     test_failed_upgrade_reports_incomplete_rollback_and_preserves_original_status
+    test_failed_upgrade_rejects_source_inventory_change_after_snapshot
     test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants
     test_failed_copy_upgrade_does_not_restore_through_symlinked_bin_root
     test_failed_copy_upgrade_does_not_restore_through_symlinked_skills_root
