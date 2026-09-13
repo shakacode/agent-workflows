@@ -808,6 +808,18 @@ assert(
            "visible checkpoint normalizer must preserve #{description} in copy #{index}")
   end
 end
+(0..3).each do |spaces|
+  input = "#{' ' * spaces}\t`<!-- marker -->`"
+  [address_review, address_review_workflow, address_review_review_wave].each_with_index do |text, index|
+    stdout, stderr, status = Open3.capture3(
+      "jq", "-r", "#{extract_visible_checkpoint_normalizer(text)}\n. | visible_checkpoint_body",
+      stdin_data: JSON.generate(input)
+    )
+    assert(status.success?, "visible checkpoint normalizer must execute for #{spaces} spaces plus tab copy #{index}: #{stderr}")
+    assert(stdout.chomp == input,
+           "visible checkpoint normalizer must preserve #{spaces} spaces plus tab in copy #{index}")
+  end
+end
 skill_cutoff_filter = extract_source_cutoff_filter(address_review)
 workflow_cutoff_filter = extract_source_cutoff_filter(address_review_workflow)
 assert(
@@ -1284,13 +1296,18 @@ end
 end
 
 source_outcome = "- Source feedback handled; old marker is `<!-- address-review-summary -->`."
-{
+ineligible_source_outcomes = {
   "escaped opening delimiter" => "- Source feedback handled; old marker is \\`<!-- address-review-summary -->`.",
   "four-space indented literal" => "    `<!-- address-review-summary -->`",
   "tab-indented literal" => "\t`<!-- address-review-summary -->`",
   "unequal delimiters" => "- Source feedback handled; old marker is ``<!-- address-review-summary -->`.",
   "actual fenced code block" => "```text\n<!-- address-review-summary -->\n```"
-}.each_with_index do |(description, outcome), index|
+}
+(0..3).each do |spaces|
+  ineligible_source_outcomes["#{spaces} spaces plus tab-indented literal"] =
+    "#{' ' * spaces}\t`<!-- address-review-summary -->`"
+end
+ineligible_source_outcomes.each_with_index do |(description, outcome), index|
   payload = template_source_payload.sub(source_outcome) { outcome }
   body = GitHubCommentEnvelope.render(body: payload, runner: "claude", host: "M5", task_or_run: "address-review")
   comment = {

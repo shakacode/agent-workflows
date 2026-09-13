@@ -185,13 +185,18 @@ class FetchPrReviewDataTest < Minitest::Test
       MARKDOWN
     end
 
-    {
+    ineligible_details = {
       "escaped opening delimiter" => "- Literal: \\`<!-- address-review-summary -->`.",
       "four-space indented literal" => "    `<!-- address-review-summary -->`",
       "tab-indented literal" => "\t`<!-- address-review-summary -->`",
       "unequal delimiters" => "- Literal: ``<!-- address-review-summary -->`.",
       "actual fenced code block" => "```text\n<!-- address-review-summary -->\n```"
-    }.each do |description, detail|
+    }
+    (0..3).each do |spaces|
+      ineligible_details["#{spaces} spaces plus tab-indented literal"] =
+        "#{' ' * spaces}\t`<!-- address-review-summary -->`"
+    end
+    ineligible_details.each do |description, detail|
       body = checkpoint.call(detail)
 
       assert_nil FetchPrReviewData.visible_checkpoint_kind(body), description

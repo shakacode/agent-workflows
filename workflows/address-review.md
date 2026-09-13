@@ -257,7 +257,7 @@ Execution flow when terminal access is available:
              def terminal_row: split("\t") | .[6] | terminal_outcome;
              def visible_checkpoint_body:
                split("\n") |
-               map(if test("^(?:[\\t]| {4}|[ \\t]{0,3}`{3,}[^`\\r\\n]*(?:\\r?\\n)?$)") then . else gsub("(?<prefix>^|[^\\\\`])(?<esc>(?:\\\\\\\\)*)(?<ticks>`+)(?!`)[^\\r\\n]*?(?<!`)\\3(?!`)"; "\(.prefix)\(.esc)inline-code") end) |
+               map(if test("^(?: {0,3}[\\t]| {4}|[ \\t]{0,3}`{3,}[^`\\r\\n]*(?:\\r?\\n)?$)") then . else gsub("(?<prefix>^|[^\\\\`])(?<esc>(?:\\\\\\\\)*)(?<ticks>`+)(?!`)[^\\r\\n]*?(?<!`)\\3(?!`)"; "\(.prefix)\(.esc)inline-code") end) |
                join("\n");
              def checkpoint_kind:
                if startswith("<!-- address-review-summary -->") then "summary"
@@ -585,7 +585,7 @@ Execution flow when terminal access is available:
            . as $inventory |
            def visible_checkpoint_body:
              split("\n") |
-             map(if test("^(?:[\\t]| {4}|[ \\t]{0,3}`{3,}[^`\\r\\n]*(?:\\r?\\n)?$)") then . else gsub("(?<prefix>^|[^\\\\`])(?<esc>(?:\\\\\\\\)*)(?<ticks>`+)(?!`)[^\\r\\n]*?(?<!`)\\3(?!`)"; "\(.prefix)\(.esc)inline-code") end) |
+             map(if test("^(?: {0,3}[\\t]| {4}|[ \\t]{0,3}`{3,}[^`\\r\\n]*(?:\\r?\\n)?$)") then . else gsub("(?<prefix>^|[^\\\\`])(?<esc>(?:\\\\\\\\)*)(?<ticks>`+)(?!`)[^\\r\\n]*?(?<!`)\\3(?!`)"; "\(.prefix)\(.esc)inline-code") end) |
              join("\n");
            def visible_checkpoint_kind:
              visible_checkpoint_body as $body |
