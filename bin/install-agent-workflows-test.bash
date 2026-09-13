@@ -8442,7 +8442,17 @@ test_failed_upgrade_ignores_hidden_skill_fingerprint_keys() {
   new_source_repo "$source"
   mkdir -p "$source/skills/.consumer"
   printf 'source-only hidden skill\n' > "$source/skills/.consumer/SKILL.md"
-  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  bash -O dotglob "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    >"$tmp/install.out"
+  [[ ! -e "$target/skills/.consumer" ]] || fail "installer copied a hidden source skill with inherited dotglob"
+  ruby -rjson -e '
+    path = ARGV.fetch(0)
+    metadata = JSON.parse(File.binread(path))
+    fingerprints = metadata.fetch("managed_skill_copy_fingerprints")
+    abort metadata.inspect if fingerprints.key?(".consumer")
+    fingerprints[".consumer"] = fingerprints.values.fetch(0)
+    File.write(path, JSON.pretty_generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json"
   consumer_file="$target/skills/.consumer/SKILL.md"
   mkdir -p "$(dirname "$consumer_file")"
   printf 'consumer before upgrade\n' > "$consumer_file"
