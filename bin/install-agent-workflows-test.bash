@@ -7806,6 +7806,48 @@ WRAP
 RUBY
 }
 
+test_failed_upgrade_removes_new_migration_recovery_artifacts() {
+  local tmp source target consumer wrap output status receipt staging
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/claude-home"
+  consumer="$tmp/consumer"
+  wrap="$tmp/wrap"
+  mkdir -p "$source" "$consumer" "$wrap"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host claude --target "$target" --mode copy >"$tmp/install.out"
+  write_native_scw_state claude "$target"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+  cat > "$wrap/bash-env" <<'BASH_ENV'
+rm() {
+  if [[ "${1:-}" = "-rf" && "${2:-}" == */.agent-workflows-flat-migration-* ]]; then
+    return 1
+  fi
+  command rm "$@"
+}
+BASH_ENV
+
+  set +e
+  output="$(BASH_ENV="$wrap/bash-env" "$source/bin/upgrade-agent-workflows" --host claude \
+    --target "$target" --source "$source" --delivery-mode plugin-companion \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "CLEANUP_PENDING"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  receipt="$target/.agent-workflows-migration-staging"
+  [[ ! -e "$receipt" && ! -L "$receipt" ]] || fail "rollback left a new migration receipt"
+  for staging in "$target"/.agent-workflows-flat-migration-*; do
+    [[ ! -e "$staging" && ! -L "$staging" ]] || fail "rollback left new migration staging: $staging"
+  done
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat" && metadata["mode"] == "copy"
+  ' "$target/.agent-workflows-install.json"
+}
+
 test_failed_upgrade_restores_companion_delivery_mode_and_layout() {
   local tmp source target consumer output status
   tmp="$(mktemp -d)"
@@ -9390,6 +9432,7 @@ main() {
     test_upgrade_without_consumer_roots_succeeds
     test_upgrade_reports_missing_source_as_check_failed
     test_upgrade_rolls_back_when_consumer_seam_fails
+    test_failed_upgrade_removes_new_migration_recovery_artifacts
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills
     test_companion_to_flat_upgrade_preserves_unowned_same_named_skill

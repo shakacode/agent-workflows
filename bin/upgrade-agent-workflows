@@ -198,9 +198,14 @@ backup_target() {
   backup_followed_manifest="$backup_dir/followed-symlink-paths"
   backup_absent_container_manifest="$backup_dir/absent-containers"
   : > "$backup_absent_container_manifest"
+  migration_receipt_existed=false
   target_existed=false
   if [[ -d "$target" ]]; then
     target_existed=true
+    if [[ -e "$target/.agent-workflows-migration-staging" ||
+          -L "$target/.agent-workflows-migration-staging" ]]; then
+      migration_receipt_existed=true
+    fi
     mkdir -p "$backup_target_dir"
     for path in "${managed_snapshot_roots[@]}"; do
       if [[ ! -e "$target/$path" && ! -L "$target/$path" ]]; then
@@ -368,10 +373,43 @@ backup_target() {
   fi
 }
 
+cleanup_new_migration_staging() {
+  [[ "${migration_receipt_existed:-false}" != "true" ]] || return 0
+  local receipt="$target/.agent-workflows-migration-staging"
+  [[ -e "$receipt" || -L "$receipt" ]] || return 0
+
+  ruby -rfileutils -e '
+    target, receipt = ARGV
+    target_stat = File.lstat(target)
+    abort unless target_stat.directory? && !target_stat.symlink?
+    receipt_stat = File.lstat(receipt)
+    abort unless receipt_stat.file? && !receipt_stat.symlink?
+    receipt_contents = File.binread(receipt)
+    lines = receipt_contents.lines(chomp: true)
+    abort unless lines.length == 1
+    staging = File.expand_path(lines.fetch(0))
+    abort unless File.dirname(staging) == File.realpath(target)
+    abort unless File.basename(staging).match?(/\A\.agent-workflows-flat-migration-.+\z/)
+    if File.exist?(staging) || File.symlink?(staging)
+      staging_stat = File.lstat(staging)
+      abort unless staging_stat.directory? && !staging_stat.symlink?
+      FileUtils.remove_entry_secure(staging, true)
+    end
+    abort if File.exist?(staging) || File.symlink?(staging)
+    current_receipt_stat = File.lstat(receipt)
+    abort unless current_receipt_stat.dev == receipt_stat.dev &&
+                 current_receipt_stat.ino == receipt_stat.ino &&
+                 File.binread(receipt) == receipt_contents
+    File.unlink(receipt)
+  ' "$target" "$receipt"
+}
+
 restore_target() {
   local path index
   local -a absent_containers=()
+  local rollback_complete=true
   if [[ "${target_existed:-false}" = "true" ]]; then
+    cleanup_new_migration_staging || rollback_complete=false
     mkdir -p "$target"
     while IFS= read -r -d '' path; do
       if [[ -L "$target/$path" ]]; then
@@ -418,6 +456,10 @@ restore_target() {
     done
   else
     rm -rf "$target"
+  fi
+  if [[ "$rollback_complete" != "true" ]]; then
+    echo "ROLLBACK_INCOMPLETE: preserved unverified migration recovery artifacts under $target" >&2
+    return 1
   fi
   echo "ROLLBACK_COMPLETE target=$target"
 }
