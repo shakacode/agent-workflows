@@ -705,7 +705,6 @@ module CloseoutEvidenceReplay
       discard_details_depth = advance_details_stack(details_stack, discard_details_depth, current_details_tags)
       next if discard_details_depth
 
-      mark_details_summary_content(details_stack, structural_line)
       # CommonMark keeps an unclosed raw code container literal through EOF, so
       # preserving that discard is intentionally fail-closed: later apparent
       # evidence is not rendered authority. Blockquotes are excluded too because
