@@ -132,9 +132,53 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
       def marker_body:
         checkpoint_kind != null or startswith("<!-- codex-claim v1") or visible_claim;
       def comment_body($comment): $comment.payload_body // $comment.body // "";
+      def source_reply_fence:
+        ([try capture("^[ \\t]{0,3}(?<delimiter>[\\x60]{3,}|~{3,})(?<info>[^\\r\\n]*)$") catch null] | first);
+      def source_reply_raw_opener:
+        ([try capture("(?i)<(?<tag>pre|code|script|style|textarea|blockquote)(?:\\s|>)") catch null] | first);
+      def source_reply_raw_delta($line; $tag):
+        ($line | [scan("(?i)<" + $tag + "(?:\\s|>)")] | length) -
+        ($line | [scan("(?i)</" + $tag + "\\s*>")] | length);
+      def visible_source_reply_context:
+        gsub("(?s)<!--.*?-->"; "") as $text |
+        if $text | contains("<!--") then false
+        else
+          (reduce ($text | split("\n")[] | sub("\\r$"; "")) as $line (
+            {fence: null, raw: null};
+            if .raw != null then
+              .raw.tag as $tag |
+              (source_reply_raw_delta($line; $tag)) as $delta |
+              .raw.depth += $delta |
+              if .raw.depth <= 0 then .raw = null else . end
+            elif .fence != null then
+              .fence as $fence |
+              ($line | source_reply_fence) as $closer |
+              if $closer != null and
+                 $closer.delimiter[0:1] == $fence[0:1] and
+                 ($closer.delimiter | length) >= ($fence | length) and
+                 ($closer.info | test("^[ \\t]*$"))
+              then .fence = null else . end
+            else
+              ($line | source_reply_raw_opener) as $opener |
+              if $opener != null then
+                ($opener.tag | ascii_downcase) as $tag |
+                (source_reply_raw_delta($line; $tag)) as $depth |
+                if $depth > 0 then .raw = {tag: $tag, depth: $depth} else . end
+              else
+                ($line | source_reply_fence) as $fence |
+                if $fence != null then .fence = $fence.delimiter else . end
+              end
+            end
+          ) | .fence == null and .raw == null)
+        end;
+      def visible_source_reply_outcome:
+        ([try capture("(?ms)\\A(?:🤖 Codex )?[Ss]ource reply: (?<outcome>[\\s\\S]*?)\\r?\\n\\r?\\n<details>\\r?\\n<summary>Address-review reply details</summary>").outcome catch null] | first);
       def generated_source_reply($comment):
         ((comment_body($comment) | startswith("<!-- address-review-source-reply -->")) or
-         (comment_body($comment) | test("(?ms)\\A(?:🤖 Codex )?[Ss]ource reply: [\\s\\S]*?\\r?\\n\\r?\\n<details>\\r?\\n<summary>Address-review reply details</summary>\\r?\\n\\r?\\n```text\\r?\\naddress-review-source-reply:v1\\r?\\n```\\r?\\n</details>\\r?\\n?\\z"))) and
+         ((comment_body($comment) | visible_source_reply_outcome) as $outcome |
+          ($outcome != null and
+           ($outcome | visible_source_reply_context) and
+           (comment_body($comment) | test("(?ms)\\A(?:🤖 Codex )?[Ss]ource reply: [\\s\\S]*?\\r?\\n\\r?\\n<details>\\r?\\n<summary>Address-review reply details</summary>\\r?\\n\\r?\\n```text\\r?\\naddress-review-source-reply:v1\\r?\\n```\\r?\\n</details>\\r?\\n?\\z"))))) and
         ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
       def item_key($kind; $id; $thread_id):
         [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");

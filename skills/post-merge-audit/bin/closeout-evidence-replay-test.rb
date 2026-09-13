@@ -446,7 +446,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
-  def test_nested_details_and_fence_edge_cases_do_not_promote_examples
+  def test_agent_details_direct_evidence_replays_but_deeper_examples_do_not
     head_sha = "1" * 40
     nested = <<~MARKDOWN
       <details>
@@ -460,6 +460,13 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       required: yes
       status: satisfied
       head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: Agent details evidence
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
       ```
       </details>
       </details>
@@ -474,12 +481,42 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       required: yes
       status: satisfied
       head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: nested example
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
       ```
       </details>
       ```` text
     MARKDOWN
 
-    [nested, trailing_info].each do |body|
+    assert_equal "SATISFIED", run_replay(nested, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+
+    nested_example = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      <details>
+      <summary>Example</summary>
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      ```
+      </details>
+      </details>
+      </details>
+    MARKDOWN
+
+    [nested_example, trailing_info].each do |body|
       evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
       assert_equal "UNKNOWN", evidence.fetch("verdict")
     end

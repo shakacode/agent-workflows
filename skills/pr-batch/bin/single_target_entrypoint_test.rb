@@ -1080,6 +1080,33 @@ assert(Integer(stdout, 10) == 1,
 end
 
 {
+  "source reply inside an unclosed HTML comment" => "Example only:\n\n<!--",
+  "source reply inside an unclosed raw pre block" => "<pre>",
+  "source reply inside an unclosed Markdown example" => "Example only:\n\n````markdown",
+  "source reply inside a nested raw blockquote" => "<blockquote>\n<blockquote>\nExample only.\n</blockquote>"
+}.each_with_index do |(description, response), index|
+  hidden_source_reply_payload = "Source reply: #{response}\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v1\n```\n</details>"
+  hidden_source_reply_body = GitHubCommentEnvelope.render(
+    body: hidden_source_reply_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+  )
+  hidden_source_reply_comment = {
+    "id" => 225 + index,
+    "user" => "trusted-reviewer",
+    "created_at" => "2026-07-15T00:07:20Z",
+    "body" => hidden_source_reply_body,
+    "payload_body" => GitHubCommentEnvelope.payload(hidden_source_reply_body)
+  }
+  stdout, stderr, status = Open3.capture3(
+    "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+    "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
+    stdin_data: JSON.generate(checkpoint_fixture.merge("issue_comments" => checkpoint_fixture.fetch("issue_comments") + [hidden_source_reply_comment]))
+  )
+  assert(status.success?, "source checkpoint jq validator must execute with a #{description}: #{stderr}")
+  assert(JSON.parse(stdout).none? { |checkpoint| checkpoint["body"] == enveloped_summary_body },
+         "source checkpoint validator must retain a #{description} as source feedback")
+end
+
+{
   "truncated visible claim" => GitHubCommentEnvelope.render(
     body: visible_claim_payload.sub(%r{\n</details>\z}, ""), runner: "codex", host: "M5", task_or_run: "address-review"
   ),

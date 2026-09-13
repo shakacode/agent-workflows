@@ -386,9 +386,10 @@ module CloseoutEvidenceReplay
       next if line.match?(/\A[ \t]{0,3}>/)
 
       if line.match?(/<details(?:\s|>)/)
-        # Only a top-level disclosure can be evidence. Nested details are often
-        # explanatory examples and must not grant authority to their contents.
-        if details_stack.empty?
+        # PR bodies place trusted evidence directly in the canonical Agent
+        # details disclosure. Deeper nested details remain explanatory
+        # examples and cannot grant authority.
+        if details_stack.empty? || (details_stack.length == 1 && details_stack.last == "Agent details")
           details_stack << nil
         else
           details_stack << nil
