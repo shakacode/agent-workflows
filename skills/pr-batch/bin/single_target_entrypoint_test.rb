@@ -48,6 +48,16 @@ def extract_source_wait_checkpoint_filter(text)
   filter_tail[0...terminator.begin(0)]
 end
 
+def extract_visible_checkpoint_normalizer(text)
+  start = text.index("def visible_checkpoint_body:")
+  abort("FAIL: visible checkpoint normalizer missing") unless start
+
+  finish = text.index('join("\\n");', start)
+  abort("FAIL: visible checkpoint normalizer terminator missing") unless finish
+
+  text[start...(finish + 'join("\\n");'.length)]
+end
+
 def extract_source_cutoff_filter(text)
   marker = 'SOURCE_REVIEW_CUTOFF_AT="$(printf'
   marker_offset = text.index(marker)
@@ -780,6 +790,24 @@ assert(
   skill_wait_checkpoint_filter.lines.map(&:strip) == review_wave_wait_checkpoint_filter.lines.map(&:strip),
   "address-review review-wave checkpoint validator must stay mirrored"
 )
+{
+  "multiple spans" => ["prefix `<!-- first -->` and `<!-- second -->`", "prefix inline-code and inline-code"],
+  "structural prefix" => ["prefix < `<!-- marker -->`", "prefix < inline-code"],
+  "even opening slashes" => ["prefix \\\\`<!-- marker -->`", "prefix \\\\inline-code"],
+  "backslash before closing delimiter" => ["prefix `<!-- marker -->\\\\`", "prefix inline-code"],
+  "fence-shaped inline literal" => [" ```<!-- marker -->```", " inline-code"],
+  "escaped opening delimiter" => ["prefix \\`<!-- marker -->`", "prefix \\`<!-- marker -->`"]
+}.each do |description, (input, expected)|
+  [address_review, address_review_workflow, address_review_review_wave].each_with_index do |text, index|
+    stdout, stderr, status = Open3.capture3(
+      "jq", "-r", "#{extract_visible_checkpoint_normalizer(text)}\n. | visible_checkpoint_body",
+      stdin_data: JSON.generate(input)
+    )
+    assert(status.success?, "visible checkpoint normalizer must execute for #{description} copy #{index}: #{stderr}")
+    assert(stdout.chomp == expected,
+           "visible checkpoint normalizer must preserve #{description} in copy #{index}")
+  end
+end
 skill_cutoff_filter = extract_source_cutoff_filter(address_review)
 workflow_cutoff_filter = extract_source_cutoff_filter(address_review_workflow)
 assert(
@@ -868,7 +896,7 @@ template_source_payload = Dir.mktmpdir do |dir|
     "SOURCE_CUTOFF_SAFE" => "1",
     "SOURCE_STATE_ROWS" => source_writer_rows,
     "REPLACEMENT_PR_URL" => "https://github.com/shakacode/agent-workflows/pull/260",
-    "SOURCE_OUTCOMES" => "- Source feedback handled; old marker is \\\\`<!-- address-review-summary -->`.",
+    "SOURCE_OUTCOMES" => "- Source feedback handled; old marker is `<!-- address-review-summary -->`.",
     "POSTING_CLIENT" => "Codex",
     "POSTING_MODEL_FAMILY" => "Astra"
   }
@@ -1255,15 +1283,15 @@ end
          "source wait checkpoint validator must reject a source-state record inside a #{description}")
 end
 
-source_outcome = "- Source feedback handled; old marker is \\\\`<!-- address-review-summary -->`."
+source_outcome = "- Source feedback handled; old marker is `<!-- address-review-summary -->`."
 {
   "escaped opening delimiter" => "- Source feedback handled; old marker is \\`<!-- address-review-summary -->`.",
-  "escaped closing delimiter" => "- Source feedback handled; old marker is `<!-- address-review-summary -->\\`.",
   "four-space indented literal" => "    `<!-- address-review-summary -->`",
   "tab-indented literal" => "\t`<!-- address-review-summary -->`",
-  "unequal delimiters" => "- Source feedback handled; old marker is ``<!-- address-review-summary -->`."
+  "unequal delimiters" => "- Source feedback handled; old marker is ``<!-- address-review-summary -->`.",
+  "actual fenced code block" => "```text\n<!-- address-review-summary -->\n```"
 }.each_with_index do |(description, outcome), index|
-  payload = template_source_payload.sub(source_outcome, outcome)
+  payload = template_source_payload.sub(source_outcome) { outcome }
   body = GitHubCommentEnvelope.render(body: payload, runner: "claude", host: "M5", task_or_run: "address-review")
   comment = {
     "id" => 240 + index,
@@ -1289,6 +1317,57 @@ source_outcome = "- Source feedback handled; old marker is \\\\`<!-- address-rev
   assert(Integer(stdout, 10).zero?,
          "source wait checkpoint validator must reject an #{description}")
 end
+
+(0..4).each do |backslashes|
+  outcome = "- Source feedback handled; old marker is `<!-- address-review-summary -->#{'\\' * backslashes}`."
+  payload = template_source_payload.sub(source_outcome) { outcome }
+  body = GitHubCommentEnvelope.render(body: payload, runner: "claude", host: "M5", task_or_run: "address-review")
+  comment = {
+    "id" => 250 + backslashes,
+    "user" => "trusted-reviewer",
+    "created_at" => "2026-07-15T00:07:36Z",
+    "body" => body,
+    "payload_body" => GitHubCommentEnvelope.payload(body)
+  }
+
+  stdout, stderr, status = Open3.capture3(
+    "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+    "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
+    stdin_data: JSON.generate(checkpoint_fixture.merge("issue_comments" => checkpoint_fixture.fetch("issue_comments") + [comment]))
+  )
+  assert(status.success?, "source checkpoint jq validator must execute with #{backslashes} closing backslashes: #{stderr}")
+  if backslashes.zero?
+    assert(JSON.parse(stdout).any? { |checkpoint| checkpoint["body"] == body },
+           "source checkpoint jq validator must accept a canonical closing delimiter")
+  end
+  stdout, stderr, status = Open3.capture3(
+    "jq", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_wait_checkpoint_filter,
+    stdin_data: JSON.generate("issue_comments" => [comment])
+  )
+  assert(status.success?, "source wait checkpoint validator must execute with #{backslashes} closing backslashes: #{stderr}")
+  assert(Integer(stdout, 10) == 1,
+         "source wait checkpoint validator must accept #{backslashes} closing backslashes")
+end
+
+fence_inline_outcome = " ```<!-- address-review-summary -->```"
+fence_inline_body = GitHubCommentEnvelope.render(
+  body: template_source_payload.sub(source_outcome) { fence_inline_outcome }, runner: "claude", host: "M5", task_or_run: "address-review"
+)
+fence_inline_comment = {
+  "id" => 255,
+  "user" => "trusted-reviewer",
+  "created_at" => "2026-07-15T00:07:36Z",
+  "body" => fence_inline_body,
+  "payload_body" => GitHubCommentEnvelope.payload(fence_inline_body)
+}
+stdout, stderr, status = Open3.capture3(
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+  "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
+  stdin_data: JSON.generate(checkpoint_fixture.merge("issue_comments" => checkpoint_fixture.fetch("issue_comments") + [fence_inline_comment]))
+)
+assert(status.success?, "source checkpoint jq validator must execute with a fence-shaped inline literal: #{stderr}")
+assert(JSON.parse(stdout).any? { |checkpoint| checkpoint["body"] == fence_inline_body },
+       "source checkpoint jq validator must accept a fence-shaped inline literal")
 
 walkthrough_fixture = checkpoint_fixture.merge(
   "review_summaries" => checkpoint_fixture.fetch("review_summaries") +

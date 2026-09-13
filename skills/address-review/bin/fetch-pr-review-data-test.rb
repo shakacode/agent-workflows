@@ -187,10 +187,10 @@ class FetchPrReviewDataTest < Minitest::Test
 
     {
       "escaped opening delimiter" => "- Literal: \\`<!-- address-review-summary -->`.",
-      "escaped closing delimiter" => "- Literal: `<!-- address-review-summary -->\\`.",
       "four-space indented literal" => "    `<!-- address-review-summary -->`",
       "tab-indented literal" => "\t`<!-- address-review-summary -->`",
-      "unequal delimiters" => "- Literal: ``<!-- address-review-summary -->`."
+      "unequal delimiters" => "- Literal: ``<!-- address-review-summary -->`.",
+      "actual fenced code block" => "```text\n<!-- address-review-summary -->\n```"
     }.each do |description, detail|
       body = checkpoint.call(detail)
 
@@ -198,8 +198,13 @@ class FetchPrReviewDataTest < Minitest::Test
       assert_equal "", FetchPrReviewData.compute_cutoff([{ "body" => body, "created_at" => "2026-09-13T00:00:00Z" }]), description
     end
 
+    (0..4).each do |backslashes|
+      detail = "- Literal: \\\\`<!-- address-review-summary -->#{'\\' * backslashes}`."
+
+      assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(checkpoint.call(detail)), backslashes
+    end
     assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(
-      checkpoint.call("- Literal: \\\\`<!-- address-review-summary -->`.")
+      checkpoint.call(" ```<!-- address-review-summary -->```")
     )
   end
 

@@ -31,8 +31,8 @@ require_relative "../../pr-batch/lib/github_comment_envelope"
 module FetchPrReviewData
   SUMMARY_MARKER = "<!-- address-review-summary -->"
   VISIBLE_CHECKPOINT_SUMMARY = "Address-review checkpoint"
-  INLINE_CODE_LITERAL = /(^|[^\\`])((?:\\\\)*)(`+)(?!`)[^\r\n]*?(?:^|[^\\`])(?:\\\\)*\3(?!`)/
-  INDENTED_OR_FENCED_CODE_LINE = /\A(?:\t| {4}|[ \t]{0,3}`{3,})/
+  INLINE_CODE_LITERAL = /(^|[^\\`])((?:\\\\)*)(`+)(?!`)[^\r\n]*?(?<!`)\3(?!`)/
+  INDENTED_OR_FENCED_CODE_LINE = /\A(?:\t| {4}|[ \t]{0,3}`{3,}[^`\r\n]*(?:\r?\n)?\z)/
   GH_TIMEOUT_SECONDS = Integer(ENV.fetch("FETCH_PR_REVIEW_DATA_GH_TIMEOUT_SECONDS", "60"))
   TRUST_DIGEST_FORMAT = /\Asha256:[0-9a-f]{64}\z/
   TRUST_CONFIG_SCOPES = %w[global repository].freeze
