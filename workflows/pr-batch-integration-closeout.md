@@ -1429,25 +1429,20 @@ human wait in a live agent session for each section. Control Plane Flow
 [PR #451](https://github.com/shakacode/control-plane-flow/pull/451) is the
 reference interaction pattern.
 
-All Agent Workflows-authored top-level comments and review replies must cross
-the `github-comment-envelope` boundary. Its visible first line is exactly
-`🤖 Codex` for Codex or `🤖 Claude` for Claude. Machine, host, task, run, and
-automation details stay out of the visible prefix. A hidden versioned marker
-records the runner, host, and task-or-run identifier. Use `post-issue` for a
-top-level PR or issue comment and `post-reply` for an inline review reply.
-Consumer code must not bypass this boundary.
+Route every Agent Workflows-authored top-level comment and review reply through
+`github-comment-envelope`: `post-issue` for PR or issue comments and
+`post-reply` for inline replies. The visible first line is exactly `🤖 Codex` or
+`🤖 Claude`; a hidden marker records the runner, host, and task-or-run ID.
 
-Before any posting path, export all three execution-context values:
-`AGENT_COMMENT_RUNNER` (`codex` or `claude`), `AGENT_COMMENT_HOST` (a non-empty
-single-line host label such as `Codex desktop`), and
-`AGENT_COMMENT_TASK_OR_RUN` (a stable task or run identifier).
-Unattended publishers must fail closed when any value is absent or invalid;
-they must not invent an `agent-workflows` runner or reuse an arbitrary batch ID.
+Export the real execution context as `AGENT_COMMENT_RUNNER` (`codex` or
+`claude`), `AGENT_COMMENT_HOST` (a non-empty single-line label), and
+`AGENT_COMMENT_TASK_OR_RUN` (a stable task or run ID). Publishers fail closed
+when a value is invalid or absent. They must not invent a runner or substitute
+an arbitrary batch ID.
 
-Agent-attributed comments never establish human approval or merge authority.
-Authority checks must exclude every comment with a valid attribution envelope;
-unattributed human comments retain their ordinary meaning under repository
-policy.
+Agent-attributed comments cannot grant human approval or merge authority.
+Authority checks exclude valid attribution envelopes; unattributed human
+comments retain their ordinary meaning under repository policy.
 
 For rollout, create the two resolved labels in every configured repository,
 add each repository under the policy seam, upgrade or reinstall the shared
