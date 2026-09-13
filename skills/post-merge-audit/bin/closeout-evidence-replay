@@ -306,30 +306,6 @@ module CloseoutEvidenceReplay
     ).map(&:first)
   end
 
-  # Evidence-like text inside a quoted Markdown example or HTML comment is not
-  # a published receipt. Strip comments only after code contexts are known, so
-  # literal comment delimiters in fenced code cannot hide later evidence.
-  def visible_line_without_html_comments(line, open:)
-    rendered = +""
-    remaining = line
-    loop do
-      if open
-        closing = remaining.index("-->")
-        return [rendered, true] unless closing
-
-        remaining = remaining[(closing + 3)..] || ""
-        open = false
-      end
-
-      opening = remaining.index("<!--")
-      return [rendered << remaining, false] unless opening
-
-      rendered << remaining[0...opening]
-      remaining = remaining[(opening + 4)..] || ""
-      open = true
-    end
-  end
-
   # Structural HTML tags inside a Markdown code span or escaped as literal text
   # are not rendered tags. Keep those literals from changing disclosure depth.
   def matching_backtick_run_index(text, delimiter, start_index)
@@ -355,20 +331,36 @@ module CloseoutEvidenceReplay
   def inline_code_lookahead(lines, start_index)
     lines[start_index..].to_a.take_while do |line|
       !line.strip.empty? && !line.match?(/\A[ \t]{0,3}>/) &&
-        !line.match?(%r{\A[ \t]*</?(?:blockquote|code|details|pre|script|style|textarea)(?:\s|>)}i)
+        !line.match?(%r{\A[ \t]*</?(?:blockquote|code|details|pre|script|style|textarea)(?:\s|>)}i) &&
+        !line.include?("<!--")
     end.join
   end
 
-  def html_context_line(line, code_delimiter:, remaining_text:, allow_new_code_span:)
+  def html_context_line(line, code_delimiter:, html_comment_open:, remaining_text:, allow_new_code_span:)
     rendered = +""
     index = 0
     while index < line.length
+      if html_comment_open
+        closing = line.index("-->", index)
+        return [rendered, code_delimiter, true] unless closing
+
+        index = closing + 3
+        html_comment_open = false
+        next
+      end
+
       if code_delimiter
         closing = matching_backtick_run_index(line, code_delimiter, index)
-        return [rendered, code_delimiter] unless closing
+        return [rendered, code_delimiter, html_comment_open] unless closing
 
         index = closing + code_delimiter.length
         code_delimiter = nil
+        next
+      end
+
+      if line[index, 4] == "<!--"
+        html_comment_open = true
+        index += 4
         next
       end
 
@@ -400,7 +392,7 @@ module CloseoutEvidenceReplay
       rendered << line[index]
       index += 1
     end
-    [rendered, code_delimiter]
+    [rendered, code_delimiter, html_comment_open]
   end
 
   RAW_HTML_TAGS = %w[pre code script style textarea blockquote].freeze
@@ -581,16 +573,16 @@ module CloseoutEvidenceReplay
         rendered << line
         next
       end
-      line, html_comment_open = visible_line_without_html_comments(line, open: html_comment_open)
-      next if line.empty?
-
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
-      structural_line, inline_code_delimiter = html_context_line(
+      structural_line, inline_code_delimiter, html_comment_open = html_context_line(
         line,
         code_delimiter: inline_code_delimiter,
+        html_comment_open:,
         remaining_text: inline_code_lookahead(lines, line_index + 1),
         allow_new_code_span: opener.nil?
       )
+      next if structural_line.empty?
+
       structural_tags, open_html_tag = structural_html_tags(structural_line, open_tag: open_html_tag)
       current_details_tags = details_tags(structural_tags)
       if discard_details_depth

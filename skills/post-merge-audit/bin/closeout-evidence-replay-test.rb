@@ -929,6 +929,30 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_inline_code_comment_delimiters_do_not_hide_raw_blockquotes
+    head_sha = "1" * 40
+    [
+      ["`<!--`", "`-->`"],
+      ["``<!--``", "``-->``"],
+      ["`<!--\nliteral`", "`-->`"]
+    ].each do |opening_literal, closing_literal|
+      body = <<~MARKDOWN
+        Use #{opening_literal} literally.
+
+        <blockquote>
+
+        Use #{closing_literal} literally.
+
+        #{visible_qa_details(head_sha:, scope: 'inline code comment delimiter')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), [opening_literal, closing_literal].inspect
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", [opening_literal, closing_literal].inspect
+    end
+  end
+
   def test_multiline_quoted_details_attributes_remain_nested
     head_sha = "1" * 40
     [["\"", "\""], ["'", "'"]].each do |opening_quote, closing_quote|
