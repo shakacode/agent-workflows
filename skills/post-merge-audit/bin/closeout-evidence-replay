@@ -547,6 +547,14 @@ module CloseoutEvidenceReplay
     indented_code_line?(line) && line.match?(%r{</?(?:details|summary)(?:\s|>)}i)
   end
 
+  def raw_containment_tags(structural_tags, line)
+    return structural_tags unless indented_code_line?(line)
+
+    # An indented raw opener may conservatively suppress authority, but its
+    # closer is Markdown code and cannot release an active containment guard.
+    structural_tags.reject { |type, tag, _text| type == :close && raw_html_tag?(tag) }
+  end
+
   def visible_markdown(text)
     fence = nil
     record_fence = false
@@ -606,7 +614,7 @@ module CloseoutEvidenceReplay
       # preserving that discard is intentionally fail-closed: later apparent
       # evidence is not rendered authority. Blockquotes are excluded too because
       # a canonical disclosure must be top-level published content.
-      raw_html_containers = advance_raw_html_containers(raw_html_containers, structural_tags)
+      raw_html_containers = advance_raw_html_containers(raw_html_containers, raw_containment_tags(structural_tags, line))
       if raw_html_containers.any?
         next
       end

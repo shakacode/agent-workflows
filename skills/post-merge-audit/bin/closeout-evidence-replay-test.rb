@@ -674,6 +674,24 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
+  def test_indented_raw_closers_cannot_release_containment
+    head_sha = "1" * 40
+    ["    ", "\t"].each do |indent|
+      body = <<~MARKDOWN
+        <blockquote>
+
+        #{indent}</blockquote>
+
+        #{visible_qa_details(head_sha:, scope: 'indented raw closer')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), indent.inspect
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", indent.inspect
+    end
+  end
+
   def test_html_comment_cannot_close_a_raw_blockquote_before_visible_evidence
     head_sha = "1" * 40
     body = <<~MARKDOWN
