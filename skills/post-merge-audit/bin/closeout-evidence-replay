@@ -407,15 +407,82 @@ module CloseoutEvidenceReplay
     RAW_TEXT_HTML_TAGS.include?(tag)
   end
 
-  def active_raw_text_closer(line, raw_html_containers, html_comment_open:)
-    return if html_comment_open
+  def active_raw_text_tag(raw_html_containers)
+    raw_html_containers.reverse.find { |container| raw_text_html_tag?(container.fetch(:tag)) }&.fetch(:tag)
+  end
 
-    tag = raw_html_containers.reverse.find { |container| raw_text_html_tag?(container.fetch(:tag)) }&.fetch(:tag)
+  def active_raw_text_closer(raw_html_containers, structural_tags)
+    tag = active_raw_text_tag(raw_html_containers)
     return unless tag
 
-    uncommented = line.gsub(/<!--.*?(?:-->|\z)/, "")
-    tags, = structural_html_tags(uncommented)
-    tag if tags.any? { |type, found, *_| type == :close && found == tag }
+    tag if structural_tags.any? { |type, found, *_| type == :close && found == tag }
+  end
+
+  def raw_text_structural_html_tags(line, open_tag: nil, html_comment_open: false)
+    tags = []
+    index = 0
+    while index < line.length
+      if html_comment_open
+        closing = line.index("-->", index)
+        return [tags, open_tag, true] unless closing
+
+        index = closing + 3
+        html_comment_open = false
+        next
+      end
+
+      unless open_tag
+        opening = line.index("<", index)
+        break unless opening
+
+        remaining = line[opening..]
+        if remaining.start_with?("<!--")
+          html_comment_open = true
+          index = opening + 4
+          next
+        end
+        unless html_tag_start?(remaining)
+          index = opening + 1
+          next
+        end
+
+        open_tag = {
+          text: +"<",
+          quote: nil,
+          attribute_value_pending: false,
+          indented_code_origin: indented_code_line?(line)
+        }
+        index = opening + 1
+      end
+
+      while index < line.length
+        character = line[index]
+        if character == "<" && !open_tag[:quote] && !open_tag[:attribute_value_pending]
+          open_tag = nil
+          break
+        end
+
+        open_tag[:text] << character
+        if open_tag[:quote]
+          open_tag[:quote] = nil if character == open_tag[:quote]
+        elsif ['"', "'"].include?(character) && open_tag[:attribute_value_pending]
+          open_tag[:quote] = character
+          open_tag[:attribute_value_pending] = false
+        elsif character == ">"
+          tag = structural_html_tag(open_tag)
+          tags << tag if tag
+          open_tag = nil
+          index += 1
+          break
+        elsif character == "="
+          open_tag[:attribute_value_pending] = attribute_assignment?(open_tag[:text])
+        elsif !character.match?(/\s/)
+          open_tag[:attribute_value_pending] = false
+        end
+        index += 1
+      end
+    end
+    [tags, open_tag, html_comment_open]
   end
 
   def structural_html_tag(token)
@@ -533,7 +600,8 @@ module CloseoutEvidenceReplay
     entry[:summary_eligible] = false unless text.empty?
   end
 
-  def visible_summary_content_line(line, structural_line)
+  def visible_summary_content_line(line, structural_line, html_comment_was_open:, html_comment_open:)
+    return "" if html_comment_was_open || html_comment_open
     return structural_line unless structural_line.strip.empty?
 
     line.gsub(/<!--.*?(?:-->|\z)/, "").strip.empty? ? "" : line
@@ -651,6 +719,8 @@ module CloseoutEvidenceReplay
     record_fence = false
     discard_details_depth = nil
     raw_html_containers = []
+    raw_text_open_tag = nil
+    raw_text_html_comment_open = false
     html_comment_open = false
     open_html_tag = nil
     inline_code_delimiter = nil
@@ -689,12 +759,25 @@ module CloseoutEvidenceReplay
         remaining_text: inline_code_lookahead(lines, line_index + 1),
         allow_new_code_span: opener.nil?
       )
-      raw_text_closer = active_raw_text_closer(
+      active_raw_text_tag = active_raw_text_tag(raw_html_containers)
+      if active_raw_text_tag
+        raw_text_tags, raw_text_open_tag, raw_text_html_comment_open = raw_text_structural_html_tags(
+          line,
+          open_tag: raw_text_open_tag,
+          html_comment_open: raw_text_html_comment_open
+        )
+      else
+        raw_text_tags = []
+        raw_text_open_tag = nil
+        raw_text_html_comment_open = false
+      end
+      raw_text_closer = active_raw_text_closer(raw_html_containers, raw_text_tags)
+      summary_content_line = visible_summary_content_line(
         line,
-        raw_html_containers,
-        html_comment_open: html_comment_was_open
+        structural_line,
+        html_comment_was_open:,
+        html_comment_open:
       )
-      summary_content_line = visible_summary_content_line(line, structural_line)
       if structural_line.empty? && !raw_text_closer
         mark_details_summary_content(details_stack, summary_content_line)
         next
@@ -720,7 +803,12 @@ module CloseoutEvidenceReplay
       # preserving that discard is intentionally fail-closed: later apparent
       # evidence is not rendered authority. Blockquotes are excluded too because
       # a canonical disclosure must be top-level published content.
-      raw_html_containers = advance_raw_html_containers(raw_html_containers, raw_containment_tags(structural_tags, line), line)
+      raw_tags = raw_containment_tags(structural_tags, line)
+      if active_raw_text_tag
+        raw_tags.reject! { |type, tag, *_| type == :close && tag == active_raw_text_tag }
+        raw_tags.concat(raw_text_tags.select { |type, tag, *_| type == :close && tag == active_raw_text_tag })
+      end
+      raw_html_containers = advance_raw_html_containers(raw_html_containers, raw_tags, line)
       if raw_html_containers.any?
         next
       end

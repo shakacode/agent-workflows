@@ -777,15 +777,21 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       assert_equal "UNKNOWN", run_replay(commented, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), tag
     end
 
-    head_sha = "1" * 40
-    attribute = <<~MARKDOWN
-      <pre>
-      <span title="</pre>">x</span>
+    [
+      "<span title=\"</pre>\">x</span>",
+      "<span title=\"\n</pre>\n\">x</span>",
+      "<span title=</pre>>x</span>"
+    ].each do |attribute|
+      head_sha = "1" * 40
+      body = <<~MARKDOWN
+        <pre>
+        #{attribute}
 
-      #{visible_qa_details(head_sha:, scope: 'raw-text attribute closer')}
-    MARKDOWN
+        #{visible_qa_details(head_sha:, scope: 'raw-text attribute closer')}
+      MARKDOWN
 
-    assert_equal "UNKNOWN", run_replay(attribute, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+      assert_equal "UNKNOWN", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), attribute
+    end
   end
 
   def test_split_real_raw_opener_stays_real_after_an_indented_completion
@@ -900,6 +906,18 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     MARKDOWN
 
     assert_equal "SATISFIED", run_replay(comment_only, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+
+    multiline_comment = <<~MARKDOWN
+      <details>
+      <!-- explanatory comment
+      still comment
+      -->
+      <summary>Agent details</summary>
+      #{visible_qa_details(head_sha:, scope: 'multiline comment before direct details summary')}
+      </details>
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(multiline_comment, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
   end
 
   def test_indented_balanced_raw_tags_do_not_create_permanent_containment
