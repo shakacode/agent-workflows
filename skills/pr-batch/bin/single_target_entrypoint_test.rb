@@ -445,11 +445,13 @@ source_mutation_contract = "Apply code and push only on the primary replacement 
 assert(address_review.include?(source_mutation_contract), "address-review must keep replacement mutations on the primary PR")
 assert(address_review_actions.include?(source_mutation_contract), "address-review actions must route source replies without pushing the source")
 assert(address_review_workflow.include?(source_mutation_contract), "address-review workflow mirror must route source replies without pushing the source")
-source_reply_contract = "authenticated `address-review-source-reply:v1` record in a closed `Address-review\nreply details` disclosure"
-assert(address_review_actions.include?(source_reply_contract), "address-review actions must document visible source replies")
+source_reply_contract = "address-review-source-reply:v1"
+assert(address_review.include?(source_reply_contract), "address-review must mark generated source replies")
+assert(address_review_actions.include?(source_reply_contract), "address-review actions must mark generated source replies")
+assert(address_review_workflow.include?(source_reply_contract), "address-review workflow must mark generated source replies")
 assert(address_review.include?('$comment.user // ""'), "address-review must authenticate source-reply marker exclusions")
 assert(address_review_workflow.include?('$comment.user // ""'), "address-review workflow must authenticate source-reply marker exclusions")
-assert(address_review_actions.include?("address-review-source-reply:v1"), "address-review actions must render the durable source-reply record")
+assert(address_review_actions.include?("🤖 Codex source reply:"), "address-review actions must prepend visible source-reply attribution")
 assert(address_review_templates.include?("A marked comment\nfrom another actor remains a candidate"), "address-review template must preserve forged-marker candidates")
 dual_target_ownership = "Replacement carryover must acquire and preserve ownership for both"
 assert(address_review.include?(dual_target_ownership), "address-review must own both carryover mutation targets")
@@ -492,6 +494,27 @@ assert(address_review_workflow.include?(public_dual_target_claim), "address-revi
 public_claim_per_target = "post or refresh one separate\n  claim comment on each PR before any non-claim mutation"
 assert(address_review.include?(public_claim_per_target), "address-review public fallback must claim both carryover targets")
 assert(address_review_workflow.include?(public_claim_per_target), "address-review workflow public fallback must claim both carryover targets")
+[address_review, address_review_workflow].each do |text|
+  edit_invocations = text.scan(/```bash\n(.*?)```/m).flatten.select do |block|
+    block.include?('github-comment-envelope" edit-issue')
+  end
+  assert(edit_invocations.length == 1, "address-review must define one fallback claim edit invocation")
+  invocation = edit_invocations.first
+  assert(invocation.match?(%r{printf .*\|\s+"\$\{PR_BATCH_SKILL_DIR\}/bin/github-comment-envelope" edit-issue}m),
+         "fallback claim edits must pipe the replacement body to the envelope")
+  ['--repo "${REPO}"', '--comment-id "${CLAIM_COMMENT_ID}"', '--runner "${AGENT_COMMENT_RUNNER:?}"',
+   '--host "${AGENT_COMMENT_HOST:?}"', '--task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}"'].each do |argument|
+    assert(invocation.include?(argument), "fallback claim edit invocation must include #{argument}")
+  end
+
+  post_invocations = text.scan(/```bash\n(.*?)```/m).flatten.select do |block|
+    block.include?("CLAIM_COMMENT_ID=") && block.include?('github-comment-envelope" post-issue')
+  end
+  assert(post_invocations.length == 1, "address-review must define one fallback claim post invocation")
+  post_invocation = post_invocations.first
+  assert(post_invocation.include?("jq -er '.id'"),
+         "fallback claim posts must extract the returned issue-comment ID")
+end
 all_claim_cleanup = "At a stable stop, update every acquired private heartbeat or advisory claim"
 assert(address_review.include?(all_claim_cleanup), "address-review must clean up every carryover claim")
 assert(address_review_workflow.include?(all_claim_cleanup), "address-review workflow must clean up every carryover claim")
@@ -530,7 +553,7 @@ assert(address_review_workflow.include?(source_cutoff_contract), "address-review
 source_cutoff_binding = 'SOURCE_REVIEW_CUTOFF_AT="$(printf \'%s\' "${SOURCE_VALID_CHECKPOINTS}" | jq -r'
 assert(address_review.include?(source_cutoff_binding), "address-review must bind source cutoff from validated checkpoints")
 assert(address_review_workflow.include?(source_cutoff_binding), "address-review workflow mirror must bind source cutoff from validated checkpoints")
-source_status_exclusion = "Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid visible `address-review-checkpoint:v1` summary and `address-review-source-state:v1` block, may advance this cutoff; a visible `kind: status` checkpoint never advances it. Historical HTML forms are read-compatible only."
+source_status_exclusion = "Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid `address-review-source-state:v1` block, whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it."
 assert(address_review.include?(source_status_exclusion), "address-review must reject source status markers as cutoffs")
 assert(address_review_actions.include?(source_status_exclusion), "address-review actions must reject source status markers as cutoffs")
 assert(address_review_workflow.include?(source_status_exclusion), "address-review workflow mirror must reject source status markers as cutoffs")
@@ -551,11 +574,22 @@ assert(address_review.include?("SOURCE_HAS_CHECKPOINT"), "address-review must pr
 assert(address_review_workflow.include?("SOURCE_HAS_CHECKPOINT"), "address-review workflow mirror must probe prior source checkpoint state before the wait")
 assert(address_review.scan(/def valid_body(?:\(|:)/).length >= 2, "address-review must schema-validate both source wait and cutoff checkpoints")
 assert(address_review_workflow.scan(/def valid_body(?:\(|:)/).length >= 2, "address-review workflow mirror must schema-validate both source wait and cutoff checkpoints")
-summary_terminal_guard = '(($kind == "summary") and all($rows[]; terminal_row))'
-assert(address_review.include?(summary_terminal_guard), "address-review summaries must require terminal-only source rows")
-assert(address_review_workflow.include?(summary_terminal_guard), "address-review workflow summaries must require terminal-only source rows")
-assert(address_review.include?('select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase))'), "source wait must authenticate the checkpoint author")
-assert(address_review_workflow.include?('select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase))'), "workflow source wait must authenticate the checkpoint author")
+summary_terminal_guard = '(($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))'
+assert(address_review.scan(summary_terminal_guard).length >= 2, "address-review summaries must require terminal-only source rows")
+assert(address_review_workflow.scan(summary_terminal_guard).length >= 2, "address-review workflow summaries must require terminal-only source rows")
+normalized_source_actor = 'select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase))'
+assert(address_review.include?(normalized_source_actor), "source wait must authenticate the normalized checkpoint author")
+assert(address_review_workflow.include?(normalized_source_actor),
+       "workflow source wait must authenticate the normalized checkpoint author")
+[address_review, address_review_workflow].each do |text|
+  source_checkpoint_probe = text[%r{if SOURCE_CHECKPOINT_JSON=.*?2>/dev/null\)"; then}m]
+  assert(source_checkpoint_probe, "source wait must include the normalized checkpoint probe")
+  ['--trust-config "${TRUST_CONFIG_PATH}"', '--trust-config-source "${TRUST_CONFIG_SOURCE}"',
+   '--trust-config-scope "${TRUST_CONFIG_SCOPE}"', '--expected-trust-digest "${TRUST_CONFIG_DIGEST}"'].each do |argument|
+    assert(source_checkpoint_probe.include?(argument),
+           "source wait checkpoint probe must include #{argument}")
+  end
+end
 assert(address_review.include?("for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do"), "address-review must implement the dual-PR review wait")
 assert(address_review_workflow.include?("for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do"), "address-review workflow mirror must implement the dual-PR review wait")
 specific_source_rejection = "A specific review/comment target remains immediate; reject its combination with `SOURCE_PR_NUMBER` and require a full replacement-PR invocation instead of starting broad source carryover."
@@ -572,8 +606,14 @@ assert(address_review_templates.include?('SOURCE_CUTOFF_SAFE="${SOURCE_CUTOFF_SA
 assert(address_review_templates.include?("SOURCE_OUTCOMES"), "address-review templates must render explicit source outcomes")
 assert(address_review_templates.include?("REPLACEMENT_PR_URL"), "address-review templates must render the replacement link")
 assert(address_review_templates.include?('[ -n "${source_summary_body_file:-}" ] && rm -f "${source_summary_body_file}"'), "address-review templates must clean the source checkpoint file")
-source_template_post = 'gh api repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments -X POST -F body=@"${source_summary_body_file}"'
-assert(address_review_templates.include?(source_template_post), "address-review templates must post the source checkpoint before cleanup")
+source_template_post = [
+  '"${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \\',
+  '    --repo "${REPO}" --number "${SOURCE_PR_NUMBER}" \\',
+  '    --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \\',
+  '    --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" < "${source_summary_body_file}"'
+].join("\n")
+assert(address_review_templates.scan(source_template_post).length == 1,
+       "address-review templates must post the source checkpoint exactly once before cleanup")
 assert(!address_review_actions.include?(source_template_post), "address-review actions must not duplicate the template source post")
 assert(!address_review_workflow.include?(source_template_post), "address-review workflow mirror must not duplicate the template source post")
 source_post_ownership = "The Step 10 template constructs and posts the primary checkpoint and, when source carryover is active, the source checkpoint exactly once before its cleanup trap runs."
@@ -608,7 +648,7 @@ assert(address_review_templates.include?(source_state_failure), "address-review 
 assert(address_review_templates.include?("SOURCE_STATE_ROWS"), "address-review templates must accept source state rows")
 assert(address_review_templates.include?("SOURCE_STATE_EXPECTED_COUNT"), "address-review templates must verify source state completeness")
 assert(address_review_templates.include?("SOURCE_STATE_HAS_PENDING"), "address-review templates must derive the source cutoff guard from pending state")
-assert(address_review_templates.include?("printf '```text\\naddress-review-source-state:v1\\n'"), "address-review templates must render visible v1 source state")
+assert(address_review_templates.include?("printf '<!-- address-review-source-state:v1\\n'"), "address-review templates must render the v1 source-state marker")
 assert(address_review_templates.include?("source-state rows are malformed or duplicate"), "address-review templates must validate source state rows")
 assert(address_review_templates.include?("/^$/ { next }"), "source state validation must tolerate blank records")
 assert(address_review_templates.include?("$4 !~ /^[1-9][0-9]*$/"), "source state producer must reject leading-zero item IDs like consumers")
@@ -627,10 +667,10 @@ assert(
 )
 skill_walkthrough_derivation = extract_source_walkthrough_derivation(address_review)
 workflow_walkthrough_derivation = extract_source_walkthrough_derivation(address_review_workflow)
-assert(skill_walkthrough_derivation.include?("visible_v2_marker"),
-       "address-review source walkthrough discovery must accept visible walkthrough records")
-assert(workflow_walkthrough_derivation.include?("legacy_v1_marker"),
-       "aggregate address-review workflow remains a legacy-reader compatibility route")
+assert(
+  skill_walkthrough_derivation.lines.map(&:strip) == workflow_walkthrough_derivation.lines.map(&:strip),
+  "address-review source walkthrough derivations must stay mirrored"
+)
 skill_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review)
 workflow_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review_workflow)
 assert(
@@ -732,28 +772,6 @@ invalid_duplicate_body = <<~BODY.chomp
   item\t160\tinline-comment\t103\tPRRT_two\t2026-07-15T00:03:00Z\thandled
   -->
 BODY
-invalid_duplicate_visible_body = <<~BODY.chomp
-  🤖 Codex original review follow-up is complete. The next routine scan can start after this comment.
-
-  <details>
-  <summary>Address-review checkpoint</summary>
-
-  ```text
-  address-review-checkpoint:v1
-  kind: summary
-  ```
-
-  ```text
-  address-review-source-state:v1
-  item	160	inline-comment	101	PRRT_kwD==/+	2026-07-15T00:00:00Z	handled
-  ```
-
-  ```text
-  address-review-source-state:v1
-  item	160	inline-comment	101	PRRT_kwD==/+	2026-07-15T00:00:00Z	handled
-  ```
-  </details>
-BODY
 checkpoint_fixture = {
   "inline_comments" => [
     {
@@ -784,7 +802,6 @@ checkpoint_fixture = {
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:02:00Z", "body" => "<!-- address-review-summary -->" },
     { "user" => "other-reviewer", "created_at" => "2026-07-15T00:03:00Z", "body" => valid_summary_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:04:00Z", "body" => invalid_duplicate_body },
-    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:04:30Z", "body" => invalid_duplicate_visible_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:05:00Z", "body" => invalid_pending_summary_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:06:00Z", "body" => invalid_ask_user_summary_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:06:30Z", "body" => incomplete_summary_body },
@@ -799,8 +816,6 @@ stdout, stderr, status = Open3.capture3(
 assert(status.success?, "source checkpoint jq validator must execute: #{stderr}")
 valid_checkpoints = JSON.parse(stdout)
 assert(valid_checkpoints.length == 3, "source checkpoint validator must reject invalid state and non-terminal summaries")
-assert(!valid_checkpoints.any? { |checkpoint| checkpoint["body"] == invalid_duplicate_visible_body },
-       "source checkpoint validator must reject duplicate visible source-state blocks")
 assert(valid_checkpoints[0]["body"] == valid_generated_summary_body, "source checkpoint validator must accept template-generated checkpoints with a trailing state block")
 assert(valid_checkpoints[1]["body"] == valid_status_body, "source checkpoint validator must return newest valid checkpoint first")
 assert(valid_checkpoints[2]["body"] == valid_summary_body, "source checkpoint validator must accept padded Base64 node IDs")
@@ -952,11 +967,11 @@ assert(valid_checkpoints.empty?, "source checkpoint validator must reject a row 
 wait_checkpoint_comments = checkpoint_fixture.fetch("issue_comments").reject do |comment|
   [incomplete_summary_body, invalid_missing_forged_marker_body].include?(comment["body"])
 end
-wait_checkpoint_fixture = [
-  wait_checkpoint_comments.map do |comment|
-    comment.merge("user" => { "login" => comment.fetch("user") })
+wait_checkpoint_fixture = {
+  "issue_comments" => wait_checkpoint_comments.map do |comment|
+    comment.merge("payload_body" => comment.fetch("body"))
   end
-]
+}
 stdout, stderr, status = Open3.capture3(
   "jq", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_wait_checkpoint_filter,
   stdin_data: JSON.generate(wait_checkpoint_fixture)

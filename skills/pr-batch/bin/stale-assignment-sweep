@@ -16,6 +16,7 @@ require "tempfile"
 require "time"
 require "timeout"
 require "yaml"
+require_relative "../lib/github_comment_envelope"
 
 module StaleAssignmentSweep
   # Historical hidden markers remain readable. New sweep comments use visible
@@ -70,6 +71,7 @@ module StaleAssignmentSweep
       options = parse_options(argv)
       return print_help(options.fetch(:parser)) if options[:help]
 
+      validate_comment_attribution! if options[:apply]
       @now = resolve_now(options)
       load_trust_config(options)
       options[:agent_claimed_label] = resolve_agent_claimed_label(options)
@@ -180,8 +182,16 @@ module StaleAssignmentSweep
         live item is re-fetched and re-classified, so a reply, an added exempt/agent-claim
         label, or a reassignment between scan and mutation aborts it. Environment:
         STALE_ASSIGNMENT_SWEEP_NOW, STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS.
+        Mutating --apply runs also require AGENT_COMMENT_RUNNER (codex, claude, or cursor),
+        AGENT_COMMENT_HOST, and AGENT_COMMENT_TASK_OR_RUN so every agent-authored
+        comment is attributable. Invalid or missing attribution fails before any
+        GitHub call.
       HELP
       0
+    end
+
+    def validate_comment_attribution!
+      render_comment("")
     end
 
     def resolve_now(options)
@@ -735,10 +745,11 @@ module StaleAssignmentSweep
         return
       end
 
-      # Remove first, then post the audit comment only if removal succeeded, so a
-      # failed DELETE never leaves a misleading "released" comment behind.
+      # Validate attribution before the destructive change. Post only after
+      # removal succeeds so a failed DELETE never leaves a misleading comment.
+      comment = render_comment(release_body(recheck))
       Array(recheck[:human]).each { |login| remove_assignee(repo, number, login) }
-      post_comment(repo, number, release_body(recheck))
+      post_enveloped_comment(repo, number, comment)
       puts "APPLIED release ##{number} (removed #{mentions(recheck)})"
     end
 
@@ -767,7 +778,22 @@ module StaleAssignmentSweep
     end
 
     def post_comment(repo, number, body)
-      run_gh("api", "repos/#{repo}/issues/#{number}/comments", "-f", "body=#{body}")
+      post_enveloped_comment(repo, number, render_comment(body))
+    end
+
+    def render_comment(body)
+      GitHubCommentEnvelope.render(
+        body:,
+        runner: ENV.fetch("AGENT_COMMENT_RUNNER"),
+        host: ENV.fetch("AGENT_COMMENT_HOST"),
+        task_or_run: ENV.fetch("AGENT_COMMENT_TASK_OR_RUN")
+      )
+    rescue KeyError, ArgumentError => e
+      raise Error, "cannot attribute agent-authored comment: #{e.message}"
+    end
+
+    def post_enveloped_comment(repo, number, enveloped)
+      run_gh("api", "repos/#{repo}/issues/#{number}/comments", "-f", "body=#{enveloped}")
     end
 
     def remove_assignee(repo, number, login)

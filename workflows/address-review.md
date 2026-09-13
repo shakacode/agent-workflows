@@ -864,6 +864,24 @@ before mutating GitHub or the branch.
   ```
   </details>
   ````
+  Post a new fallback claim through `github-comment-envelope post-issue` and
+  retain its returned comment ID. Route every refresh and terminal update through
+  `github-comment-envelope edit-issue`, piping the complete visible claim body
+  with `--repo`, `--comment-id`, `--runner`, `--host`, and `--task-or-run`.
+  The runner/host/task values come from authenticated runtime context.
+  ```bash
+  CLAIM_COMMENT_ID="$(printf '%s' "${CLAIM_BODY}" |
+    "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
+      --repo "${REPO}" --number "${CLAIM_TARGET}" \
+      --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+      --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" |
+    jq -er '.id')"
+  printf '%s' "${CLAIM_BODY}" |
+    "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" edit-issue \
+      --repo "${REPO}" --comment-id "${CLAIM_COMMENT_ID}" \
+      --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+      --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}"
+  ```
   Use any stable session, thread, or machine identifier available; if none is
   available, use `thread: unavailable`. Set a short bounded advisory lease,
   usually 2-4 hours for an active review run, and refresh the same comment if

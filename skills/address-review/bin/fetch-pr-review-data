@@ -24,6 +24,7 @@ require "set"
 
 require_relative "../../pr-batch/lib/git_probe_env"
 require_relative "../../pr-batch/lib/github_actor_trust"
+require_relative "../../pr-batch/lib/github_comment_envelope"
 
 # Pure data shaping (no I/O) plus the gh-backed runner. The pure methods take the
 # raw `gh --paginate --slurp` output strings so they can be unit-tested directly.
@@ -196,6 +197,7 @@ module FetchPrReviewData
         "id" => review["id"],
         "type" => "review_summary",
         "body" => review["body"],
+        "payload_body" => GitHubCommentEnvelope.payload(review["body"].to_s),
         "state" => review["state"],
         "user" => review.dig("user", "login"),
         "created_at" => review["submitted_at"],
@@ -228,6 +230,7 @@ module FetchPrReviewData
         "type" => "review",
         "path" => comment["path"],
         "body" => comment["body"],
+        "payload_body" => GitHubCommentEnvelope.payload(comment["body"].to_s),
         "line" => comment["line"],
         "start_line" => comment["start_line"],
         "user" => comment.dig("user", "login"),
@@ -278,6 +281,7 @@ module FetchPrReviewData
         "node_id" => comment["node_id"],
         "type" => "issue",
         "body" => comment["body"],
+        "payload_body" => GitHubCommentEnvelope.payload(comment["body"].to_s),
         "user" => comment.dig("user", "login"),
         "created_at" => comment["created_at"],
         "html_url" => comment["html_url"]
@@ -292,7 +296,7 @@ module FetchPrReviewData
   # would let an untrusted actor hide real review feedback.
   def compute_cutoff(trusted_issue_comments)
     trusted_issue_comments
-      .select { |comment| summary_checkpoint?(comment["body"]) }
+      .select { |comment| summary_checkpoint?(comment.fetch("payload_body", comment["body"])) }
       .filter_map { |comment| comment["created_at"] }
       .reject(&:empty?)
       .max
@@ -690,12 +694,19 @@ module FetchPrReviewData
       out.scan(%r{^HTTP/\S+\s+(\d{3})}).last&.first
     end
 
-    def fetch(repo, pr_number, trust)
+    def fetch(repo, pr_number, trust, issue_comments_only: false)
+      issue_raw = rest("repos/#{repo}/issues/#{pr_number}/comments")
+      if issue_comments_only
+        return FetchPrReviewData.assemble(
+          repo:, pr_number:, issue_raw:, reviews_raw: "[]", inline_raw: "[]", threads_raw: "[]", trust:
+        )
+      end
+
       owner, name = repo.split("/", 2)
       FetchPrReviewData.assemble(
         repo:,
         pr_number:,
-        issue_raw: rest("repos/#{repo}/issues/#{pr_number}/comments"),
+        issue_raw:,
         reviews_raw: rest("repos/#{repo}/pulls/#{pr_number}/reviews"),
         inline_raw: rest("repos/#{repo}/pulls/#{pr_number}/comments"),
         threads_raw: capture!(
