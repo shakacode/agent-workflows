@@ -1863,8 +1863,10 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill,
-      "docs/pr-batch-skills.md" => @pr_batch_docs
+      "docs/pr-batch-skills.md" => @pr_batch_docs,
+      "docs/seam-design.md" => File.read(File.join(ROOT, "docs/seam-design.md"))
     }.each do |label, text|
+      refute_includes text, "<PROJECT>", "#{label} must use the canonical <PREFIX> placeholder"
       LEGACY_PROJECT_ABBREVIATION_PHRASES.each do |phrase|
         # Case-insensitive: pr-processing.md carried the same clause lowercased mid-sentence.
         refute_includes squish(text).downcase, squish(phrase).downcase,
