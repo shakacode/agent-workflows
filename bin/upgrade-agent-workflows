@@ -464,6 +464,41 @@ backup_target() {
             system("git", "-C", root, "cat-file", "-e", "#{revision}:skills", out: File::NULL, err: File::NULL)
         end
         if git_root
+          recorded_directory = lambda do |path|
+            current = Pathname.new(path)
+            visited = {}
+            loop do
+              resolved = current.cleanpath.to_s
+              break false if current.absolute? || resolved == ".." || resolved.start_with?("../") || visited[resolved]
+
+              visited[resolved] = true
+              entry = IO.popen(
+                ["git", "-C", git_root, "ls-tree", "-z", revision, "--", resolved],
+                err: File::NULL,
+                &:read
+              )
+              break false unless $?.success?
+
+              object, entry_name = entry.delete_suffix("\0").split("\t", 2)
+              break false unless entry_name == resolved
+
+              file_mode, object_type = object.split(" ", 3)
+              break true if object_type == "tree"
+              break false unless file_mode == "120000" && object_type == "blob"
+
+              link_target = IO.popen(
+                ["git", "-C", git_root, "cat-file", "-p", "#{revision}:#{resolved}"],
+                err: File::NULL,
+                &:read
+              )
+              break false unless $?.success?
+
+              link_path = Pathname.new(link_target)
+              break false if link_path.absolute?
+
+              current = Pathname.new(resolved).dirname.join(link_path)
+            end
+          end
           tree = IO.popen(["git", "-C", git_root, "ls-tree", "-z", "#{revision}:skills"], &:read)
           tree.split("\0").each do |record|
             object, name = record.split("\t", 2)
@@ -473,21 +508,7 @@ backup_target() {
             file_mode, object_type = object.split(" ", 3)
             managed_entry = metadata["mode"] == "copy" || object_type == "tree"
             if !managed_entry && file_mode == "120000"
-              link_target = IO.popen(
-                ["git", "-C", git_root, "cat-file", "-p", "#{revision}:skills/#{name}"],
-                err: File::NULL,
-                &:read
-              )
-              link_path = Pathname.new(link_target)
-              resolved = Pathname.new("skills").join(link_path).cleanpath.to_s
-              if $?.success? && !link_path.absolute? && resolved != ".." && !resolved.start_with?("../")
-                target_type = IO.popen(
-                  ["git", "-C", git_root, "cat-file", "-t", "#{revision}:#{resolved}"],
-                  err: File::NULL,
-                  &:read
-                )
-                managed_entry = $?.success? && target_type.strip == "tree"
-              end
+              managed_entry = recorded_directory.call("skills/#{name}")
             end
             managed << "skills/#{name}" if managed_entry
           end

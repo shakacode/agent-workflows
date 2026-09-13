@@ -8271,9 +8271,10 @@ test_failed_symlink_upgrade_restores_recorded_symlinked_skill() {
   target="$tmp/codex-home"
   mkdir -p "$source"
   new_source_repo "$source"
-  ln -s address-review "$source/skills/alias-skill"
-  git -C "$source" add skills/alias-skill
-  git -C "$source" commit --quiet -m "add symlinked skill"
+  ln -s address-review "$source/skills/alias-target"
+  ln -s alias-target "$source/skills/alias-skill"
+  git -C "$source" add skills/alias-skill skills/alias-target
+  git -C "$source" commit --quiet -m "add chained symlinked skill"
   "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
   expected="$(readlink "$target/skills/alias-skill")"
   git -C "$source" rm --quiet skills/alias-skill
@@ -8297,7 +8298,7 @@ PATCH
   [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
   assert_contains "$output" "ROLLBACK_COMPLETE"
   [[ -L "$target/skills/alias-skill" && "$(readlink "$target/skills/alias-skill")" = "$expected" ]] || \
-    fail "rollback did not restore a recorded symlink-to-directory skill"
+    fail "rollback did not restore a recorded chained symlink-to-directory skill"
 }
 
 test_failed_upgrade_ignores_directory_fingerprint_keys() {
