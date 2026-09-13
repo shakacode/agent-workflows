@@ -1054,6 +1054,31 @@ assert(status.success?, "source wait checkpoint jq validator must execute with t
 assert(Integer(stdout, 10) == 1,
        "source wait checkpoint validator must accept the actual source template after envelope unwrapping")
 
+[
+  "handled in the replacement.\n\nThe follow-up also updates the source test.",
+  "handled with `--strict` and <code>inline markup</code>."
+].each_with_index do |response, index|
+  actual_source_reply_payload = "Source reply: #{response}\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v1\n```\n</details>"
+  actual_source_reply_body = GitHubCommentEnvelope.render(
+    body: actual_source_reply_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+  )
+  actual_source_reply_comment = {
+    "id" => 220 + index,
+    "user" => "trusted-reviewer",
+    "created_at" => "2026-07-15T00:07:20Z",
+    "body" => actual_source_reply_body,
+    "payload_body" => GitHubCommentEnvelope.payload(actual_source_reply_body)
+  }
+  stdout, stderr, status = Open3.capture3(
+    "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+    "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
+    stdin_data: JSON.generate(checkpoint_fixture.merge("issue_comments" => checkpoint_fixture.fetch("issue_comments") + [actual_source_reply_comment]))
+  )
+  assert(status.success?, "source checkpoint jq validator must execute with an actual #{index.zero? ? 'multiline' : 'inline-markup'} source reply: #{stderr}")
+  assert(JSON.parse(stdout).any? { |checkpoint| checkpoint["body"] == enveloped_summary_body },
+         "source checkpoint validator must exclude an actual #{index.zero? ? 'multiline' : 'inline-markup'} source reply")
+end
+
 {
   "truncated visible claim" => GitHubCommentEnvelope.render(
     body: visible_claim_payload.sub(%r{\n</details>\z}, ""), runner: "codex", host: "M5", task_or_run: "address-review"

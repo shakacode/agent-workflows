@@ -134,7 +134,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
       def comment_body($comment): $comment.payload_body // $comment.body // "";
       def generated_source_reply($comment):
         ((comment_body($comment) | startswith("<!-- address-review-source-reply -->")) or
-         (comment_body($comment) | test("(?ms)\\A(?:🤖 Codex )?[Ss]ource reply: [^\\r\\n<>]+\\r?\\n\\r?\\n<details>\\r?\\n<summary>Address-review reply details</summary>\\r?\\n\\r?\\n```text\\r?\\naddress-review-source-reply:v1\\r?\\n```\\r?\\n</details>\\r?\\n?\\z"))) and
+         (comment_body($comment) | test("(?ms)\\A(?:🤖 Codex )?[Ss]ource reply: [\\s\\S]*?\\r?\\n\\r?\\n<details>\\r?\\n<summary>Address-review reply details</summary>\\r?\\n\\r?\\n```text\\r?\\naddress-review-source-reply:v1\\r?\\n```\\r?\\n</details>\\r?\\n?\\z"))) and
         ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
       def item_key($kind; $id; $thread_id):
         [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
