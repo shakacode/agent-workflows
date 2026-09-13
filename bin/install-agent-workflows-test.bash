@@ -8181,13 +8181,15 @@ PATCH
 }
 
 test_failed_companion_upgrade_preserves_replaced_consumer_lib_symlink() {
-  local tmp source target first_lib second_lib output status
+  local tmp source target first_lib second_lib first_scanner output status
   tmp="$(mktemp -d)"
   source="$tmp/source"
   target="$tmp/codex-home"
   first_lib="$tmp/first-lib"
   second_lib="$tmp/second-lib"
-  mkdir -p "$source" "$first_lib" "$second_lib"
+  first_scanner="$first_lib/agent-workflows/secure_github_actions_scanner.rb"
+  mkdir -p "$source" "$(dirname "$first_scanner")" "$second_lib"
+  printf 'consumer scanner\n' > "$first_scanner"
   new_source_repo "$source"
   write_native_scw_state codex "$target"
   "$source/bin/install-agent-workflows" --host codex --target "$target" \
@@ -8214,6 +8216,8 @@ PATCH
   assert_contains "$output" "ROLLBACK_COMPLETE"
   [[ -L "$target/lib" && "$(readlink "$target/lib")" = "$second_lib" ]] || \
     fail "rollback restored a rejected consumer-owned lib symlink"
+  [[ "$(cat "$first_scanner")" = "consumer scanner" ]] || \
+    fail "rollback changed a scanner through the consumer-owned lib symlink"
 }
 
 test_failed_upgrade_ignores_recorded_hidden_workflows() {

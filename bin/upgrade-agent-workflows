@@ -391,7 +391,13 @@ backup_target() {
       rescue StandardError
         {}
       end
-      if metadata["delivery_mode"] == "plugin-companion" || delivery_mode == "plugin-companion"
+      lib_root = File.join(target, "lib")
+      companion_root = File.join(lib_root, "agent-workflows")
+      companion_root_active = [lib_root, companion_root].all? do |root|
+        !File.symlink?(root) && (!File.exist?(root) || File.directory?(root))
+      end
+      if companion_root_active &&
+         (metadata["delivery_mode"] == "plugin-companion" || delivery_mode == "plugin-companion")
         managed << "lib/agent-workflows/secure_github_actions_scanner.rb"
       end
       revision = metadata["source_revision"]
