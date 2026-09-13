@@ -222,6 +222,24 @@ class FetchPrReviewDataTest < Minitest::Test
     assert_equal body, normalized.fetch("body")
   end
 
+  def test_cutoff_rejects_a_legacy_html_envelope_with_a_suffixed_denial
+    body = <<~BODY
+      🤖 Codex No review checkpoint was recorded.
+      <!-- agent-comment-attribution:v1
+      runner: codex
+      host: M5
+      task_or_run: task-7
+      -->
+
+      <!-- address-review-summary -->
+    BODY
+    comments = [{ "body" => body, "user" => { "login" => "bot" }, "created_at" => "2026-01-05T00:00:00Z" }]
+    normalized = FetchPrReviewData.build_issue_comments(comments, trust).first.first
+
+    assert_empty FetchPrReviewData.compute_cutoff([normalized])
+    assert_equal body, normalized.fetch("payload_body")
+  end
+
   def test_drops_empty_review_summaries
     assert_equal([10], assembled["review_summaries"].map { |r| r["id"] })
   end

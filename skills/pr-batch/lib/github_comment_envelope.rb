@@ -116,6 +116,7 @@ module GitHubCommentEnvelope
     host = lines[3].delete_prefix("host: ")
     task_or_run = lines[4].delete_prefix("task_or_run: ")
     return unless valid_fields?(visible, runner, host, task_or_run)
+    return unless visible == "🤖 #{RUNNER_DISPLAY.fetch(runner.downcase)}"
 
     payload_offset = body.lines.first(6).join.length
     payload_offset += 2 if body[payload_offset, 2] == "\r\n"

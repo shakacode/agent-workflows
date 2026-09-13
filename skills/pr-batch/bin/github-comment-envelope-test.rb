@@ -201,6 +201,22 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_equal "<!-- address-review-summary -->\n", GitHubCommentEnvelope.payload(body)
   end
 
+  def test_payload_refuses_a_legacy_html_envelope_with_an_outcome_suffix
+    body = <<~BODY
+      🤖 Codex No review checkpoint was recorded.
+      <!-- agent-comment-attribution:v1
+      runner: codex
+      host: M5
+      task_or_run: task-7
+      -->
+
+      <!-- address-review-summary -->
+    BODY
+
+    assert_nil GitHubCommentEnvelope.parse(body)
+    assert_equal body, GitHubCommentEnvelope.payload(body)
+  end
+
   def test_payload_unwraps_the_previous_visible_envelope_shape
     body = <<~BODY
       🤖 Codex
