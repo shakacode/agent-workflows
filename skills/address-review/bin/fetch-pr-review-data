@@ -314,7 +314,7 @@ module FetchPrReviewData
 
   def visible_checkpoint_kind(body)
     match = body.to_s.match(
-      %r{\A🤖 Codex [^\r\n]+\r?\n\r?\n.*?<details>\r?\n<summary>#{Regexp.escape(VISIBLE_CHECKPOINT_SUMMARY)}</summary>\r?\n.*?^```text\r?\naddress-review-checkpoint:v1\r?\nkind: (?<kind>summary|status)\r?\n```.*?</details>\r?\n?\z}m
+      %r{\A(?:(?:🤖 Codex )?address-review|Address-review) [^\r\n]+\r?\n\r?\n(?:(?![ \t]{0,3}(?:`{3,}|~{3,})|<details>)[^\r\n]*(?:\r?\n|\z))*?<details>\r?\n<summary>#{Regexp.escape(VISIBLE_CHECKPOINT_SUMMARY)}</summary>\r?\n\r?\n(?:(?![ \t]{0,3}(?:`{3,}|~{3,}))[\s\S])*?^```text\r?\naddress-review-checkpoint:v1\r?\nkind: (?<kind>summary|status)\r?\n```[\s\S]*?</details>\r?\n?\z}m
     )
     match && match[:kind]
   end

@@ -118,10 +118,13 @@ Source-aware reply routing uses `${ITEM_SOURCE_PR}` as defined in Step 8. If
 and authenticated (`gh auth status`).
 
 Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
-issue comment or review summary must start with the authenticated
-`<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked
-reply from source triage and snapshot completeness; another actor cannot use
-the marker to suppress a source candidate.
+issue comment or review summary must state its outcome visibly and place an
+`address-review-source-reply:v1` record in a closed `Address-review reply
+details` disclosure. Post the payload through `github-comment-envelope`, so
+the public comment begins with authenticated attribution. Exclude only a
+same-actor recorded reply from source triage and snapshot completeness; another
+actor cannot use the record to suppress a source candidate. Historical
+HTML-marked replies remain readable only.
 
 When `SOURCE_PR_NUMBER` is present, re-fetch primary and source metadata from
 `${GH_HOST}` and `${REPO}` and rerun the same live ownership/write preflight

@@ -115,7 +115,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         ($fields[6] | valid_outcome);
       . as $inventory |
       def visible_checkpoint_kind:
-        if test("(?ms)\\A(?:🤖 Codex )?[^\\r\\n]+\\r?\\n\\r?\\n.*?<details>\\r?\\n<summary>Address-review checkpoint</summary>.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n```")
+        if test("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<details>)[^\\r\\n]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n```")
         then capture("(?ms)^.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```").kind else null end;
       def checkpoint_kind:
         if startswith("<!-- address-review-summary -->") then "summary"
@@ -126,13 +126,13 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)
         else ([scan("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?$")] | length) end;
       def visible_claim:
-        test("(?ms)\\A(?:🤖 Codex )?claim .*?<details>\\r?\\n<summary>Claim details</summary>.*?^```text\\r?\\ncodex-claim v1\\r?\\n");
+        test("(?ms)\\A(?:🤖 Codex )?[Cc]laim is active\\. Do not start competing work\\.\\r?\\n\\r?\\n<details>\\r?\\n<summary>Claim details</summary>\\r?\\n\\r?\\n```text\\r?\\ncodex-claim v1\\r?\\n");
       def marker_body:
         checkpoint_kind != null or startswith("<!-- codex-claim v1") or visible_claim;
       def comment_body($comment): $comment.payload_body // $comment.body // "";
       def generated_source_reply($comment):
         ((comment_body($comment) | startswith("<!-- address-review-source-reply -->")) or
-         (comment_body($comment) | test("(?ms)\\A(?:🤖 Codex )?source reply: .*?<details>\\r?\\n<summary>Address-review reply details</summary>.*?^```text\\r?\\naddress-review-source-reply:v1\\r?\\n"))) and
+         (comment_body($comment) | test("(?ms)\\A(?:🤖 Codex )?[Ss]ource reply: .*?<details>\\r?\\n<summary>Address-review reply details</summary>.*?^```text\\r?\\naddress-review-source-reply:v1\\r?\\n"))) and
         ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
       def item_key($kind; $id; $thread_id):
         [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
@@ -218,7 +218,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
       sort_by(.created_at) | reverse
     ' source-review-data.json)"; then
       SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].payload_body // .[0].body // ""')"
-      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.payload_body // .body // "") | startswith("<!-- address-review-summary -->") or test("(?ms)\\A(?:🤖 Codex )?.*?address-review-checkpoint:v1\\r?\\nkind: summary\\r?\\n"))][0].created_at // ""')"
+      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.payload_body // .body // "") | checkpoint_kind == "summary")][0].created_at // ""')"
     else
       echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
     fi
@@ -333,13 +333,16 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
   informational rather than triage items; after a verified current replacement
   exists, resolve their threads without posting address-review disposition
   replies.
-- Never triage prior workflow summary/status/claim comments. Skip any issue comment
-  whose body starts with `<!-- address-review-summary -->` or
-  `<!-- address-review-status -->` or `<!-- codex-claim v1`; only the summary
-  marker is a cutoff checkpoint.
-- On a source PR, also skip `<!-- address-review-source-reply -->` comments
-  only when their author matches `SOURCE_REVIEW_ACTOR`; a different author
-  using that marker remains a source candidate.
+- Never triage prior workflow summary/status/claim comments. Use each comment's
+  normalized `payload_body // body // ""`, then skip a recognized visible
+  `Address-review checkpoint` or `Claim details` record as well as historical
+  first-line `<!-- address-review-summary -->`, `<!-- address-review-status -->`,
+  or `<!-- codex-claim v1` forms. Only a recognized summary checkpoint is a
+  cutoff checkpoint; historical HTML forms are read-compatible only.
+- On a source PR, also skip a visible `address-review-source-reply:v1` record
+  only when its author matches `SOURCE_REVIEW_ACTOR`; a different author using
+  that record remains a source candidate. Historical HTML-marked replies remain
+  readable only.
 - Skip comments belonging to already-resolved threads (use the `is_resolved` field already joined onto each `inline_comments` entry, or match via `thread_id` against `review_threads`)
 - Do not create standalone triage items from comments where `in_reply_to_id` is set unless `root_excluded` is true or the explanatory root belongs to the verified current walkthrough. In either case, triage the first retained trusted reply as the standalone item and use later reply text as context when it updates or narrows the unresolved concern
 - When `REVIEW_CUTOFF_AT` is set, evaluate unresolved review threads by their latest activity timestamp, not only by the top-level comment timestamp

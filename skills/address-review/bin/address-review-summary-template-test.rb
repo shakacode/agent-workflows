@@ -5,6 +5,12 @@
 # Run with: ruby .agents/skills/address-review/bin/address-review-summary-template-test.rb
 
 require "minitest/autorun"
+require "open3"
+require "shellwords"
+require "tmpdir"
+require_relative "../../pr-batch/lib/github_comment_envelope"
+
+load File.expand_path("fetch-pr-review-data", __dir__)
 
 class AddressReviewSummaryTemplateTest < Minitest::Test
   TEMPLATE_PATH = File.expand_path("../references/templates.md", __dir__)
@@ -62,6 +68,38 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     refute_includes primary, "<details open>"
     refute_includes primary, "<!--"
     assert_includes template, '"${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue'
+  end
+
+  def test_primary_writer_envelope_and_cutoff_round_trip
+    primary = section_after(
+      'POSTING_CLIENT="${POSTING_CLIENT:-UNKNOWN}"',
+      '} > "${summary_body_file}"'
+    )
+
+    Dir.mktmpdir do |dir|
+      output = File.join(dir, "summary.md")
+      environment = {
+        "CUTOFF_SAFE" => "1",
+        "SCAN_SCOPE" => "template test",
+        "POSTING_CLIENT" => "Codex",
+        "POSTING_MODEL_FAMILY" => "Astra",
+        "TRACKING_OUTCOME" => "",
+        "OPTIONAL_OUTCOMES" => ""
+      }
+      _stdout, stderr, status = Open3.capture3(
+        environment, "sh", "-c", "summary_body_file=#{Shellwords.escape(output)}\n#{primary}"
+      )
+      assert status.success?, stderr
+
+      payload = File.read(output)
+      body = GitHubCommentEnvelope.render(body: payload, runner: "codex", host: "test-host", task_or_run: "template")
+      normalized_payload = GitHubCommentEnvelope.payload(body)
+
+      assert_equal payload, normalized_payload
+      assert_equal "2026-09-13T00:00:00Z", FetchPrReviewData.compute_cutoff([
+        { "body" => body, "payload_body" => normalized_payload, "created_at" => "2026-09-13T00:00:00Z" }
+      ])
+    end
   end
 
   def test_posting_identity_uses_unknown_when_runtime_metadata_is_unavailable

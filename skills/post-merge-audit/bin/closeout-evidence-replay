@@ -310,11 +310,16 @@ module CloseoutEvidenceReplay
   # a published receipt. Strip those containers before recognizing the visible
   # disclosure, while leaving legacy HTML parsing above read-compatible.
   def visible_markdown(text)
-    text = text.to_s.gsub(/<!--.*?-->/m, "")
+    # An unclosed HTML comment hides the remaining rendered text too. Treat it
+    # exactly like a closed comment rather than letting invisible evidence
+    # become authoritative at EOF.
+    text = text.to_s.gsub(/<!--.*?(?:-->|\z)/m, "")
     fence = nil
     record_fence = false
-    details_depth = 0
-    text.each_line.filter_map do |line|
+    details_stack = []
+    evidence_summaries = ["QA evidence", "Hosted QA evidence", "Priority finding dispositions"]
+    rendered = []
+    text.each_line do |line|
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
       if fence
         if opener && opener[:delimiter][0] == fence[0] && opener[:delimiter].length >= fence.length
@@ -324,26 +329,33 @@ module CloseoutEvidenceReplay
       end
       if record_fence
         record_fence = false if opener && opener[:delimiter] == "```" && opener[:info].strip.empty?
-        next line
+        rendered << line
+        next
       end
       if opener
         # The record itself is the exact ```text fence inside a visible
         # disclosure. Every other Markdown fence is an outer example, even
         # when nested in a descriptive details block.
-        if details_depth.positive? && opener[:delimiter] == "```" && opener[:info].strip == "text"
+        if evidence_summaries.include?(details_stack.last) &&
+           opener[:delimiter] == "```" && opener[:info].strip == "text"
           record_fence = true
+          rendered << line
         else
           fence = opener[:delimiter]
-          next
         end
+        next
       end
       # A blockquote nested in an otherwise canonical disclosure is still an
       # example, not an authoritative published record.
       next if line.match?(/\A[ \t]{0,3}>/)
-      details_depth += 1 if line.match?(%r{<details(?:\s|>)})
-      details_depth -= 1 if line.match?(%r{</details>}) && details_depth.positive?
-      line
-    end.join
+      details_stack << nil if line.match?(%r{<details(?:\s|>)})
+      if (summary = line.match(%r{<summary>(?<text>[^<]+)</summary>})) && !details_stack.empty?
+        details_stack[-1] = summary[:text].strip
+      end
+      details_stack.pop if line.match?(%r{</details>}) && !details_stack.empty?
+      rendered << line
+    end
+    rendered.join
   end
 
   def replay_qa_markers(markers, expected_head_sha: nil, version: 1, github_host: nil)

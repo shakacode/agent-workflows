@@ -452,7 +452,8 @@ assert(address_review_actions.include?(source_reply_contract), "address-review a
 assert(address_review_workflow.include?(source_reply_contract), "address-review workflow must mark generated source replies")
 assert(address_review.include?('$comment.user // ""'), "address-review must authenticate source-reply marker exclusions")
 assert(address_review_workflow.include?('$comment.user // ""'), "address-review workflow must authenticate source-reply marker exclusions")
-assert(address_review_actions.include?("🤖 Codex source reply:"), "address-review actions must prepend visible source-reply attribution")
+assert(address_review_actions.include?("Source reply: %s"), "address-review actions must put the source-reply outcome in the visible payload")
+assert(address_review_actions.include?("github-comment-envelope"), "address-review actions must delegate source-reply attribution to the shared envelope")
 assert(address_review_templates.include?("A marked comment\nfrom another actor remains a candidate"), "address-review template must preserve forged-marker candidates")
 dual_target_ownership = "Replacement carryover must acquire and preserve ownership for both"
 assert(address_review.include?(dual_target_ownership), "address-review must own both carryover mutation targets")
@@ -627,7 +628,7 @@ scoped_primary_post = "When replacement carryover is inactive, pipe it through\n
 assert(address_review_workflow.include?(scoped_primary_post), "address-review workflow must route primary checkpoints through the envelope")
 template_primary_ownership = "When replacement carryover is active, do not post it outside the template; delegate\n     both checkpoint posts to the Step 10 template below."
 assert(address_review_workflow.include?(template_primary_ownership), "address-review workflow must give the template sole checkpoint-post ownership during carryover")
-source_state_format = "Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` under `<!-- address-review-source-state:v1`; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`."
+source_state_format = "Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` in the visible fenced `address-review-source-state:v1` record inside the closed `Address-review checkpoint` disclosure; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`. Historical HTML records are read-compatible only."
 assert(address_review.include?(source_state_format), "address-review must define deterministic source restart state")
 assert(address_review_actions.include?(source_state_format), "address-review actions must preserve deterministic source restart state")
 assert(address_review_workflow.include?(source_state_format), "address-review workflow mirror must define deterministic source restart state")
@@ -760,6 +761,26 @@ BODY
 enveloped_source_reply_body = GitHubCommentEnvelope.render(
   body: visible_enveloped_source_reply_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
+visible_claim_payload = <<~BODY.chomp
+  Claim is active. Do not start competing work.
+
+  <details>
+  <summary>Claim details</summary>
+
+  ```text
+  codex-claim v1
+  batch: batch-160
+  machine: M5
+  thread: address-review
+  branch: codex/address-review
+  status: in_progress
+  expires_at: 2026-07-15T01:00:00Z
+  ```
+  </details>
+BODY
+enveloped_claim_body = GitHubCommentEnvelope.render(
+  body: visible_claim_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+)
 valid_cumulative_history_summary_body = <<~BODY.chomp
   <!-- address-review-summary -->
   ## Address-review replacement carryover
@@ -836,6 +857,7 @@ checkpoint_fixture = {
     { "id" => 103, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:30Z", "body" => enveloped_source_reply_body, "payload_body" => GitHubCommentEnvelope.payload(enveloped_source_reply_body) },
     { "id" => 104, "user" => "other-reviewer", "created_at" => "2026-07-15T00:00:45Z", "body" => "<!-- address-review-source-reply -->\nThis is still an actionable source comment." },
     { "id" => 102, "user" => "reviewer", "created_at" => "2026-07-15T00:01:00Z", "body" => "Please verify the source behavior." },
+    { "id" => 150, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:01:05Z", "body" => enveloped_claim_body, "payload_body" => GitHubCommentEnvelope.payload(enveloped_claim_body) },
     { "id" => 202, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:01:10Z", "body" => valid_status_body },
     { "id" => 203, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:01:20Z", "body" => invalid_missing_forged_marker_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:02:00Z", "body" => "<!-- address-review-summary -->" },
@@ -1010,7 +1032,7 @@ wait_checkpoint_comments = checkpoint_fixture.fetch("issue_comments").reject do 
 end
 wait_checkpoint_fixture = {
   "issue_comments" => wait_checkpoint_comments.map do |comment|
-    comment.merge("payload_body" => comment.fetch("body"))
+    comment.merge("payload_body" => GitHubCommentEnvelope.payload(comment.fetch("body")))
   end
 }
 stdout, stderr, status = Open3.capture3(

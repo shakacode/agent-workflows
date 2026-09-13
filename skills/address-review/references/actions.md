@@ -28,7 +28,7 @@ prepared by the verified checkpoint. Fetch and triage both review inventories, p
 Apply code and push only on the primary replacement PR; route each reply and resolution to the item's preserved source PR and never push the unpushable source PR.
 In replacement carryover, post a summary/status checkpoint on the primary replacement PR and a separate carryover checkpoint on `SOURCE_PR_NUMBER`; each checkpoint is cutoff-safe only when its own inventory guard passes, otherwise post a non-cutoff status.
 A source checkpoint is cutoff-safe only when every source item has a terminal handled, deferred, declined, or other explicitly safe-to-skip outcome; any pending, `ask user`, or user-pending source item requires a non-cutoff status and remains eligible for the next source scan.
-Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` under `<!-- address-review-source-state:v1`; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`.
+Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` in the visible fenced `address-review-source-state:v1` record inside the closed `Address-review checkpoint` disclosure; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`. Historical HTML records are read-compatible only.
 Validate the source PR and item ID as positive decimals, the thread ID as a GitHub node ID or `-`, the activity timestamp as RFC3339, the enum fields, stable-identity uniqueness, and snapshot completeness before consuming or posting state.
 On rerun, suppress a source item only when its exact source PR, kind, immutable item ID, and preserved thread ID match a terminal state row and its current latest activity is not newer than the recorded activity timestamp; `pending` and `ask-user` rows always remain eligible.
 Missing, duplicate, malformed, identity-mismatched, or incomplete source state suppresses no item and makes source readiness `UNKNOWN` until corrected; a status checkpoint never acts as a global cutoff.
@@ -40,10 +40,12 @@ For each reply or resolution, bind `ITEM_SOURCE_PR` to the worklist item's
 preserved source PR; when replacement carryover is inactive, default it to
 `${PRIMARY_PR_NUMBER}`. Keep `REVIEW_COMMENT_ID` and `THREAD_ID` from that same
 item. Never use `ITEM_SOURCE_PR` for checkout, code edits, commits, or pushes.
-Build the source checkpoint file with `references/templates.md`. Start it
-exactly `🤖 Codex` with outcome and reader action, then put the summary/status
-kind and source-state records in the closed `Address-review checkpoint`
-disclosure; use `kind: summary` only when the source cutoff guard passes.
+Build the source checkpoint payload with `references/templates.md`. Post it
+through `github-comment-envelope` so the public comment begins exactly `🤖 Codex`;
+the payload itself begins with the visible outcome and reader action, then puts
+the summary/status kind and source-state records in the closed
+`Address-review checkpoint` disclosure. Use `kind: summary` only when the
+source cutoff guard passes.
 Populate its cumulative state rows from the verified source-aware worklist,
 including terminal and pending outcomes, after comparing each item's current
 latest activity with any valid carried row.
@@ -299,7 +301,7 @@ suppress a source candidate. Historical HTML-marked replies remain readable.
 ITEM_SOURCE_PR="${ITEM_SOURCE_PR:-${PRIMARY_PR_NUMBER}}"
 RESPONSE_BODY="<response>"
 if [ -n "${SOURCE_PR_NUMBER:-}" ] && [ "${ITEM_SOURCE_PR}" = "${SOURCE_PR_NUMBER}" ]; then
-  RESPONSE_BODY="$(printf '🤖 Codex source reply: %s\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v1\n```\n</details>' "${RESPONSE_BODY}")"
+  RESPONSE_BODY="$(printf 'Source reply: %s\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v1\n```\n</details>' "${RESPONSE_BODY}")"
 fi
 printf '%s' "${RESPONSE_BODY}" | "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
   --repo "${REPO}" --number "${ITEM_SOURCE_PR}" \
@@ -337,7 +339,7 @@ Review summary bodies do not have a `comment_id` and cannot be replied to via th
 ITEM_SOURCE_PR="${ITEM_SOURCE_PR:-${PRIMARY_PR_NUMBER}}"
 RESPONSE_BODY="<response>"
 if [ -n "${SOURCE_PR_NUMBER:-}" ] && [ "${ITEM_SOURCE_PR}" = "${SOURCE_PR_NUMBER}" ]; then
-  RESPONSE_BODY="$(printf '🤖 Codex source reply: %s\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v1\n```\n</details>' "${RESPONSE_BODY}")"
+  RESPONSE_BODY="$(printf 'Source reply: %s\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v1\n```\n</details>' "${RESPONSE_BODY}")"
 fi
 printf '%s' "${RESPONSE_BODY}" | "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
   --repo "${REPO}" --number "${ITEM_SOURCE_PR}" \

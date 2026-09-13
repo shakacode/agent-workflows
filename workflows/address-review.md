@@ -65,7 +65,7 @@ Behavior rules:
   Unavailable or `UNKNOWN` source review data blocks readiness; require source review-inventory closeout plus replacement current-head review/readiness, with durable carryover summaries on both PRs as appropriate.
   In replacement carryover, post a summary/status checkpoint on the primary replacement PR and a separate carryover checkpoint on `SOURCE_PR_NUMBER`; each checkpoint is cutoff-safe only when its own inventory guard passes, otherwise post a non-cutoff status.
   A source checkpoint is cutoff-safe only when every source item has a terminal handled, deferred, declined, or other explicitly safe-to-skip outcome; any pending, `ask user`, or user-pending source item requires a non-cutoff status and remains eligible for the next source scan.
-  Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` under `<!-- address-review-source-state:v1`; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`.
+  Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` in the visible fenced `address-review-source-state:v1` record inside the closed `Address-review checkpoint` disclosure; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`. Historical HTML records are read-compatible only.
   Validate the source PR and item ID as positive decimals, the thread ID as a GitHub node ID or `-`, the activity timestamp as RFC3339, the enum fields, stable-identity uniqueness, and snapshot completeness before consuming or posting state.
   On rerun, suppress a source item only when its exact source PR, kind, immutable item ID, and preserved thread ID match a terminal state row and its current latest activity is not newer than the recorded activity timestamp; `pending` and `ask-user` rows always remain eligible.
   Missing, duplicate, malformed, identity-mismatched, or incomplete source state suppresses no item and makes source readiness `UNKNOWN` until corrected; a status checkpoint never acts as a global cutoff.
@@ -210,11 +210,11 @@ Execution flow when terminal access is available:
 
 3. Determine scan window and summary cutoff:
    - For full-PR scans (plain PR number or PR URL with no specific review/comment anchor), default to reviewing only feedback posted after the latest PR summary comment created by this workflow.
-   - The summary marker is a PR issue comment whose body starts with `<!-- address-review-summary -->` on its very first line. Requiring `startswith` (not `contains`) means a human comment that quotes or embeds the marker in prose is not mistaken for a checkpoint and cannot silently advance the cutoff.
-   - Legacy summary comments where the marker appears after a blank line, heading, or byte-order mark are ignored by this rule. If the cutoff appears to miss an older checkpoint, use `check all reviews`; new summary checkpoints created by this workflow always place the marker on the first line.
+   - The fetcher recognizes a top-level visible `Address-review checkpoint` summary record from each comment's normalized `payload_body // body // ""`; a quoted record never advances the cutoff. Historical first-line `<!-- address-review-summary -->` markers remain read-compatible only.
+   - Legacy summary comments where the marker appears after a blank line, heading, or byte-order mark are ignored. If the cutoff appears to miss an older checkpoint, use `check all reviews`; new summary checkpoints use the visible closed disclosure.
    - If `CHECK_ALL_REVIEWS` is true, ignore the cutoff and scan the full PR history.
    - If the input is a specific review URL or specific issue-comment URL, fetch that exact target even if it predates the latest summary comment.
-   - The full-PR fetch in step 4 returns `review_cutoff_at` (the latest `<!-- address-review-summary -->` comment timestamp, or empty). Read the cutoff from that field instead of a separate query:
+   - The full-PR fetch in step 4 returns `review_cutoff_at` (the latest recognized summary checkpoint timestamp, or empty). Read the cutoff from that field instead of a separate query:
      ```bash
      # After running the step 4 fetcher into review-data.json:
      REVIEW_CUTOFF_AT=$(jq -r '.review_cutoff_at' review-data.json)
@@ -258,7 +258,7 @@ Execution flow when terminal access is available:
              def checkpoint_kind:
                if startswith("<!-- address-review-summary -->") then "summary"
                elif startswith("<!-- address-review-status -->") then "status"
-               elif test("(?ms)\\A(?:🤖 Codex )?[^\\r\\n]+.*?<summary>Address-review checkpoint</summary>.*?address-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n")
+               elif test("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<details>)[^\\r\\n]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n```")
                then capture("(?ms)^.*?address-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n").kind else null end;
              def source_state_count:
                if startswith("<!-- address-review-")
@@ -575,7 +575,7 @@ Execution flow when terminal access is available:
            ($fields[6] | valid_outcome);
            . as $inventory |
            def visible_checkpoint_kind:
-             if test("(?ms)\\A(?:🤖 Codex )?[^\\r\\n]+\\r?\\n\\r?\\n.*?<details>\\r?\\n<summary>Address-review checkpoint</summary>.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n```")
+             if test("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<details>)[^\\r\\n]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n```")
              then capture("(?ms)^.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```").kind else null end;
            def checkpoint_kind:
              if startswith("<!-- address-review-summary -->") then "summary"
@@ -586,13 +586,13 @@ Execution flow when terminal access is available:
              then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)
              else ([scan("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?$")] | length) end;
            def visible_claim:
-             test("(?ms)\\A(?:🤖 Codex )?claim .*?<details>\\r?\\n<summary>Claim details</summary>.*?^```text\\r?\\ncodex-claim v1\\r?\\n");
+             test("(?ms)\\A(?:🤖 Codex )?[Cc]laim is active\\. Do not start competing work\\.\\r?\\n\\r?\\n<details>\\r?\\n<summary>Claim details</summary>\\r?\\n\\r?\\n```text\\r?\\ncodex-claim v1\\r?\\n");
            def marker_body:
              checkpoint_kind != null or startswith("<!-- codex-claim v1") or visible_claim;
            def comment_body($comment): $comment.payload_body // $comment.body // "";
            def generated_source_reply($comment):
              ((comment_body($comment) | startswith("<!-- address-review-source-reply -->")) or
-              (comment_body($comment) | test("(?ms)\\A(?:🤖 Codex )?source reply: .*?<details>\\r?\\n<summary>Address-review reply details</summary>.*?^```text\\r?\\naddress-review-source-reply:v1\\r?\\n"))) and
+              (comment_body($comment) | test("(?ms)\\A(?:🤖 Codex )?[Ss]ource reply: .*?<details>\\r?\\n<summary>Address-review reply details</summary>.*?^```text\\r?\\naddress-review-source-reply:v1\\r?\\n"))) and
              ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
            def item_key($kind; $id; $thread_id):
              [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
@@ -678,7 +678,7 @@ Execution flow when terminal access is available:
            sort_by(.created_at) | reverse
          ' source-review-data.json)"; then
            SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].payload_body // .[0].body // ""')"
-           SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.payload_body // .body // "") | startswith("<!-- address-review-summary -->") or test("(?ms)\\A(?:🤖 Codex )?.*?address-review-checkpoint:v1\\r?\\nkind: summary\\r?\\n"))][0].created_at // ""')"
+           SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.payload_body // .body // "") | checkpoint_kind == "summary")][0].created_at // ""')"
          else
            echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
          fi
@@ -911,8 +911,8 @@ before mutating GitHub or the branch.
 
 5. Filter comments:
    - Exclude the current exact-diff walkthrough review body and its original explanatory inline comments from triage. Retain trusted replies to those sections, promote the first retained reply in each thread as the triage item, and use later replies as context. Identify the walkthrough as the newest trusted review whose fetched `state` is `COMMENTED`, whose first line is a valid `<!-- pr-walkthrough:v2 ... -->` marker, and whose bound PR number, publisher, `commit_id`, full head SHA, reviewed diff base, and canonical diff identity match the live target. During migration, recognize a legacy short v1 marker only when it is authored by the authenticated actor and its PR, review commit, full head, and canonical diff identity match. Join sections by `pull_request_review_id`; never infer membership from explanatory comment text alone. Immediately after fetching the source packet and before source-checkpoint validation, derive `SOURCE_WALKTHROUGH_REVIEW_IDS_JSON` deterministically from authenticated, internally consistent marker forms and available bindings; this source-checkpoint set includes marker-valid historical walkthroughs so their explanatory roots do not re-enter triage. Apply live target bindings separately for exact-current classification; a stale marker remains historical but receives no current-walkthrough exemption. The query emits `[]` when none pass. Keep the current walkthrough threads unresolved and omit only marked walkthrough summaries and explanatory roots from cutoff or source-checkpoint completeness; retained replies remain normal candidates. Older walkthrough reviews remain informational rather than triage items; after a verified current replacement exists, resolve their threads without posting address-review disposition replies.
-   - Never triage prior workflow summary/status/claim comments. Skip any issue comment whose body starts with `<!-- address-review-summary -->`, `<!-- address-review-status -->`, or `<!-- codex-claim v1` on its very first line; only the summary marker is a cutoff checkpoint.
-   - On a source PR, also skip `<!-- address-review-source-reply -->` comments only when their author matches `SOURCE_REVIEW_ACTOR`; a different author using that marker remains a source candidate.
+   - Never triage prior workflow summary/status/claim comments. Use normalized `payload_body // body // ""` and skip recognized visible `Address-review checkpoint` or `Claim details` records as well as historical first-line `<!-- address-review-summary -->`, `<!-- address-review-status -->`, or `<!-- codex-claim v1` forms. Only a recognized summary checkpoint is a cutoff checkpoint; historical HTML forms are read-compatible only.
+   - On a source PR, also skip a visible `address-review-source-reply:v1` record only when its author matches `SOURCE_REVIEW_ACTOR`; a different author using that record remains a source candidate. Historical HTML-marked replies remain readable only.
    - Skip resolved threads.
    - Triage the first retained trusted reply as its own item when `root_excluded: true` marks a trust-boundary exclusion or its explanatory root belongs to the verified current walkthrough. This non-blocking representative may be an acknowledgment, so later trusted replies are required classification context. Otherwise, use comments with `in_reply_to_id` only as the latest thread context when they update or narrow the unresolved concern.
    - When `REVIEW_CUTOFF_AT` is set, evaluate unresolved review threads by their latest activity timestamp, not only by the top-level comment timestamp.

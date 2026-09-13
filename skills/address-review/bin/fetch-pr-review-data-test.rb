@@ -54,6 +54,56 @@ class FetchPrReviewDataTest < Minitest::Test
     refute_includes comments.first.fetch("body"), "<!--"
   end
 
+  def test_template_payload_wrapped_by_the_envelope_advances_the_cutoff
+    payload = <<~MARKDOWN.chomp
+      Address-review follow-up is complete. The next routine scan can start after this comment.
+
+      ## Review follow-up complete
+
+      Every review item in the selected scan has a recorded outcome.
+
+      <details>
+      <summary>Address-review checkpoint</summary>
+
+      **Runtime:** Codex · Astra
+
+      ```text
+      address-review-checkpoint:v1
+      kind: summary
+      ```
+      </details>
+    MARKDOWN
+    body = GitHubCommentEnvelope.render(body: payload, runner: "codex", host: "M5", task_or_run: "task-8")
+    normalized = FetchPrReviewData.build_issue_comments(
+      [{ "body" => body, "user" => { "login" => "bot" }, "created_at" => "2026-09-13T00:00:00Z" }], trust
+    ).first.first
+
+    assert_equal "2026-09-13T00:00:00Z", FetchPrReviewData.compute_cutoff([normalized])
+    assert_equal payload, normalized.fetch("payload_body")
+  end
+
+  def test_visible_checkpoint_in_a_four_backtick_example_does_not_advance_the_cutoff
+    body = <<~MARKDOWN.chomp
+      🤖 Codex address-review follow-up example:
+
+      ````markdown
+      Address-review follow-up is complete. The next routine scan can start after this comment.
+
+      <details>
+      <summary>Address-review checkpoint</summary>
+
+      ```text
+      address-review-checkpoint:v1
+      kind: summary
+      ```
+      </details>
+      ````
+    MARKDOWN
+
+    assert_nil FetchPrReviewData.visible_checkpoint_kind(body)
+    assert_equal "", FetchPrReviewData.compute_cutoff([{ "body" => body, "created_at" => "2026-09-13T00:00:00Z" }])
+  end
+
   REVIEWS_RAW = <<~JSON
     [[
       {"id":10,"body":"fix the nil guard","state":"COMMENTED","user":{"login":"alice"},"submitted_at":"2026-01-04T00:00:00Z","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},

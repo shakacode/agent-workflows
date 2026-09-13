@@ -239,9 +239,11 @@ its infrastructure provider.
      fallback or branching. Use structured public `codex-claim` comments only
      when the private claim cannot be started or fails with a definitive
      non-timeout setup/auth error, and only where dependency rules allow it. A
-     structured public `codex-claim` comment is a GitHub issue/PR comment
-     containing a `codex-claim` HTML comment (`<!-- codex-claim v1 ... -->`) with
-     key/value fields; see the "Public claim comment" format below.
+     structured public `codex-claim` comment is a GitHub issue/PR comment whose
+     visible payload contains a closed `Claim details` disclosure with a fenced
+     `codex-claim v1` record; post it through `github-comment-envelope` so the
+     public comment begins with authenticated attribution. See the "Public claim
+     comment" format below. Historical HTML markers are read-compatible only.
    - For lanes declared in `batches/<batch-id>.json` with `depends_on`, run
      bounded `agent-coord status` at lane start and before rebase or push. If
      the lane shows unmet `blocked_on` refs, treat them as verified source facts
@@ -1941,7 +1943,7 @@ and public claim-comment operation in this section.
   instead of starting competing work:
 
 ````markdown
-🤖 Codex claim is active. Do not start competing work.
+Claim is active. Do not start competing work.
 
 <details>
 <summary>Claim details</summary>
@@ -1958,7 +1960,9 @@ expires_at: <ISO8601_UTC>
 </details>
 ````
 
-Use any stable session, thread, or machine identifier that lets a restarted
+Post this payload through `github-comment-envelope`; the public comment begins
+exactly `🤖 Codex`, while the closed disclosure retains the structured claim
+record. Use any stable session, thread, or machine identifier that lets a restarted
 coordinator recognize its own work; if none exists, use `thread: unavailable`
 and rely on the machine, branch, and batch fields. Set `expires_at` to a short
 bounded advisory lease, usually 2-4 hours for an active batch or no later than

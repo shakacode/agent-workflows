@@ -3,8 +3,10 @@
 
 require "minitest/autorun"
 require_relative "../lib/human_attention"
+require_relative "../lib/github_comment_envelope"
 
 ROOT = File.expand_path("../../..", __dir__)
+load File.join(ROOT, "skills/address-review/bin/fetch-pr-review-data")
 
 class HumanAttentionContractTest < Minitest::Test
   # Production break: this repository's shipped tower can invoke the semantic
@@ -65,17 +67,27 @@ class HumanAttentionContractTest < Minitest::Test
     actions = File.read(File.join(ROOT, "skills/address-review/references/actions.md"))
     templates = File.read(File.join(ROOT, "skills/address-review/references/templates.md"))
 
-    assert_includes actions, "github-comment-envelope post-issue"
-    assert_includes actions, "github-comment-envelope post-reply"
-    assert_includes templates, "github-comment-envelope post-issue"
+    assert_match(/github-comment-envelope.*post-issue/m, actions)
+    assert_match(/github-comment-envelope.*post-reply/m, actions)
+    assert_match(/github-comment-envelope.*post-issue/m, templates)
   end
 
   def test_address_review_filters_primary_checkpoints_through_unwrapped_payloads
-    workflow = File.read(File.join(ROOT, "workflows/address-review.md"))
-    filter_step = workflow[/\n5\. Filter comments:\n.*?\n6\./m]
+    payload = <<~MARKDOWN.chomp
+      Address-review follow-up is complete. The next routine scan can start after this comment.
 
-    refute_nil filter_step
-    assert_includes filter_step, ".payload_body // .body // \"\""
+      <details>
+      <summary>Address-review checkpoint</summary>
+
+      ```text
+      address-review-checkpoint:v1
+      kind: summary
+      ```
+      </details>
+    MARKDOWN
+    body = GitHubCommentEnvelope.render(body: payload, runner: "codex", host: "test-host", task_or_run: "human-attention")
+
+    assert FetchPrReviewData.summary_checkpoint?(GitHubCommentEnvelope.payload(body))
   end
 
   def test_other_shared_comment_producers_use_the_envelope

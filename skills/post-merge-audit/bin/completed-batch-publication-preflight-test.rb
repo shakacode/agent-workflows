@@ -3661,7 +3661,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     PAYLOAD
     legacy = "<!-- hosted-qa-maintainer-waiver v1\n#{payload}\n-->"
     visible = <<~MARKDOWN.chomp
-      Maintainer hosted QA waiver is recorded. No reader action is needed.
+      Hosted QA waiver is recorded. No reader action is needed.
 
       <details>
       <summary>Hosted QA waiver details</summary>
@@ -3698,7 +3698,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       )
     end
 
-    agent_visible = visible.sub("Maintainer hosted QA waiver", "🤖 Codex hosted QA waiver")
+    agent_visible = visible.sub("Hosted QA waiver", "🤖 Codex hosted QA waiver")
     assert_nil CompletedBatchPublicationPreflight.canonical_hosted_qa_waiver(
       { "url" => waiver_url }, target, waiver_url, head_sha:, hosted_target: "staging",
       verifier: ->(**_keywords) { { "id" => 817, "html_url" => waiver_url,

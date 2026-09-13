@@ -431,7 +431,7 @@ maintainer_waiver: <exact same-target #issuecomment-ID URL>
 `maintainer`, the linked comment must contain this distinct closed marker:
 
 ````markdown
-🤖 Codex hosted QA waiver is recorded. No reader action is needed.
+Hosted QA waiver is recorded. No reader action is needed.
 
 <details>
 <summary>Hosted QA waiver details</summary>
