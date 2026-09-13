@@ -247,3 +247,8 @@ Conversation status: Follow-ups remain — <each exact blocker or required actio
 
 Use the ready line only when the archive gate passes. The follow-ups line must
 name concrete blockers or actions, not a vague status.
+
+<!-- host-branch: cursor-only start -->
+Cursor has no Claude Desktop archive control. Use the portable Ready for
+archiving line only; do not treat a Cursor chat close as Desktop archive.
+<!-- host-branch: cursor-only end -->

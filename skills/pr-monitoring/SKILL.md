@@ -106,6 +106,11 @@ outcomes, persist the reducer's exact restart-safe handoff, including its manual
 question. Reload that handoff after restart instead of synthesizing a replacement. These watcher decisions never
 make a pending check, missing reviewer artifact, or unresolved thread ready.
 
+<!-- host-branch: cursor-only start -->
+On Cursor, advertise `model-polling-only` and use Cursor `/loop` as the bounded
+fallback. Do not claim Claude Cron or Codex task-wake.
+<!-- host-branch: cursor-only end -->
+
 ## Monitoring Loop
 
 1. **Re-fetch current PR state.**

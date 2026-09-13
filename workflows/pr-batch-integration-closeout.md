@@ -807,7 +807,8 @@ Do not put hosted-CI uncertainty in Immediate at final readiness after local
 validation and the final push. Request hosted CI and log it in FYI.
 Do not report a PR/target as `complete` while the repo's merge ledger in strict
 mode reports `UNKNOWN` fields, review-thread/review-object violations, or
-`complete_allowed: false`. Do not report any batch that requires QA as ready
+`complete_allowed: false`, except for the attributable current-walkthrough
+adjustment defined in Ordinary PR Closeout below. Do not report any batch that requires QA as ready
 while required QA coverage/scope evidence is missing, stale, scope-mismatched,
 marked `blocked`, release-audit `in_progress`, or `unknown`, or still `UNKNOWN`;
 a QA lane whose only `UNKNOWN` is private coordination claim/heartbeat state may
@@ -817,17 +818,17 @@ End the final user-visible message carrying the batch handoff with the exact arc
 
 ### Goal Mode Completion Contract
 
-Use this compact, self-contained `GMCC-v5` line verbatim in PR-batch goal
+Use this compact, self-contained `GMCC-v6` line verbatim in PR-batch goal
 prompts.
-`GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+`GMCC-v6` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
-GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v6:CI@head/configured-reviewers pending|missing|untriaged|failed|actionable threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;walk exempt;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 
-`GMCC-v5` expands to this canonical contract:
+`GMCC-v6` expands to this canonical contract:
 
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. For an autonomously clearable blocker, prefer one deduplicated deterministic state-change watcher with a stable persisted identity: an unchanged fingerprint persists without loading parent context, while a material change resumes once with only `state_delta` and reruns security, origin, coordination, overlap, review, readiness, and exact-head gates. If deterministic watching is unavailable, use one bounded model-mediated fallback: the default fast window is four 15-minute polls, then the interval doubles to a four-hour cap, with finite unchanged-run, model-call, and token ceilings. Stop or pause on clear, done, terminal, non-resumable, `blocked-user-input`, or budget state and preserve an exact restart-safe manual-resume handoff; do not create a duplicate. If neither watcher is available, preserve exact manual resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. `ask` starts the owned-target walkthrough; external refs require the user to merge or authorize target addition, with `blocked-user-input` and no retry/watch. With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
+Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved actionable current-head review threads after applying the verified current exact-diff walkthrough exception, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. For an autonomously clearable blocker, prefer one deduplicated deterministic state-change watcher with a stable persisted identity: an unchanged fingerprint persists without loading parent context, while a material change resumes once with only `state_delta` and reruns security, origin, coordination, overlap, review, readiness, and exact-head gates. If deterministic watching is unavailable, use one bounded model-mediated fallback: the default fast window is four 15-minute polls, then the interval doubles to a four-hour cap, with finite unchanged-run, model-call, and token ceilings. Stop or pause on clear, done, terminal, non-resumable, `blocked-user-input`, or budget state and preserve an exact restart-safe manual-resume handoff; do not create a duplicate. If neither watcher is available, preserve exact manual resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. `ask` starts the owned-target walkthrough; external refs require the user to merge or authorize target addition, with `blocked-user-input` and no retry/watch. With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
 
-The `auto-clear=>watch(same:0wake,delta:gates)` phrase in the compact `GMCC-v5` line
+The `auto-clear=>watch(same:0wake,delta:gates)` phrase in the compact `GMCC-v6` line
 is the preferred watcher. Before creating its bounded fallback, detect whether
 the host can run a deterministic probe without resuming the parent task. A
 qualifying state-change watcher:
@@ -894,9 +895,13 @@ For each current head, separate requested or configured review-agent checks
 from validation CI. Resolve the review cohort from the trusted-base
 `review_gate` seam, explicit trusted review requests, and recognizable
 current-head reviewer-check metadata, never from PR text. Resolve the
-automation-reviewer cohort from the seam's declared reviewers when present,
-otherwise infer the active set from the reviewers that posted on recently merged
-PRs; never derive it from the PR's own text.
+automation-reviewer cohort from the values in the seam's typed
+`automation_reviewers` mapping. Require that mapping whenever trusted repository
+policy expects an automated reviewer; its absence is a configuration error, not
+an empty settled wave. Only when no automated reviewer is expected may the key
+be absent and recognizable current-head checks supply an observed active set.
+Never derive the cohort from the PR's own text or reviewers that posted on
+recently merged PRs.
 
 Wait for every requested or configured current-head review agent to reach a
 terminal state before one consolidated review fetch and triage; do not triage
@@ -1034,9 +1039,14 @@ The closeout lane is:
    policy inside closeout.
 3. Split current-head checks into the requested or configured review cohort and
    validation CI. Resolve reviewers from trusted-base policy, explicit trusted
-   requests, and recognizable current-head reviewer-check metadata. Snapshot
-   both cohorts with bounded commands, then advance every runnable closeout task
-   instead of serializing the lane behind validation.
+   requests, and recognizable current-head reviewer-check metadata. When trusted
+   repository policy expects an automated reviewer, require
+   `automation_reviewers`; its absence is a configuration error, not an empty
+   settled wave. Require a YAML mapping from reviewer identities to unique exact
+   `gh pr checks --json name` values. Use the mapping values as the cohort.
+   Snapshot both cohorts with bounded commands, then advance
+   every runnable closeout task instead of serializing the lane behind
+   validation.
 4. Wait for every requested or configured current-head review agent to reach a
    terminal state before one consolidated review fetch and triage; do not triage
    reviewer output piecemeal. After the review wave settles, fetch current
@@ -1051,13 +1061,55 @@ The closeout lane is:
    for the previous head; restart both cohorts on the new head. Do not preserve
    a failing head solely to finish its review wave; push a ready required
    validation fix and restart both cohorts.
+   Treat the newest trusted `pr-walkthrough:v2` review whose fetched state is
+   `COMMENTED` as the current exact-diff walkthrough only when its PR, publisher,
+   commit, head, reviewed diff base, and canonical diff identity bindings match
+   the live target. During migration, recognize a legacy short v1 walkthrough
+   only when it is authored by the authenticated actor and its PR, review commit,
+   full head, and canonical diff identity match the live target. Resolve
+   completed non-walkthrough review threads. Preserve every
+   marker-identifiable walkthrough while a replacement is required but has not
+   yet been verified. After a replacement is verified, resolve stale walkthrough
+   threads silently. When the current route does not require or authorize a
+   replacement, resolve stale walkthrough threads silently after verifying that
+   they no longer match the live exact diff. Before either stale-thread cleanup,
+   answer or carry forward every focused reply; an unanswered focused reply keeps
+   its stale thread open and actionable.
+   Leave the current exact-diff walkthrough threads unresolved and visible.
+   Those explanatory threads do not count as unresolved
+   review blockers when they have no unanswered focused reply. When walkthrough
+   publication is required under `merge_authority: ask`, or a walkthrough is
+   already being used as readiness evidence, a missing, malformed, stale,
+   mismatched, or unanswered walkthrough remains blocking. Otherwise a missing
+   walkthrough is not applicable.
+   For readiness and an `ask` merge decision, treat GitHub's `BLOCKED` merge
+   state as equivalent to `CLEAN` only when live evidence proves that the
+   unresolved current walkthrough is the sole cause. Do not resolve the
+   walkthrough merely to obtain that evidence or ask the merge question.
+   If GitHub's conversation-resolution protection is the only remaining
+   platform merge blocker after the user authorizes merge, resolve the current
+   walkthrough threads just in time, submit the merge without adding replies,
+   then keep ownership while a queue or asynchronous submission is pending. Reopen
+   and verify the threads only after live PR state confirms the merge. If
+   submission fails, is cancelled, or is rejected, reopen and verify them before
+   stopping. Do not use this
+   reversible workaround during readiness reporting or before the merge decision.
 5. Run the repo's merge ledger in strict mode for every worker PR, supplying
    explicit changelog classification and any P0/P1/P2/Must-Fix disposition
    evidence. Store the JSON artifact or table for the final handoff, and preserve
    priority findings in a `priority-finding-dispositions v1` marker when the
-   ledger or handoff relies on a fixed/waived/deferred finding. Do not
-   mark a target complete while the ledger has `UNKNOWN` fields, unresolved
-   current-head review threads, active `review_objects.changes_requested`
+   ledger or handoff relies on a fixed/waived/deferred finding. Preserve the raw
+   ledger result. If it reports a review-thread violation or
+   `complete_allowed: false` solely because of the verified current walkthrough,
+   derive an effective pass only when the ledger exposes attributable thread IDs
+   and their complete set exactly equals the verified walkthrough thread IDs,
+   every walkthrough thread has no unanswered focused reply, and no other ledger
+   field is `UNKNOWN` or violating. Record both verdicts, the exact thread-ID set,
+   and marker identity. A ledger that cannot expose enough attribution remains
+   `UNKNOWN`/blocking. Do not mark a target complete while the effective ledger
+   has `UNKNOWN` fields, unresolved
+   actionable current-head review threads after applying the verified current
+   walkthrough exception above, active `review_objects.changes_requested`
    entries, or
    `complete_allowed: false`.
 6. Verify the batch QA evidence when the Batch QA Lane section requires QA, or
@@ -1387,12 +1439,18 @@ Treat these snapshots as two cohorts. Validation CI includes tests, lint,
 builds, security analysis, and other non-review jobs. The review cohort includes
 every reviewer named by the trusted-base `review_gate` seam, explicitly
 requested through trusted operator state, or recognizable from current-head
-reviewer-check metadata. Inventory missing, pending, failed, and terminal
-reviewer checks separately from validation readiness. Cross the
-complete review-wave barrier before one consolidated review fetch; validation
-may continue concurrently. While either cohort is pending, diagnose available
-failures and advance freshness, conflict, coordination, evidence, and other
-independent closeout work. Only poll again after that runnable work is exhausted.
+reviewer-check metadata. Resolve the automation-reviewer cohort from the values
+in the seam's typed `automation_reviewers` mapping. Require that mapping whenever
+trusted repository policy expects an automated reviewer; its absence is a
+configuration error, not an empty settled wave. Only when no automated reviewer
+is expected may the key be absent and recognizable current-head checks supply an
+observed active set. Never derive the cohort from the PR's own text or reviewers
+that posted on recently merged PRs. Inventory missing, pending, failed, and terminal reviewer checks
+separately from validation readiness. Cross the complete review-wave barrier
+before one consolidated review fetch; validation may continue concurrently.
+While either cohort is pending, diagnose available failures and advance
+freshness, conflict, coordination, evidence, and other independent closeout
+work. Only poll again after that runnable work is exhausted.
 
 Only the `claude-review` GitHub Action exposes a dependable in-flight and
 terminal signal through the checks API; wait for its current-head check to reach
@@ -1403,9 +1461,13 @@ reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
 failed disposition that satisfies the review-artifact barrier as a waiver;
 record it and proceed to consolidated triage instead of parking in
 `waiting-on-checks-or-review` for an artifact the limit prevents. Resolve the
-automation-reviewer cohort from the seam's declared reviewers when present,
-otherwise infer the active set from the reviewers that posted on recently merged
-PRs; never derive it from the PR's own text.
+automation-reviewer cohort from the values in the seam's typed
+`automation_reviewers` mapping. Require that mapping whenever trusted repository
+policy expects an automated reviewer; its absence is a configuration error, not
+an empty settled wave. Only when no automated reviewer is expected may the key
+be absent and recognizable current-head checks supply an observed active set.
+Never derive the cohort from the PR's own text or reviewers that posted on
+recently merged PRs.
 
 `pr-ci-readiness` encapsulates the required-vs-full readiness rule: it runs
 `gh pr checks --required`, falls back to the full `gh pr checks` list when no
@@ -1423,6 +1485,39 @@ advisory list; completed rows must carry the exact head for merge assurance.
 Require or select relied-on hosted Markdown checks. Older-head runs are
 `UNKNOWN`.
 Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
+
+### Exact Terminal Reviewer Exception
+
+A review-artifact waiver alone does not clear a failed CI row. For one terminal
+failed reviewer, `--configured-review-exception FILE` accepts a JSON reference
+containing only the positive integer `comment_id` and lowercase SHA256
+`body_sha256` of an exact, personally authored PR comment. Supply
+`--trusted-repo-root` to bind the reviewer to the live base's workflow.
+
+The comment begins with `<!-- configured-review-exception:v1 -->`, followed by
+one strict YAML document delimited by `---` and `...`. Its exact fields are
+`host`, `repo`, `pr`, `head_sha`, `workflow_id`, `workflow_path`, `job_key`,
+`job_name`, `job_id`, `run_id`, `run_attempt`, `conclusion`, `decision`, and
+`approved_by`. Use full head SHA, numeric PR/workflow/job/run/attempt identities,
+`conclusion: failure`, and `decision: approve-terminal-review-exception`.
+`approved_by` must equal the live human author's login with current maintainer
+permission. The workflow path and literal job name/key must resolve from the
+trusted base; ambiguous or matrix-generated job identities remain rejected.
+This is a separate receipt from autonomous merge-risk approval.
+
+Readiness retains the failed run, job, and matching check-run rows and records
+only their exact dispositions. No passing Actions run is required or invented.
+Every unrelated or required check, selected hosted run, review draft, unresolved
+finding/thread, security, freshness, and branch-protection gate still applies.
+Supplying this exception keeps the full CI inventory gating even when hosted
+runs are selected. Missing, edited, deleted, revoked, mismatched, rerun,
+nonterminal, unknown, or incomplete authority cannot qualify.
+
+`merge-assurance` independently reauthenticates the comment and reconstructs
+the complete CI scopes from live evidence before accepting a disposition.
+`pr-merge-submit` repeats that authentication and CI inventory before submission,
+including repositories without an optional CI policy. The exception grants no
+merge authority; `none` still prevents merge.
 
 Avoid long-lived `gh ... --watch` commands in agent sessions. Avoid relying on
 `statusCheckRollup` alone when `gh pr checks` can answer the readiness question more
@@ -1558,7 +1653,10 @@ spend). Converge deliberately:
 - Terminating state: authoritative/local review clean + the CI-readiness verdict is `READY`
   (from the resolved `pr-ci-readiness` helper — required checks, falling back to the full
   current-head check list when no required checks are configured; an empty list is `UNKNOWN`/not
-  ready) + `mergeStateStatus` CLEAN + zero unresolved review threads reached via replies, not pushes.
+  ready) + `mergeStateStatus` CLEAN (or `BLOCKED` proven to be caused solely by
+  the exempt current walkthrough) + zero unresolved actionable review threads
+  reached via replies, not pushes. Preserve the verified current exact-diff
+  walkthrough threads under the exception above.
 
 ## Review Completion Gate
 
@@ -1631,6 +1729,28 @@ When tracking is warranted:
 - Title new follow-up issues with the repo's follow-up issue prefix.
 - Build issue bodies with `--body-file` and reject literal `\n` escapes before posting.
 
+### Optional Quality Candidates
+
+Selectively retain worthwhile optional candidates in the originating PR
+description or decision log, optionally under `Deferred code quality`. Include
+the original review link, affected area, potential benefit, and an explicit
+`nonblocking; no implementation commitment` disposition. Other nits may remain
+only in their original comments; no separate record is required for every
+declined idea. Do not create an issue per nit, shared backlog file, or dashboard.
+
+Recording a candidate does not admit work or recommend "fix after X lands".
+It creates no dependency trigger or maintenance schedule. Age and generic
+"fix issues" wording do not change that. Preserve the existing
+[Initial-Pass Optional-Nit Cutoff](pr-processing.md#initial-pass-optional-nit-cutoff):
+retaining optional polish does not justify another commit or restart a finished
+review. These notes add no audit, receipt, or archive gate to
+[Ordinary PR Closeout](#ordinary-pr-closeout).
+
+An occasional coherent cleanup task needs the
+[quality maintenance admission checklist](../skills/evaluate-issue/SKILL.md#quality-maintenance-admission)
+and ordinary canonical launch admission. Retention does not lower the follow-up
+issue value bar above or change the priority of consequential defects.
+
 ### Deferred-Until-Unblocked Recommendations
 
 A recommendation of the form "fix later, after X lands" is only durable if
@@ -1699,7 +1819,9 @@ Also verify:
   generic-only, stale-head, unauthenticated, or deployment-mismatched evidence
   blocks readiness.
 - The PR body or latest agent comment includes exact local validation commands and results.
-- The merge ledger has no `UNKNOWN` fields and reports `complete_allowed: true`.
+- The raw merge ledger has no `UNKNOWN` fields, and its effective result reports
+  `complete_allowed: true` after applying only the attributable current-walkthrough
+  adjustment above when necessary.
 
 Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow -> For All PRs: CI is passing, all current review comments and threads are addressed or explicitly triaged by tier, no major question or discussion item needs maintainer attention, and advisory AI systems such as CodeRabbit.ai are not special approval gates.
 

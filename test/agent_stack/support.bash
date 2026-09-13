@@ -85,7 +85,7 @@ BASH
   fi
   git -C "$work" add .
   git -C "$work" commit --quiet -m "initial $name"
-  git -C "$work" clone --quiet --bare . "$origin"
+  git -C "$work" clone --quiet --bare --no-local . "$origin"
 }
 
 create_current_workflows_origin() {
@@ -99,7 +99,7 @@ create_current_workflows_origin() {
   git -C "$work" config user.name "Agent Stack Test"
   git -C "$work" add .
   git -C "$work" commit --quiet -m "current agent-workflows"
-  git -C "$work" clone --quiet --bare . "$origin"
+  git -C "$work" clone --quiet --bare --no-local . "$origin"
 }
 
 with_origins() {

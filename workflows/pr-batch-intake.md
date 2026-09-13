@@ -19,6 +19,10 @@ Those components consume the facts produced here without redefining them.
 ## Canonical Launch Target Gate
 
 Ordinary implementation launch requires an exact GitHub issue or an existing PR as its canonical launch target.
+An occasional quality task must also satisfy
+[Quality Maintenance Admission](../skills/evaluate-issue/SKILL.md#quality-maintenance-admission).
+Retaining optional review candidates, their age, or generic "fix issues"
+wording cannot admit that task; canonical identity alone is not scope approval.
 Pass the repository-qualified canonical issue/PR identity unchanged through planning, plan preflight, dispatch, coordination claims, the Lane Card, and final handoff.
 A direct prompt without either target must stop before branch creation, editing, implementation or coordination mutation, or worker dispatch and route to planning/reconciliation.
 Planning/reconciliation searches for and reuses the exact existing issue or PR. Equivalent prompt wording cannot create an independently claimable synthetic lane.

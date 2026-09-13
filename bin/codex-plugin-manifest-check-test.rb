@@ -13,13 +13,13 @@ load SCRIPT
 class CodexPluginManifestCheckTest < Minitest::Test
   def test_current_native_manifests_use_canonical_scw_namespace
     root = File.expand_path("..", __dir__)
-    manifest_paths = %w[.codex-plugin/plugin.json .claude-plugin/plugin.json]
+    manifest_paths = %w[.codex-plugin/plugin.json .claude-plugin/plugin.json .cursor-plugin/plugin.json]
 
     names = manifest_paths.map do |relative_path|
       JSON.parse(File.read(File.join(root, relative_path), encoding: "UTF-8")).fetch("name")
     end
 
-    assert_equal %w[scw scw], names
+    assert_equal %w[scw scw scw], names
   end
 
   def test_current_claude_manifest_uses_stable_display_name

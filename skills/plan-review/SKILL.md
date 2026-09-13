@@ -65,6 +65,11 @@ implementation details. Do block a plan that is too vague to prove it can work.
 - Use `plan-pr-batch` or `pr-batch` to assign exact GitHub targets and lanes.
 - Use `autoreview` or `adversarial-pr-review` once code exists.
 
+<!-- host-branch: available-tool start -->
+On Cursor, availability-check `/review`, `/review-bugbot`, or `/review-security`
+if a host review pass is requested; they do not replace this plan review.
+<!-- host-branch: available-tool end -->
+
 ## Source Note
 
 Inspired by the plan-review gate in

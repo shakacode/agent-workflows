@@ -32,7 +32,7 @@ paths the examples use. The exceptions are the agent transcripts in Steps 3,
 | Ruby | Ruby 3 series; verified with 3.3.6, and this repo's CI pins 3.4 | The seam doctor, status, and upgrade helpers. Plain Ruby only — no gems to install. |
 | SQLite CLI (`sqlite3`) | With `-json` output support | The optional `$audit-chats` local inventory helper and this repo's validation suite. The helper uses Ruby's standard library and reads databases without modifying them. |
 | GitHub CLI (`gh`) | 2.x, authenticated; 2.99.0+ for image/video `--attach` (walkthrough machine: 2.89.0) | Workflows that read GitHub, such as `$pr-batch` and `$address-review`. Not needed for install or adoption. Run `gh auth status` to confirm login. Attachment upload requires repository write access plus an OAuth, classic PAT, or fine-grained PAT credential; GitHub Actions and App tokens are unsupported. It works on GitHub.com and GitHub Enterprise Cloud, but not GitHub Enterprise Server in this release. |
-| An agent host | A current release of Codex CLI or Claude Code | Actually loads and runs the installed skills. |
+| An agent host | A current release of Codex CLI, Claude Code, or Cursor | Actually loads and runs the installed skills. |
 
 Contributing changes back to this pack needs additional pinned lint tools; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) and `bin/lint`. None of them are needed
@@ -56,9 +56,9 @@ cd "$HOME/src/agent-workflows"
 bin/install-agent-workflows --host codex
 ```
 
-Use `--host claude` for Claude Code instead. The installer copies skills,
-workflow prompts, and helper commands into the host's home (`~/.codex` or
-`~/.claude`) and prints what to do next:
+Use `--host claude` for Claude Code or `--host cursor` for Cursor. The installer
+copies skills, workflow prompts, and helper commands into the host's home
+(`~/.codex`, `~/.claude`, or `~/.cursor`) and prints what to do next:
 
 ```text
 Installed ShakaCode agent workflows into:
@@ -621,7 +621,7 @@ list](installation-and-upgrades.md#troubleshooting):
 | --- | --- |
 | `agent-workflows-status` prints `NOT_INSTALLED` | Run `bin/install-agent-workflows --host <host>` from the pack clone, or pass the correct `--target`. ([details](installation-and-upgrades.md#troubleshooting)) |
 | `agent-workflows-status` prints `UPGRADE_AVAILABLE` | Run `upgrade-agent-workflows` as shown above, or manually update the source clone and reinstall. ([details](installation-and-upgrades.md#troubleshooting)) |
-| `Auto host detection found both Codex and Claude homes` | You have both hosts installed, so rerun the command with an explicit `--host codex` or `--host claude`. ([details](installation-and-upgrades.md#troubleshooting)) |
+| `Auto host detection found multiple agent homes` | You have more than one host installed, so rerun the command with an explicit `--host codex`, `--host claude`, or `--host cursor`. ([details](installation-and-upgrades.md#troubleshooting)) |
 | `DELIVERY_MODE_CONFLICT` | Both delivery routes are active and the pack refuses to guess which skill copy wins; keep exactly one — disable or remove the native `scw` plugin before a flat install, or use `--delivery-mode plugin-companion`. ([details](installation-and-upgrades.md#troubleshooting)) |
 | `invalid byte sequence in US-ASCII` or other `Encoding::` errors from a Ruby helper | An older install is running under a non-UTF-8 locale (`LANG=C` / `LC_ALL=C`, common in CI and headless agents); the pack's Ruby tools now read UTF-8 regardless of locale, so run `upgrade-agent-workflows --host <host>` to pick up the fix. ([details](installation-and-upgrades.md#troubleshooting)) |
 | The agent cannot find an installed skill | Check `agent-workflows-status --host <host>` says `UP_TO_DATE`, then restart the agent host so it reloads its skill directory. |

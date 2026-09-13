@@ -35,18 +35,28 @@ agent_stack_absolute_path() {
 agent_stack_effective_workflow_target() {
   local codex_home="${CODEX_HOME:-$HOME/.codex}"
   local claude_home="${CLAUDE_HOME:-$HOME/.claude}"
+  local cursor_home="${CURSOR_HOME:-$HOME/.cursor}"
+  local candidates=()
   [[ -z "$target" ]] || { printf '%s\n' "$target"; return; }
   case "$host" in
     codex) printf '%s\n' "$codex_home" ;;
     claude) printf '%s\n' "$claude_home" ;;
+    cursor) printf '%s\n' "$cursor_home" ;;
     auto)
-      if [[ ( -n "${CODEX_HOME:-}" || -d "$codex_home" ) && ( -n "${CLAUDE_HOME:-}" || -d "$claude_home" ) ]]; then
-        return 1
-      elif [[ -n "${CLAUDE_HOME:-}" || -d "$claude_home" ]]; then
-        printf '%s\n' "$claude_home"
-      else
-        printf '%s\n' "$codex_home"
+      if [[ -n "${CODEX_HOME:-}" || -d "$codex_home" ]]; then
+        candidates+=("$codex_home")
       fi
+      if [[ -n "${CLAUDE_HOME:-}" || -d "$claude_home" ]]; then
+        candidates+=("$claude_home")
+      fi
+      if [[ -n "${CURSOR_HOME:-}" || -d "$cursor_home" ]]; then
+        candidates+=("$cursor_home")
+      fi
+      case "${#candidates[@]}" in
+        0) printf '%s\n' "$codex_home" ;;
+        1) printf '%s\n' "${candidates[0]}" ;;
+        *) return 1 ;;
+      esac
       ;;
   esac
 }

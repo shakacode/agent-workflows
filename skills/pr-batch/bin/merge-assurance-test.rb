@@ -10,11 +10,99 @@ require "stringio"
 require "timeout"
 require "tmpdir"
 require_relative "../lib/autonomous_merge_runtime_trust"
+require_relative "../lib/configured_review_exception_test_support"
 
 SCRIPT = File.expand_path("merge-assurance", __dir__)
 load SCRIPT
 
 class MergeAssuranceTest < Minitest::Test
+  include ConfiguredReviewExceptionTestSupport
+
+  def with_review_exception_assessment(execution_head_sha: "a" * 40)
+    with_review_exception(execution_head_sha:) do |root, base, reference, data, _fallback, transport|
+      runner = PrCiReadiness::Runner.new(read_transport: transport)
+      ci = runner.assess_authenticated(
+        repo: "owner/repo", pr_number: 123, host: "github.com", requested_hosted_runs: [],
+        trusted_repo_root: root, diff_base_sha: base, configured_review_exception: reference
+      )
+      assert_equal "READY", ci.fetch("verdict")
+      merge_context = context("auto_merge_when_gates_pass", pull_request: 123, diff_base_sha: base)
+      merge_context["base"]["sha"] = base
+      args = {
+        ci_result: ci, context: merge_context,
+        autonomous_result: autonomous_result("autonomous-merge-eligible", pull_request: 123, base_sha: base),
+        trusted_repo_root: root, ci_readiness_runner: runner
+      }
+      yield args, data
+    end
+  end
+
+  def test_review_exception_assurance_preserves_synthetic_execution_head
+    with_review_exception_assessment(execution_head_sha: "b" * 40) do |args, data|
+      result = MergeAssurance.assess(**args)
+      assert_equal true, result.fetch("eligible"), result.inspect
+      assert_equal(["b" * 40] * 2, result.dig("evidence", "ci_result", "scopes", "github_actions", "rows").map { |row| row["head_sha"] })
+      data.fetch("repos/owner/repo/actions/runs/42")["head_sha"] = "c" * 40
+      assert_equal false, MergeAssurance.assess(**args).fetch("eligible")
+    end
+  end
+
+  def test_review_exception_reauthenticates_raw_failure_and_requires_separate_merge_authority
+    with_review_exception_assessment do |args, _data|
+      result = MergeAssurance.assess(**args)
+      assert_equal true, result.fetch("eligible"), result.inspect
+      assert_equal(%w[failure failure], result.dig("evidence", "ci_result", "scopes", "github_actions", "rows").map { |row| row["conclusion"] })
+      args.fetch(:context)["authority"] = "none"
+      blocked = MergeAssurance.assess(**args)
+      assert_equal false, blocked.fetch("eligible")
+      assert(blocked.fetch("failures").any? { |failure| failure.include?("authority") })
+    end
+  end
+
+  def test_review_exception_assurance_rejects_changed_live_authority_and_forged_or_stale_evidence
+    cases = {
+      "edited exact bytes" => lambda { |_args, data|
+        comment = data.fetch("repos/owner/repo/issues/comments/501")
+        comment["body"] = comment.fetch("body").sub("pr: 123", "pr:  123")
+      },
+      "revoked permission" => ->(_args, data) { data.fetch("repos/owner/repo/collaborators/maintainer/permission")["role_name"] = "write" },
+      "run attempt changed" => ->(_args, data) { data.fetch("repos/owner/repo/actions/runs/42")["run_attempt"] = 2 },
+      "forged raw success" => ->(args, _data) { args[:ci_result].dig("scopes", "github_actions", "rows").first["conclusion"] = "success" },
+      "forged disposition" => ->(args, _data) { args[:ci_result].dig("scopes", "github_actions", "policy_dispositions").first["comment_id"] = 502 },
+      "deleted authority" => ->(args, _data) { args[:ci_result].delete("configured_review_exception") },
+      "deleted raw fallback" => ->(args, _data) { args[:ci_result]["check_rows"] = [] },
+      "stale CI" => ->(args, _data) { args[:ci_result]["checked_at"] = (Time.now.utc - 601).iso8601 },
+      "unresolved security gate" => ->(args, _data) { args[:autonomous_result]["evidence_failures"] = ["security preflight failed"] },
+      "live pending review" => lambda { |_args, data|
+        data["viewer_reviews"] = { "data" => { "repository" => { "pullRequest" => { "reviews" => {
+          "nodes" => [{ "id" => "PRR_pending", "state" => "PENDING", "submittedAt" => nil,
+                        "commit" => { "oid" => "a" * 40 } }],
+          "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+        } } } } }
+      }
+    }
+    cases.each do |label, mutate|
+      with_review_exception_assessment do |args, data|
+        assert_equal true, MergeAssurance.assess(**args).fetch("eligible"), "initial #{label}"
+        mutate.call(args, data)
+        result = MergeAssurance.assess(**args)
+        assert_equal false, result.fetch("eligible"), label
+      end
+    end
+  end
+
+  def test_review_exception_rejects_base_moved_during_authentication_replay
+    with_review_exception_assessment do |args, data|
+      root = args.fetch(:trusted_repo_root)
+      system(PrCiReadiness::SYSTEM_GIT, "-C", root, "commit", "--allow-empty", "-qm", "advance base", exception: true)
+      moved = Open3.capture2(PrCiReadiness::SYSTEM_GIT, "-C", root, "rev-parse", "HEAD").first.strip
+      data.fetch("repos/owner/repo/pulls/123").fetch("base")["sha"] = moved
+      result = MergeAssurance.assess(**args)
+      assert_equal false, result.fetch("eligible")
+      assert_includes result.fetch("failures"), "configured review exception or complete CI inventory no longer matches live evidence"
+    end
+  end
+
   HEAD_SHA = "a" * 40
   BASE_SHA = "b" * 40
   DIFF_IDENTITY = DiffIdentity.derive(
