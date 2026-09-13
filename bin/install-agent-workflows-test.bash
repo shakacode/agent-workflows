@@ -7863,6 +7863,32 @@ test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills() {
   [[ ! -e "$target/skills/pr-batch" ]] || fail "rollback left a new flat skill beside companion metadata"
 }
 
+test_companion_to_flat_upgrade_preserves_unowned_same_named_skill() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion >"$tmp/install.out"
+  printf '[plugins."scw@agent-workflows"]\nenabled = false\n' > "$target/config.toml"
+  mkdir -p "$target/skills/pr-batch"
+  printf 'user-owned replacement\n' > "$target/skills/pr-batch/SKILL.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode flat --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "companion-to-flat upgrade replaced an unowned same-named skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  grep -q 'user-owned replacement' "$target/skills/pr-batch/SKILL.md" || \
+    fail "companion-to-flat rollback did not preserve the unowned same-named skill"
+}
+
 test_failed_flat_upgrade_restores_skill_removed_from_new_source() {
   local tmp source target consumer output exit_code
   tmp="$(mktemp -d)"
@@ -7967,9 +7993,10 @@ WRAP
 }
 
 test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants() {
-  local tmp source target consumer external_bin output status
+  local tmp source next_source target consumer external_bin output status
   tmp="$(mktemp -d)"
   source="$tmp/source"
+  next_source="$tmp/next-source"
   target="$tmp/codex-home"
   consumer="$tmp/consumer"
   external_bin="$tmp/external-bin"
@@ -7980,13 +8007,14 @@ test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants() 
   "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
     >"$tmp/install.out"
   [[ -L "$target/bin" ]] || fail "expected initial bin root symlink"
-  printf '0.1.1\n' > "$source/VERSION"
-  git -C "$source" add VERSION
-  git -C "$source" commit --quiet -m "bump version"
+  git clone --quiet "$source" "$next_source"
+  printf '0.1.1\n' > "$next_source/VERSION"
+  git -C "$next_source" add VERSION
+  git -C "$next_source" commit --quiet -m "bump version"
   printf '# incomplete seam\n' > "$consumer/AGENTS.md"
 
   set +e
-  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+  output="$("$next_source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$next_source" \
     --consumer-root "$consumer" --no-fetch 2>&1)"
   status=$?
   set -e
@@ -7996,6 +8024,8 @@ test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants() 
   [[ -L "$target/bin" ]] || fail "rollback did not restore the bin root symlink"
   [[ "$(readlink "$target/bin")" = "$external_bin" ]] || fail "rollback changed the bin root target"
   [[ -L "$external_bin/agent-workflows-status" ]] || fail "rollback lost a bin helper"
+  [[ "$(readlink "$external_bin/agent-workflows-status")" = "$source/bin/agent-workflows-status" ]] || \
+    fail "rollback did not restore the helper link behind the bin root"
 }
 
 test_failed_upgrade_restores_flat_skill_symlinks_after_copy_mode_switch() {
@@ -9088,6 +9118,7 @@ main() {
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills
+    test_companion_to_flat_upgrade_preserves_unowned_same_named_skill
     test_failed_flat_upgrade_restores_skill_removed_from_new_source
     test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion
     test_flat_skill_snapshot_manifest_excludes_dot_entries

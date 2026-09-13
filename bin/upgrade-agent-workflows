@@ -164,12 +164,23 @@ path_is_within_snapshot_symlink_root() {
   return 1
 }
 
+path_is_snapshot_symlink_root() {
+  local path="${1%/}"
+  local root
+  for root in "${snapshot_symlink_roots[@]}"; do
+    [[ "$path" = "$root" ]] && return 0
+  done
+  return 1
+}
+
 backup_target() {
   backup_dir="$(mktemp -d)"
   backup_target_dir="$backup_dir/target"
   backup_manifest="$backup_dir/managed-paths"
   backup_existing_manifest="$backup_dir/existing-managed-paths"
   backup_symlink_manifest="$backup_dir/managed-symlinks"
+  backup_followed_dir="$backup_dir/followed-symlink-roots"
+  backup_followed_manifest="$backup_dir/followed-symlink-paths"
   target_existed=false
   if [[ -d "$target" ]]; then
     target_existed=true
@@ -254,6 +265,9 @@ backup_target() {
         end
       end
       managed.uniq.each do |path|
+        path = path.delete_suffix("/")
+        target_path = File.join(target, path)
+        path = "#{path}/" if File.directory?(target_path) && !File.symlink?(target_path)
         STDOUT.write(path)
         STDOUT.write("\0")
       end
@@ -270,8 +284,18 @@ backup_target() {
       fi
     done
     : > "$backup_existing_manifest"
+    : > "$backup_followed_manifest"
     while IFS= read -r -d '' path; do
-      path_is_within_snapshot_symlink_root "$path" && continue
+      path_is_snapshot_symlink_root "$path" && continue
+      if path_is_within_snapshot_symlink_root "$path"; then
+        path="${path%/}"
+        printf '%s\0' "$path" >> "$backup_followed_manifest"
+        if [[ -e "$target/$path" || -L "$target/$path" ]]; then
+          mkdir -p "$backup_followed_dir/$(dirname "$path")"
+          cp -a "$target/$path" "$backup_followed_dir/$path"
+        fi
+        continue
+      fi
       if [[ -e "$target/$path" || -L "$target/$path" ]]; then
         printf '%s\0' "$path" >> "$backup_existing_manifest"
       fi
@@ -307,6 +331,15 @@ restore_target() {
         rm -rf -- "${target:?}/$path"
       fi
     done < "$backup_manifest"
+    while IFS= read -r -d '' path; do
+      if [[ -L "$target/$path" || -e "$target/$path" ]]; then
+        rm -rf -- "${target:?}/$path"
+      fi
+      if [[ -L "$backup_followed_dir/$path" || -e "$backup_followed_dir/$path" ]]; then
+        mkdir -p "$(dirname "$target/$path")"
+        cp -a "$backup_followed_dir/$path" "$target/$path"
+      fi
+    done < "$backup_followed_manifest"
   else
     rm -rf "$target"
   fi
