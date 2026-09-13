@@ -341,14 +341,6 @@ module CloseoutEvidenceReplay
     rendered = []
     text.each_line do |line|
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
-      if discard_details_depth
-        details_stack << nil if line.match?(/<details(?:\s|>)/)
-        if line.match?(%r{</details>}) && !details_stack.empty?
-          details_stack.pop
-          discard_details_depth = nil if details_stack.length < discard_details_depth
-        end
-        next
-      end
       if fence
         if opener && opener[:delimiter][0] == fence[0] && opener[:delimiter].length >= fence.length &&
            opener[:info].strip.empty?
@@ -369,6 +361,18 @@ module CloseoutEvidenceReplay
         rendered << line
         next
       end
+      line, html_comment_open = visible_line_without_html_comments(line, open: html_comment_open)
+      next if line.empty?
+
+      opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
+      if discard_details_depth
+        details_stack << nil if line.match?(/<details(?:\s|>)/)
+        if line.match?(%r{</details>}) && !details_stack.empty?
+          details_stack.pop
+          discard_details_depth = nil if details_stack.length < discard_details_depth
+        end
+        next
+      end
       if raw_html_container
         tag = Regexp.escape(raw_html_container.fetch(:tag))
         raw_html_container[:depth] += line.scan(/<#{tag}(?:\s|>)/i).length
@@ -376,9 +380,6 @@ module CloseoutEvidenceReplay
         raw_html_container = nil if raw_html_container.fetch(:depth) <= 0
         next
       end
-      line, html_comment_open = visible_line_without_html_comments(line, open: html_comment_open)
-      next if line.empty?
-
       # CommonMark keeps an unclosed raw code container literal through EOF, so
       # preserving that discard is intentionally fail-closed: later apparent
       # evidence is not rendered authority. Blockquotes are excluded too because

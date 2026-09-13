@@ -77,6 +77,28 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     MARKDOWN
   end
 
+  def visible_qa_details(head_sha:, scope: "visible details regression")
+    <<~MARKDOWN
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: #{scope}
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ```
+      </details>
+    MARKDOWN
+  end
+
   def hosted_v1_marker
     <<~MARKDOWN
       <!-- hosted-qa-evidence v1
@@ -556,26 +578,39 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       <!-- literal example text without a closing comment delimiter
       ```
 
-      <details>
-      <summary>QA evidence</summary>
-
-      ```text
-      qa-evidence v1
-      required: yes
-      status: satisfied
-      head_sha: #{head_sha}
-      tested_at: PR #123 head #{head_sha}
-      scope: fenced literal comment regression
-      automated_checks: bin/validate
-      manual_checks: browser path
-      findings: none
-      release_blocking: clear
-      process_gap_disposition: schema
-      ```
-      </details>
+      #{visible_qa_details(head_sha:, scope: 'fenced literal comment regression')}
     MARKDOWN
 
     assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
+  def test_html_comment_cannot_close_a_raw_blockquote_before_visible_evidence
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <blockquote>
+      <!-- </blockquote> -->
+      #{visible_qa_details(head_sha:, scope: 'commented blockquote closer')}
+      </blockquote>
+    MARKDOWN
+
+    assert_equal "UNKNOWN", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
+  def test_html_comment_cannot_close_a_discarded_nested_details_example
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      <details>
+      <summary>Example</summary>
+      <!-- </details> -->
+      #{visible_qa_details(head_sha:, scope: 'commented nested details closer')}
+      </details>
+      </details>
+    MARKDOWN
+
+    assert_equal "UNKNOWN", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
   end
 
   def test_unclosed_html_comment_hides_visible_evidence
