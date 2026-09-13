@@ -84,8 +84,10 @@ and use the conservative outcome defined below.
    failure logs and history for the failure identity, then record the local
    result separately. An equivalent hosted invocation has matching controlled
    invocation parameters and selected or known pre-run hosted environment
-   identity—event, inputs, matrix, runner image, toolchain/runtime, and relevant
-   environment or configuration selection—not runtime behavior or outcomes. If
+   identity—event, trigger ref, inputs, matrix, runner image, toolchain/runtime,
+   and relevant environment or configuration selection—not runtime behavior or
+   outcomes. If the GitHub Actions `headBranch` value cannot establish the exact
+   runtime `github.ref`, record the trigger-ref dimension as `UNKNOWN`. If
    equivalence is unverifiable,
    exit 3 does not fire. Record `UNKNOWN`, do not classify or route the failure,
    and continue only evidence collection that does not depend on a
@@ -230,6 +232,11 @@ this workflow, not results.
 
 Both skills start from a hosted CI failure. First establish hosted history for
 the exact failure identity, then record local behavior as a separate fact.
+Invocation equivalence requires matching event, trigger ref, inputs, matrix,
+runner image, toolchain/runtime, and relevant environment or configuration
+selection. It compares those pre-run facts, not runtime behavior or outcomes.
+If the GitHub Actions `headBranch` value cannot establish the exact runtime
+`github.ref`, record the trigger-ref dimension as `UNKNOWN`.
 Local-green evidence is required only for a deterministic hosted/local parity
 gap:
 
