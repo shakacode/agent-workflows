@@ -7807,13 +7807,15 @@ RUBY
 }
 
 test_failed_upgrade_removes_new_migration_recovery_artifacts() {
-  local tmp source target consumer wrap output status receipt staging
+  local tmp source target real_target consumer wrap output status receipt staging
   tmp="$(mktemp -d)"
   source="$tmp/source"
-  target="$tmp/claude-home"
+  target="$tmp/claude-home-link"
+  real_target="$tmp/claude-home"
   consumer="$tmp/consumer"
   wrap="$tmp/wrap"
-  mkdir -p "$source" "$consumer" "$wrap"
+  mkdir -p "$source" "$real_target" "$consumer" "$wrap"
+  ln -s "$real_target" "$target"
   new_source_repo "$source"
   "$source/bin/install-agent-workflows" --host claude --target "$target" --mode copy >"$tmp/install.out"
   write_native_scw_state claude "$target"
@@ -8173,6 +8175,73 @@ PATCH
     fail "rollback reverted a consumer-owned workflow"
 }
 
+test_failed_upgrade_preserves_consumer_owned_legacy_guide() {
+  local tmp source target guide output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  guide="$target/docs/model-routing.md"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  printf 'consumer-owned before upgrade\n' > "$guide"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+printf 'consumer-owned edit during upgrade\n' > $(printf '%q' "$guide")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$guide")" = "consumer-owned edit during upgrade" ]] || \
+    fail "rollback reverted a consumer-owned legacy guide"
+}
+
+test_failed_upgrade_restores_installer_owned_legacy_guide() {
+  local tmp source target guide legacy_revision output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  guide="$target/docs/model-routing.md"
+  mkdir -p "$source"
+  legacy_revision="$(new_source_repo_with_legacy_model_routing_history "$source")"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  git -C "$source" show "$legacy_revision:docs/model-routing.md" > "$guide"
+  ruby -rjson -e '
+    path, revision = ARGV
+    metadata = JSON.parse(File.binread(path))
+    metadata["source_revision"] = revision
+    File.write(path, JSON.generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json" "$legacy_revision"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+"$(dirname "$0")/install-agent-workflows-real" "$@"
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  cmp -s "$guide" <(git -C "$source" show "$legacy_revision:docs/model-routing.md") || \
+    fail "rollback did not restore an installer-owned legacy guide"
+}
+
 test_upgrade_snapshot_ignores_unmanaged_metadata_root() {
   local tmp source target consumer wrap real_rsync marker output status
   tmp="$(mktemp -d)"
@@ -8408,6 +8477,81 @@ test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants() 
   [[ -L "$external_bin/agent-workflows-status" ]] || fail "rollback lost a bin helper"
   [[ "$(readlink "$external_bin/agent-workflows-status")" = "$source/bin/agent-workflows-status" ]] || \
     fail "rollback did not restore the helper link behind the bin root"
+}
+
+test_failed_copy_upgrade_does_not_restore_through_symlinked_bin_root() {
+  local tmp source target external_bin helper output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external_bin="$tmp/external-bin"
+  helper="$external_bin/agent-workflows-status"
+  mkdir -p "$source" "$target" "$external_bin"
+  ln -s "$external_bin" "$target/bin"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+  [[ -L "$helper" ]] || fail "expected initial helper link behind bin root"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+rm -f $(printf '%q' "$helper")
+printf 'external edit during upgrade\n' > $(printf '%q' "$helper")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --mode copy --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected copy-mode upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/bin" && "$(readlink "$target/bin")" = "$external_bin" ]] || \
+    fail "rollback did not restore the bin root symlink"
+  [[ ! -L "$helper" && "$(cat "$helper")" = "external edit during upgrade" ]] || \
+    fail "rollback changed external bin content that copy mode did not touch"
+}
+
+test_failed_copy_upgrade_does_not_restore_through_symlinked_skills_root() {
+  local tmp source target external_skills skill output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external_skills="$tmp/external-skills"
+  skill="$external_skills/pr-batch"
+  mkdir -p "$source" "$target" "$external_skills"
+  ln -s "$external_skills" "$target/skills"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+  [[ -L "$skill" ]] || fail "expected initial skill link behind skills root"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+rm -f $(printf '%q' "$skill")
+mkdir $(printf '%q' "$skill")
+printf 'external edit during upgrade\n' > $(printf '%q' "$skill/SKILL.md")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --mode copy --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected copy-mode upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/skills" && "$(readlink "$target/skills")" = "$external_skills" ]] || \
+    fail "rollback did not restore the skills root symlink"
+  [[ ! -L "$skill" && "$(cat "$skill/SKILL.md")" = "external edit during upgrade" ]] || \
+    fail "rollback changed external skills content that copy mode did not touch"
 }
 
 test_failed_upgrade_restores_flat_skill_symlinks_after_copy_mode_switch() {
@@ -9510,6 +9654,8 @@ main() {
     test_failed_upgrade_removes_new_empty_container_directories
     test_upgrade_snapshot_managed_lists_match_installer
     test_failed_upgrade_preserves_consumer_owned_workflow
+    test_failed_upgrade_preserves_consumer_owned_legacy_guide
+    test_failed_upgrade_restores_installer_owned_legacy_guide
     test_upgrade_snapshot_ignores_unmanaged_metadata_root
     test_failed_symlink_upgrade_removes_new_workflows_root_before_children
     test_failed_repeat_symlink_upgrade_does_not_replace_source_workflows
@@ -9517,6 +9663,8 @@ main() {
     test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion
     test_flat_skill_snapshot_manifest_excludes_dot_entries
     test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants
+    test_failed_copy_upgrade_does_not_restore_through_symlinked_bin_root
+    test_failed_copy_upgrade_does_not_restore_through_symlinked_skills_root
     test_failed_upgrade_restores_flat_skill_symlinks_after_copy_mode_switch
     test_upgrade_validates_consumer_root_after_install
   )

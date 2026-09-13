@@ -181,7 +181,8 @@ path_is_within_traversed_snapshot_symlink_root() {
     # directory symlinks are replaced as leaves before descendant writes.
     case "$root" in
       bin|skills)
-        [[ "$path" = "$root" || "$path" = "$root/"* ]] && return 0
+        [[ "$mode" = "symlink" ]] &&
+          [[ "$path" = "$root" || "$path" = "$root/"* ]] && return 0
         ;;
     esac
   done
@@ -205,6 +206,7 @@ backup_target() {
   target_existed=false
   if [[ -d "$target" ]]; then
     target_existed=true
+    backup_canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
     if [[ -e "$target/.agent-workflows-migration-staging" ||
           -L "$target/.agent-workflows-migration-staging" ]]; then
       migration_receipt_existed=true
@@ -268,7 +270,6 @@ backup_target() {
         ".agent-workflows-install.lock/",
         "LICENSE",
         "THIRD_PARTY-NOTICES.md",
-        "docs/model-routing.md",
         "bin/agent_doctor/"
       ]
       managed.concat(bin_helpers.map { |name| "bin/#{name}" })
@@ -298,6 +299,32 @@ backup_target() {
         recorded_git_root &&
           system("git", "-C", recorded_git_root, "cat-file", "-e", "#{revision}:#{path}", out: File::NULL, err: File::NULL)
       end
+      legacy_guide = File.join(target, "docs/model-routing.md")
+      legacy_guide_owned = if File.symlink?(legacy_guide)
+        previous_source = metadata["source"]
+        [source, previous_source].compact.map { |root| File.join(root, "docs/model-routing.md") }
+          .include?(File.readlink(legacy_guide))
+      elsif File.file?(legacy_guide)
+        expected_contents = []
+        if revision.to_s.match?(/\A[0-9a-f]{40}\z/i)
+          roots.each do |root|
+            next unless File.directory?(root)
+            contents = IO.popen(
+              ["git", "-C", root, "show", "#{revision}:docs/model-routing.md"],
+              err: File::NULL,
+              &:read
+            )
+            expected_contents << contents.b if $?.success?
+          end
+        end
+        previous_source = metadata["source"]
+        previous_guide = File.join(previous_source, "docs/model-routing.md") if previous_source.is_a?(String)
+        expected_contents << File.binread(previous_guide) if previous_guide && File.file?(previous_guide)
+        expected_contents.include?(File.binread(legacy_guide))
+      else
+        false
+      end
+      managed << "docs/model-routing.md" if legacy_guide_owned
       {
         "managed_skill_copy_fingerprints" => "skills/",
         "managed_pack_doc_copy_fingerprints" => "docs/",
@@ -399,7 +426,8 @@ backup_target() {
 
 cleanup_new_migration_staging() {
   [[ "${migration_receipt_existed:-false}" != "true" ]] || return 0
-  local receipt="$target/.agent-workflows-migration-staging"
+  local cleanup_target="${backup_canonical_target:-$target}"
+  local receipt="$cleanup_target/.agent-workflows-migration-staging"
   [[ -e "$receipt" || -L "$receipt" ]] || return 0
 
   ruby -rfileutils -e '
@@ -425,7 +453,7 @@ cleanup_new_migration_staging() {
                  current_receipt_stat.ino == receipt_stat.ino &&
                  File.binread(receipt) == receipt_contents
     File.unlink(receipt)
-  ' "$target" "$receipt"
+  ' "$cleanup_target" "$receipt"
 }
 
 restore_target() {
