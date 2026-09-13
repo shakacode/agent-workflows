@@ -144,6 +144,23 @@ mechanism:
 If a host lacks a mechanism for the requested verb, stop with a precise blocker
 instead of silently weakening the workflow.
 
+### Managed Task Titles
+
+Task naming is an optional presentation capability governed by
+[Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection)
+and its [Verified In-Place Rename Lifecycle](../../workflows/pr-batch-intake.md#verified-in-place-rename-lifecycle).
+Availability-check creation-time titles, in-place rename by durable task ID,
+and title readback separately. Apply the verified title on creation/adoption;
+reconcile the same managed task after PR creation, supersession, and resume.
+Do not claim a successful rename without readback, or rename again when the
+title is already correct. Preserve explicit user overrides.
+
+Unlike a missing required execution verb, unsupported or failed rename is
+non-blocking. Keep the existing task and launch mode, record its intended title
+and the precise limitation in the existing Batch Plan or handoff, and retry only
+at normal reconciliation. Never create a replacement task to obtain a title.
+This contract adds no host-specific title service or tracking subsystem.
+
 ## Scheduled Monitoring and Planning-Chat Lifecycle
 
 The portable completion contract prefers one deduplicated deterministic
