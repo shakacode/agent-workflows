@@ -437,9 +437,13 @@ class PostMergeAuditPolicyTest < Minitest::Test
                "completed-batch-only guard must present the receipt as a four-space-indented Markdown example"
     marker_contents = indented_marker_block[:contents]
     assert_match(%r{^    🤖 Codex .+\n\n    <details>\n    <summary>Completed-batch audit receipt</summary>\n}m, marker_contents)
+    receipt_record = marker_contents.match(%r{^    ```text\n(?<contents>.*?)^    ```\n    </details>\n}m)
+    refute_nil receipt_record,
+               "receipt example must contain a closed inner text fence before its disclosure closes"
+    record_contents = receipt_record[:contents]
     [COMPLETED_BATCH_AUDIT_MARKER_HEADER, "batch_id:", "audit_status:", "verdict:", "scope_evidence:",
      "checker_evidence:", "findings:", "followups_dispositions:"].each do |field|
-      assert_includes marker_contents, "    #{field}", "receipt example must retain #{field.inspect}"
+      assert_includes record_contents, "    #{field}", "receipt record must retain #{field.inspect}"
     end
     assert_includes marker_contents, "    </details>"
     assert_includes body, "publication_snapshot"
