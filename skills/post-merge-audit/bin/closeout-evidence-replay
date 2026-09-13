@@ -405,7 +405,7 @@ module CloseoutEvidenceReplay
   def structural_html_tag(token)
     tag = token.fetch(:text)
     match = tag.match(%r{\A<(?<closing>/)?(?<tag>[A-Za-z][A-Za-z0-9:-]*)(?=\s|/?>)}i)
-    return unless match && STRUCTURAL_HTML_TAGS.include?(match[:tag].downcase)
+    return unless match
 
     [match[:closing] ? :close : :open, match[:tag].downcase, nil, token.fetch(:indented_code_origin)]
   end
@@ -428,7 +428,7 @@ module CloseoutEvidenceReplay
         break unless opening
 
         remaining = line[opening..]
-        if (summary = remaining.match(%r{\A<summary>(?<text>[^<]+)</summary>}i))
+        if (summary = remaining.match(%r{\A<summary>(?<text>[^<]*)</summary>}i))
           tags << [:summary, "summary", summary[:text].strip]
           index = opening + summary[0].length
           next
@@ -487,9 +487,23 @@ module CloseoutEvidenceReplay
       when "details"
         [type, nil]
       when "summary"
-        [:summary, text] if type == :summary
+        if type == :summary
+          [:summary, text]
+        elsif type == :open
+          [:summary_element, nil]
+        end
+      else
+        [type == :open ? :html_open : :html_close, tag]
       end
     end
+  end
+
+  def details_entry
+    { label: nil, summary_seen: false, html_children: [] }
+  end
+
+  def direct_details_child?(entry)
+    entry.fetch(:html_children).empty?
   end
 
   def advance_details_stack(details_stack, discard_details_depth, tags)
@@ -497,7 +511,7 @@ module CloseoutEvidenceReplay
       if discard_details_depth
         case type
         when :open
-          details_stack << nil
+          details_stack << details_entry
         when :close
           details_stack.pop unless details_stack.empty?
           discard_details_depth = nil if details_stack.length < discard_details_depth
@@ -510,16 +524,36 @@ module CloseoutEvidenceReplay
         # PR bodies place trusted evidence directly in the canonical Agent
         # details disclosure. Deeper nested details remain explanatory examples
         # and cannot grant authority.
-        if details_stack.empty? || (details_stack.length == 1 && details_stack.last == "Agent details")
-          details_stack << nil
+        if details_stack.empty? || (details_stack.length == 1 && details_stack.last.fetch(:label) == "Agent details")
+          details_stack << details_entry
         else
-          details_stack << nil
+          details_stack << details_entry
           discard_details_depth = details_stack.length
         end
       when :summary
-        # The first summary labels a disclosure. A later summary is ordinary
-        # disclosure content and must not relabel an explanatory example.
-        details_stack[-1] = text if !details_stack.empty? && details_stack[-1].nil?
+        next if details_stack.empty?
+
+        entry = details_stack.last
+        # Only the first direct-child summary labels a disclosure. An empty or
+        # nested first summary still consumes that slot, as GitHub supplies a
+        # default direct summary instead of promoting a later nested one.
+        unless entry.fetch(:summary_seen)
+          entry[:summary_seen] = true
+          entry[:label] = text if direct_details_child?(entry)
+        end
+      when :summary_element
+        next if details_stack.empty?
+
+        entry = details_stack.last
+        entry[:summary_seen] = true unless entry.fetch(:summary_seen)
+      when :html_open
+        details_stack.last.fetch(:html_children) << text unless details_stack.empty?
+      when :html_close
+        next if details_stack.empty?
+
+        children = details_stack.last.fetch(:html_children)
+        index = children.rindex(text)
+        children.delete_at(index) if index
       when :close
         details_stack.pop unless details_stack.empty?
       end
@@ -529,17 +563,22 @@ module CloseoutEvidenceReplay
   end
 
   def advance_raw_html_containers(raw_html_containers, structural_tags, line)
+    raw_html_containers.each do |container|
+      container[:blank_since_open] ||= line.strip.empty?
+    end
+
     structural_tags.each do |type, tag, _text, indented_origin|
       next unless raw_html_tag?(tag)
 
       if type == :open
         # A split tag retains the context of its opening '<'. An indented
         # completion must not turn a real opener into a synthetic one.
-        raw_html_containers << { tag:, synthetic: indented_origin }
+        raw_html_containers << { tag:, synthetic: indented_origin, blank_since_open: false }
       elsif type == :close
         index = raw_html_containers.rindex do |current|
           current.fetch(:tag) == tag &&
-            (!(indented_code_line?(line) || indented_origin) || current.fetch(:synthetic))
+            (!(indented_code_line?(line) || indented_origin) || current.fetch(:synthetic) ||
+              !current.fetch(:blank_since_open))
         end
         raw_html_containers.delete_at(index) if index
       end
@@ -623,6 +662,7 @@ module CloseoutEvidenceReplay
       )
       next if structural_line.empty?
 
+      continuing_html_tag = !open_html_tag.nil?
       structural_tags, open_html_tag = structural_html_tags(structural_line, open_tag: open_html_tag)
       current_details_tags = details_tags(visible_disclosure_tags(structural_tags, line))
       if discard_details_depth
@@ -642,7 +682,7 @@ module CloseoutEvidenceReplay
         # The record itself is the exact ```text fence inside a visible
         # disclosure. Every other Markdown fence is an outer example, even
         # when nested in a descriptive details block.
-        if evidence_summaries.include?(details_stack.last) &&
+        if evidence_summaries.include?(details_stack.last&.fetch(:label, nil)) &&
            opener[:delimiter] == "```" && opener[:info].strip == "text"
           record_fence = true
           rendered << line
@@ -653,7 +693,7 @@ module CloseoutEvidenceReplay
       end
       # A blockquote nested in an otherwise canonical disclosure is still an
       # example, not an authoritative published record.
-      next if line.match?(/\A[ \t]{0,3}>/)
+      next if line.match?(/\A[ \t]{0,3}>/) && !continuing_html_tag
 
       discard_details_depth = advance_details_stack(details_stack, discard_details_depth, current_details_tags)
       next if discard_details_depth

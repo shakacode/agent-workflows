@@ -709,6 +709,19 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
+  def test_indented_raw_closer_closes_an_active_raw_block_before_a_blank_boundary
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <blockquote>
+      text
+          </blockquote>
+
+      #{visible_qa_details(head_sha:, scope: 'indented raw closer before blank boundary')}
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
   def test_split_real_raw_opener_stays_real_after_an_indented_completion
     head_sha = "1" * 40
     indent = "    "
@@ -741,6 +754,38 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
     assert_equal "UNKNOWN", evidence.fetch("verdict")
     assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_only_the_first_direct_details_summary_can_label_agent_details
+    head_sha = "1" * 40
+    invalid_prefixes = [
+      "<summary></summary>\n<summary>Agent details</summary>",
+      "<div>\n<summary>Agent details</summary>\n</div>",
+      "<summary\n>Example</summary>\n<summary>Agent details</summary>",
+      "<summary><strong>Example</strong></summary>\n<summary>Agent details</summary>"
+    ]
+
+    invalid_prefixes.each do |prefix|
+      body = <<~MARKDOWN
+        <details>
+        #{prefix}
+        #{visible_qa_details(head_sha:, scope: 'noncanonical first details summary')}
+        </details>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), prefix
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", prefix
+    end
+
+    canonical = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+      #{visible_qa_details(head_sha:, scope: 'direct first details summary')}
+      </details>
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(canonical, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
   end
 
   def test_indented_balanced_raw_tags_do_not_create_permanent_containment
