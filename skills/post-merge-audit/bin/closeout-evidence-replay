@@ -403,59 +403,62 @@ module CloseoutEvidenceReplay
     [rendered, code_delimiter]
   end
 
-  def html_tag_end(line, start_index)
-    quote = nil
-    index = start_index + 1
-    while index < line.length
-      character = line[index]
-      if quote
-        quote = nil if character == quote
-      elsif ['"', "'"].include?(character)
-        quote = character
-      elsif character == ">"
-        return index
-      end
-      index += 1
-    end
-  end
-
   RAW_HTML_TAGS = %w[pre code script style textarea blockquote].freeze
   STRUCTURAL_HTML_TAGS = (%w[details summary] + RAW_HTML_TAGS).freeze
-  STRUCTURAL_HTML_TAG_PATTERN = STRUCTURAL_HTML_TAGS.map { |tag| Regexp.escape(tag) }.join("|").freeze
 
   def raw_html_tag?(tag)
     RAW_HTML_TAGS.include?(tag)
   end
 
-  def structural_html_tags(line)
-    tags = []
-    index = 0
-    while (opening = line.index("<", index))
-      remaining = line[opening..]
-      if (summary = remaining.match(%r{\A<summary>(?<text>[^<]+)</summary>}i))
-        tags << [:summary, "summary", summary[:text].strip]
-        index = opening + summary[0].length
-        next
-      end
+  def structural_html_tag(token)
+    tag = token.fetch(:text)
+    match = tag.match(%r{\A<(?<closing>/)?(?<tag>[A-Za-z][A-Za-z0-9:-]*)(?=\s|/?>)}i)
+    return unless match && STRUCTURAL_HTML_TAGS.include?(match[:tag].downcase)
 
-      tag_match = remaining.match(%r{\A<(?<closing>/)?(?<tag>#{STRUCTURAL_HTML_TAG_PATTERN})(?=\s|>)}i)
-      unless tag_match
-        index = opening + 1
-        next
-      end
-
-      ending = html_tag_end(line, opening)
-      break unless ending
-
-      type = tag_match[:closing] ? :close : :open
-      tags << [type, tag_match[:tag].downcase, nil]
-      index = ending + 1
-    end
-    tags
+    [match[:closing] ? :close : :open, match[:tag].downcase, nil]
   end
 
-  def details_tags(line)
-    structural_html_tags(line).filter_map do |type, tag, text|
+  def structural_html_tags(line, open_tag: nil)
+    tags = []
+    index = 0
+    while index < line.length
+      unless open_tag
+        opening = line.index("<", index)
+        break unless opening
+
+        remaining = line[opening..]
+        if (summary = remaining.match(%r{\A<summary>(?<text>[^<]+)</summary>}i))
+          tags << [:summary, "summary", summary[:text].strip]
+          index = opening + summary[0].length
+          next
+        end
+
+        open_tag = { text: +"<", quote: nil }
+        index = opening + 1
+      end
+
+      while index < line.length
+        character = line[index]
+        open_tag[:text] << character
+        if open_tag[:quote]
+          open_tag[:quote] = nil if character == open_tag[:quote]
+        elsif ['"', "'"].include?(character)
+          open_tag[:quote] = character
+        elsif character == ">"
+          tag = structural_html_tag(open_tag)
+          tags << tag if tag
+          open_tag = nil
+          index += 1
+          break
+        end
+        index += 1
+      end
+    end
+    [tags, open_tag]
+  end
+
+  def details_tags(structural_tags)
+    structural_tags.filter_map do |type, tag, text|
       case tag
       when "details"
         [type, nil]
@@ -465,8 +468,8 @@ module CloseoutEvidenceReplay
     end
   end
 
-  def advance_details_stack(details_stack, discard_details_depth, line)
-    details_tags(line).each do |type, text|
+  def advance_details_stack(details_stack, discard_details_depth, tags)
+    tags.each do |type, text|
       if discard_details_depth
         case type
         when :open
@@ -505,6 +508,7 @@ module CloseoutEvidenceReplay
     discard_details_depth = nil
     raw_html_container = nil
     html_comment_open = false
+    open_html_tag = nil
     inline_code_delimiter = nil
     details_stack = []
     evidence_summaries = ["QA evidence", "Hosted QA evidence", "Priority finding dispositions"]
@@ -542,9 +546,10 @@ module CloseoutEvidenceReplay
         remaining_text: inline_code_lookahead(lines, line_index + 1),
         allow_new_code_span: opener.nil?
       )
-      structural_tags = structural_html_tags(structural_line)
+      structural_tags, open_html_tag = structural_html_tags(structural_line, open_tag: open_html_tag)
+      current_details_tags = details_tags(structural_tags)
       if discard_details_depth
-        discard_details_depth = advance_details_stack(details_stack, discard_details_depth, structural_line)
+        discard_details_depth = advance_details_stack(details_stack, discard_details_depth, current_details_tags)
         next
       end
       if raw_html_container
@@ -585,7 +590,7 @@ module CloseoutEvidenceReplay
       # example, not an authoritative published record.
       next if line.match?(/\A[ \t]{0,3}>/)
 
-      discard_details_depth = advance_details_stack(details_stack, discard_details_depth, structural_line)
+      discard_details_depth = advance_details_stack(details_stack, discard_details_depth, current_details_tags)
       next if discard_details_depth
 
       rendered << line

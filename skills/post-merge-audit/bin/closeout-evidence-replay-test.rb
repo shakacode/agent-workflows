@@ -766,6 +766,50 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_unrecognized_html_tag_attributes_cannot_close_a_nested_example
+    head_sha = "1" * 40
+    [
+      '<span title="</details>">Text</span>',
+      "<div data-note='</details>'>Text</div>"
+    ].each do |literal_tag|
+      body = <<~MARKDOWN
+        <details>
+        <summary>Agent details</summary>
+
+        <details>
+        <summary>Example</summary>
+        #{literal_tag}
+        #{visible_qa_details(head_sha:, scope: 'unrecognized HTML tag')}
+        </details>
+        </details>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), literal_tag
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", literal_tag
+    end
+  end
+
+  def test_multiline_quoted_details_attributes_remain_nested
+    head_sha = "1" * 40
+    [["\"", "\""], ["'", "'"]].each do |opening_quote, closing_quote|
+      body = <<~MARKDOWN
+        <details>
+        <summary>Agent details</summary>
+
+        <details title=#{opening_quote}x>
+        </details>#{closing_quote}>
+        #{visible_qa_details(head_sha:, scope: 'multiline quoted details attribute')}
+        </details>
+        </details>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), opening_quote
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", opening_quote
+    end
+  end
+
   def test_unmatched_backticks_do_not_cross_paragraph_or_raw_html_boundaries
     head_sha = "1" * 40
     body = <<~MARKDOWN
