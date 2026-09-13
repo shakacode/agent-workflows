@@ -407,6 +407,16 @@ module CloseoutEvidenceReplay
     RAW_TEXT_HTML_TAGS.include?(tag)
   end
 
+  def active_raw_text_closer(line, raw_html_containers, html_comment_open:)
+    return if html_comment_open
+
+    tag = raw_html_containers.reverse.find { |container| raw_text_html_tag?(container.fetch(:tag)) }&.fetch(:tag)
+    return unless tag
+
+    uncommented = line.gsub(/<!--.*?(?:-->|\z)/, "")
+    tag if uncommented.match?(%r{</#{Regexp.escape(tag)}\s*>}i)
+  end
+
   def structural_html_tag(token)
     tag = token.fetch(:text)
     match = tag.match(%r{\A<(?<closing>/)?(?<tag>[A-Za-z][A-Za-z0-9:-]*)(?=\s|/?>)}i)
@@ -664,6 +674,7 @@ module CloseoutEvidenceReplay
         next
       end
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
+      html_comment_was_open = html_comment_open
       structural_line, inline_code_delimiter, html_comment_open = html_context_line(
         line,
         code_delimiter: inline_code_delimiter,
@@ -671,15 +682,30 @@ module CloseoutEvidenceReplay
         remaining_text: inline_code_lookahead(lines, line_index + 1),
         allow_new_code_span: opener.nil?
       )
-      next if structural_line.empty?
+      raw_text_closer = active_raw_text_closer(
+        line,
+        raw_html_containers,
+        html_comment_open: html_comment_was_open
+      )
+      next if structural_line.empty? && !raw_text_closer
 
       continuing_html_tag = !open_html_tag.nil?
       structural_tags, open_html_tag = structural_html_tags(structural_line, open_tag: open_html_tag)
+      if raw_text_closer && structural_tags.none? { |type, tag, *_| type == :close && tag == raw_text_closer }
+        structural_tags << [:close, raw_text_closer, nil, indented_code_line?(line)]
+      end
       current_details_tags = details_tags(visible_disclosure_tags(structural_tags, line))
       if discard_details_depth
         discard_details_depth = advance_details_stack(details_stack, discard_details_depth, current_details_tags)
         next
       end
+      # A label is valid only when it is the first rendered direct child. Mark
+      # visible Markdown before fence, quote, or raw-HTML branches can skip it.
+      mark_details_summary_content(details_stack, structural_line)
+      discard_details_depth = advance_details_stack(details_stack, discard_details_depth, current_details_tags)
+      next if discard_details_depth
+
+      mark_details_summary_content(details_stack, structural_line)
       # CommonMark keeps an unclosed raw code container literal through EOF, so
       # preserving that discard is intentionally fail-closed: later apparent
       # evidence is not rendered authority. Blockquotes are excluded too because
@@ -706,12 +732,8 @@ module CloseoutEvidenceReplay
       # example, not an authoritative published record.
       next if line.match?(/\A[ \t]{0,3}>/) && !continuing_html_tag
 
-      discard_details_depth = advance_details_stack(details_stack, discard_details_depth, current_details_tags)
-      next if discard_details_depth
-
       next if indented_disclosure_code_line?(line)
 
-      mark_details_summary_content(details_stack, structural_line)
       rendered << line
     end
     rendered.join

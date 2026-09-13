@@ -747,6 +747,37 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_active_raw_text_closers_are_not_hidden_by_markdown_literals
+    %w[pre script style textarea].each do |tag|
+      ["`</#{tag}>`", "\\</#{tag}>"].each do |literal_closer|
+        head_sha = "1" * 40
+        body = <<~MARKDOWN
+          <#{tag}>
+          text
+
+          #{literal_closer}
+
+          #{visible_qa_details(head_sha:, scope: "#{tag} literal raw-text closer")}
+        MARKDOWN
+
+        assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"),
+                     "#{tag}: #{literal_closer}"
+      end
+
+      head_sha = "1" * 40
+      commented = <<~MARKDOWN
+        <#{tag}>
+        text
+
+        <!-- </#{tag}> -->
+
+        #{visible_qa_details(head_sha:, scope: "#{tag} commented raw-text closer")}
+      MARKDOWN
+
+      assert_equal "UNKNOWN", run_replay(commented, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), tag
+    end
+  end
+
   def test_split_real_raw_opener_stays_real_after_an_indented_completion
     head_sha = "1" * 40
     indent = "    "
@@ -818,7 +849,9 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     invalid_prefixes = [
       "<div></div>\n<summary>Agent details</summary>",
       "<div>\n\n    </div>\n<summary>Agent details</summary>",
-      "Explanatory text.\n<summary>Agent details</summary>"
+      "Explanatory text.\n<summary>Agent details</summary>",
+      "```text\nexample\n```\n<summary>Agent details</summary>",
+      "> quoted content\n<summary>Agent details</summary>"
     ]
 
     invalid_prefixes.each do |prefix|
@@ -845,6 +878,16 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     MARKDOWN
 
     assert_equal "SATISFIED", run_replay(whitespace_only, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+
+    comment_only = <<~MARKDOWN
+      <details>
+      <!-- explanatory comment -->
+      <summary>Agent details</summary>
+      #{visible_qa_details(head_sha:, scope: 'comment before direct details summary')}
+      </details>
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(comment_only, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
   end
 
   def test_indented_balanced_raw_tags_do_not_create_permanent_containment
