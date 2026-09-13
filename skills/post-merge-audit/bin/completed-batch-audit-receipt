@@ -1461,7 +1461,7 @@ module CompletedBatchAuditReceipt
 
     CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       preflight,
-      coordination_backend: trusted_backend,
+      coordination_backend:,
       trusted_applicability:,
       trusted_applicability_digest:,
       waiver_verifier: method(:authenticated_publication_waiver_comment),
@@ -1662,8 +1662,10 @@ module CompletedBatchAuditReceipt
     config = YAML.safe_load(File.read(workflow_config, encoding: "UTF-8"), aliases: false)
     raise Error, "workflow config must be a mapping" unless config.is_a?(Hash)
 
-    backend = CompletedBatchPublicationPreflight.normalized_known_string(config["coordination_backend"])
-    raise Error, "workflow config coordination_backend is missing or invalid" unless backend
+    backend = config["coordination_backend"]
+    unless CompletedBatchPublicationPreflight.normalized_known_string(backend)
+      raise Error, "workflow config coordination_backend is missing or invalid"
+    end
 
     backend
   rescue Psych::Exception, SystemCallError => e

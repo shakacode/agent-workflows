@@ -332,8 +332,20 @@ module PushDownstream
     policy = layer.delete("policy") || layer
     contract[:commands].merge!(commands)
     contract[:policy].merge!(policy)
+    reconcile_coordination_backend_contract!(contract[:policy], policy)
     contract[:trust_configured] ||= trust_configured
     merge_trust_config!(contract[:trust], trust)
+  end
+
+  def reconcile_coordination_backend_contract!(merged_policy, source_policy)
+    return unless source_policy.key?("coordination_backend")
+    return if source_policy.key?("coordination_backend_contract")
+
+    contract = merged_policy["coordination_backend_contract"]
+    allowed = contract.is_a?(Hash) ? contract["allowed_identifiers"] : nil
+    return if allowed.is_a?(Array) && allowed.include?(source_policy.fetch("coordination_backend"))
+
+    merged_policy.delete("coordination_backend_contract")
   end
 
   def stringify_keys(value)
@@ -549,7 +561,12 @@ module PushDownstream
     path = File.join(root, ".agents/agent-workflow.yml")
     existing = File.file?(path) ? AgentWorkflowSeamDoctor.load_policy_config(path) : {}
     legacy = legacy_agents_policy(root)
-    merged = minimum_policy(policy.fetch("base_branch", "main")).merge(policy).merge(legacy).merge(existing)
+    merged = minimum_policy(policy.fetch("base_branch", "main"))
+    [policy, legacy, existing].each do |source_policy|
+      source_policy = stringify_keys(source_policy)
+      merged.merge!(source_policy)
+      reconcile_coordination_backend_contract!(merged, source_policy)
+    end
     write_if_changed(path, "#{merged.to_yaml}\n")
   end
 

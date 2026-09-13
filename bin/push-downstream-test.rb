@@ -784,6 +784,78 @@ class PushDownstreamSecurityAuditFleetTest < Minitest::Test
 end
 
 class PushDownstreamAdapterTest < Minitest::Test
+  PRIVATE_COORDINATION_BACKEND = "agent-coord private backend"
+  PRIVATE_COORDINATION_BACKEND_CONTRACT = {
+    "version" => 1,
+    "allowed_identifiers" => [PRIVATE_COORDINATION_BACKEND]
+  }.freeze
+
+  def test_shipped_default_uses_the_closed_agent_coord_backend_contract
+    presets = PushDownstream.load_presets(File.expand_path("../seam-presets.yml", __dir__))
+    repo = { repo: "consumer", base_branch: "main", preset: nil, overrides: {} }
+
+    policy = PushDownstream.resolve_contract(repo, presets).fetch(:policy)
+
+    assert_equal "agent-coord private backend", policy.fetch("coordination_backend")
+    assert_equal(
+      {
+        "version" => 1,
+        "allowed_identifiers" => ["agent-coord private backend"]
+      },
+      policy.fetch("coordination_backend_contract")
+    )
+  end
+
+  def test_per_repo_backend_override_discards_an_incompatible_inherited_contract
+    presets = {
+      "defaults" => {
+        "policy" => {
+          "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+          "coordination_backend_contract" => PRIVATE_COORDINATION_BACKEND_CONTRACT
+        }
+      }
+    }
+
+    ["public claim-comment fallback", "n/a"].each do |backend|
+      repo = {
+        repo: "consumer", base_branch: "main", preset: nil,
+        overrides: { "policy" => { "coordination_backend" => backend } }
+      }
+
+      policy = PushDownstream.resolve_contract(repo, presets).fetch(:policy)
+
+      assert_equal backend, policy.fetch("coordination_backend")
+      refute policy.key?("coordination_backend_contract"), backend
+    end
+  end
+
+  def test_per_repo_paired_backend_override_retains_its_matching_contract
+    backend = "public claim-comment fallback"
+    matching_contract = { "version" => 1, "allowed_identifiers" => [backend] }
+    presets = {
+      "defaults" => {
+        "policy" => {
+          "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+          "coordination_backend_contract" => PRIVATE_COORDINATION_BACKEND_CONTRACT
+        }
+      }
+    }
+    repo = {
+      repo: "consumer", base_branch: "main", preset: nil,
+      overrides: {
+        "policy" => {
+          "coordination_backend" => backend,
+          "coordination_backend_contract" => matching_contract
+        }
+      }
+    }
+
+    policy = PushDownstream.resolve_contract(repo, presets).fetch(:policy)
+
+    assert_equal backend, policy.fetch("coordination_backend")
+    assert_equal matching_contract, policy.fetch("coordination_backend_contract")
+  end
+
   def test_resolve_contract_layers_defaults_preset_and_overrides
     presets = {
       "defaults" => {
@@ -921,7 +993,7 @@ class PushDownstreamScaffoldTest < Minitest::Test
       "follow_up_prefix" => "Follow-up:",
       "review_gate" => "AI reviewers are advisory.",
       "approval_exempt" => "docs and workflow text.",
-      "coordination_backend" => "public claim-comment fallback.",
+      "coordination_backend" => "public claim-comment fallback",
       "changelog" => "CHANGELOG.md; user-visible changes only.",
       "benchmark_labels" => "n/a",
       "merge_ledger" => "n/a",
@@ -930,6 +1002,51 @@ class PushDownstreamScaffoldTest < Minitest::Test
       "ci_change_detector" => "n/a"
     }
   }.freeze
+
+  def private_backend_policy
+    CONTRACT.fetch(:policy).merge(
+      "coordination_backend" => "agent-coord private backend",
+      "coordination_backend_contract" => {
+        "version" => 1,
+        "allowed_identifiers" => ["agent-coord private backend"]
+      }
+    )
+  end
+
+  def test_write_policy_discards_an_incompatible_contract_from_existing_policy
+    ["public claim-comment fallback", "n/a"].each do |backend|
+      Dir.mktmpdir("push-downstream-existing-policy") do |root|
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        File.write(File.join(root, ".agents/agent-workflow.yml"), "coordination_backend: #{backend}\n")
+
+        PushDownstream.write_policy(root, private_backend_policy)
+
+        policy = YAML.safe_load_file(File.join(root, ".agents/agent-workflow.yml"), aliases: false)
+        assert_equal backend, policy.fetch("coordination_backend")
+        refute policy.key?("coordination_backend_contract"), backend
+      end
+    end
+  end
+
+  def test_write_policy_discards_an_incompatible_contract_from_legacy_prose
+    ["public claim-comment fallback", "n/a"].each do |backend|
+      Dir.mktmpdir("push-downstream-legacy-policy") do |root|
+        File.write(File.join(root, "AGENTS.md"), <<~MARKDOWN)
+          # AGENTS.md
+
+          ## Agent Workflow Configuration
+
+          - **Coordination backend**: #{backend}
+        MARKDOWN
+
+        PushDownstream.write_policy(root, private_backend_policy)
+
+        policy = YAML.safe_load_file(File.join(root, ".agents/agent-workflow.yml"), aliases: false)
+        assert_equal backend, policy.fetch("coordination_backend")
+        refute policy.key?("coordination_backend_contract"), backend
+      end
+    end
+  end
 
   def test_apply_scaffold_generates_binstubs_policy_readme_agents_and_claude
     Dir.mktmpdir("push-downstream-scaffold") do |root|

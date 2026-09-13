@@ -77,7 +77,7 @@ module CompletedBatchPublicationPreflight
   GRAPHQL
   TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
   RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned].freeze
-  PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
+  PUBLIC_CLAIM_COMMENT_FALLBACK = "public claim-comment fallback"
   DEFAULT_GH_TIMEOUT_SECONDS = 60
   COORDINATION_TIMEOUT_SECONDS = 20
   COORDINATION_CAPTURE_TIMEOUT_SECONDS = 25
@@ -160,7 +160,7 @@ module CompletedBatchPublicationPreflight
       coordination_authentic = !no_backend_evidence.nil?
     else
       no_backend_evidence = nil
-      authenticated_status = coordination_verifier&.call(backend:, batch_id:)
+      authenticated_status = coordination_verifier&.call(backend: coordination_backend, batch_id:)
       drift = coordination_status_drift(authenticated_status, input["coordination_status"])
       coordination_authentic = drift.empty?
       unless drift.empty?
@@ -488,7 +488,7 @@ module CompletedBatchPublicationPreflight
 
     refreshed = assess(
       receipt.fetch("source_input"),
-      coordination_backend: trusted_backend,
+      coordination_backend:,
       trusted_applicability:,
       trusted_applicability_digest:,
       waiver_verifier:,
@@ -1806,7 +1806,7 @@ module CompletedBatchPublicationPreflight
   def authenticated_coordination_status(backend:, batch_id:)
     normalized_backend = normalized_known_string(backend)
     return unless normalized_backend && normalized_backend.downcase != "n/a"
-    return if normalized_backend.match?(PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN)
+    return if backend == PUBLIC_CLAIM_COMMENT_FALLBACK
 
     command = [
       AGENT_COORD_BOUNDED,
