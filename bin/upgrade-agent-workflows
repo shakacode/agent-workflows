@@ -322,7 +322,7 @@ backup_target() {
     # The agent home can contain hundreds of thousands of unrelated files
     # under worktrees/, tmp/, and sessions/. Snapshot only paths the installer
     # can replace so rollback remains bounded by the pack installation.
-    ruby -rjson -e '
+    ruby -rjson -rpathname -e '
       target, source, host, delivery_mode, metadata_path, mode = ARGV
       bin_helpers = %w[
         agent-workflow-seam-doctor
@@ -464,9 +464,32 @@ backup_target() {
             system("git", "-C", root, "cat-file", "-e", "#{revision}:skills", out: File::NULL, err: File::NULL)
         end
         if git_root
-          IO.popen(["git", "-C", git_root, "ls-tree", "--name-only", "#{revision}:skills"], &:read).lines.each do |name|
-            name = name.strip
-            managed << "skills/#{name}" unless name.empty? || name.start_with?(".") || name.include?("/") || [".", ".."].include?(name)
+          tree = IO.popen(["git", "-C", git_root, "ls-tree", "-z", "#{revision}:skills"], &:read)
+          tree.split("\0").each do |record|
+            object, name = record.split("\t", 2)
+            next unless name
+            next if name.empty? || name.start_with?(".") || name.include?("/") || [".", ".."].include?(name)
+
+            file_mode, object_type = object.split(" ", 3)
+            managed_entry = metadata["mode"] == "copy" || object_type == "tree"
+            if !managed_entry && file_mode == "120000"
+              link_target = IO.popen(
+                ["git", "-C", git_root, "cat-file", "-p", "#{revision}:skills/#{name}"],
+                err: File::NULL,
+                &:read
+              )
+              link_path = Pathname.new(link_target)
+              resolved = Pathname.new("skills").join(link_path).cleanpath.to_s
+              if $?.success? && !link_path.absolute? && resolved != ".." && !resolved.start_with?("../")
+                target_type = IO.popen(
+                  ["git", "-C", git_root, "cat-file", "-t", "#{revision}:#{resolved}"],
+                  err: File::NULL,
+                  &:read
+                )
+                managed_entry = $?.success? && target_type.strip == "tree"
+              end
+            end
+            managed << "skills/#{name}" if managed_entry
           end
         end
       end
