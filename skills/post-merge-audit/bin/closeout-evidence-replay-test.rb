@@ -613,6 +613,21 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "UNKNOWN", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
   end
 
+  def test_html_comment_literal_in_raw_text_container_does_not_hide_following_visible_evidence
+    head_sha = "1" * 40
+    %w[textarea script style].each do |tag|
+      body = <<~MARKDOWN
+        <#{tag}>
+        <!-- literal raw text without a closing comment delimiter
+        </#{tag}>
+
+        #{visible_qa_details(head_sha:, scope: "#{tag} literal comment")}
+      MARKDOWN
+
+      assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+    end
+  end
+
   def test_unclosed_html_comment_hides_visible_evidence
     body = <<~MARKDOWN
       Evidence follows.
