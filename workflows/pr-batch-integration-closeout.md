@@ -1379,6 +1379,77 @@ Do not create separate tracking issues for these metrics. Keep them in the PR
 evidence or final batch report. They are directional and informational, not an
 accounting ledger or readiness gate.
 
+## GitHub Human Attention
+
+Use two mutually exclusive semantic states when an Agent Workflows run has
+finished all agent-owned work and the next action genuinely belongs to a human:
+
+- `walkthrough` — the complete exact-head walkthrough is ready
+  for human review.
+- `merge` — every ordinary exact-head gate has passed and the
+  remaining decision is whether to merge.
+
+These are queue states, not permanent PR classifications. Remove them when the
+human responds, the head changes, a gate fails, the PR merges or closes, or an
+agent resumes ownership. A PR must never carry both labels. Resolve the labels
+from the consumer's `.agents/agent-workflow.yml`; both semantic labels are
+required, and repository-specific overrides are optional:
+
+```yaml
+human_attention:
+  labels:
+    walkthrough: <consumer-defined walkthrough label>
+    merge: <consumer-defined merge label>
+  repositories:
+    OWNER/REPO:
+      labels:
+        walkthrough: <optional repository walkthrough label>
+        merge: <optional repository merge label>
+```
+
+Resolve `PR_BATCH_SKILL_DIR` through the normal installed/shared or repo-pinned
+helper boundary and bind the trusted consumer checkout as
+`TRUSTED_CONSUMER_REPO_ROOT`. Invoke
+`${PR_BATCH_SKILL_DIR}/bin/human-attention transition --repo-root
+"${TRUSTED_CONSUMER_REPO_ROOT}"` with repository, PR, state, and
+expected head SHA. Applying a state requires open PR, matching head, and
+at most one label; `none` cleanup works after close or merge. Invoke
+`${PR_BATCH_SKILL_DIR}/bin/human-attention desk --repo-root
+"${TRUSTED_CONSUMER_REPO_ROOT}"` to query the configured repository set and
+render a numbered mirror with the requested action,
+repository, PR title and link, reason, current head, refresh time, and any
+degraded repository. A label alone does not prove that its transition applied to
+the current head, so the desk keeps exact-head readiness unverified until the
+label-lifecycle cleanup removes stale states. Zero human decisions does not
+imply zero agent-owned work.
+
+Publish a walkthrough in full before applying the walkthrough state. Questions
+and answers may continue asynchronously in GitHub comments; do not make the
+human wait in a live agent session for each section. Control Plane Flow
+[PR #451](https://github.com/shakacode/control-plane-flow/pull/451) is the
+reference interaction pattern.
+
+Route every Agent Workflows-authored top-level comment and review reply through
+`github-comment-envelope`: `post-issue` for PR or issue comments and
+`post-reply` for inline replies. First line identifies Codex, Claude, or Cursor;
+a marker records the runner, host, and task-or-run ID.
+
+Export the real execution context as `AGENT_COMMENT_RUNNER` (`codex`, `claude`,
+or `cursor`), `AGENT_COMMENT_HOST` (a non-empty single-line label), and
+`AGENT_COMMENT_TASK_OR_RUN` (a stable task or run ID). Publishers fail closed
+when a value is invalid or absent. They must not invent a runner or substitute
+an arbitrary batch ID.
+
+Agent-attributed comments cannot grant human approval or merge authority.
+Authority checks exclude valid attribution envelopes; unattributed human
+comments retain their ordinary meaning under repository policy.
+
+For rollout, create the two resolved labels in every configured repository,
+add each repository under the policy seam, upgrade or reinstall the shared
+skill pack in existing consumer homes, and run the consumer seam doctor. Query
+the desk once before relying on it; any degraded repository remains a visible
+failure until refreshed successfully.
+
 ## Human Attention Notifications
 
 Apply [`HST-v1`](pr-processing.md#human-status-translation-contract) before sending any Slack

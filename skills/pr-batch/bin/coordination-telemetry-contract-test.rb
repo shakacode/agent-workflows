@@ -818,6 +818,15 @@ class CoordinationTelemetryContractTest < Minitest::Test
     end
   end
 
+  def test_public_fallback_self_renewal_requires_a_trusted_repository_identity
+    # A missing identity gate would let an untrusted public-comment author renew a claim.
+    docs = read_repo_file(COORDINATION_DOC_PATH).gsub(/\s+/, " ")
+
+    assert_includes docs,
+                    "Public claim-comment fallback self-renewal requires the repository agent identity to be in " \
+                    "configured `trusted_users`, `trusted_bots`, or `trusted_teams`."
+  end
+
   def test_coordination_backend_documents_the_applicability_proof_digest_boundary
     section = extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Coordination Applicability").gsub(/\s+/, " ")
 
