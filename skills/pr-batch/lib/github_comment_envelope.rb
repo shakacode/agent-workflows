@@ -39,7 +39,7 @@ module GitHubCommentEnvelope
   def payload(body)
     return body unless parse(body)
 
-    body.lines.drop(6).join.sub(/\A\n/, "")
+    body.lines.drop(6).join.sub(/\A\r?\n/, "")
   end
 
   def parse(body)

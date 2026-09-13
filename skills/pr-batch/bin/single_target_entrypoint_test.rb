@@ -564,6 +564,8 @@ assert(address_review_workflow.include?(authenticated_source_state), "address-re
 source_review_wait = "On every non-specific run, apply the bounded complete-wave wait to `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when no prior source summary or status checkpoint exists."
 assert(address_review.gsub(/\s+/, " ").include?(source_review_wait), "address-review must limit the source review wait to first harvest")
 assert(address_review_workflow.gsub(/\s+/, " ").include?(source_review_wait), "address-review workflow mirror must limit the source review wait to first harvest")
+assert(address_review.include?("automation_reviewers"), "address-review must route the configured reviewer mapping")
+assert(address_review_workflow.include?("automation_reviewers"), "address-review workflow mirror must route the configured reviewer mapping")
 assert(address_review.include?("REVIEW_CHECK_NAMES_JSON"), "address-review must bind the complete expected review cohort")
 assert(address_review_workflow.include?("REVIEW_CHECK_NAMES_JSON"), "address-review workflow mirror must bind the complete expected review cohort")
 assert(address_review.include?("exit 2"), "address-review must stop rather than fetch a partial review wave")

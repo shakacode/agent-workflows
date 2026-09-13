@@ -691,6 +691,45 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  def test_transition_clears_attention_state_when_verification_json_is_malformed
+    with_repo_config(LABEL_POLICY) do |root|
+      fake_gh = File.join(root, "gh")
+      calls = File.join(root, "calls")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        calls = ENV.fetch("CALLS")
+        File.open(calls, "a") { |file| file.puts(ARGV.join("\t")) }
+        if ARGV[0, 2] == ["pr", "view"]
+          view_count = File.readlines(calls).count { |line| line.start_with?("pr\tview") }
+          case view_count
+          when 1
+            puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}",
+                                "labels" => [{"name" => "human-attention:walkthrough"}]})
+          when 2
+            puts "{"
+          else
+            puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}", "labels" => []})
+          end
+        end
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "transition", "--repo-root", root, "--repo", "acme/widgets", "--pr", "7",
+        "--state", "merge", "--expected-head", ("a" * 40).to_s,
+        env: { "HUMAN_ATTENTION_GH" => fake_gh, "CALLS" => calls }
+      )
+
+      refute_predicate result[:status], :success?
+      assert_includes result[:stderr], "cannot parse human-attention verification; attention state cleared"
+      edits = File.readlines(calls, chomp: true).select { |line| line.start_with?("pr\tedit") }
+      assert_equal 2, edits.length
+      assert_includes edits.last, "--remove-label\thuman-attention:walkthrough"
+      assert_includes edits.last, "--remove-label\thuman-attention:merge"
+    end
+  end
+
   def test_idempotent_transition_preserves_attention_state_when_verification_fails
     with_repo_config(LABEL_POLICY) do |root|
       fake_gh = File.join(root, "gh")

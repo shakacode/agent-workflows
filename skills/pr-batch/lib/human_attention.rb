@@ -224,7 +224,19 @@ module HumanAttention
       raise Error, "cannot verify unchanged human-attention labels: #{verify_stderr.lines.first.to_s.strip}"
     end
 
-    verified = JSON.parse(verify_stdout)
+    verified = begin
+      JSON.parse(verify_stdout)
+    rescue JSON::ParserError
+      if edit_attempted
+        clear_attention_state!(
+          github_cli:, repo:, pr_number:, labels:, current_labels: labels.values,
+          error_prefix: "cannot parse human-attention verification"
+        )
+        raise Error, "cannot parse human-attention verification; attention state cleared"
+      end
+
+      raise Error, "cannot parse unchanged human-attention verification"
+    end
     unchanged = verified["state"] == detail["state"] && verified["headRefOid"] == expected_head
     verified_labels = Array(verified["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
     unless unchanged

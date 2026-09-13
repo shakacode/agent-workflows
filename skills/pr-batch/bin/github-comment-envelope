@@ -73,7 +73,11 @@ begin
                     attachments.flat_map { |attachment| ["--attach", attachment] }
                 end
     stdout, stderr, status = Open3.capture3(*arguments)
-    raise ArgumentError, "GitHub comment post failed: #{stderr.lines.first.to_s.strip}" unless status.success?
+    unless status.success?
+      partial_result = stdout.lines.first.to_s.strip
+      partial_suffix = partial_result.empty? ? "" : "; partial result: #{partial_result}"
+      raise ArgumentError, "GitHub comment post failed: #{stderr.lines.first.to_s.strip}#{partial_suffix}"
+    end
 
     print stdout
   end

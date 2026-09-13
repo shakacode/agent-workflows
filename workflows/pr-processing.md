@@ -619,6 +619,8 @@ execution in addition to syntax, and post a PR comment with a `Workflow Change
 Audit:` header listing before/after changes for secret references, `permissions:`,
 `on:` triggers, third-party actions added or version-changed, and any applicable
 new-gate rollout or Dependabot/lockfile compatibility results. The audit comment
+must use the installed or repo-local `github-comment-envelope post-issue`
+boundary with the current runner, host, and task/run identity. The audit comment
 is the human-readable summary; CI check results for the current head SHA are the
 objective verification record.
 

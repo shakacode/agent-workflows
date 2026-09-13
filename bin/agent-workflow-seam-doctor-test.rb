@@ -1316,6 +1316,46 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
                  config.fetch("coordination_backend_contract")
   end
 
+  def test_automation_reviewers_accepts_a_typed_identity_to_check_name_mapping
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge("automation_reviewers" => { "claude-review" => "claude-review", "coderabbitai" => "CodeRabbit" })
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+    end
+  end
+
+  def test_automation_reviewers_rejects_ambiguous_or_incomplete_shapes
+    invalid_values = {
+      "free-form scalar" => "claude-review (check: claude-review)",
+      "list" => ["claude-review"],
+      "empty mapping" => {},
+      "non-string identity" => { 1 => "claude-review" },
+      "blank identity" => { " " => "claude-review" },
+      "blank check name" => { "claude-review" => " " },
+      "duplicate check name" => { "first" => "shared-check", "second" => "shared-check" }
+    }
+
+    invalid_values.each do |label, value|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("automation_reviewers" => value))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, "#{label}: #{out}"
+        assert_includes out, "invalid automation_reviewers policy", label
+      end
+    end
+  end
+
   def test_incomplete_untrusted_contributor_intake_policy_fails
     with_repo do |root|
       write_valid_binstub_contract(root)
@@ -2871,6 +2911,12 @@ end
 
 class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
   include AgentWorkflowSeamDoctorTestHelpers
+
+  def test_init_command_shell_helpers_remain_public_module_methods
+    AgentWorkflowSeamDoctor::InitCommandShell::PUBLIC_METHODS.each do |method_name|
+      assert_includes AgentWorkflowSeamDoctor.public_methods, method_name
+    end
+  end
 
   def test_help_advertises_init
     out, status = Open3.capture2e("ruby", SCRIPT, "--help")

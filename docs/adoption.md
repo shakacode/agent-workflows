@@ -237,6 +237,20 @@ libraries provides no guarantee of token or cost savings, quality, or security.
    repository guide or personal fallback. The initializer leaves the optional
    repository key absent until the project chooses to enable it.
 
+   Repositories that expect automated reviewers must add the
+   `automation_reviewers` mapping and describe the review requirement in
+   `review_gate`; do not retain `review_gate: "n/a"`. The mapping is optional
+   only when no automated reviewer is expected; omit the key instead of using
+   the `n/a` sentinel. Each key is the reviewer's GitHub actor base login, with
+   any `[bot]` suffix omitted. Each value is the exact GitHub check-run name returned by
+   `gh pr checks --json name`:
+
+   ```yaml
+   automation_reviewers:
+     claude: claude-review
+     coderabbitai: CodeRabbit
+   ```
+
    Repositories that use repository-based GitHub Actions and reusable workflows
    must also add a closed, exact `trusted_actions` allowlist. Its entries are
    case-insensitive `owner/repository` identities, with no refs, subpaths, or

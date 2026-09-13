@@ -96,6 +96,14 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_equal payload, GitHubCommentEnvelope.payload(body)
   end
 
+  def test_payload_unwraps_an_envelope_with_crlf_line_endings
+    body = GitHubCommentEnvelope.render(
+      body: "<!-- address-review-summary -->\n", runner: "codex", host: "M5", task_or_run: "task-7"
+    ).gsub("\n", "\r\n")
+
+    assert_equal "<!-- address-review-summary -->\r\n", GitHubCommentEnvelope.payload(body)
+  end
+
   # Production break: a Windows-style leading blank line remains before a
   # workflow marker, so downstream first-line checkpoint detection misses it.
   def test_render_removes_leading_crlf_blank_lines_from_the_payload
@@ -236,6 +244,31 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       end
       assert_equal ["evidence.png#Before and after", "evidence.mp4"], attachments
       assert posted.fetch("body").start_with?("🤖 Codex\n")
+    end
+  end
+
+  def test_attachment_failure_reports_a_partial_result_url
+    Dir.mktmpdir("comment-envelope-partial-attach") do |directory|
+      fake_gh = File.join(directory, "gh")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        exit 0 if ARGV[0] == "api"
+        puts "https://github.com/acme/widgets/pull/7#issuecomment-1"
+        warn "second attachment failed"
+        exit 1
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "post-issue", "--repo", "acme/widgets", "--number", "7",
+        "--runner", "codex", "--host", "M5", "--task-or-run", "task-7",
+        "--attach", "one.png", "--attach", "two.png",
+        stdin: "Verified.", env: { "GITHUB_COMMENT_GH" => fake_gh }
+      )
+
+      refute_predicate result[:status], :success?
+      assert_includes result[:stderr], "second attachment failed"
+      assert_includes result[:stderr], "partial result: https://github.com/acme/widgets/pull/7#issuecomment-1"
     end
   end
 

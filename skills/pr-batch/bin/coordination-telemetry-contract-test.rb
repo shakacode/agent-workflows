@@ -1049,6 +1049,16 @@ class CoordinationTelemetryContractTest < Minitest::Test
     assert_match(/\A[0-9a-f]{40}\z|\AUNKNOWN\z/, manifest.fetch("pack_sha"))
     assert_manifest_route_provenance(manifest)
 
+    manifest_section = extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Batch Provenance Manifest")
+    normalized_section = manifest_section.gsub(/\s+/, " ")
+    assert_includes normalized_section, '"targets": ["123"]'
+    assert_includes normalized_section, "exact raw target identities"
+    assert_includes normalized_section, "does not normalize equivalent forms"
+    assert_includes normalized_section, "terminal closeout does not match exactly one lane in batch <id>"
+    assert_includes normalized_section, "Only when the installed backend supports an exact whole-manifest"
+    assert_includes normalized_section, "Otherwise leave closeout `UNKNOWN`"
+    assert_includes normalized_section, "Do not invent a lane-only repair operation"
+
     [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
       assert_manifest_prompt_contract(read_repo_file(path), path)
     end

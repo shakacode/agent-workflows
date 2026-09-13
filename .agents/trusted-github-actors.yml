@@ -10,5 +10,6 @@ trusted_bots:
   - coderabbitai
   - claude
   - chatgpt-codex-connector
+  - cursor
 
 trusted_teams: []

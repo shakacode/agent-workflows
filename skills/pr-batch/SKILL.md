@@ -196,7 +196,7 @@ human-readable handoff. JSON is not mandatory.
 
 ## Review-Wave And Validation Cohorts
 
-Use the canonical [Review-Wave And Validation Cohorts](../../workflows/pr-batch-integration-closeout.md#review-wave-and-validation-cohorts) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
+Use the canonical [Review-Wave And Validation Cohorts](../../workflows/pr-batch-integration-closeout.md#review-wave-and-validation-cohorts) section. It resolves exact check names from the typed `automation_reviewers` seam. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
 
 ## Target Resolution Gate
 
