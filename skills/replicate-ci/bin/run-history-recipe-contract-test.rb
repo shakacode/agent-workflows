@@ -28,6 +28,6 @@ class RunHistoryRecipeContractTest < Minitest::Test
 
   def test_attempt_jobs_expose_the_id_used_for_the_scoped_log_fetch
     assert_match(/\.jobs\[\] \| \{id: \.id,/, @recipe)
-    assert_match(/gh run view --repo <HOST>\/<OWNER>\/<REPO> --job <JOB_ID> --log/, @recipe)
+    assert_match(%r{gh run view --repo <HOST>/<OWNER>/<REPO> --job <JOB_ID> --log}, @recipe)
   end
 end
