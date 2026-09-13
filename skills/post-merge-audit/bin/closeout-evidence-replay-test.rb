@@ -857,6 +857,42 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_raw_container_transitions_process_every_tag_in_order
+    head_sha = "1" * 40
+    [
+      "<code></code><blockquote>",
+      "<pre></pre><blockquote>",
+      "<code>\n</code><blockquote>"
+    ].each do |raw_prefix|
+      body = <<~MARKDOWN
+        #{raw_prefix}
+
+        #{visible_qa_details(head_sha:, scope: 'ordered raw container transition')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), raw_prefix
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", raw_prefix
+    end
+  end
+
+  def test_quotes_without_an_attribute_assignment_do_not_hide_a_raw_tag
+    head_sha = "1" * 40
+    ["'", '"'].each do |quote|
+      body = <<~MARKDOWN
+        <word #{quote} <blockquote> #{quote}>
+
+        #{visible_qa_details(head_sha:, scope: 'unassigned quote')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), quote
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", quote
+    end
+  end
+
   def test_multiline_quoted_details_attributes_remain_nested
     head_sha = "1" * 40
     [["\"", "\""], ["'", "'"]].each do |opening_quote, closing_quote|

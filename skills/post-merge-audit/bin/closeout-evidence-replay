@@ -443,7 +443,7 @@ module CloseoutEvidenceReplay
           next
         end
 
-        open_tag = { text: +"<", quote: nil }
+        open_tag = { text: +"<", quote: nil, attribute_value_pending: false }
         index = opening + 1
       end
 
@@ -460,14 +460,19 @@ module CloseoutEvidenceReplay
         open_tag[:text] << character
         if open_tag[:quote]
           open_tag[:quote] = nil if character == open_tag[:quote]
-        elsif ['"', "'"].include?(character)
+        elsif ['"', "'"].include?(character) && open_tag[:attribute_value_pending]
           open_tag[:quote] = character
+          open_tag[:attribute_value_pending] = false
         elsif character == ">"
           tag = structural_html_tag(open_tag)
           tags << tag if tag
           open_tag = nil
           index += 1
           break
+        elsif character == "="
+          open_tag[:attribute_value_pending] = true
+        elsif !character.match?(/\s/)
+          open_tag[:attribute_value_pending] = false
         end
         index += 1
       end
@@ -520,6 +525,20 @@ module CloseoutEvidenceReplay
     discard_details_depth
   end
 
+  def advance_raw_html_container(raw_html_container, structural_tags)
+    structural_tags.each do |type, tag, _text|
+      if raw_html_container
+        next unless tag == raw_html_container.fetch(:tag)
+
+        raw_html_container[:depth] += type == :open ? 1 : -1 if %i[open close].include?(type)
+        raw_html_container = nil if raw_html_container.fetch(:depth) <= 0
+      elsif type == :open && raw_html_tag?(tag)
+        raw_html_container = { tag:, depth: 1 }
+      end
+    end
+    raw_html_container
+  end
+
   def visible_markdown(text)
     fence = nil
     record_fence = false
@@ -570,27 +589,15 @@ module CloseoutEvidenceReplay
         discard_details_depth = advance_details_stack(details_stack, discard_details_depth, current_details_tags)
         next
       end
-      if raw_html_container
-        tag = raw_html_container.fetch(:tag)
-        structural_tags.each do |type, current_tag, _text|
-          next unless current_tag == tag
-
-          raw_html_container[:depth] += type == :open ? 1 : -1 if %i[open close].include?(type)
-        end
-        raw_html_container = nil if raw_html_container.fetch(:depth) <= 0
-        next
-      end
       # CommonMark keeps an unclosed raw code container literal through EOF, so
       # preserving that discard is intentionally fail-closed: later apparent
       # evidence is not rendered authority. Blockquotes are excluded too because
       # a canonical disclosure must be top-level published content.
-      if (container = structural_tags.find { |type, tag, _text| type == :open && raw_html_tag?(tag) })
-        tag = container[1]
-        depth = structural_tags.count { |type, current_tag, _text| type == :open && current_tag == tag }
-        depth -= structural_tags.count { |type, current_tag, _text| type == :close && current_tag == tag }
-        raw_html_container = { tag:, depth: } if depth.positive?
+      raw_html_container = advance_raw_html_container(raw_html_container, structural_tags)
+      if raw_html_container
         next
       end
+
       if opener
         # The record itself is the exact ```text fence inside a visible
         # disclosure. Every other Markdown fence is an outer example, even
