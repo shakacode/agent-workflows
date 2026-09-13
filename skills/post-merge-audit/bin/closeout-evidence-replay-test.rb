@@ -792,6 +792,19 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
       assert_equal "UNKNOWN", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), attribute
     end
+
+    head_sha = "1" * 40
+    comment_terminator = <<~MARKDOWN
+      <pre>
+      <!--
+      </pre>
+      -->
+      </pre>
+
+      #{visible_qa_details(head_sha:, scope: 'raw-text comment terminator')}
+    MARKDOWN
+
+    assert_equal "UNKNOWN", run_replay(comment_terminator, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
   end
 
   def test_split_real_raw_opener_stays_real_after_an_indented_completion
@@ -869,7 +882,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "```text\nexample\n```\n<summary>Agent details</summary>",
       "> quoted content\n<summary>Agent details</summary>",
       "`example`\n<summary>Agent details</summary>",
-      "<https://example.com>\n<summary>Agent details</summary>"
+      "<https://example.com>\n<summary>Agent details</summary>",
+      "visible <!-- comment\n-->\n<summary>Agent details</summary>"
     ]
 
     invalid_prefixes.each do |prefix|
