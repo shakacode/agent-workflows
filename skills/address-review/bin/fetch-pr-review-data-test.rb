@@ -82,9 +82,9 @@ class FetchPrReviewDataTest < Minitest::Test
     assert_equal payload, normalized.fetch("payload_body")
   end
 
-  def test_visible_checkpoint_accepts_the_same_codex_prefix_variants_as_the_jq_readers
-    body = <<~MARKDOWN.chomp
-      🤖 Codex Address-review follow-up is complete.
+  def test_visible_checkpoint_accepts_configured_runner_prefixes
+    payload = <<~MARKDOWN.chomp
+      Address-review follow-up is complete.
 
       <details>
       <summary>Address-review checkpoint</summary>
@@ -96,7 +96,11 @@ class FetchPrReviewDataTest < Minitest::Test
       </details>
     MARKDOWN
 
-    assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(body)
+    { "codex" => "Codex", "claude" => "Claude", "cursor" => "Cursor" }.each do |runner, display|
+      body = "🤖 #{display} #{payload}"
+
+      assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(body), runner
+    end
   end
 
   def test_visible_checkpoint_in_a_four_backtick_example_does_not_advance_the_cutoff

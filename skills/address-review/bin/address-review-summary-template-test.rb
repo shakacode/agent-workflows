@@ -84,7 +84,7 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
         "POSTING_CLIENT" => "Codex",
         "POSTING_MODEL_FAMILY" => "Astra",
         "TRACKING_OUTCOME" => "",
-        "OPTIONAL_OUTCOMES" => ""
+        "OPTIONAL_OUTCOMES" => "- Historical marker is literal inline code: `<!-- address-review-summary -->`."
       }
       _stdout, stderr, status = Open3.capture3(
         environment, "sh", "-c", "summary_body_file=#{Shellwords.escape(output)}\n#{primary}"
@@ -96,6 +96,8 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
       normalized_payload = GitHubCommentEnvelope.payload(body)
 
       assert_equal payload, normalized_payload
+      assert_includes payload, "`<!-- address-review-summary -->`"
+      assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(normalized_payload)
       { "codex" => "Codex", "claude" => "Claude", "cursor" => "Cursor" }.each do |runner, display|
         rendered = GitHubCommentEnvelope.render(body: payload, runner:, host: "test-host", task_or_run: "template")
 
@@ -143,14 +145,18 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
       assert status.success?, stderr
 
       payload = File.read(output)
-      body = GitHubCommentEnvelope.render(body: payload, runner: "codex", host: "test-host", task_or_run: "template")
-      normalized_payload = GitHubCommentEnvelope.payload(body)
+      { "codex" => "Codex", "claude" => "Claude", "cursor" => "Cursor" }.each do |runner, display|
+        body = GitHubCommentEnvelope.render(body: payload, runner:, host: "test-host", task_or_run: "template")
+        normalized_payload = GitHubCommentEnvelope.payload(body)
 
-      assert_equal payload, normalized_payload
-      assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(normalized_payload)
-      assert_equal "2026-09-13T00:00:00Z", FetchPrReviewData.compute_cutoff([
-                                                                              { "body" => body, "payload_body" => normalized_payload, "created_at" => "2026-09-13T00:00:00Z" }
-                                                                            ])
+        assert body.start_with?("🤖 #{display} Original review follow-up is complete."), runner
+        assert_equal payload, normalized_payload, runner
+        assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(normalized_payload), runner
+        cutoff = FetchPrReviewData.compute_cutoff(
+          [{ "body" => body, "payload_body" => normalized_payload, "created_at" => "2026-09-13T00:00:00Z" }]
+        )
+        assert_equal "2026-09-13T00:00:00Z", cutoff, runner
+      end
     end
   end
 

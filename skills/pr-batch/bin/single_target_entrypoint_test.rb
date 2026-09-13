@@ -868,7 +868,7 @@ template_source_payload = Dir.mktmpdir do |dir|
     "SOURCE_CUTOFF_SAFE" => "1",
     "SOURCE_STATE_ROWS" => source_writer_rows,
     "REPLACEMENT_PR_URL" => "https://github.com/shakacode/agent-workflows/pull/260",
-    "SOURCE_OUTCOMES" => "- Source feedback handled.",
+    "SOURCE_OUTCOMES" => "- Source feedback handled; old marker is `<!-- address-review-summary -->`.",
     "POSTING_CLIENT" => "Codex",
     "POSTING_MODEL_FAMILY" => "Astra"
   }
@@ -879,8 +879,10 @@ template_source_payload = Dir.mktmpdir do |dir|
   File.read(output)
 end
 template_source_body = GitHubCommentEnvelope.render(
-  body: template_source_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+  body: template_source_payload, runner: "claude", host: "M5", task_or_run: "address-review"
 )
+assert(template_source_body.start_with?("🤖 Claude Original review follow-up is complete."),
+       "source checkpoint template must retain the configured runner prefix")
 raw_html_source_state_payload = template_source_payload
                                 .sub("```text\naddress-review-source-state:v1", "<pre>\n```text\naddress-review-source-state:v1")
                                 .sub("\n```\n\n</details>", "\n```\n</pre>\n\n</details>")

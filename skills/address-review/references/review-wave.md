@@ -90,13 +90,20 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
         def valid_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip" or . == "pending" or . == "ask-user";
         def terminal_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip";
         def terminal_row: split("\t") | .[6] | terminal_outcome;
+        def visible_checkpoint_body:
+          split("\n") |
+          map(if test("^[ \\t]{0,3}`{3,}") then . else gsub("(?<!`)(`+)(?!`)[^\\r\\n]*?(?<!`)\\1(?!`)"; "inline-code") end) |
+          join("\n");
         def checkpoint_kind:
           if startswith("<!-- address-review-summary -->") then "summary"
           elif startswith("<!-- address-review-status -->") then "status"
-          elif test("<!--") then null
-          else ([try capture("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```(?:(?!<)[\\s\\S])*?</details>\\r?\\n?\\z").kind catch null] | first) end;
+          else visible_checkpoint_body as $body |
+            if ($body | test("<!--")) then null
+            else ($body | [try capture("(?ms)\\A(?:🤖 (?:Codex|Claude|Cursor) )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```(?:(?!<)[\\s\\S])*?</details>\\r?\\n?\\z").kind catch null] | first) end
+          end;
         def visible_source_state:
-          capture("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?:summary|status)\\r?\\n```\\r?\\n(?:(?!^(?:[ \\t]{0,3}(?:`{3,}|~{3,}))|<)[\\s\\S])*?^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```\\r?\\n(?:\\r?\\n)?</details>\\r?\\n?\\z")?;
+          visible_checkpoint_body |
+          capture("(?ms)\\A(?:🤖 (?:Codex|Claude|Cursor) )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?:summary|status)\\r?\\n```\\r?\\n(?:(?!^(?:[ \\t]{0,3}(?:`{3,}|~{3,}))|<)[\\s\\S])*?^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```\\r?\\n(?:\\r?\\n)?</details>\\r?\\n?\\z")?;
         def source_state_count:
           if startswith("<!-- address-review-")
           then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)

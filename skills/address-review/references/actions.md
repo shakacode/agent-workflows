@@ -41,7 +41,8 @@ preserved source PR; when replacement carryover is inactive, default it to
 `${PRIMARY_PR_NUMBER}`. Keep `REVIEW_COMMENT_ID` and `THREAD_ID` from that same
 item. Never use `ITEM_SOURCE_PR` for checkout, code edits, commits, or pushes.
 Build the source checkpoint payload with `references/templates.md`. Post it
-through `github-comment-envelope` so the public comment begins exactly `🤖 Codex`;
+through `github-comment-envelope` so `AGENT_COMMENT_RUNNER` supplies the public
+`🤖 <configured runner>` prefix;
 the payload itself begins with the visible outcome and reader action, then puts
 the summary/status kind and source-state records in the closed
 `Address-review checkpoint` disclosure. Use `kind: summary` only when the

@@ -114,15 +114,21 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         ($fields[5] | test("^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\\.[0-9]+)?(Z|[+-][0-9][0-9]:[0-9][0-9])$")) and
         ($fields[6] | valid_outcome);
       . as $inventory |
+      def visible_checkpoint_body:
+        split("\n") |
+        map(if test("^[ \\t]{0,3}`{3,}") then . else gsub("(?<!`)(`+)(?!`)[^\\r\\n]*?(?<!`)\\1(?!`)"; "inline-code") end) |
+        join("\n");
       def visible_checkpoint_kind:
-        if test("<!--") then null
-        else ([try capture("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```(?:(?!<)[\\s\\S])*?</details>\\r?\\n?\\z").kind catch null] | first) end;
+        visible_checkpoint_body as $body |
+        if ($body | test("<!--")) then null
+        else ($body | [try capture("(?ms)\\A(?:🤖 (?:Codex|Claude|Cursor) )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```(?:(?!<)[\\s\\S])*?</details>\\r?\\n?\\z").kind catch null] | first) end;
       def checkpoint_kind:
         if startswith("<!-- address-review-summary -->") then "summary"
         elif startswith("<!-- address-review-status -->") then "status"
         else visible_checkpoint_kind end;
       def visible_source_state:
-        capture("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?:summary|status)\\r?\\n```\\r?\\n(?:(?!^(?:[ \\t]{0,3}(?:`{3,}|~{3,}))|<)[\\s\\S])*?^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```\\r?\\n(?:\\r?\\n)?</details>\\r?\\n?\\z")?;
+        visible_checkpoint_body |
+        capture("(?ms)\\A(?:🤖 (?:Codex|Claude|Cursor) )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?:summary|status)\\r?\\n```\\r?\\n(?:(?!^(?:[ \\t]{0,3}(?:`{3,}|~{3,}))|<)[\\s\\S])*?^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```\\r?\\n(?:\\r?\\n)?</details>\\r?\\n?\\z")?;
       def source_state_count:
         if startswith("<!-- address-review-")
         then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)

@@ -313,13 +313,26 @@ module FetchPrReviewData
   end
 
   def visible_checkpoint_kind(body)
-    body = body.to_s
+    body = visible_checkpoint_body(body)
     return if body.include?("<!--")
 
     match = body.match(
-      %r{\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\r\n]+\r?\n\r?\n(?:(?![ \t]{0,3}(?:`{3,}|~{3,}))[^\r\n<]*(?:\r?\n|\z))*?<details>\r?\n<summary>#{Regexp.escape(VISIBLE_CHECKPOINT_SUMMARY)}</summary>\r?\n\r?\n(?:(?![ \t]{0,3}(?:`{3,}|~{3,})|<)[\s\S])*?^```text\r?\naddress-review-checkpoint:v1\r?\nkind: (?<kind>summary|status)\r?\n```(?:(?!<)[\s\S])*?</details>\r?\n?\z}m
+      %r{\A(?:🤖 (?:Codex|Claude|Cursor) )?(?:[Aa]ddress-review|[Oo]riginal review) [^\r\n]+\r?\n\r?\n(?:(?![ \t]{0,3}(?:`{3,}|~{3,}))[^\r\n<]*(?:\r?\n|\z))*?<details>\r?\n<summary>#{Regexp.escape(VISIBLE_CHECKPOINT_SUMMARY)}</summary>\r?\n\r?\n(?:(?![ \t]{0,3}(?:`{3,}|~{3,})|<)[\s\S])*?^```text\r?\naddress-review-checkpoint:v1\r?\nkind: (?<kind>summary|status)\r?\n```(?:(?!<)[\s\S])*?</details>\r?\n?\z}m
     )
     match && match[:kind]
+  end
+
+  # Outcome bullets can quote old markers as Markdown inline code. Remove only
+  # complete, same-line inline spans before validating the surrounding visible
+  # disclosure; real comments and fenced examples remain fail-closed.
+  def visible_checkpoint_body(body)
+    body.to_s.each_line.map do |line|
+      if line.match?(/\A[ \t]{0,3}`{3,}/)
+        line
+      else
+        line.gsub(/(?<!`)(`+)(?!`)[^\r\n]*?(?<!`)\1(?!`)/, "inline-code")
+      end
+    end.join
   end
 
   # Build the normalized result hash from the four raw slurped strings.
