@@ -220,6 +220,10 @@ source_managed_inventory_fingerprint() {
   ruby -rdigest -e '
     source, include_flat_skills, install_mode = ARGV
     paths = []
+    installer = File.join(source, "bin/install-agent-workflows")
+    if File.file?(installer) && !File.symlink?(installer)
+      paths << "bin/install-agent-workflows:#{Digest::SHA256.file(installer).hexdigest}"
+    end
     Dir.glob(File.join(source, "docs/solutions", "*")).each do |path|
       paths << "docs/solutions/#{File.basename(path)}" if File.file?(path) && !File.symlink?(path)
     end
@@ -448,8 +452,8 @@ backup_target() {
           system("git", "-C", root, "cat-file", "-e", "#{revision}:workflows", out: File::NULL, err: File::NULL)
       end
       if workflow_git_root
-        IO.popen(["git", "-C", workflow_git_root, "ls-tree", "--name-only", "#{revision}:workflows"], &:read).lines.each do |name|
-          name = name.strip
+        tree = IO.popen(["git", "-C", workflow_git_root, "ls-tree", "-z", "--name-only", "#{revision}:workflows"], &:read)
+        tree.split("\0").each do |name|
           managed << "workflows/#{name}" unless name.empty? || name.start_with?(".") || name.include?("/") || [".", ".."].include?(name)
         end
       end

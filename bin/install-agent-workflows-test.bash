@@ -8774,9 +8774,7 @@ test_failed_upgrade_rejects_source_inventory_change_after_snapshot() {
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-mkdir -p "$root/skills/appeared-after-snapshot"
-printf '%s\n' '---' 'name: appeared-after-snapshot' 'description: race fixture' '---' \
-  > "$root/skills/appeared-after-snapshot/SKILL.md"
+printf '\n# changed after rollback snapshot\n' >> "$root/bin/install-agent-workflows"
 "$root/bin/install-agent-workflows-real" "$@"
 exit 7
 PATCH
