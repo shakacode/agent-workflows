@@ -179,8 +179,10 @@ In published-review mode:
 6. Each thread explains the prior problem, change, rationale, observable effect
    and risk, and proof to the degree relevant. Use explanatory language, not a
    review-finding severity, approval, or requested-change verdict.
-7. Put a short visible orientation and action on the first line of the review
-   body (for example, `🤖 Codex walkthrough published for PR #<PR_NUMBER>.
+7. Resolve the visible runner display from `AGENT_COMMENT_RUNNER` (`codex` →
+   `Codex`, `claude` → `Claude`, `cursor` → `Cursor`) and put a short visible
+   orientation and action on the first line of the review body (for example,
+   `🤖 <configured runner display> walkthrough published for PR #<PR_NUMBER>.
    Explanation only; it is not approval.`), then put this exact idempotency
    record in one closed disclosure labelled `Walkthrough details`:
    `pr-walkthrough:v2 pr=<PR_NUMBER> publisher=<GITHUB_LOGIN> base-ref-b64url=<BASE_REF_BASE64URL> diff-base=<REVIEWED_DIFF_BASE_SHA> head=<FULL_HEAD_SHA> diff=<CANONICAL_DIFF_IDENTITY>`.

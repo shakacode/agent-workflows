@@ -130,6 +130,25 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_equal payload, GitHubCommentEnvelope.payload(rendered)
   end
 
+  def test_render_preserves_markdown_block_syntax_on_the_payload_first_line
+    payloads = [
+      "```ruby\nputs :ok\n```\n",
+      "# Heading\nEvidence follows.\n",
+      "> Quoted context\nEvidence follows.\n",
+      "<details>\n<summary>Evidence</summary>\n\nVisible details.\n</details>\n"
+    ]
+
+    payloads.each do |payload|
+      rendered = GitHubCommentEnvelope.render(
+        body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
+      )
+
+      assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
+      assert_equal payload, GitHubCommentEnvelope.payload(rendered)
+      assert_includes rendered, "\n\n#{payload}"
+    end
+  end
+
   def test_payload_refuses_a_tampered_first_line_that_could_inject_a_legacy_checkpoint
     rendered = GitHubCommentEnvelope.render(
       body: "Review complete.\nFollow-up evidence is recorded.", runner: "codex", host: "M5", task_or_run: "task-7"

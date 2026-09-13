@@ -16,6 +16,7 @@ module GitHubCommentEnvelope
   LEGACY_AGENT_HEADER = /\A🤖 \*\*(?:Codex|Claude|Cursor)(?: · [^*\r\n]+)?\*\*(?:\r?\n|\z)/
   VISIBLE_AGENT_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:\r?\n|\z)/
   PAYLOAD_RUNNER_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:[ \t]+|(?=\z))/
+  MARKDOWN_BLOCK_SYNTAX = %r{\A[ \t]{0,3}(?:`{3,}|~{3,}|\#{1,6}(?:[ \t]|\z)|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+|(?:[-*_][ \t]*){3,}|<[A-Za-z!/])|\A(?: {4}|[ \t]*\t)}
   PAYLOAD_LINE_ENDINGS = { "\r\n" => "crlf", "\n" => "lf", "\r" => "cr", "" => "none" }.freeze
   PAYLOAD_LINE_ENDING_VALUES = PAYLOAD_LINE_ENDINGS.invert.freeze
 
@@ -33,6 +34,7 @@ module GitHubCommentEnvelope
     payload = body.sub(/\A[\r\n]+/, "")
     first_line, line_ending, remaining_payload = split_payload(payload)
     visible = visible_line(display_runner, first_line)
+    remaining_payload = "#{first_line}#{line_ending}#{remaining_payload}" if preserve_payload_first_line?(first_line)
     marker = [
       MARKER,
       "runner: #{runner}",
@@ -61,7 +63,10 @@ module GitHubCommentEnvelope
     remaining_payload = body[parsed.fetch("payload_offset")..].to_s
     return remaining_payload unless parsed.key?("payload_first_line")
 
-    "#{parsed.fetch('payload_first_line')}#{parsed.fetch('payload_line_ending')}#{remaining_payload}"
+    preserved_first_line = "#{parsed.fetch('payload_first_line')}#{parsed.fetch('payload_line_ending')}"
+    return remaining_payload if remaining_payload.start_with?(preserved_first_line)
+
+    "#{preserved_first_line}#{remaining_payload}"
   end
 
   def parse(body)
@@ -141,8 +146,14 @@ module GitHubCommentEnvelope
   def visible_line(display_runner, payload_first_line)
     outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip
     visible = "🤖 #{display_runner}"
-    visible += " #{outcome}" unless outcome.empty?
+    visible += " #{outcome}" unless outcome.empty? || outcome.match?(MARKDOWN_BLOCK_SYNTAX)
     visible
+  end
+
+  def preserve_payload_first_line?(payload_first_line)
+    return false if payload_first_line.empty?
+
+    payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").match?(MARKDOWN_BLOCK_SYNTAX)
   end
 
   def normalized_value(value, name, pattern: VALUE_PATTERN)

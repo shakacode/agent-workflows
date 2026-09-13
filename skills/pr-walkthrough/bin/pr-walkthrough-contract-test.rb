@@ -121,6 +121,9 @@ class PrWalkthroughContractTest < Minitest::Test
     assert_includes skill, "never `APPROVE` or `REQUEST_CHANGES`"
     assert_includes skill, "walkthrough is not approval"
     assert_includes skill, "never blindly publish a duplicate walkthrough"
+    assert_includes skill, "AGENT_COMMENT_RUNNER"
+    %w[Codex Claude Cursor].each { |runner| assert_includes skill, runner }
+    refute_includes skill, "🤖 Codex walkthrough published"
   end
 
   def test_pr_batch_routes_ask_authority_walkthrough_to_closeout_component

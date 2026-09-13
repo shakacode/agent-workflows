@@ -103,7 +103,11 @@ class PostMergeAuditPolicyTest < Minitest::Test
   OBSOLETE_FINDINGS_FIELD = "findings: <none|concise refs|UNKNOWN>"
   REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD = "followups_dispositions: <none|one or more ` | `-separated records with ref, owner, current status, disposition, and evidence; unescaped `;` and `|` are rejected in every record-field value; escaping is not supported; terminal disposition is resolved|accepted-waiver|accepted-deferral|not-applicable; nonterminal action is investigate|fix|await-input|retry|replay|track>"
   OBSOLETE_FOLLOWUPS_DISPOSITIONS_FIELD = "followups_dispositions: <none|one or more ` | `-separated terminal disposition records"
-  REQUIRED_STRICT_MARKER_REPLAY_RULE = "Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails."
+  REQUIRED_VISIBLE_RECEIPT_REPLAY_TERMS = [
+    "Completed-batch audit receipt",
+    "completed-batch-audit v1",
+    "read-compatible only"
+  ].freeze
   REQUIRED_PUBLICATION_PREFLIGHT = "completed-batch-publication-preflight"
   REQUIRED_PUBLICATION_SNAPSHOT = "helper-managed `publication_snapshot`"
   REQUIRED_TERMINAL_PUBLICATION_STATES = "`SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED`"
@@ -553,8 +557,10 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should require the completed-batch audit follow-up disposition contract"
       refute_includes text, OBSOLETE_FOLLOWUPS_DISPOSITIONS_FIELD,
                       "#{relative_path} must not require terminal-only follow-up statuses"
-      assert_includes text, REQUIRED_STRICT_MARKER_REPLAY_RULE,
-                      "#{relative_path} should make exact marker replay fail closed"
+      REQUIRED_VISIBLE_RECEIPT_REPLAY_TERMS.each do |term|
+        assert_includes text, term,
+                        "#{relative_path} should describe visible current receipt replay and legacy read compatibility"
+      end
       assert_includes text, REQUIRED_RECORD_DELIMITER_RULE,
                       "#{relative_path} should explicitly reserve record delimiters"
       assert_includes text, REQUIRED_STRUCTURAL_VS_READINESS_RULE,
