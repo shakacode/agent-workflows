@@ -407,7 +407,7 @@ module CloseoutEvidenceReplay
     match = tag.match(%r{\A<(?<closing>/)?(?<tag>[A-Za-z][A-Za-z0-9:-]*)(?=\s|/?>)}i)
     return unless match && STRUCTURAL_HTML_TAGS.include?(match[:tag].downcase)
 
-    [match[:closing] ? :close : :open, match[:tag].downcase, nil]
+    [match[:closing] ? :close : :open, match[:tag].downcase, nil, token.fetch(:indented_code_origin)]
   end
 
   def html_tag_start?(text)
@@ -439,7 +439,12 @@ module CloseoutEvidenceReplay
           next
         end
 
-        open_tag = { text: +"<", quote: nil, attribute_value_pending: false }
+        open_tag = {
+          text: +"<",
+          quote: nil,
+          attribute_value_pending: false,
+          indented_code_origin: indented_code_line?(line)
+        }
         index = opening + 1
       end
 
@@ -548,11 +553,26 @@ module CloseoutEvidenceReplay
   end
 
   def raw_containment_tags(structural_tags, line)
-    return structural_tags unless indented_code_line?(line)
+    balanced = Set.new
+    openings = Hash.new { |hash, tag| hash[tag] = [] }
+    if indented_code_line?(line)
+      structural_tags.each_with_index do |(type, tag, _text, _indented_origin), index|
+        next unless raw_html_tag?(tag)
+
+        if type == :open
+          openings[tag] << index
+        elsif type == :close && (opening = openings[tag].pop)
+          balanced.merge([opening, index])
+        end
+      end
+    end
 
     # An indented raw opener may conservatively suppress authority, but its
     # closer is Markdown code and cannot release an active containment guard.
-    structural_tags.reject { |type, tag, _text| type == :close && raw_html_tag?(tag) }
+    structural_tags.each_with_index.reject do |(type, tag, _text, indented_origin), index|
+      balanced.include?(index) ||
+        (type == :close && raw_html_tag?(tag) && (indented_code_line?(line) || indented_origin))
+    end.map(&:first)
   end
 
   def visible_markdown(text)

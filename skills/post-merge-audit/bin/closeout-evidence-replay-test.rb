@@ -692,6 +692,36 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_split_indented_raw_closers_cannot_release_containment
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <blockquote>
+
+          </blockquote
+      >
+
+      #{visible_qa_details(head_sha:, scope: 'split indented raw closer')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_indented_balanced_raw_tags_do_not_create_permanent_containment
+    head_sha = "1" * 40
+    ["    <code></code>", "A paragraph.\n    <blockquote></blockquote>"].each do |prefix|
+      body = <<~MARKDOWN
+        #{prefix}
+
+        #{visible_qa_details(head_sha:, scope: 'balanced indented raw tags')}
+      MARKDOWN
+
+      assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), prefix
+    end
+  end
+
   def test_html_comment_cannot_close_a_raw_blockquote_before_visible_evidence
     head_sha = "1" * 40
     body = <<~MARKDOWN
