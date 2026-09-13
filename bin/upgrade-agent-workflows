@@ -553,7 +553,7 @@ restore_target() {
   fi
   trap - ERR
   if [[ "$rollback_complete" != "true" ]]; then
-    echo "ROLLBACK_INCOMPLETE: preserved unverified migration recovery artifacts under $target" >&2
+    echo "ROLLBACK_INCOMPLETE: managed state under $target could not be fully restored or verified." >&2
     return 1
   fi
   echo "ROLLBACK_COMPLETE target=$target"
