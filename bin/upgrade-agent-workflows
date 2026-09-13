@@ -556,7 +556,14 @@ restore_target() {
     while IFS= read -r -d '' path; do
       path_is_within_snapshot_symlink_root "$path" && continue
       if [[ -d "$backup_target_dir/$path" && ! -L "$backup_target_dir/$path" ]]; then
+        if [[ -L "$target/$path" || ( -e "$target/$path" && ! -d "$target/$path" ) ]]; then
+          rm -rf -- "${target:?}/$path"
+        fi
         mkdir -p "$target/$path"
+        if [[ ! -d "$target/$path" || -L "$target/$path" ]]; then
+          rollback_complete=false
+          continue
+        fi
         if [[ "${path%/}" = "bin/agent_doctor" ]]; then
           rsync -a --delete --exclude='/.agent-stack-managed' "$backup_target_dir/$path"/ "$target/$path"/
         else

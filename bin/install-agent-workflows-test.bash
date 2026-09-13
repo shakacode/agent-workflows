@@ -8614,25 +8614,27 @@ PATCH
 }
 
 test_failed_upgrade_restores_preexisting_recovery_artifacts() {
-  local tmp source target quarantine receipt output status
+  local tmp source target quarantine receipt outside output status
   tmp="$(mktemp -d)"
   source="$tmp/source"
   target="$tmp/codex-home"
   quarantine="$target/.agent-workflows-install.json.recovery-review-fixture"
   receipt="$target/.agent-workflows-install.json.cleanup-complete-review-fixture"
+  outside="$tmp/outside"
   mkdir -p "$source"
   new_source_repo "$source"
   "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
   mkdir "$quarantine"
   printf 'original recovery evidence\n' > "$quarantine/metadata"
   printf 'original cleanup receipt\n' > "$receipt"
+  mkdir "$outside"
+  printf 'outside sentinel\n' > "$outside/sentinel"
   mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
   cat > "$source/bin/install-agent-workflows" <<PATCH
 #!/usr/bin/env bash
 set -euo pipefail
 rm -rf $(printf '%q' "$quarantine")
-mkdir $(printf '%q' "$quarantine")
-printf 'changed recovery evidence\n' > $(printf '%q' "$quarantine/metadata")
+ln -s $(printf '%q' "$outside") $(printf '%q' "$quarantine")
 printf 'changed cleanup receipt\n' > $(printf '%q' "$receipt")
 exit 7
 PATCH
@@ -8650,6 +8652,9 @@ PATCH
     fail "rollback did not restore pre-existing recovery evidence"
   [[ "$(cat "$receipt")" = "original cleanup receipt" ]] || \
     fail "rollback did not restore pre-existing cleanup receipt"
+  [[ ! -L "$quarantine" ]] || fail "rollback retained a replacement recovery symlink"
+  [[ "$(cat "$outside/sentinel")" = "outside sentinel" ]] || \
+    fail "rollback modified content through a replacement recovery symlink"
 }
 
 test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants() {
