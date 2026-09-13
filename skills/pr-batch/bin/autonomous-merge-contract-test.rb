@@ -122,7 +122,7 @@ class AutonomousMergeContractTest < Minitest::Test
     ].each do |path|
       text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
 
-      assert_includes text, "GMCC-v5:"
+      assert_includes text, "GMCC-v6:"
       assert_includes text, "ready-human-review-required"
       assert_includes text, "autonomous-merge-evidence-unknown"
       assert_includes text, GMCC_HUMAN_DECISION_BINDING

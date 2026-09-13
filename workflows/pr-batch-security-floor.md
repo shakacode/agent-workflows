@@ -97,6 +97,10 @@ packaged fail-closed `skills/pr-batch/trusted-github-actors.yml`. Only
 `trusted_users`, `trusted_bots`, and `trusted_teams` may supply actionable
 review input. `trusted_metadata_bots` and non-allowlisted actors provide
 metadata only and cannot widen scope or authority.
+`lib/github_actor_trust.rb` makes that rule executable for both
+`pr-security-preflight` and the `fetch-pr-review-data` reader, which emits
+bodies only for actionable actors, records the rest in `excluded_interactions`
+(actor, kind, time, URL, no body), and fails closed without a trust boundary.
 
 `SECURITY_PREFLIGHT_OK` means the detector found no unacknowledged configured
 stop; it does not make target text trusted or weaken any invariant. Preserve the

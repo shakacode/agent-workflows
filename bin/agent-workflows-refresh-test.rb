@@ -97,8 +97,8 @@ class AgentWorkflowsRefreshTest < Minitest::Test
       )
 
       assert_equal 64, status.exitstatus, out
-      assert_includes out, "found both Codex and Claude homes"
-      assert_includes out, "pass --host codex or --host claude"
+      assert_includes out, "found multiple agent homes"
+      assert_includes out, "pass --host codex, --host claude, or --host cursor"
       refute_path_exists calls
     end
   end
@@ -131,7 +131,18 @@ class AgentWorkflowsRefreshTest < Minitest::Test
 
       assert_equal 64, status.exitstatus, out
       assert_includes out, "Usage: agent-workflows-refresh"
-      assert_includes out, "codex|claude|auto"
+      assert_includes out, "codex|claude|cursor|auto"
+      refute_path_exists calls
+    end
+  end
+
+  def test_cursor_refresh_names_the_missing_cli
+    with_fake_hosts do |bin_dir, calls|
+      out, status = run_refresh(bin_dir, calls, "--host", "cursor")
+
+      assert_equal 2, status.exitstatus, out
+      assert_includes out, "upgrade-agent-workflows --host cursor"
+      refute_includes out, "REFRESH_COMPLETE"
       refute_path_exists calls
     end
   end
@@ -217,6 +228,9 @@ class AgentWorkflowsRefreshTest < Minitest::Test
       "AGENT_WORKFLOWS_REFRESH_TEST_CALLS" => calls,
       "CODEX_HOME" => nil,
       "CLAUDE_HOME" => nil,
+      "CURSOR_HOME" => nil,
+      "BASH_ENV" => nil,
+      "ENV" => nil,
       "HOME" => File.join(File.dirname(bin_dir), "home"),
       "PATH" => "#{bin_dir}:#{path}"
     }.merge(env)

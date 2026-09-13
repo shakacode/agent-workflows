@@ -239,6 +239,17 @@ Users can chain actions: e.g., `f+i` then `r7-9`. After the first action complet
 
 ### General rules for all actions
 
+Never post an unsolicited address-review disposition or acknowledgment reply to
+an explanatory root in the current exact-diff walkthrough, and do not resolve
+that walkthrough during ordinary closeout. When a trusted focused reply was
+promoted for triage, answer it in the original thread under the normal action
+rules while keeping the walkthrough visible. Resolve stale walkthrough threads
+without adding disposition replies after a verified current replacement exists,
+or after verifying that the active route neither requires nor authorizes a
+replacement. First answer or carry forward every focused reply; an unanswered
+focused reply keeps its stale thread open and actionable. Apply the normal reply
+and resolution rules to every other selected review thread.
+
 Except for action `a`, when addressing items, after completing each selected item (whether `MUST-FIX`, `DISCUSS`, or `OPTIONAL`), reply to the original review comment explaining how it was addressed.
 For actions other than `a`, if the user selects `DISCUSS` or `OPTIONAL` items to address, treat them the same as `MUST-FIX`: make the code change, reply, and resolve the thread.
 If the user selects skipped/declined items for rationale replies, post those replies too.
@@ -268,6 +279,14 @@ After parallel fixes complete, verify no conflicts exist between the changes by 
 
 **For issue comments (general PR comments):**
 
+Post through `github-comment-envelope post-issue`; never call the GitHub comment
+endpoint directly.
+
+Before posting, export `AGENT_COMMENT_RUNNER` as exactly `codex`, `claude`, or `cursor`,
+`AGENT_COMMENT_HOST` as the actual runner host, and
+`AGENT_COMMENT_TASK_OR_RUN` as this task/run's stable identifier. Missing or
+invalid context blocks the post; never synthesize a generic runner identity.
+
 Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
 issue comment or review summary must start with the authenticated
 `<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked
@@ -280,17 +299,33 @@ RESPONSE_BODY="<response>"
 if [ -n "${SOURCE_PR_NUMBER:-}" ] && [ "${ITEM_SOURCE_PR}" = "${SOURCE_PR_NUMBER}" ]; then
   RESPONSE_BODY="$(printf '<!-- address-review-source-reply -->\n%s' "${RESPONSE_BODY}")"
 fi
-gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"
+printf '%s' "${RESPONSE_BODY}" | "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
+  --repo "${REPO}" --number "${ITEM_SOURCE_PR}" \
+  --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+  --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}"
 ```
 
 **For PR review comments (file-specific, replying to a thread):**
 
+Post through `github-comment-envelope post-reply` so the reply carries the same
+authenticated attribution as a top-level comment.
+
 ```bash
 ITEM_SOURCE_PR="${ITEM_SOURCE_PR:-${PRIMARY_PR_NUMBER}}"
-gh api repos/${REPO}/pulls/${ITEM_SOURCE_PR}/comments/${REVIEW_COMMENT_ID}/replies -X POST -f body="<response>"
+REVIEW_COMMENT_ID="<current-item-id>"
+CURRENT_ITEM_IN_REPLY_TO_ID="<current-item-in_reply_to_id-or-null>"
+REVIEW_COMMENT_IN_REPLY_TO_ID=""
+if [ "${CURRENT_ITEM_IN_REPLY_TO_ID}" != "null" ]; then
+  REVIEW_COMMENT_IN_REPLY_TO_ID="${CURRENT_ITEM_IN_REPLY_TO_ID}"
+fi
+REVIEW_REPLY_TARGET_ID="${REVIEW_COMMENT_IN_REPLY_TO_ID:-${REVIEW_COMMENT_ID}}"
+printf '%s' "<response>" | "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-reply \
+  --repo "${REPO}" --number "${ITEM_SOURCE_PR}" --comment-id "${REVIEW_REPLY_TARGET_ID}" \
+  --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+  --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}"
 ```
 
-Use the selected item's review comment `id` as `REVIEW_COMMENT_ID`; do not use the parsed input `COMMENT_ID` except for the specific-comment fetch path. Use the `/replies` endpoint for all existing review comments, including standalone top-level comments.
+Use the selected item's review comment `id` as `REVIEW_COMMENT_ID`; it remains the tracked item identity. Assign the current item's raw `in_reply_to_id` (number or `null`) to `CURRENT_ITEM_IN_REPLY_TO_ID` on every iteration, then reset and populate `REVIEW_COMMENT_IN_REPLY_TO_ID` exactly as shown. Never inherit either item value from a prior persistent-shell iteration and never pass the literal string `null`. A promoted `root_excluded` reply therefore posts through its excluded top-level parent while its own ID remains in worklists and checkpoints. Do not use the parsed input `COMMENT_ID` except for the specific-comment fetch path. Use the `/replies` endpoint for all existing review comments, including standalone top-level comments.
 
 **For review summary bodies (from `/pulls/{PR_NUMBER}/reviews/{REVIEW_ID}`):**
 
@@ -302,7 +337,10 @@ RESPONSE_BODY="<response>"
 if [ -n "${SOURCE_PR_NUMBER:-}" ] && [ "${ITEM_SOURCE_PR}" = "${SOURCE_PR_NUMBER}" ]; then
   RESPONSE_BODY="$(printf '<!-- address-review-source-reply -->\n%s' "${RESPONSE_BODY}")"
 fi
-gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"
+printf '%s' "${RESPONSE_BODY}" | "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
+  --repo "${REPO}" --number "${ITEM_SOURCE_PR}" \
+  --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+  --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}"
 ```
 
 The response should briefly explain:

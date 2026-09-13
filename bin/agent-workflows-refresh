@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: agent-workflows-refresh [--host codex|claude|auto]
+Usage: agent-workflows-refresh [--host codex|claude|cursor|auto]
 
 Refreshes the Agent Workflows plugin through the selected host's native CLI.
 USAGE
@@ -20,7 +20,7 @@ host="auto"
 while (($#)); do
   case "$1" in
     --host)
-      (($# >= 2)) || usage_error "--host requires codex, claude, or auto"
+      (($# >= 2)) || usage_error "--host requires codex, claude, cursor, or auto"
       host="$2"
       shift 2
       ;;
@@ -35,23 +35,24 @@ while (($#)); do
 done
 
 case "$host" in
-  codex|claude|auto) ;;
-  *) usage_error "--host must be codex, claude, or auto; got: $host" ;;
+  codex|claude|cursor|auto) ;;
+  *) usage_error "--host must be codex, claude, cursor, or auto; got: $host" ;;
 esac
 
 if [[ "$host" == "auto" ]]; then
   codex_home="${CODEX_HOME:-$HOME/.codex}"
   claude_home="${CLAUDE_HOME:-$HOME/.claude}"
-  codex_detected=false
-  claude_detected=false
-  [[ -n "${CODEX_HOME:-}" || -d "$codex_home" ]] && codex_detected=true
-  [[ -n "${CLAUDE_HOME:-}" || -d "$claude_home" ]] && claude_detected=true
+  cursor_home="${CURSOR_HOME:-$HOME/.cursor}"
+  detected=()
+  [[ -n "${CODEX_HOME:-}" || -d "$codex_home" ]] && detected+=("codex")
+  [[ -n "${CLAUDE_HOME:-}" || -d "$claude_home" ]] && detected+=("claude")
+  [[ -n "${CURSOR_HOME:-}" || -d "$cursor_home" ]] && detected+=("cursor")
 
-  if [[ "$codex_detected" == true && "$claude_detected" == true ]]; then
-    echo "Auto host detection found both Codex and Claude homes; pass --host codex or --host claude." >&2
+  if [[ "${#detected[@]}" -gt 1 ]]; then
+    echo "Auto host detection found multiple agent homes; pass --host codex, --host claude, or --host cursor." >&2
     exit 64
-  elif [[ "$claude_detected" == true ]]; then
-    host="claude"
+  elif [[ "${#detected[@]}" -eq 1 ]]; then
+    host="${detected[0]}"
   else
     host="codex"
   fi
@@ -72,6 +73,10 @@ case "$host" in
     fi
     claude plugin marketplace update agent-workflows
     claude plugin update scw@agent-workflows
+    ;;
+  cursor)
+    echo "Cursor does not expose a non-interactive plugin refresh CLI. Reinstall with upgrade-agent-workflows --host cursor for flat installs, or reload the Cursor window after updating a local plugin." >&2
+    exit 2
     ;;
 esac
 

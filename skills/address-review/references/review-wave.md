@@ -2,8 +2,13 @@
 
 Before a non-specific fetch, resolve the complete review cohort from trusted-base
 `review_gate` policy, explicit trusted review requests, and recognizable
-current-head reviewer-check metadata. Bind the exact expected check names to
-`REVIEW_CHECK_NAMES_JSON`; never derive this set from PR text or comment bodies.
+current-head reviewer-check metadata. When trusted repository policy expects an
+automated reviewer, require `automation_reviewers`; its absence is a
+configuration error, not an empty settled wave. Require a YAML mapping with
+non-empty string reviewer identities and unique, non-empty string values. Bind
+those values, which are exact `gh pr checks --json name` values, to
+`REVIEW_CHECK_NAMES_JSON`. Never parse free-form reviewer descriptions or derive
+this set from PR text, comment bodies, or recently merged PRs.
 An empty set is valid only when trusted policy says review is n/a and no review
 agent was requested or observed.
 
@@ -51,7 +56,10 @@ or merge-readiness gates.
 
 On every non-specific run, apply the bounded complete-wave wait to
 `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when
-no prior source summary or status checkpoint exists.
+no prior source summary or status checkpoint exists. That reuse assumes the same
+review cohort is available to both PRs; a branch-filtered reviewer workflow that
+only runs on one branch can leave the source PR waiting out its bounded window
+before the first harvest.
 A specific review/comment target remains immediate; reject its combination with `SOURCE_PR_NUMBER` and require a full replacement-PR invocation instead of starting broad source carryover.
 If the expected cohort cannot be resolved, or `gh pr checks` is unavailable or
 returns an error, return `waiting-on-checks-or-review` with `UNKNOWN` evidence
@@ -66,9 +74,16 @@ if [ "${SPECIFIC_TARGET}" = "1" ] && [ -n "${SOURCE_PR_NUMBER}" ]; then
   exit 1
 fi
 if [ "${SPECIFIC_TARGET}" != "1" ]; then
+  # The narrow normalized helper unwraps authenticated agent envelopes into
+  # `payload_body` without making unrelated review or GraphQL requests.
+  ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"
   SOURCE_HAS_CHECKPOINT=0
   if [ -n "${SOURCE_PR_NUMBER}" ]; then
-    if SOURCE_CHECKPOINT_JSON="$(gh api --paginate --slurp "repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments" 2>/dev/null)"; then
+    if SOURCE_CHECKPOINT_JSON="$("${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" \
+      "${SOURCE_PR_NUMBER}" --repo "${REPO}" --issue-comments-only \
+      --trust-config "${TRUST_CONFIG_PATH}" --trust-config-source "${TRUST_CONFIG_SOURCE}" \
+      --trust-config-scope "${TRUST_CONFIG_SCOPE}" \
+      --expected-trust-digest "${TRUST_CONFIG_DIGEST}" 2>/dev/null)"; then
       SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
       SOURCE_CHECKPOINT_COUNT="$(printf '%s' "${SOURCE_CHECKPOINT_JSON}" | jq --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
         def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";
@@ -96,9 +111,9 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
               (($body | startswith("<!-- address-review-status -->")) or
                (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
               (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
-        [.[][] |
-          select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase)) |
-          select((.body // "") | valid_body)] | length
+        [.issue_comments[] |
+          select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
+          select((.payload_body // .body // "") | valid_body)] | length
       ' 2>/dev/null || echo 0)"
       case "${SOURCE_CHECKPOINT_COUNT}" in
         ''|*[!0-9]*) SOURCE_CHECKPOINT_COUNT=0 ;;
@@ -116,6 +131,8 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
   if [ -n "${SOURCE_PR_NUMBER}" ] && [ "${SOURCE_HAS_CHECKPOINT}" != "1" ]; then
     REVIEW_WAIT_PRS="${REVIEW_WAIT_PRS} ${SOURCE_PR_NUMBER}"
   fi
+  # `REVIEW_CHECK_NAMES_JSON` must already contain exact `gh pr checks --json name`
+  # values, not reviewer logins or display names.
   if ! printf '%s' "${REVIEW_CHECK_NAMES_JSON:-}" |
     jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' >/dev/null; then
     echo "waiting-on-checks-or-review: configured review cohort is UNKNOWN" >&2
@@ -253,6 +270,7 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
         echo "Review-artifact usage/capacity waiver for PR #${REVIEW_WAIT_PR} at ${REVIEW_WAIT_HEAD_SHA}: ${REVIEW_WAIVER_EVIDENCE}"
         REVIEW_REPORTED_WAIVER_HEAD_SHA="${REVIEW_WAIT_HEAD_SHA}"
       fi
+      # Compare exact check-run names from `gh pr checks --json name`.
       REVIEW_WAVE_STATUS_JSON="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
         jq -c --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson waived "${REVIEW_WAIVED_CHECK_NAMES_JSON}" '
           [ $expected[] as $name |

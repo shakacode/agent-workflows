@@ -6,6 +6,7 @@
 
 require "minitest/autorun"
 require "open3"
+require_relative "../../pr-batch/lib/github_comment_envelope"
 
 SCRIPT = File.expand_path("fetch-pr-review-data", __dir__)
 load SCRIPT
@@ -23,14 +24,14 @@ class FetchPrReviewDataTest < Minitest::Test
 
   REVIEWS_RAW = <<~JSON
     [[
-      {"id":10,"body":"fix the nil guard","state":"COMMENTED","user":{"login":"alice"},"submitted_at":"2026-01-04T00:00:00Z"},
+      {"id":10,"body":"fix the nil guard","state":"COMMENTED","user":{"login":"alice"},"submitted_at":"2026-01-04T00:00:00Z","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
       {"id":11,"body":"","state":"APPROVED","user":{"login":"bob"}}
     ]]
   JSON
 
   INLINE_RAW = <<~JSON
     [[
-      {"id":20,"node_id":"RC_20","path":"a.rb","user":{"login":"alice"}},
+      {"id":20,"node_id":"RC_20","path":"a.rb","user":{"login":"alice"},"pull_request_review_id":10,"commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
       {"id":21,"node_id":"RC_21","path":"b.rb","user":{"login":"alice"}},
       {"id":22,"node_id":"RC_22","path":"c.rb","user":{"login":"alice"}}
     ]]
@@ -43,10 +44,21 @@ class FetchPrReviewDataTest < Minitest::Test
     ]}}}}}]
   JSON
 
+  # These cases are about shaping, not trust, so every fixture actor is
+  # actionable; the trust boundary itself is covered in the -trust-test suite.
+  def trust
+    config = GithubActorTrust.build_config(
+      { "trusted_users" => %w[alice bob bot] },
+      contents: "trusted_users: [alice, bob, bot]\n", path: "(test)", global: false
+    )
+    FetchPrReviewData::TrustBoundary.new(repo: "owner/repo", config:, source: "test")
+  end
+
   def assembled
     FetchPrReviewData.assemble(
       repo: "owner/repo", pr_number: 1234,
-      issue_raw: ISSUE_RAW, reviews_raw: REVIEWS_RAW, inline_raw: INLINE_RAW, threads_raw: THREADS_RAW
+      issue_raw: ISSUE_RAW, reviews_raw: REVIEWS_RAW, inline_raw: INLINE_RAW, threads_raw: THREADS_RAW,
+      trust:
     )
   end
 
@@ -54,8 +66,34 @@ class FetchPrReviewDataTest < Minitest::Test
     assert_equal "2026-01-03T00:00:00Z", assembled["review_cutoff_at"]
   end
 
+  def test_cutoff_accepts_summary_as_first_payload_line_after_agent_envelope
+    body = GitHubCommentEnvelope.render(
+      body: "<!-- address-review-summary -->\ncurrent",
+      runner: "codex",
+      host: "M5",
+      task_or_run: "task-7"
+    )
+    comments = [{ "body" => body, "user" => { "login" => "bot" }, "created_at" => "2026-01-05T00:00:00Z" }]
+    normalized = FetchPrReviewData.build_issue_comments(comments, trust).first.first
+
+    assert_equal "2026-01-05T00:00:00Z", FetchPrReviewData.compute_cutoff([normalized])
+    assert_equal "<!-- address-review-summary -->\ncurrent", normalized.fetch("payload_body")
+    assert_equal body, normalized.fetch("body")
+  end
+
   def test_drops_empty_review_summaries
     assert_equal([10], assembled["review_summaries"].map { |r| r["id"] })
+  end
+
+  # Production break: address-review cannot associate an inline concept with
+  # its current walkthrough review, so it replies to and resolves that thread.
+  def test_preserves_review_and_commit_identity_for_walkthrough_filtering
+    summary = assembled["review_summaries"].fetch(0)
+    comment = assembled["inline_comments"].find { |row| row["id"] == 20 }
+
+    assert_equal "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", summary["commit_id"]
+    assert_equal 10, comment["pull_request_review_id"]
+    assert_equal "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", comment["commit_id"]
   end
 
   def test_joins_thread_metadata_by_node_id
@@ -75,7 +113,8 @@ class FetchPrReviewDataTest < Minitest::Test
 
   def test_handles_empty_and_blank_inputs
     out = FetchPrReviewData.assemble(
-      repo: "o/r", pr_number: 7, issue_raw: "", reviews_raw: "[]", inline_raw: "[[]]", threads_raw: nil
+      repo: "o/r", pr_number: 7, issue_raw: "", reviews_raw: "[]", inline_raw: "[[]]", threads_raw: nil,
+      trust:
     )
     assert_equal "", out["review_cutoff_at"]
     assert_equal 0, out["inline_comments"].length
@@ -86,6 +125,24 @@ class FetchPrReviewDataTest < Minitest::Test
     text = FetchPrReviewData.text_summary(assembled)
     assert_includes text, "inline_comments: 3 (1 in resolved threads)"
     assert_includes text, "review_threads: 2 (1 resolved)"
+  end
+
+  def test_issue_comments_only_fetch_avoids_unrelated_review_endpoints
+    runner = FetchPrReviewData::Runner.new
+    calls = []
+    runner.define_singleton_method(:rest) do |endpoint|
+      calls << endpoint
+      FetchPrReviewDataTest::ISSUE_RAW
+    end
+    runner.define_singleton_method(:capture!) { |*| raise "unexpected GraphQL fetch" }
+
+    out = runner.send(:fetch, "owner/repo", 1234, trust, issue_comments_only: true)
+
+    assert_equal ["repos/owner/repo/issues/1234/comments"], calls
+    assert_equal 4, out.fetch("issue_comments").length
+    assert_empty out.fetch("review_summaries")
+    assert_empty out.fetch("inline_comments")
+    assert_empty out.fetch("review_threads")
   end
 
   def test_self_check_passes

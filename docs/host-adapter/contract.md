@@ -3,8 +3,8 @@
 Date: 2026-07-02
 Status: accepted
 
-This contract defines how one installed `agent-workflows` pack runs in both
-Codex Desktop and Claude Code Desktop without forking shared skills or workflow
+This contract defines how one installed `agent-workflows` pack runs on Codex
+Desktop, Claude Code, and Cursor without forking shared skills or workflow
 text. Shared skill text stays portable. Host-specific behavior lives in this
 document, optional host metadata, and the current host's runtime configuration.
 
@@ -30,23 +30,28 @@ adapter maps those verbs to the current host's mechanisms at runtime.
 
 ## Host Table
 
-| Area | Codex Desktop | Claude Code Desktop |
-| --- | --- | --- |
-| Primary repo instructions | `AGENTS.md`, with `agents.md` accepted only when the host explicitly resolves it | `CLAUDE.md`, usually as a thin import or pointer back to `AGENTS.md` |
-| Shared skill location | `${CODEX_HOME:-$HOME/.codex}/skills` | `${CLAUDE_HOME:-$HOME/.claude}/skills` |
-| Shared workflow location | `${CODEX_HOME:-$HOME/.codex}/workflows` | `${CLAUDE_HOME:-$HOME/.claude}/workflows` |
-| Shared helper location | `${CODEX_HOME:-$HOME/.codex}/bin` | `${CLAUDE_HOME:-$HOME/.claude}/bin` |
-| Optional metadata | `skills/*/agents/openai.yaml`, `.agents/plugins/marketplace.json`, and `.codex-plugin/plugin.json` (`scw`) | `.claude-plugin/plugin.json` plus marketplace metadata (`scw`) |
-| Persistent memory | Codex memory locations exposed by the current runtime, only after availability check | Claude Code persistent workspace or project-root locations exposed by the current runtime, only after availability check |
-| Repo policy source | Consumer `AGENTS.md` and `.agents/agent-workflow.yml` | `CLAUDE.md` may route to `AGENTS.md`; consumer `AGENTS.md` and `.agents/agent-workflow.yml` remain the policy source |
+| Area | Codex Desktop | Claude Code Desktop | Cursor (Grok and other Cursor models) |
+| --- | --- | --- | --- |
+| Primary repo instructions | `AGENTS.md`, with `agents.md` accepted only when the host explicitly resolves it | `CLAUDE.md`, usually as a thin import or pointer back to `AGENTS.md` | `AGENTS.md`. Optional `.cursor/rules` may add a routing rule only |
+| Shared skill location | `${CODEX_HOME:-$HOME/.codex}/skills` | `${CLAUDE_HOME:-$HOME/.claude}/skills` | `${CURSOR_HOME:-$HOME/.cursor}/skills` |
+| Shared workflow location | `${CODEX_HOME:-$HOME/.codex}/workflows` | `${CLAUDE_HOME:-$HOME/.claude}/workflows` | `${CURSOR_HOME:-$HOME/.cursor}/workflows` |
+| Shared helper location | `${CODEX_HOME:-$HOME/.codex}/bin` | `${CLAUDE_HOME:-$HOME/.claude}/bin` | `${CURSOR_HOME:-$HOME/.cursor}/bin` |
+| Optional metadata | `skills/*/agents/openai.yaml`, `.agents/plugins/marketplace.json`, and `.codex-plugin/plugin.json` (`scw`) | `.claude-plugin/plugin.json` plus marketplace metadata (`scw`) | `.cursor-plugin/plugin.json` (`scw`), Cursor skill frontmatter, and `rules/agent-workflows.mdc` |
+| Persistent memory | Codex memory locations exposed by the current runtime, only after availability check | Claude Code persistent workspace or project-root locations exposed by the current runtime, only after availability check | Cursor transcript and project memory locations exposed by the current runtime, only after availability check |
+| Repo policy source | Consumer `AGENTS.md` and `.agents/agent-workflow.yml` | `CLAUDE.md` may route to `AGENTS.md`; consumer `AGENTS.md` and `.agents/agent-workflow.yml` remain the policy source | Consumer `AGENTS.md` and `.agents/agent-workflow.yml` |
+
+Never install into `~/.cursor/skills-cursor`. That directory is reserved for Cursor builtins.
+
+Cursor also loads Claude and Codex skill homes for compatibility. Prefer the Cursor-installed copy when the same skill name exists in more than one home. Only `~/.cursor/skills` syncs to Cloud Agents.
 
 If a host cannot load installed shared skills, use a repo-pinned `.agents/`
 copy as the fallback. Repo-local copies may carry pinned compatibility changes,
 so resolve them before the installed home.
 
 Native plugins add a host namespace without changing the portable skill name:
-Codex uses the plugin-qualified `scw:<skill>` surface and Claude Code uses
-`/scw:<skill>`. Claude's plugin manifest publishes `ShakaCode Agent Workflows`
+Codex uses the plugin-qualified `scw:<skill>` surface, Claude Code uses
+`/scw:<skill>`, and Cursor uses `/<skill>` from the `scw` Cursor plugin or the
+flat `~/.cursor/skills` install. Claude's plugin manifest publishes `ShakaCode Agent Workflows`
 as the human-readable `displayName`; `scw` remains the stable install, lookup,
 and namespace identifier. The Host Installer Path defaults to flat and
 unqualified skills;
@@ -60,15 +65,16 @@ explicit-invocation-only; never leave two auto-invocable aliases.
 
 Runtime host detection is best-effort. An explicit user-requested host, runner,
 or paste destination wins over inference. Installed-home auto detection, such as
-`agent-workflows-status --host auto` or installer `--host auto`, detects Codex
-and Claude homes; it does not prove which runner is executing the current
-prompt. When both homes exist, the install/status tools must ask for
-`--host codex` or `--host claude` instead of guessing.
+`agent-workflows-status --host auto` or installer `--host auto`, detects Codex,
+Claude, and Cursor homes; it does not prove which runner is executing the current
+prompt. When more than one home exists, the install/status tools must ask for
+`--host codex`, `--host claude`, or `--host cursor` instead of guessing.
 
 A coordinator may infer the active host only from reliable runtime-exposed
-signals, such as Codex `/goal` support or Codex-specific tooling for Codex, and
-Claude Code slash commands or subagent runtime support for Claude Code. If those
-signals are absent or mixed, use the `generic` prompt target and conservative
+signals, such as Codex `/goal` support or Codex-specific tooling for Codex,
+Claude Code slash commands or subagent runtime support for Claude Code, and
+Cursor Plan mode, `Task` subagents, or a `~/.cursor` skill base for Cursor.
+If those signals are absent or mixed, use the `generic` prompt target and conservative
 batch sizing.
 
 Model and effort selections remain advisory preferences across every host. A
@@ -89,7 +95,7 @@ Record that ownership in the design or PR with this minimum matrix:
 
 | Host-owned fact | Producer owner | Verifier owner | Provisioner owner | Installer owner | Clean-install acceptance |
 | --- | --- | --- | --- | --- | --- |
-| Named fact and schema | Accountable component/person | Accountable component/person | Accountable component/person | Accountable component/person | Commands and expected evidence for Codex and Claude |
+| Named fact and schema | Accountable component/person | Accountable component/person | Accountable component/person | Accountable component/person | Commands and expected evidence for Codex, Claude, and Cursor |
 
 Every owner must be named and every role must have an implemented path. The
 clean-install acceptance must start from an empty supported host target, install
@@ -108,13 +114,14 @@ readiness.
 Shared docs may mention the portable skill name, but user-facing prompts must
 mark host-specific syntax when a literal invocation is required.
 
-| Meaning | Codex Desktop | Claude Code Desktop | Portability rule |
-| --- | --- | --- | --- |
-| Invoke a shared skill | `$name` or skill picker selection | `/name` when exposed as a slash command or skill | Use neutral prose unless the branch is marked for one host. |
-| Run `pr-batch` | `$pr-batch` | `/pr-batch` if installed for Claude Code | Do not install-time rewrite one form into the other. |
-| Start a Codex goal prompt | `/goal` | n/a | `/goal` is Codex-only and must appear only inside a marked Codex branch. |
-| Address review comments | `$address-review` | `/address-review` when available | Availability-check the command or skill before use. |
-| Simplify a diff | `/simplify` when Codex exposes it through the active workflow | Claude slash command or CLI support when available | Treat `/simplify` as host-specific, never as guaranteed portable syntax. |
+| Meaning | Codex Desktop | Claude Code Desktop | Cursor | Portability rule |
+| --- | --- | --- | --- | --- |
+| Invoke a shared skill | `$name` or skill picker selection | `/name` when exposed as a slash command or skill | `/name` slash command, or pin the skill as a Custom Mode | Use neutral prose unless the branch is marked for one host. |
+| Run `pr-batch` | `$pr-batch` | `/pr-batch` if installed for Claude Code | `/pr-batch` or Custom Mode | Do not install-time rewrite one form into the other. |
+| Start a Codex goal prompt | `/goal` | n/a | n/a | `/goal` is Codex-only and must appear only inside a marked Codex branch. |
+| Enter plan mode | host planning UI when present | host planning UI when present | Cursor Plan mode | Cursor Plan mode is host-specific. <!-- host-allow: cursor-only --> |
+| Address review comments | `$address-review` | `/address-review` when available | `/address-review` skill when available | Availability-check the command or skill before use. |
+| Simplify a diff | `/simplify` when Codex exposes it through the active workflow | Claude slash command or CLI support when available | Treat as unavailable unless the current Cursor session exposes an equivalent | Treat `/simplify` as host-specific, never as guaranteed portable syntax. |
 
 When a document needs both forms, write separate marked branches, for example
 "Codex: `$pr-batch`" and "Claude Code: `/pr-batch`". Do not write one mixed
@@ -125,14 +132,14 @@ command that assumes both hosts parse the same syntax.
 Shared skill text should prefer these verbs and let the adapter choose the
 mechanism:
 
-| Portable verb | Codex Desktop mechanism | Claude Code Desktop mechanism |
-| --- | --- | --- |
-| Dispatch a worker per lane | Goal chats, cloud tasks, separate Codex sessions, or separate machines | `Agent` or `Workflow` subagents when available |
-| Isolate each file-editing worker in its own worktree | `git worktree add` per worker or lane | `Agent` / `Workflow` subagents with `isolation: 'worktree'` |
-| Run without blocking approval prompts | Codex sandbox and approval settings chosen before launch | Claude Code permission mode and `settings.json` allowlists chosen before launch |
-| Resolve repo commands and policy | `AGENTS.md`, `.agents/bin/`, and `.agents/agent-workflow.yml` | `CLAUDE.md` routes to `AGENTS.md`; then `.agents/bin/` and `.agents/agent-workflow.yml` |
-| Record a follow-up | Use the consumer repo's follow-up prefix and tracking rules from the seam | Same seam; do not invent Claude-specific labels or trackers |
-| Run an independent review pass | `codex review` only when the command is present | Claude Code review slash command or CLI only when present |
+| Portable verb | Codex Desktop mechanism | Claude Code Desktop mechanism | Cursor |
+| --- | --- | --- | --- |
+| Dispatch a worker per lane | Goal chats, cloud tasks, separate Codex sessions, or separate machines | `Agent` or `Workflow` subagents when available | Sequential `Task` subagents in the parent chat, project agents in `.cursor/agents/`, or Cloud Agents for a separate machine. Overnight multi-lane fleets stay blocked until worktree isolation is proven. |
+| Isolate each file-editing worker in its own worktree | `git worktree add` per worker or lane | `Agent` / `Workflow` subagents with `isolation: 'worktree'` | `git worktree add` per worker until Cursor `Task` exposes an equivalent of `isolation: 'worktree'`. Stop rather than silently sharing the parent worktree. |
+| Run without blocking approval prompts | Codex sandbox and approval settings chosen before launch | Claude Code permission mode and `settings.json` allowlists chosen before launch | Cursor auto-run and sandbox settings chosen before spawn; do not block workers on chat approvals |
+| Resolve repo commands and policy | `AGENTS.md`, `.agents/bin/`, and `.agents/agent-workflow.yml` | `CLAUDE.md` routes to `AGENTS.md`; then `.agents/bin/` and `.agents/agent-workflow.yml` | `AGENTS.md`, `.agents/bin/`, and `.agents/agent-workflow.yml` |
+| Record a follow-up | Use the consumer repo's follow-up prefix and tracking rules from the seam | Same seam; do not invent Claude-specific labels or trackers | Same seam |
+| Run an independent review pass | `codex review` only when the command is present | Claude Code review slash command or CLI only when present | Cursor `/review`, `/review-bugbot`, or `/review-security` only when present; otherwise availability-check `codex review` or Claude review |
 
 If a host lacks a mechanism for the requested verb, stop with a precise blocker
 instead of silently weakening the workflow.
@@ -196,13 +203,13 @@ verb, advertise `model-polling-only` and use one inspectable, updatable,
 stoppable bounded fallback, or advertise `unsupported` and preserve the exact
 manual-resume instruction.
 
-| Portable lifecycle | Codex Desktop | Claude Code (CLI and Desktop) |
-| --- | --- | --- |
-| Deterministic state-change watcher | Advertise `deterministic-watcher` only when a configured adapter verb runs the sanitized probe and reducer outside task context, persists one stable monitor identity, and resumes the same task for every `wake_parent: true` decision, including an idempotent `redeliver-pending-wake` after restart. Without that verb, use `model-polling-only` or `unsupported`; a scheduled task that first reloads the parent does not qualify. | Apply the same capability test. Background Bash or Monitor work is not restored on resume, and `/loop`/Cron re-entry is model-mediated rather than proof of an out-of-context reducer verb; use it only as the bounded fallback unless a configured adapter supplies the required verb. [Scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks) |
-| Current-thread bounded fallback | Use the current task's recurring wake mechanism only when it can be inspected, updated, and stopped. Keep one monitor identity; use four 15-minute fast-window polls, exponential backoff capped at four hours, finite unchanged-run/call/token ceilings, and stop or pause on clear, done, terminal, user-input, or budget state. | In the current Claude Code session, `/loop <interval> <prompt>` or Cron may provide the same bounded fallback. These tasks are session-scoped: they run only while Claude Code is running and idle, a new conversation clears them, resumed sessions restore only unexpired tasks, and recurring tasks expire after seven days. [Scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks) |
-| Resume after a scheduled handoff | Re-enter the same goal/thread, or give the exact manual resume instruction. | Name the CLI session before handoff, then record the exact `claude --resume <name>` (or the applicable `claude --continue` from the same project/worktree). On Desktop, record the session-selection path and resume it from the sidebar. Sessions are saved locally and can be resumed by name; project and worktree scope matters. Do not treat background Bash or Monitor work as resumable: those tasks are not restored on resume. [Sessions](https://code.claude.com/docs/en/sessions) |
-| Durable or independent scheduling | Use a Codex mechanism only when it still meets the portable current-thread requirement; otherwise hand off with exact manual resume. | Do not substitute a Routine or a Desktop scheduled task for a current-thread monitor: those are durable, independent scheduling surfaces, not evidence that the original thread will be re-entered. Use them only when the workflow explicitly authorizes independent work. [Scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks) |
-| Planning-chat resume and archive | Preserve the planning-chat role, durable handoff, and archive-readiness criteria; resume the same planning chat when it retains parent-orchestrator duties. | CLI sessions and Desktop sessions have separate histories. For CLI, `--resume`/`--continue` (or `/resume`) returns to the saved conversation; accepting a plan can name the session. `Ready for archiving` remains the portable lifecycle status, not a claim that the CLI has a matching archive UI. In Desktop, resume by selecting the session in the sidebar; its archive control removes the session worktree, and auto-archive applies only to finished local sessions after a PR merges or closes. Do not archive a planning parent that still owns reconciliation or an unresolved follow-up. [Sessions](https://code.claude.com/docs/en/sessions), [Desktop](https://code.claude.com/docs/en/desktop) |
+| Portable lifecycle | Codex Desktop | Claude Code (CLI and Desktop) | Cursor |
+| --- | --- | --- | --- |
+| Deterministic state-change watcher | Advertise `deterministic-watcher` only when a configured adapter verb runs the sanitized probe and reducer outside task context, persists one stable monitor identity, and resumes the same task for every `wake_parent: true` decision, including an idempotent `redeliver-pending-wake` after restart. Without that verb, use `model-polling-only` or `unsupported`; a scheduled task that first reloads the parent does not qualify. | Apply the same capability test. Background Bash or Monitor work is not restored on resume, and `/loop`/Cron re-entry is model-mediated rather than proof of an out-of-context reducer verb; use it only as the bounded fallback unless a configured adapter supplies the required verb. [Scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks) | Advertise `model-polling-only` until an out-of-context reducer verb exists. Cursor `/loop` and Cloud `cursor-subscriptions` timers are not that verb. Do not claim Claude `/loop` or Codex task-wake. |
+| Current-thread bounded fallback | Use the current task's recurring wake mechanism only when it can be inspected, updated, and stopped. Keep one monitor identity; use four 15-minute fast-window polls, exponential backoff capped at four hours, finite unchanged-run/call/token ceilings, and stop or pause on clear, done, terminal, user-input, or budget state. | In the current Claude Code session, `/loop <interval> <prompt>` or Cron may provide the same bounded fallback. These tasks are session-scoped: they run only while Claude Code is running and idle, a new conversation clears them, resumed sessions restore only unexpired tasks, and recurring tasks expire after seven days. [Scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks) | Cursor `/loop` may provide the same bounded fallback while this chat remains open. A new chat clears it. Cloud timers are independent scheduling, not proof the original thread will be re-entered. |
+| Resume after a scheduled handoff | Re-enter the same goal/thread, or give the exact manual resume instruction. | Name the CLI session before handoff, then record the exact `claude --resume <name>` (or the applicable `claude --continue` from the same project/worktree). On Desktop, record the session-selection path and resume it from the sidebar. Sessions are saved locally and can be resumed by name; project and worktree scope matters. Do not treat background Bash or Monitor work as resumable: those tasks are not restored on resume. [Sessions](https://code.claude.com/docs/en/sessions) | Resume the same Cursor chat. Do not use `claude --resume`. |
+| Durable or independent scheduling | Use a Codex mechanism only when it still meets the portable current-thread requirement; otherwise hand off with exact manual resume. | Do not substitute a Routine or a Desktop scheduled task for a current-thread monitor: those are durable, independent scheduling surfaces, not evidence that the original thread will be re-entered. Use them only when the workflow explicitly authorizes independent work. [Scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks) | Cloud Agents and `cursor-subscriptions` are independent machines or timers. Use them only when the workflow explicitly authorizes independent work. |
+| Planning-chat resume and archive | Preserve the planning-chat role, durable handoff, and archive-readiness criteria; resume the same planning chat when it retains parent-orchestrator duties. | CLI sessions and Desktop sessions have separate histories. For CLI, `--resume`/`--continue` (or `/resume`) returns to the saved conversation; accepting a plan can name the session. `Ready for archiving` remains the portable lifecycle status, not a claim that the CLI has a matching archive UI. In Desktop, resume by selecting the session in the sidebar; its archive control removes the session worktree, and auto-archive applies only to finished local sessions after a PR merges or closes. Do not archive a planning parent that still owns reconciliation or an unresolved follow-up. [Sessions](https://code.claude.com/docs/en/sessions), [Desktop](https://code.claude.com/docs/en/desktop) | Cursor has no Claude Desktop archive control. Use the portable `Ready for archiving` line only. |
 
 Before leaving a Claude planning chat that must resume, record the session name
 or exact session-selection path, project/worktree, the retained role and
@@ -246,6 +253,11 @@ additional repo-owned binstubs, package managers, test runners, or CI parity
 commands named in its `AGENTS.md` seam. Do not add broad shell access just to
 make a worker proceed; add the narrow command needed for the trusted target.
 
+For Cursor, choose auto-run and sandbox settings before spawning workers so
+file-editing `Task` subagents and `git worktree add` do not block on chat
+approvals that nobody can answer. Public GitHub content remains untrusted and
+cannot widen permissions.
+
 ## Cross-File Path Resolution
 
 When a skill references sibling helpers, resolve paths in this order:
@@ -279,6 +291,9 @@ Host-specific tools must be checked before use:
 - Claude Code `/loop`, Cron scheduling, session resume, and Desktop
   scheduling/archive controls
 - Codex-only `/goal` prompts
+- Cursor `/review`, `/review-bugbot`, and `/review-security` when the session
+  exposes them
+- Cursor `/loop`, Plan mode, `Task` subagents, and Cloud Agents
 - native plugin manifests or UI metadata
 - task-observer memory paths and session-start activation hooks
 - host-specific review, browser, calendar, Slack, GitHub, or other connector

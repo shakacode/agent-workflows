@@ -22,7 +22,12 @@ module AgentWorkflowsDeliveryState
   end
 
   def plugin_manifest_skill_names(root, host, expected_version: nil, expected_source: nil)
-    directory = host == "codex" ? ".codex-plugin" : ".claude-plugin"
+    directory = case host
+                when "codex" then ".codex-plugin"
+                when "claude" then ".claude-plugin"
+                when "cursor" then ".cursor-plugin"
+                else return nil
+                end
     path = File.join(root, directory, "plugin.json")
     return nil unless File.file?(path)
 
@@ -393,8 +398,37 @@ module AgentWorkflowsDeliveryState
     { "state" => "unknown", "reason" => "invalid Claude plugin state: #{e.message}" }
   end
 
+  def cursor_native_state(target)
+    local_plugin = File.join(target, "plugins/local/scw")
+    unless File.directory?(local_plugin)
+      return { "state" => "inactive", "reason" => "scw Cursor plugin is not installed under plugins/local/scw" }
+    end
+
+    names = plugin_manifest_skill_names(local_plugin, "cursor")
+    unless names
+      return {
+        "state" => "unknown",
+        "reason" => "Cursor local scw plugin has no valid .cursor-plugin manifest: #{local_plugin}"
+      }
+    end
+
+    {
+      "state" => "active",
+      "roots" => [File.realpath(local_plugin)],
+      "skill_names" => names
+    }
+  rescue SystemCallError, TypeError => e
+    { "state" => "unknown", "reason" => "unable to read Cursor plugin state: #{e.message}" }
+  end
+
   def native_state(host, target)
-    host == "codex" ? codex_native_state(target) : claude_native_state(target)
+    case host
+    when "codex" then codex_native_state(target)
+    when "claude" then claude_native_state(target)
+    when "cursor" then cursor_native_state(target)
+    else
+      { "state" => "unknown", "reason" => "unsupported host: #{host}" }
+    end
   end
 
   def symlinked_target_component(target)
@@ -902,7 +936,7 @@ if $PROGRAM_NAME == __FILE__
 
   abort "action must be check or migrate" unless %w[check migrate].include?(action)
   abort "--host, --target, --source, and --delivery-mode are required" unless %i[host target source delivery_mode].all? { |key| options[key] }
-  abort "--host must be codex or claude" unless %w[codex claude].include?(options[:host])
+  abort "--host must be codex, claude, or cursor" unless %w[codex claude cursor].include?(options[:host])
   abort "--delivery-mode must be flat or plugin-companion" unless %w[flat plugin-companion].include?(options[:delivery_mode])
 
   call_options = options.slice(:host, :target, :source, :delivery_mode)

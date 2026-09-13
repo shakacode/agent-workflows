@@ -107,6 +107,16 @@ class StaleAssignmentSweepTest < Minitest::Test
     assert_includes log, "-X DELETE repos/owner/repo/issues/2/assignees -f assignees[]=bob"
   end
 
+  # Production break: a scheduled --apply run without attribution used to exit
+  # successfully after silently skipping every nudge and release.
+  def test_apply_fails_before_any_gh_call_when_comment_attribution_is_invalid
+    result, log = run_cli(apply: true, agent_comment_env: { "AGENT_COMMENT_RUNNER" => nil })
+
+    refute_predicate result.fetch(:status), :success?, result.fetch(:stderr)
+    assert_includes result.fetch(:stderr), "cannot attribute agent-authored comment"
+    assert_empty log
+  end
+
   def test_release_requires_a_prior_nudge_and_respects_the_grace_window
     _result, log = run_cli(apply: true)
 
@@ -414,6 +424,9 @@ class StaleAssignmentSweepTest < Minitest::Test
     assert status.success?
     assert_includes out, "time-to-first-activity"
     assert_includes out, "inactivity-after-start"
+    assert_includes out, "AGENT_COMMENT_RUNNER"
+    assert_includes out, "AGENT_COMMENT_HOST"
+    assert_includes out, "AGENT_COMMENT_TASK_OR_RUN"
   end
 
   # --- #221: the claim label is resolved from the seam, not hardcoded ---
@@ -681,7 +694,7 @@ class StaleAssignmentSweepTest < Minitest::Test
 
   def run_cli(apply: false, trust_config: nil, trust_file: "trust.yml", repo: "owner/repo", repos: nil,
               identity: IDENTITY, gh_fail_user: false, extra_args: [], fail_delete: nil,
-              agent_claimed_label: nil, workflow_label: nil, workflow_raw: nil)
+              agent_claimed_label: nil, workflow_label: nil, workflow_raw: nil, agent_comment_env: {})
     Dir.mktmpdir("stale-assignment-sweep-test") do |dir|
       build_fixtures(dir, fail_delete:)
       log_path = File.join(dir, "gh.log")
@@ -698,7 +711,8 @@ class StaleAssignmentSweepTest < Minitest::Test
         write_workflow_seam(dir, workflow_raw || "agent_claimed_label: #{workflow_label}\n")
         spawn_opts[:chdir] = dir
       end
-      stdout, stderr, status = Open3.capture3(cli_env(dir, log_path, gh_fail_user), *args, **spawn_opts)
+      environment = cli_env(dir, log_path, gh_fail_user).merge(agent_comment_env)
+      stdout, stderr, status = Open3.capture3(environment, *args, **spawn_opts)
       stdout = stdout.force_encoding("UTF-8")
       stderr = stderr.force_encoding("UTF-8")
       log = File.exist?(log_path) ? File.read(log_path, encoding: "UTF-8") : ""
@@ -718,7 +732,10 @@ class StaleAssignmentSweepTest < Minitest::Test
     env = {
       "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
       "GH_LOG" => log_path,
-      "GH_FIXTURE_DIR" => dir
+      "GH_FIXTURE_DIR" => dir,
+      "AGENT_COMMENT_RUNNER" => "codex",
+      "AGENT_COMMENT_HOST" => "test-host",
+      "AGENT_COMMENT_TASK_OR_RUN" => "test-sweep"
     }
     env["GH_FAIL_USER"] = "1" if gh_fail_user
     env

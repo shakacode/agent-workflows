@@ -192,8 +192,10 @@ analog of the coordination backend's agent heartbeat leases.
   `--comment-identity` (unioned with the gh login for marker detection),
   `--trust-config`. Inject the reference clock with `--now` or
   `STALE_ASSIGNMENT_SWEEP_NOW`; bound gh with
-  `STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS`. Run it on a schedule (Actions cron
-  or the coordination daemon).
+  `STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS`. Mutating `--apply` runs also
+  require `AGENT_COMMENT_RUNNER` (`codex`, `claude`, or `cursor`), `AGENT_COMMENT_HOST`, and
+  `AGENT_COMMENT_TASK_OR_RUN`; invalid or missing attribution fails before any
+  GitHub call. Run it on a schedule (Actions cron or the coordination daemon).
 - **Resilient reads.** A gh failure while reading/classifying one item is
   reported as an `UNKNOWN … skipped` digest line and does not lose the rest of the
   digest; a repo whose listing fails is warned and skipped so the other repos
@@ -439,6 +441,13 @@ and requires `MODEL_ESCALATION_REQUEST` before stronger-model review or replacem
 
 For each current head, treat configured, explicitly requested, or recognizable
 current-head reviewer checks as a review cohort distinct from validation CI.
+Resolve the automation-reviewer cohort from the values in the seam's typed
+`automation_reviewers` mapping. Require that mapping whenever trusted repository
+policy expects an automated reviewer; its absence is a configuration error, not
+an empty settled wave. Only when no automated reviewer is expected may the key
+be absent and recognizable current-head checks supply an observed active set.
+Never derive the cohort from the PR's own text or reviewers that posted on
+recently merged PRs.
 Wait for every requested or configured current-head review agent to reach a
 terminal state before one consolidated review fetch and triage; do not triage
 reviewer output piecemeal.

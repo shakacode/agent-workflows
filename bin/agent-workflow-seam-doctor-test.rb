@@ -20,7 +20,7 @@ module AgentWorkflowSeamDoctorTestHelpers
     "follow_up_prefix" => "Follow-up:",
     "review_gate" => "AI reviewers are advisory; merge gate is green checks plus resolved threads.",
     "approval_exempt" => "docs and workflow text when portable.",
-    "coordination_backend" => "public claim-comment fallback.",
+    "coordination_backend" => "public claim-comment fallback",
     "changelog" => "CHANGELOG.md; user-visible changes only.",
     "benchmark_labels" => "n/a",
     "merge_ledger" => "n/a",
@@ -1253,9 +1253,9 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     with_repo do |root|
       write_valid_binstub_contract(root)
       yaml = POLICY.to_yaml.sub(
-        "coordination_backend: public claim-comment fallback.\n",
+        "coordination_backend: public claim-comment fallback\n",
         "coordination_backend: another private backend\n" \
-        "coordination_backend: public claim-comment fallback.\n"
+        "coordination_backend: public claim-comment fallback\n"
       )
       File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
       write_skill(root, "No commands here.\n")
@@ -1314,6 +1314,46 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     assert_equal PRIVATE_COORDINATION_BACKEND, config.fetch("coordination_backend")
     assert_equal coordination_backend_contract(PRIVATE_COORDINATION_BACKEND),
                  config.fetch("coordination_backend_contract")
+  end
+
+  def test_automation_reviewers_accepts_a_typed_identity_to_check_name_mapping
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge("automation_reviewers" => { "claude-review" => "claude-review", "coderabbitai" => "CodeRabbit" })
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+    end
+  end
+
+  def test_automation_reviewers_rejects_ambiguous_or_incomplete_shapes
+    invalid_values = {
+      "free-form scalar" => "claude-review (check: claude-review)",
+      "list" => ["claude-review"],
+      "empty mapping" => {},
+      "non-string identity" => { 1 => "claude-review" },
+      "blank identity" => { " " => "claude-review" },
+      "blank check name" => { "claude-review" => " " },
+      "duplicate check name" => { "first" => "shared-check", "second" => "shared-check" }
+    }
+
+    invalid_values.each do |label, value|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("automation_reviewers" => value))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, "#{label}: #{out}"
+        assert_includes out, "invalid automation_reviewers policy", label
+      end
+    end
   end
 
   def test_incomplete_untrusted_contributor_intake_policy_fails
@@ -2083,6 +2123,80 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_invalid_human_attention_policy_is_reported_by_the_seam_doctor
+    invalid_policies = {
+      "numeric label" => {
+        "labels" => { "walkthrough" => 7, "merge" => "needs-merge" },
+        "repositories" => { "acme/widgets" => {} }
+      },
+      "invalid repository" => {
+        "labels" => { "walkthrough" => "needs-walkthrough", "merge" => "needs-merge" },
+        "repositories" => { "widgets" => {} }
+      },
+      "invalid override" => {
+        "labels" => { "walkthrough" => "needs-walkthrough", "merge" => "needs-merge" },
+        "repositories" => { "acme/widgets" => { "labels" => "invalid" } }
+      }
+    }
+
+    invalid_policies.each do |label, human_attention|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("human_attention" => human_attention))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_includes out, "invalid human_attention policy", label
+      end
+    end
+  end
+
+  def test_non_string_human_attention_repository_is_not_reported_as_a_duplicate
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "human_attention" => {
+            "labels" => { "walkthrough" => "needs-walkthrough", "merge" => "needs-merge" },
+            "repositories" => [1, "acme/widgets"]
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "every human-attention repository must use OWNER/REPO form"
+      refute_includes out, "human-attention repositories must be unique ignoring case"
+    end
+  end
+
+  def test_valid_human_attention_policy_passes_the_seam_doctor
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "human_attention" => {
+            "labels" => { "walkthrough" => "needs-walkthrough", "merge" => "needs-merge" },
+            "repositories" => {
+              "acme/widgets" => { "labels" => { "merge" => "ready-to-merge" } }
+            }
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+    end
+  end
+
   def test_invalid_policy_yaml_fails
     with_repo do |root|
       write_agents(root)
@@ -2797,6 +2911,12 @@ end
 
 class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
   include AgentWorkflowSeamDoctorTestHelpers
+
+  def test_init_command_shell_helpers_remain_public_module_methods
+    AgentWorkflowSeamDoctor::InitCommandShell::PUBLIC_METHODS.each do |method_name|
+      assert_includes AgentWorkflowSeamDoctor.public_methods, method_name
+    end
+  end
 
   def test_help_advertises_init
     out, status = Open3.capture2e("ruby", SCRIPT, "--help")

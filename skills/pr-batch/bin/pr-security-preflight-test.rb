@@ -230,7 +230,7 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       assert status.success?, out
-      assert_trust_config_evidence(out, path: global_config, source: "env")
+      assert_trust_config_evidence(out, path: global_config, source: "env", scope: "global")
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
     end
@@ -414,6 +414,82 @@ class PrSecurityPreflightTest < Minitest::Test
         refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
         refute_includes out, "WARN: global trust config ignores unqualified team slug"
       end
+    end
+  end
+
+  def test_repo_local_trust_config_resolves_ssh_aliases_like_review_fetch
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer-alias")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      ssh_path = File.join(dir, "ssh")
+      FileUtils.mkdir_p(consumer_root)
+      init_git_remote(consumer_root, "owner/repo", url: "git@github.com-work:owner/repo.git")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+      File.write(ssh_path, <<~SH)
+        #!/usr/bin/env bash
+        if [[ "$1" == "-G" && "$2" == "github.com-work" ]]; then
+          printf 'hostname github.com\n'
+          exit 0
+        fi
+        exit 1
+      SH
+      FileUtils.chmod(0o755, ssh_path)
+
+      out, status = run_script(
+        env.merge("GH_HOST" => "github.com"),
+        "--repo", "owner/repo", "--trust-config", repo_config, "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      assert_includes out, "Trust config scope: repository"
+      refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
+  def test_trusted_base_scope_revalidation_resolves_the_same_ssh_alias
+    Dir.mktmpdir("aw794-trusted-alias") do |root|
+      config_path = File.join(root, ".agents", "trusted-github-actors.yml")
+      ordinary_ssh = File.join(root, "ssh")
+      FileUtils.mkdir_p(File.dirname(config_path))
+      init_git_remote(root, "owner/repo", url: "git@github.com-work:owner/repo.git")
+      File.write(config_path, "trusted_users:\n  - operator\n")
+      File.write(ordinary_ssh, <<~SH)
+        #!/bin/sh
+        [ "$1" = "-G" ] && [ "$2" = "github.com-work" ] || exit 1
+        printf 'hostname github.com\n'
+      SH
+      FileUtils.chmod(0o755, ordinary_ssh)
+
+      trusted_ssh_dir = Dir.mktmpdir("aw794-trusted-ssh", Dir.home)
+      trusted_ssh = File.join(trusted_ssh_dir, "ssh")
+      FileUtils.cp(ordinary_ssh, trusted_ssh)
+      FileUtils.chmod(0o755, trusted_ssh)
+      config = GithubActorTrust.load(path: config_path, global: false)
+      resolution = {
+        path: config_path, global: false, source: "explicit", implicit: false,
+        contents: File.binread(config_path)
+      }
+
+      with_env(
+        "PATH" => "#{root}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}",
+        "PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE" => trusted_ssh
+      ) do
+        previous_ssh = TrustedGitState.ssh_executable
+        TrustedGitState.ssh_executable = nil
+        refute trust_config_global?(config_path, "owner/repo", github_host: "github.com")
+        refreshed, error = revalidate_trust_config_for_trusted_base(
+          resolution, config, repo: "owner/repo", github_host: "github.com"
+        )
+
+        assert_nil error
+        assert_equal resolution.fetch(:global), refreshed.fetch(:global)
+      ensure
+        TrustedGitState.ssh_executable = previous_ssh
+      end
+    ensure
+      FileUtils.remove_entry_secure(trusted_ssh_dir) if trusted_ssh_dir && File.exist?(trusted_ssh_dir)
     end
   end
 
@@ -1382,7 +1458,7 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       refute status.success?, out
-      assert_trust_config_evidence(out, path: explicit_config, source: "explicit")
+      assert_trust_config_evidence(out, path: explicit_config, source: "explicit", scope: "global")
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
       assert_includes out, "not in trusted actor allowlist"
     end
@@ -1468,7 +1544,9 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       assert status.success?, out
-      assert_trust_config_evidence(out, path: File.realpath(repo_config), source: "repo-local")
+      assert_trust_config_evidence(
+        out, path: File.realpath(repo_config), source: "repo-local", scope: "global"
+      )
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
     end
@@ -1763,8 +1841,20 @@ class PrSecurityPreflightTest < Minitest::Test
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
 
       assert status.success?, out
-      assert_trust_config_evidence(out, path: trust_config_path, source: "explicit")
+      assert_trust_config_evidence(out, path: trust_config_path, source: "explicit", scope: "global")
       assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_team_membership_lookup_failure_is_reported_before_fail_closed_classification
+    with_fake_gh("team-membership-error") do |env, trust_config_path, _log_path|
+      write_trust_config(trust_config_path, users: [], teams: ["owner/maintainers"])
+
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      assert status.success?, out
+      assert_includes out, "WARN: could not fetch team membership for justin808 in owner/maintainers"
+      assert_includes out, "Untrusted or hidden participant findings:"
     end
   end
 
@@ -1827,7 +1917,7 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       assert status.success?, out
-      assert_trust_config_evidence(out, path: home_config, source: "user-global")
+      assert_trust_config_evidence(out, path: home_config, source: "user-global", scope: "global")
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
     end
@@ -1852,7 +1942,8 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_trust_config_evidence(
         out,
         path: File.expand_path("../trusted-github-actors.yml", __dir__),
-        source: "packaged-fallback"
+        source: "packaged-fallback",
+        scope: "repository"
       )
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
       assert_includes out, "not in trusted actor allowlist"
@@ -2538,7 +2629,7 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       assert_trusted_base_blocked(out, status)
-      assert_trust_config_evidence(out, path: trust_config_path, source: "env")
+      assert_trust_config_evidence(out, path: trust_config_path, source: "env", scope: "global")
       assert_includes out, "implicit trust config selection changed during trusted-base verification"
       assert File.exist?(path_git_marker), "ordinary implicit discovery did not use PATH Git"
     end
@@ -8791,10 +8882,11 @@ class PrSecurityPreflightTest < Minitest::Test
     false
   end
 
-  def assert_trust_config_evidence(out, path:, source:)
+  def assert_trust_config_evidence(out, path:, source:, scope:)
     lines = out.lines.map(&:chomp)
     assert_includes lines, "Trust config: #{File.expand_path(path)}"
     assert_includes lines, "Trust config source: #{source}"
+    assert_includes lines, "Trust config scope: #{scope}"
     digest = "sha256:#{Digest::SHA256.hexdigest(File.binread(File.expand_path(path)))}"
     assert_includes lines, "Trust config content digest: #{digest}"
   end
@@ -9909,6 +10001,11 @@ class PrSecurityPreflightTest < Minitest::Test
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/collaborators/justin808/permission" ]; then
         printf '{"permission":"admin"}'
         exit 0
+      fi
+
+      if [ "$mode" = "team-membership-error" ] && [ "$1" = "api" ] && [ "$2" = "orgs/owner/teams/maintainers/memberships/justin808" ]; then
+        printf 'temporary upstream error' >&2
+        exit 1
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "orgs/owner/teams/maintainers/memberships/justin808" ]; then

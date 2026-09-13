@@ -57,8 +57,9 @@ repo policy before merge readiness.
 3. Apply the canonical `AGENTS.md` decision for no tracker, stale tracker,
    missing release-mode block, duplicate trackers, cross-target trackers,
    accelerated-RC confidence, and final-release handling. When `AGENTS.md`
-   requires reporting, post a PR comment with a `Release Mode Block:` header,
-   the signal name, relevant tracker URLs, and the current decision.
+   requires reporting, post a PR comment through `github-comment-envelope
+   post-issue` with a `Release Mode Block:` header, the signal name, relevant
+   tracker URLs, and the current decision.
 4. Do not auto-create release trackers. A maintainer creates one when entering
    accelerated RC, strict RC, or final-release coordination.
 
@@ -163,7 +164,7 @@ Auto-merge requires all of the following:
 - Score is at least `8/10`; `7/10` permits human merge after review, but not auto-merge.
 - Before triggering auto-merge, the merge actor re-fetches the current PR body, its `lastEditedAt`, and the current head, then verifies the bound finalizer record against an authenticated GitHub review, check, or comment rather than trusting PR-body text alone.
 - All GitHub checks for the current head SHA are complete. An empty full `gh pr checks <PR>` list is `UNKNOWN` / not ready. Skipped checks count as complete only when CI selector output explains them or a maintainer explicitly waives them.
-- The configured Claude review check for the current head SHA completed with an acceptable conclusion, or a qualifying fallback review completed with the same blocker-triage bar. The portable default check name is `claude-review`; consumer repos that use a differently named review check must define that name under their `AGENTS.md` `Review gate` policy and keep every helper or workflow that polls review status aligned with it before relying on that override. Other repo-configured reviewers, including Cursor Bugbot or Codex review, qualify only when visible as a current-head GitHub check/app result or when they satisfy the reviewer-identity and attestation rules in **Ordinary Review Fallback** in the resolved processing workflow. Acceptable conclusions are `success`, or `skipped` / `neutral` only when CI selector output or a maintainer waiver explains why the run did not review code. A `failure`, `cancelled`, `timed_out`, or unknown conclusion does not satisfy this gate and must route through the fallback/error-evidence rules. An `action_required` conclusion is an external approval gate; it blocks auto-merge until the approval is satisfied or a maintainer leaves an explicit waiver, and it is not a fallback trigger by itself.
+- The configured Claude review check for the current head SHA completed with an acceptable conclusion, or a qualifying fallback review completed with the same blocker-triage bar. Resolve its exact check-run name from the `claude` reviewer base-login key in the repository seam's typed `automation_reviewers` mapping; do not infer it from `review_gate`, display names, or PR prose. Other repo-configured reviewers, including Cursor Bugbot or Codex review, qualify only when visible as a current-head GitHub check/app result or when they satisfy the reviewer-identity and attestation rules in **Ordinary Review Fallback** in the resolved processing workflow. Acceptable conclusions are `success`, or `skipped` / `neutral` only when CI selector output or a maintainer waiver explains why the run did not review code. A `failure`, `cancelled`, `timed_out`, or unknown conclusion does not satisfy this gate and must route through the fallback/error-evidence rules. An `action_required` conclusion is an external approval gate; it blocks auto-merge until the approval is satisfied or a maintainer leaves an explicit waiver, and it is not a fallback trigger by itself.
 - **Fallback safety and attestation.** Apply every trigger, final re-poll,
   exact-diff invocation, isolation, budget, reviewer-identity, and attestation
   requirement in

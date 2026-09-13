@@ -104,7 +104,7 @@ module AgentDoctor
 
     def identity_mismatches(payload, host:, target:, source:)
       mismatches = []
-      host_matches = payload["host"] == host || (host == "auto" && %w[codex claude].include?(payload["host"]))
+      host_matches = payload["host"] == host || (host == "auto" && %w[codex claude cursor].include?(payload["host"]))
       mismatches << "host" unless host_matches
       mismatches << "target" unless payload["target"] == target
       mismatches << "source" unless payload["source"] == source

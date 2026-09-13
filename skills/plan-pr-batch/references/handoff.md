@@ -11,8 +11,8 @@
      Otherwise use `generic`; report when the host was not detectable or when no
      target-specific wrapper is available for the detected host. Host detection
      is heuristic: prefer host-exposed runtime signals over installed-home
-     auto-detection, and choose `generic` when both Codex and Claude are
-     plausible.
+     auto-detection, and choose `generic` when Codex, Claude, and Cursor are
+     all plausible. Use `generic` for Cursor until a measured prompt cap exists.
    - After the target-specific invocation line, put the editable controls first
      in this exact order: `Batch title:`, `Repo:`, `Objective:`, and
      `merge_authority:`. Use one space after every control-field colon and
