@@ -64,7 +64,10 @@ module GitHubCommentEnvelope
     return remaining_payload unless parsed.key?("payload_first_line")
 
     preserved_first_line = "#{parsed.fetch('payload_first_line')}#{parsed.fetch('payload_line_ending')}"
-    return remaining_payload if remaining_payload.start_with?(preserved_first_line)
+    if preserve_payload_first_line?(parsed.fetch("payload_first_line")) &&
+       remaining_payload.start_with?(preserved_first_line)
+      return remaining_payload
+    end
 
     "#{preserved_first_line}#{remaining_payload}"
   end

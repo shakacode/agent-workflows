@@ -149,6 +149,16 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     end
   end
 
+  def test_payload_round_trips_repeated_plain_first_lines
+    ["Repeat\nRepeat\nTail\n", "Repeat\r\nRepeat\r\nTail\r\n"].each do |payload|
+      rendered = GitHubCommentEnvelope.render(
+        body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
+      )
+
+      assert_equal payload, GitHubCommentEnvelope.payload(rendered)
+    end
+  end
+
   def test_payload_refuses_a_tampered_first_line_that_could_inject_a_legacy_checkpoint
     rendered = GitHubCommentEnvelope.render(
       body: "Review complete.\nFollow-up evidence is recorded.", runner: "codex", host: "M5", task_or_run: "task-7"
