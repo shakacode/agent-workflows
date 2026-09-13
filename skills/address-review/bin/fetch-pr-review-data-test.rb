@@ -82,6 +82,23 @@ class FetchPrReviewDataTest < Minitest::Test
     assert_equal payload, normalized.fetch("payload_body")
   end
 
+  def test_visible_checkpoint_accepts_the_same_codex_prefix_variants_as_the_jq_readers
+    body = <<~MARKDOWN.chomp
+      🤖 Codex Address-review follow-up is complete.
+
+      <details>
+      <summary>Address-review checkpoint</summary>
+
+      ```text
+      address-review-checkpoint:v1
+      kind: summary
+      ```
+      </details>
+    MARKDOWN
+
+    assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(body)
+  end
+
   def test_visible_checkpoint_in_a_four_backtick_example_does_not_advance_the_cutoff
     body = <<~MARKDOWN.chomp
       🤖 Codex address-review follow-up example:

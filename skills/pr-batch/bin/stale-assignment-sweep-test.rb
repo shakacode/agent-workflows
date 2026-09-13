@@ -81,7 +81,8 @@ class StaleAssignmentSweepTest < Minitest::Test
 
     assert_includes log, "repos/owner/repo/issues/1/comments"
     assert_includes log, "Heads up @alice"
-    assert_includes log, "🤖 Codex assignment follow-up:"
+    assert_includes log, "🤖 Codex"
+    assert_includes log, "Assignment follow-up:"
     assert_includes log, VISIBLE_NUDGE_MARKER
     refute_includes log, LEGACY_NUDGE_MARKER
     # A stale-but-unnudged item is nudged, never released.
@@ -100,13 +101,20 @@ class StaleAssignmentSweepTest < Minitest::Test
   end
 
   def test_nudge_reader_recognizes_the_actual_enveloped_writer_output
-    payload = "🤖 Codex assignment follow-up: Heads up @alice.\n\n<details>\n<summary>Assignment sweep details</summary>\n\n```text\n#{VISIBLE_NUDGE_MARKER}\n```\n</details>"
+    payload = "Assignment follow-up: Heads up @alice.\n\n<details>\n<summary>Assignment sweep details</summary>\n\n```text\n#{VISIBLE_NUDGE_MARKER}\n```\n</details>"
     rendered = GitHubCommentEnvelope.render(
       body: payload, runner: "codex", host: "M5", task_or_run: "stale-assignment-sweep"
     )
 
     assert StaleAssignmentSweep::Runner.new.send(:nudge_comment?, rendered)
     assert StaleAssignmentSweep::Runner.new.send(:nudge_comment?, "#{LEGACY_NUDGE_MARKER}\nlegacy")
+  end
+
+  def test_enveloped_nudge_uses_the_configured_runner_once
+    _result, log = run_cli(apply: true, agent_comment_env: { "AGENT_COMMENT_RUNNER" => "cursor" })
+
+    assert_includes log, "🤖 Cursor"
+    refute_includes log, "🤖 Codex assignment"
   end
 
   # --- apply: release ----------------------------------------------------

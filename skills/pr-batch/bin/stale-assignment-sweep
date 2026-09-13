@@ -755,7 +755,7 @@ module StaleAssignmentSweep
 
     def nudge_body(result)
       context = result.fetch(:context)
-      body = "🤖 Codex assignment follow-up: Heads up #{mentions(result)} — no assignee activity on this #{result.fetch(:kind)} for " \
+      body = "Assignment follow-up: Heads up #{mentions(result)} — no assignee activity on this #{result.fetch(:kind)} for " \
              "#{context.fetch(:days)} days. Still on it? Any reply keeps it; otherwise it is released to the " \
              "batch pool in #{context.fetch(:grace)} days.\n\n<details>\n" \
              "<summary>Assignment sweep details</summary>\n\n```text\n#{NUDGE_MARKER}\n```\n</details>"
@@ -764,7 +764,7 @@ module StaleAssignmentSweep
 
     def release_body(result)
       context = result.fetch(:context)
-      body = "🤖 Codex assignment release: Released #{mentions(result)} after #{context.fetch(:days)} days of inactivity with no reply to the " \
+      body = "Assignment release: Released #{mentions(result)} after #{context.fetch(:days)} days of inactivity with no reply to the " \
              "#{context.fetch(:grace)}-day nudge. Reassign to reclaim.\n\n<details>\n" \
              "<summary>Assignment sweep details</summary>\n\n```text\n#{RELEASE_MARKER}\n```\n</details>"
       reject_leading_at!(body, "release body")
@@ -775,7 +775,7 @@ module StaleAssignmentSweep
       payload = GitHubCommentEnvelope.payload(body)
       return true if payload.include?(LEGACY_NUDGE_MARKER)
 
-      payload.match?(%r{\A🤖 Codex assignment follow-up:.*?<details>\r?\n<summary>Assignment sweep details</summary>\r?\n\r?\n```text\r?\nstale-assignment-sweep:nudge:v1\r?\n```\r?\n</details>\r?\n?\z}m)
+      payload.match?(%r{\AAssignment follow-up:.*?<details>\r?\n<summary>Assignment sweep details</summary>\r?\n\r?\n```text\r?\nstale-assignment-sweep:nudge:v1\r?\n```\r?\n</details>\r?\n?\z}m)
     end
 
     def post_comment(repo, number, body)

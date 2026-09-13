@@ -91,7 +91,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert GitHubCommentEnvelope.agent_authored?(rendered)
     assert GitHubCommentEnvelope.agent_authored?("🤖 Codex\nlegacy payload")
     assert GitHubCommentEnvelope.agent_authored?("🤖 Claude\nlegacy payload")
-    assert GitHubCommentEnvelope.agent_authored?("🤖 Codex hosted QA waiver: awaiting maintainer action")
+    refute GitHubCommentEnvelope.agent_authored?("🤖 Codex hosted QA waiver: awaiting maintainer action")
     assert GitHubCommentEnvelope.agent_authored?("🤖 **Codex · GPT-5**\n\nlegacy payload")
     assert GitHubCommentEnvelope.agent_authored?(<<~BODY)
       <!-- address-review-summary -->
@@ -138,6 +138,22 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     BODY
 
     assert_equal "<!-- address-review-summary -->\n", GitHubCommentEnvelope.payload(body)
+  end
+
+  def test_legacy_parser_requires_all_field_labels
+    body = <<~BODY
+      🤖 Codex
+      <!-- agent-comment-attribution:v1
+      codex
+      M5
+      task-7
+      -->
+
+      payload
+    BODY
+
+    assert_nil GitHubCommentEnvelope.parse(body)
+    assert_equal body, GitHubCommentEnvelope.payload(body)
   end
 
   # Production break: a Windows-style leading blank line remains before a

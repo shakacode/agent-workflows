@@ -370,7 +370,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
   def test_raw_html_code_containers_do_not_authorize_visible_evidence
     head_sha = "1" * 40
-    %w[pre code].each do |tag|
+    %w[pre code blockquote].each do |tag|
       body = <<~MARKDOWN
         <#{tag}>
         <details>
@@ -397,6 +397,94 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       assert_equal "UNKNOWN", evidence.fetch("verdict"), tag
       assert_includes evidence.fetch("missing"), "qa-evidence marker missing", tag
     end
+  end
+
+  def test_unclosed_raw_code_container_keeps_later_apparent_evidence_non_authoritative
+    body = <<~MARKDOWN
+      <pre>
+      Example:
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{'1' * 40}
+      ```
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_nested_details_and_fence_edge_cases_do_not_promote_examples
+    head_sha = "1" * 40
+    nested = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      ```
+      </details>
+      </details>
+    MARKDOWN
+    trailing_info = <<~MARKDOWN
+      ````markdown
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      ```
+      </details>
+      ```` text
+    MARKDOWN
+
+    [nested, trailing_info].each do |body|
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict")
+    end
+  end
+
+  def test_visible_record_accepts_a_longer_valid_closing_fence
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      QA evidence is satisfied.
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: valid longer close
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ````
+      </details>
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
   end
 
   def test_unclosed_html_comment_hides_visible_evidence

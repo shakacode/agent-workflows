@@ -302,7 +302,7 @@ module CloseoutEvidenceReplay
     }.fetch(name)
 
     visible_markdown(text).scan(
-      %r{<details>[ \t]*\r?\n<summary>#{Regexp.escape(summary)}</summary>[ \t]*\r?\n\r?\n```text[ \t]*\r?\n#{Regexp.escape(name)}[ \t]*\r?\n(.*?)^```[ \t]*\r?\n</details>[ \t]*(?:\r?\n|\z)}m
+      %r{<details>[ \t]*\r?\n<summary>#{Regexp.escape(summary)}</summary>[ \t]*\r?\n\r?\n```text[ \t]*\r?\n#{Regexp.escape(name)}[ \t]*\r?\n(.*?)^`{3,}[ \t]*\r?\n</details>[ \t]*(?:\r?\n|\z)}m
     ).map(&:first)
   end
 
@@ -324,20 +324,22 @@ module CloseoutEvidenceReplay
     text.each_line do |line|
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
       if discard_details_depth
-        if line.match?(%r{</details>}) && details_stack.length <= discard_details_depth
+        details_stack << nil if line.match?(/<details(?:\s|>)/)
+        if line.match?(%r{</details>}) && !details_stack.empty?
           details_stack.pop
-          discard_details_depth = nil
+          discard_details_depth = nil if details_stack.length < discard_details_depth
         end
         next
       end
       if fence
-        if opener && opener[:delimiter][0] == fence[0] && opener[:delimiter].length >= fence.length
+        if opener && opener[:delimiter][0] == fence[0] && opener[:delimiter].length >= fence.length &&
+           opener[:info].strip.empty?
           fence = nil
         end
         next
       end
       if record_fence
-        if opener && !(opener[:delimiter] == "```" && opener[:info].strip.empty?)
+        if opener && !(opener[:delimiter][0] == "`" && opener[:delimiter].length >= 3 && opener[:info].strip.empty?)
           # A second fenced opener makes this disclosure a Markdown example.
           # CommonMark treats a ` ```text` line inside an open ` ```text`
           # block as code, so no record in that block is published evidence.
@@ -353,7 +355,11 @@ module CloseoutEvidenceReplay
         raw_html_container = nil if line.match?(%r{</#{Regexp.escape(raw_html_container)}\s*>}i)
         next
       end
-      if (container = line.match(/<(?<tag>pre|code|script|style|textarea)(?:\s|>)/i))
+      # CommonMark keeps an unclosed raw code container literal through EOF, so
+      # preserving that discard is intentionally fail-closed: later apparent
+      # evidence is not rendered authority. Blockquotes are excluded too because
+      # a canonical disclosure must be top-level published content.
+      if (container = line.match(/<(?<tag>pre|code|script|style|textarea|blockquote)(?:\s|>)/i))
         raw_html_container = container[:tag].downcase unless line.match?(%r{</#{Regexp.escape(container[:tag])}\s*>}i)
         next
       end
@@ -374,7 +380,17 @@ module CloseoutEvidenceReplay
       # example, not an authoritative published record.
       next if line.match?(/\A[ \t]{0,3}>/)
 
-      details_stack << nil if line.match?(/<details(?:\s|>)/)
+      if line.match?(/<details(?:\s|>)/)
+        # Only a top-level disclosure can be evidence. Nested details are often
+        # explanatory examples and must not grant authority to their contents.
+        if details_stack.empty?
+          details_stack << nil
+        else
+          details_stack << nil
+          discard_details_depth = details_stack.length
+          next
+        end
+      end
       if (summary = line.match(%r{<summary>(?<text>[^<]+)</summary>})) && !details_stack.empty?
         details_stack[-1] = summary[:text].strip
       end

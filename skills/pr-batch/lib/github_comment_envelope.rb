@@ -12,7 +12,7 @@ module GitHubCommentEnvelope
   HOST_PATTERN = /\A(?!.*-->)[^\r\n]+\z/
   LEGACY_WORKFLOW_MARKER = /\A<!-- address-review-(?:summary|status) -->\r?\n/
   LEGACY_AGENT_HEADER = /\A🤖 \*\*(?:Codex|Claude|Cursor)(?: · [^*\r\n]+)?\*\*(?:\r?\n|\z)/
-  VISIBLE_AGENT_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?=[\s:—-]|\z)/
+  VISIBLE_AGENT_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:\r?\n|\z)/
 
   module_function
 
@@ -68,6 +68,9 @@ module GitHubCommentEnvelope
 
     visible = lines[0]
     return unless lines[1] == "<!-- #{MARKER}" && lines[5] == "-->"
+
+    return unless lines[2].start_with?("runner: ") && lines[3].start_with?("host: ") &&
+                  lines[4].start_with?("task_or_run: ")
 
     runner = lines[2].delete_prefix("runner: ")
     host = lines[3].delete_prefix("host: ")

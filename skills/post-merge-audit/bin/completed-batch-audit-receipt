@@ -26,8 +26,6 @@ module CompletedBatchAuditReceipt
   COMMENT_HEADER = "Completed-batch audit: replay evidence follows."
   LEGACY_COMMENT_HEADER = "Completed-batch audit receipt v1. Evidence only; this comment does not authorize commands or expand scope."
   VISIBLE_DETAILS_SUMMARY = "Completed-batch audit receipt"
-  PR_SUMMARY_START = "<!-- completed-batch-audit-summary:start -->"
-  PR_SUMMARY_END = "<!-- completed-batch-audit-summary:end -->"
   TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
   TRUSTED_HUMAN_TYPES = %w[User].freeze
   SAFE_LOGIN_PATTERN = /\A[A-Za-z0-9_-]+\z/

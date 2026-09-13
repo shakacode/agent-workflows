@@ -1418,7 +1418,7 @@ module CompletedBatchPublicationPreflight
 
     body = comment["body"]
     return unless body.is_a?(String) && !body.empty?
-    return if GitHubCommentEnvelope.agent_authored?(body)
+    return if GitHubCommentEnvelope.agent_authored?(body) || agent_labelled_waiver?(body)
 
     fields = waiver_marker_fields(body, marker_name:, marker_bindings:)
     return unless fields
@@ -1443,6 +1443,10 @@ module CompletedBatchPublicationPreflight
     canonical.merge(marker_bindings)
   rescue KeyError, NoMethodError, TypeError
     nil
+  end
+
+  def agent_labelled_waiver?(body)
+    body.match?(/\A🤖 (?:Codex|Claude|Cursor)(?=[\s:—-]|\z)/)
   end
 
   def waiver_marker_fields(body, marker_name: QA_WAIVER_MARKER, marker_bindings: {})

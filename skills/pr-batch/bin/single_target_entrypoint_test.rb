@@ -115,6 +115,7 @@ address_review = read_repo_file("skills/address-review/SKILL.md")
 address_review_workflow = read_repo_file("workflows/address-review.md")
 address_review_actions = read_repo_file("skills/address-review/references/actions.md")
 address_review_templates = read_repo_file("skills/address-review/references/templates.md")
+address_review_review_wave = read_repo_file("skills/address-review/references/review-wave.md")
 
 assert(batch.include?("A single target is\na batch of one"), "pr-batch must own single-target mode")
 assert(batch.include?("dispatch one\n  worker subagent"), "single-target mode must default to a worker subagent")
@@ -703,9 +704,14 @@ assert(
 )
 skill_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review)
 workflow_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review_workflow)
+review_wave_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review_review_wave)
 assert(
   skill_wait_checkpoint_filter.lines.map(&:strip) == workflow_wait_checkpoint_filter.lines.map(&:strip),
   "address-review source wait checkpoint validators must stay mirrored"
+)
+assert(
+  skill_wait_checkpoint_filter.lines.map(&:strip) == review_wave_wait_checkpoint_filter.lines.map(&:strip),
+  "address-review review-wave checkpoint validator must stay mirrored"
 )
 skill_cutoff_filter = extract_source_cutoff_filter(address_review)
 workflow_cutoff_filter = extract_source_cutoff_filter(address_review_workflow)
