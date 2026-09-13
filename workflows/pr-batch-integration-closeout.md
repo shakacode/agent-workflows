@@ -704,7 +704,7 @@ Use this structure; replace placeholders with concise, task-specific content:
 
 <Head/base SHAs and replay scope.>
 
-<Insert the complete visible `### QA Evidence` block, with its outcome first
+<Insert the complete canonical `### QA Evidence` block, with its visible outcome first
 and its `qa-evidence v2` and `priority-finding-dispositions v1` records in
 closed disclosures. Historical HTML markers are read-only.>
 
