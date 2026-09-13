@@ -39,7 +39,7 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
 
     assert_in_order(
       primary,
-      "printf '🤖 Codex review follow-up is complete.",
+      "printf '🤖 Codex address-review follow-up is complete.",
       "printf '## Review follow-up complete\\n\\n'",
       "printf '## Review follow-up needs another pass\\n\\n'",
       "printf '<details>\\n'",

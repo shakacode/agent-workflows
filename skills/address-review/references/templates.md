@@ -261,11 +261,11 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
 # Leave empty only when there were no optional items in scope.
 {
   if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
-    printf '🤖 Codex review follow-up is complete. The next routine scan can start after this comment.\n\n'
+    printf '🤖 Codex address-review follow-up is complete. The next routine scan can start after this comment.\n\n'
     printf '## Review follow-up complete\n\n'
     printf 'Every review item in the selected scan has a recorded outcome, so the next routine check can start after this comment.\n\n'
   else
-    printf '🤖 Codex review follow-up needs another pass. Use `check all reviews` before acting.\n\n'
+    printf '🤖 Codex address-review follow-up needs another pass. Use `check all reviews` before acting.\n\n'
     printf '## Review follow-up needs another pass\n\n'
     printf 'Some feedback in the selected scan still needs an explicit outcome, so this comment does not set a new review checkpoint.\n\n'
   fi

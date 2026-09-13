@@ -28,7 +28,7 @@ class FetchPrReviewDataTest < Minitest::Test
     comments = [
       {
         "body" => <<~MARKDOWN.chomp,
-          🤖 Codex review follow-up is complete. The next routine scan can start after this comment.
+          🤖 Codex address-review follow-up is complete. The next routine scan can start after this comment.
 
           ## Review follow-up complete
 
