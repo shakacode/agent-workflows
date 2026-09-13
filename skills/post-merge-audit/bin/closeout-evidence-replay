@@ -336,15 +336,22 @@ module CloseoutEvidenceReplay
     end.join
   end
 
+  def html_comment_close(line, index)
+    closing = [line.index("-->", index), line.index("--!>", index)].compact.min
+    return unless closing
+
+    [closing, line[closing, 4] == "--!>" ? 4 : 3]
+  end
+
   def html_context_line(line, code_delimiter:, html_comment_open:, remaining_text:, allow_new_code_span:)
     rendered = +""
     index = 0
     while index < line.length
       if html_comment_open
-        closing = line.index("-->", index)
+        closing = html_comment_close(line, index)
         return [rendered, code_delimiter, true] unless closing
 
-        index = closing + 3
+        index = closing[0] + closing[1]
         html_comment_open = false
         next
       end
@@ -355,6 +362,11 @@ module CloseoutEvidenceReplay
 
         index = closing + code_delimiter.length
         code_delimiter = nil
+        next
+      end
+
+      if line[index, 5] == "<!-->"
+        index += 5
         next
       end
 
@@ -428,14 +440,14 @@ module CloseoutEvidenceReplay
     index = 0
     while index < line.length
       if html_comment_open
-        closing = line.index("-->", index)
+        closing = html_comment_close(line, index)
         unless closing
           comment_text << line[index..]
           return [tags, open_tag, true, comment_text]
         end
 
-        comment_text << line[index...closing]
-        index = closing + 3
+        comment_text << line[index...closing[0]]
+        index = closing[0] + closing[1]
         html_comment_open = false
         next
       end
@@ -445,6 +457,10 @@ module CloseoutEvidenceReplay
         break unless opening
 
         remaining = line[opening..]
+        if remaining.start_with?("<!-->")
+          index = opening + 5
+          next
+        end
         if remaining.start_with?("<!--")
           html_comment_open = true
           index = opening + 4
@@ -613,7 +629,7 @@ module CloseoutEvidenceReplay
     return structural_line unless structural_line.strip.empty?
     return "" if html_comment_was_open || html_comment_open
 
-    line.gsub(/<!--.*?(?:-->|\z)/, "").strip.empty? ? "" : line
+    line.gsub(/<!-->|<!--.*?(?:-->|--!>|\z)/, "").strip.empty? ? "" : line
   end
 
   def advance_details_stack(details_stack, discard_details_depth, tags)

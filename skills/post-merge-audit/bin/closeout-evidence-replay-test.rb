@@ -776,7 +776,12 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
       assert_equal "UNKNOWN", run_replay(commented, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), tag
 
-      ["<!-- </#{tag}> -->\n</#{tag}>", "<!-- </#{tag}> --></#{tag}>"].each do |completed_comment|
+      [
+        "<!-- </#{tag}> -->\n</#{tag}>",
+        "<!-- </#{tag}> --></#{tag}>",
+        "<!-- ordinary --!>\n</#{tag}>",
+        "<!--></#{tag}>"
+      ].each do |completed_comment|
         head_sha = "1" * 40
         body = <<~MARKDOWN
           <#{tag}>
@@ -924,15 +929,17 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     assert_equal "SATISFIED", run_replay(whitespace_only, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
 
-    comment_only = <<~MARKDOWN
-      <details>
-      <!-- explanatory comment -->
-      <summary>Agent details</summary>
-      #{visible_qa_details(head_sha:, scope: 'comment before direct details summary')}
-      </details>
-    MARKDOWN
+    ["<!-- explanatory comment -->", "<!-- ordinary --!>", "<!-->"].each do |comment|
+      comment_only = <<~MARKDOWN
+        <details>
+        #{comment}
+        <summary>Agent details</summary>
+        #{visible_qa_details(head_sha:, scope: 'comment before direct details summary')}
+        </details>
+      MARKDOWN
 
-    assert_equal "SATISFIED", run_replay(comment_only, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+      assert_equal "SATISFIED", run_replay(comment_only, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), comment
+    end
 
     multiline_comment = <<~MARKDOWN
       <details>
