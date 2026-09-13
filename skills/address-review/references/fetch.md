@@ -140,9 +140,9 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         ($line | [scan("(?i)<" + $tag + "(?:\\s|>)")] | length) -
         ($line | [scan("(?i)</" + $tag + "\\s*>")] | length);
       def source_reply_noncode:
-        gsub("(?<delimiter>`+)[\\s\\S]*?\\k<delimiter>"; "") | gsub("<!--.*?-->"; "");
+        gsub("(?<prefix>[^\\n`]*?[^\\s`][ \\t]*)(?<delimiter>`+)[\\s\\S]*?\\k<delimiter>"; "\(.prefix)") | gsub("<!--.*?-->"; "");
       def visible_source_reply_context:
-        (reduce (split("\n")[] | sub("\\r$"; "")) as $source_line (
+        (source_reply_noncode | reduce (split("\n")[] | sub("\\r$"; "")) as $source_line (
           {fence: null, raw: null, comment: false};
           if .raw != null then
             .raw.tag as $tag |
@@ -163,7 +163,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
             ($source_line | source_reply_fence) as $fence |
             if $fence != null then .fence = $fence.delimiter
             else
-              ($source_line | source_reply_noncode) as $line |
+              $source_line as $line |
               ($line | source_reply_raw_opener) as $opener |
               if $opener != null then
                 ($opener.tag | ascii_downcase) as $tag |
