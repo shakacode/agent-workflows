@@ -239,6 +239,15 @@ Execution flow when terminal access is available:
              def valid_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip" or . == "pending" or . == "ask-user";
              def terminal_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip";
              def terminal_row: split("\t") | .[6] | terminal_outcome;
+             def checkpoint_kind:
+               if startswith("<!-- address-review-summary -->") then "summary"
+               elif startswith("<!-- address-review-status -->") then "status"
+               elif test("(?ms)\\A🤖 Codex [^\\r\\n]+.*?<summary>Address-review checkpoint</summary>.*?address-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n")
+               then capture("(?ms)^.*?address-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n").kind else null end;
+             def source_state_count:
+               if startswith("<!-- address-review-")
+               then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)
+               else ([scan("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?$")] | length) end;
              def valid_row:
                split("\t") as $fields |
                ($fields | length) == 7 and
@@ -250,15 +259,16 @@ Execution flow when terminal access is available:
                ($fields[6] | valid_outcome);
              def valid_body:
                . as $body |
-               (($body | startswith("<!-- address-review-summary -->")) or
-                ($body | startswith("<!-- address-review-status -->"))) and
-               ([ $body | scan("(?m)^<!-- address-review-source-state:v1$") ] | length) == 1 and
-               (($body | capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?) as $state |
+               ($body | checkpoint_kind) as $kind |
+               $kind != null and
+               ($body | source_state_count) == 1 and
+               (($body | if startswith("<!-- address-review-")
+                 then capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?
+                 else capture("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```")? end) as $state |
                  $state != null and
                  (($state.rows | split("\n") | map(select(length > 0))) as $rows |
                    all($rows[]; valid_row) and
-                   (($body | startswith("<!-- address-review-status -->")) or
-                    (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
+                   (($kind == "status") or (($kind == "summary") and all($rows[]; terminal_row))) and
                    (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
              [.[][] |
                select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase)) |
@@ -548,12 +558,24 @@ Execution flow when terminal access is available:
            ($fields[5] | test("^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\\.[0-9]+)?(Z|[+-][0-9][0-9]:[0-9][0-9])$")) and
            ($fields[6] | valid_outcome);
            . as $inventory |
+           def visible_checkpoint_kind:
+             if test("(?ms)\\A🤖 Codex [^\\r\\n]+\\r?\\n\\r?\\n.*?<details>\\r?\\n<summary>Address-review checkpoint</summary>.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n```")
+             then capture("(?ms)^.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```").kind else null end;
+           def checkpoint_kind:
+             if startswith("<!-- address-review-summary -->") then "summary"
+             elif startswith("<!-- address-review-status -->") then "status"
+             else visible_checkpoint_kind end;
+           def source_state_count:
+             if startswith("<!-- address-review-")
+             then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)
+             else ([scan("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?$")] | length) end;
+           def visible_claim:
+             test("(?ms)\\A🤖 Codex claim .*?<details>\\r?\\n<summary>Claim details</summary>.*?^```text\\r?\\ncodex-claim v1\\r?\\n");
            def marker_body:
-             startswith("<!-- address-review-summary -->") or
-             startswith("<!-- address-review-status -->") or
-             startswith("<!-- codex-claim v1");
+             checkpoint_kind != null or startswith("<!-- codex-claim v1") or visible_claim;
            def generated_source_reply($comment):
-             (($comment.body // "") | startswith("<!-- address-review-source-reply -->")) and
+             ((($comment.body // "") | startswith("<!-- address-review-source-reply -->")) or
+              (($comment.body // "") | test("(?ms)\\A🤖 Codex source reply: .*?<details>\\r?\\n<summary>Address-review reply details</summary>.*?^```text\\r?\\naddress-review-source-reply:v1\\r?\\n"))) and
              ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
            def item_key($kind; $id; $thread_id):
              [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
@@ -617,15 +639,16 @@ Execution flow when terminal access is available:
              ]) | unique_by(.key);
            def valid_body($checkpoint_created_at):
              . as $body |
-             (($body | startswith("<!-- address-review-summary -->")) or
-              ($body | startswith("<!-- address-review-status -->"))) and
-             ([ $body | scan("(?m)^<!-- address-review-source-state:v1$") ] | length) == 1 and
-             (($body | capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?) as $state |
+             ($body | checkpoint_kind) as $kind |
+             $kind != null and
+             ($body | source_state_count) == 1 and
+             (($body | if startswith("<!-- address-review-")
+               then capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?
+               else capture("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```")? end) as $state |
                $state != null and
                (($state.rows | split("\n") | map(select(length > 0))) as $rows |
                  all($rows[]; valid_row) and
-                 (($body | startswith("<!-- address-review-status -->")) or
-                  (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
+                 (($kind == "status") or (($kind == "summary") and all($rows[]; terminal_row))) and
                 (($rows | map(identity_key) | unique | length) == ($rows | length)) and
                  (source_candidate_states($checkpoint_created_at) as $candidates |
                   ($rows | map(row_state)) as $row_states |
@@ -822,16 +845,23 @@ before mutating GitHub or the branch.
   update on either PR blocks mutations on both. Otherwise post a PR issue
   comment using this marker shape only when a
   GitHub-mutating action is selected:
-  ```markdown
-  <!-- codex-claim v1
+  ````markdown
+  🤖 Codex claim is active. Do not start competing work.
+
+  <details>
+  <summary>Claim details</summary>
+
+  ```text
+  codex-claim v1
   batch: <BATCH_ID>
   machine: <MACHINE_ID>
   thread: <codex-thread-id>
   branch: <BRANCH_NAME>
   status: in_progress
   expires_at: <ISO8601_UTC>
-  -->
   ```
+  </details>
+  ````
   Use any stable session, thread, or machine identifier available; if none is
   available, use `thread: unavailable`. Set a short bounded advisory lease,
   usually 2-4 hours for an active review run, and refresh the same comment if

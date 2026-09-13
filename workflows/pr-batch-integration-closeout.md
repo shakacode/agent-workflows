@@ -376,8 +376,14 @@ A satisfied receipt uses exactly one marker and exactly one passed row with
 nonempty evidence for each configured criterion, with no missing, duplicate,
 or extra IDs:
 
+````markdown
+🤖 Codex hosted QA is satisfied. No reader action is needed.
+
+<details>
+<summary>Hosted QA evidence</summary>
+
 ```text
-<!-- hosted-qa-evidence v1
+hosted-qa-evidence v1
 status: satisfied
 head_sha: <full current head SHA>
 deployed_head_sha: <same full current head SHA>
@@ -385,8 +391,9 @@ deployment_id: <immutable deployment ID>
 deployment_url: <immutable HTTPS deployment URL>
 target: <configured target ID>
 criterion: id=<configured-id> | status=passed | evidence=<nonempty evidence>
--->
 ```
+</details>
+````
 
 SHA fields accept either hexadecimal case but must contain exactly 40 digits.
 After full-SHA validation, replay canonicalizes both SHA fields to lowercase
@@ -404,26 +411,40 @@ separately by `closeout-evidence-replay`.
 
 A waiver receipt is a separate closed marker variant:
 
+````markdown
+🤖 Codex hosted QA is waived. Review the maintainer waiver before acting.
+
+<details>
+<summary>Hosted QA evidence</summary>
+
 ```text
-<!-- hosted-qa-evidence v1
+hosted-qa-evidence v1
 status: waived
 head_sha: <full current head SHA>
 target: <configured target ID>
 maintainer_waiver: <exact same-target #issuecomment-ID URL>
--->
 ```
+</details>
+````
 
 `waived` blocks when trusted-base `waiver_mode` is `forbidden`. With
 `maintainer`, the linked comment must contain this distinct closed marker:
 
+````markdown
+🤖 Codex hosted QA waiver is recorded. No reader action is needed.
+
+<details>
+<summary>Hosted QA waiver details</summary>
+
 ```text
-<!-- hosted-qa-maintainer-waiver v1
+hosted-qa-maintainer-waiver v1
 target: <exact pull request or issue URL>
 head_sha: <full current head SHA>
 hosted_target: <configured hosted QA target ID>
 decision: waived
--->
 ```
+</details>
+````
 
 The helper fetches the comment and author permission through authenticated
 `gh api`, binds the exact pull request or issue, current head, and configured
@@ -683,10 +704,9 @@ Use this structure; replace placeholders with concise, task-specific content:
 
 <Head/base SHAs and replay scope.>
 
-<Insert the complete canonical `### QA Evidence` block, including its heading
-and the `<!-- qa-evidence v2 ... -->` and
-`<!-- priority-finding-dispositions v1 ... -->` markers, unchanged inside this
-disclosure.>
+<Insert the complete visible `### QA Evidence` block, with its outcome first
+and its `qa-evidence v2` and `priority-finding-dispositions v1` records in
+closed disclosures. Historical HTML markers are read-only.>
 
 ### Coordination and reviewer telemetry
 

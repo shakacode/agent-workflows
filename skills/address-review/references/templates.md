@@ -204,8 +204,8 @@ Rules for the summary comment:
   concise language and say plainly when another pass is needed. Put scan
   metadata, itemized outcomes, tracking receipts, and rescan instructions in
   one closed GitHub `<details>` block whose summary is exactly `Address-review checkpoint`;
-  do not add the `open` attribute. Hidden workflow markers may remain outside
-  the disclosure where their parsers require it.
+  do not add the `open` attribute. Historical hidden markers are read-only;
+  new records remain inside the visible disclosure.
 - Summarize `MUST-FIX` and `DISCUSS` items under `Findings that mattered`, including whether each item was addressed, deferred, or left pending by user choice.
 - Summarize `OPTIONAL` items under `Optional suggestions` when any optional item
   has a recorded outcome or is intentionally left pending/unselected by the

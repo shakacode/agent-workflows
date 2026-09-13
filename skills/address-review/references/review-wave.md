@@ -88,6 +88,10 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
           elif startswith("<!-- address-review-status -->") then "status"
           elif test("(?ms)\\A🤖 Codex [^\\r\\n]+.*?<summary>Address-review checkpoint</summary>.*?address-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n")
           then capture("(?ms)^.*?address-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n").kind else null end;
+        def source_state_count:
+          if startswith("<!-- address-review-")
+          then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)
+          else ([scan("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?$")] | length) end;
         def valid_row:
           split("\t") as $fields |
           ($fields | length) == 7 and
@@ -101,6 +105,7 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
           . as $body |
           ($body | checkpoint_kind) as $kind |
           $kind != null and
+          ($body | source_state_count) == 1 and
           (($body | if startswith("<!-- address-review-")
             then capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?
             else capture("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```")? end) as $state |

@@ -551,9 +551,9 @@ assert(address_review.include?("SOURCE_HAS_CHECKPOINT"), "address-review must pr
 assert(address_review_workflow.include?("SOURCE_HAS_CHECKPOINT"), "address-review workflow mirror must probe prior source checkpoint state before the wait")
 assert(address_review.scan(/def valid_body(?:\(|:)/).length >= 2, "address-review must schema-validate both source wait and cutoff checkpoints")
 assert(address_review_workflow.scan(/def valid_body(?:\(|:)/).length >= 2, "address-review workflow mirror must schema-validate both source wait and cutoff checkpoints")
-summary_terminal_guard = '(($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))'
-assert(address_review.scan(summary_terminal_guard).length >= 2, "address-review summaries must require terminal-only source rows")
-assert(address_review_workflow.scan(summary_terminal_guard).length >= 2, "address-review workflow summaries must require terminal-only source rows")
+summary_terminal_guard = '(($kind == "summary") and all($rows[]; terminal_row))'
+assert(address_review.include?(summary_terminal_guard), "address-review summaries must require terminal-only source rows")
+assert(address_review_workflow.include?(summary_terminal_guard), "address-review workflow summaries must require terminal-only source rows")
 assert(address_review.include?('select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase))'), "source wait must authenticate the checkpoint author")
 assert(address_review_workflow.include?('select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase))'), "workflow source wait must authenticate the checkpoint author")
 assert(address_review.include?("for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do"), "address-review must implement the dual-PR review wait")
@@ -732,6 +732,28 @@ invalid_duplicate_body = <<~BODY.chomp
   item\t160\tinline-comment\t103\tPRRT_two\t2026-07-15T00:03:00Z\thandled
   -->
 BODY
+invalid_duplicate_visible_body = <<~BODY.chomp
+  🤖 Codex original review follow-up is complete. The next routine scan can start after this comment.
+
+  <details>
+  <summary>Address-review checkpoint</summary>
+
+  ```text
+  address-review-checkpoint:v1
+  kind: summary
+  ```
+
+  ```text
+  address-review-source-state:v1
+  item	160	inline-comment	101	PRRT_kwD==/+	2026-07-15T00:00:00Z	handled
+  ```
+
+  ```text
+  address-review-source-state:v1
+  item	160	inline-comment	101	PRRT_kwD==/+	2026-07-15T00:00:00Z	handled
+  ```
+  </details>
+BODY
 checkpoint_fixture = {
   "inline_comments" => [
     {
@@ -762,6 +784,7 @@ checkpoint_fixture = {
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:02:00Z", "body" => "<!-- address-review-summary -->" },
     { "user" => "other-reviewer", "created_at" => "2026-07-15T00:03:00Z", "body" => valid_summary_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:04:00Z", "body" => invalid_duplicate_body },
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:04:30Z", "body" => invalid_duplicate_visible_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:05:00Z", "body" => invalid_pending_summary_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:06:00Z", "body" => invalid_ask_user_summary_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:06:30Z", "body" => incomplete_summary_body },
@@ -776,6 +799,8 @@ stdout, stderr, status = Open3.capture3(
 assert(status.success?, "source checkpoint jq validator must execute: #{stderr}")
 valid_checkpoints = JSON.parse(stdout)
 assert(valid_checkpoints.length == 3, "source checkpoint validator must reject invalid state and non-terminal summaries")
+assert(!valid_checkpoints.any? { |checkpoint| checkpoint["body"] == invalid_duplicate_visible_body },
+       "source checkpoint validator must reject duplicate visible source-state blocks")
 assert(valid_checkpoints[0]["body"] == valid_generated_summary_body, "source checkpoint validator must accept template-generated checkpoints with a trailing state block")
 assert(valid_checkpoints[1]["body"] == valid_status_body, "source checkpoint validator must return newest valid checkpoint first")
 assert(valid_checkpoints[2]["body"] == valid_summary_body, "source checkpoint validator must accept padded Base64 node IDs")

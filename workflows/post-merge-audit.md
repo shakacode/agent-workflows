@@ -114,7 +114,7 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   - In final chat, this compact receipt line opens the closing lines: it is followed by the [Unblock Block](pr-processing.md#unblock-block) whenever the status is not clean, and then by the exact `Conversation status` final line; never include the full wrapper: Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
   - Give the local receipt below to the helper. It publishes a visible outcome and reader action, then one closed `Completed-batch audit receipt` disclosure after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; historical HTML wrappers remain read-compatible only. Fill every operator-authored field explicitly and use `none` rather than omitting a field:
 
-    ```text
+    ````text
     🤖 Codex completed-batch audit is clean. No reader action is needed.
 
     <details>
@@ -131,7 +131,7 @@ self-contained. Keep state-machine changes mirrored across this workflow,
     followups_dispositions: <none|one or more ` | `-separated records with ref, owner, current status, disposition, and evidence; unescaped `;` and `|` are rejected in every record-field value; escaping is not supported; terminal disposition is resolved|accepted-waiver|accepted-deferral|not-applicable; nonterminal action is investigate|fix|await-input|retry|replay|track>
     ```
     </details>
-    ```
+    ````
 
   - For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it inside `### Audit receipts` in the canonical `Agent details` disclosure through a separate freshly-read update, preserves all surrounding text, never duplicates the receipt section, and never reruns `publish` to retry description sync:
 

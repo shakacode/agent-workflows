@@ -117,6 +117,10 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         if startswith("<!-- address-review-summary -->") then "summary"
         elif startswith("<!-- address-review-status -->") then "status"
         else visible_checkpoint_kind end;
+      def source_state_count:
+        if startswith("<!-- address-review-")
+        then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)
+        else ([scan("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?$")] | length) end;
       def visible_claim:
         test("(?ms)\\A🤖 Codex claim .*?<details>\\r?\\n<summary>Claim details</summary>.*?^```text\\r?\\ncodex-claim v1\\r?\\n");
       def marker_body:
@@ -189,6 +193,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         . as $body |
         ($body | checkpoint_kind) as $kind |
         $kind != null and
+        ($body | source_state_count) == 1 and
         (($body | if startswith("<!-- address-review-")
           then capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?
           else capture("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```")? end) as $state |

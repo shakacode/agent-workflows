@@ -329,6 +329,9 @@ module CloseoutEvidenceReplay
           next
         end
       end
+      # A blockquote nested in an otherwise canonical disclosure is still an
+      # example, not an authoritative published record.
+      next if line.match?(/\A[ \t]{0,3}>/)
       details_depth += 1 if line.match?(%r{<details(?:\s|>)})
       details_depth -= 1 if line.match?(%r{</details>}) && details_depth.positive?
       line

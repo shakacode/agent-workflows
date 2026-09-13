@@ -433,7 +433,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
     end
     nested_marker_rule = "  - Give the local receipt below to the helper. It publishes a visible outcome and reader action, then one closed `Completed-batch audit receipt` disclosure after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; historical HTML wrappers remain read-compatible only. Fill every operator-authored field explicitly and use `none` rather than omitting a field:\n\n"
     indented_marker_block = [
-      "    ```text\n",
+      "    ````text\n",
       "    #{REQUIRED_DURABLE_RECEIPT_HEADER}\n",
       "\n",
       "    <details>\n",
@@ -450,7 +450,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "    #{REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD}\n",
       "    ```\n",
       "    </details>\n",
-      "    ```\n"
+      "    ````\n"
     ].join
 
     assert_includes body, nested_marker_rule + indented_marker_block,
