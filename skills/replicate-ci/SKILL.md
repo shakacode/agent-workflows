@@ -39,13 +39,13 @@ that the repository is hosted on `github.com`:
 gh api --hostname <HOST> --method GET --paginate --slurp \
   repos/<OWNER>/<REPO>/actions/workflows/<WORKFLOW_ID_OR_FILE>/runs \
   -f head_sha='<HEAD_SHA>' -F per_page=100 |
-  jq '[.[].workflow_runs[] | {databaseId: .id, attempt: .run_attempt, conclusion: .conclusion, headSha: .head_sha, event: .event, workflowName: .name, number: .run_number, createdAt: .created_at, url: .html_url}]'
-gh run view <RUN_ID> --repo <HOST>/<OWNER>/<REPO> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
+  jq '[.[].workflow_runs[] | {databaseId: .id, attempt: .run_attempt, conclusion: .conclusion, headSha: .head_sha, headBranch: .head_branch, event: .event, workflowName: .name, number: .run_number, createdAt: .created_at, url: .html_url}]'
+gh run view <RUN_ID> --repo <HOST>/<OWNER>/<REPO> --attempt <N> --json databaseId,headSha,headBranch,event,workflowName,conclusion,createdAt,startedAt,status
 gh api --hostname <HOST> --method GET --paginate --slurp \
   repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/attempts/<N>/jobs \
   -F per_page=100 |
-  jq '[.[].jobs[] | {name: .name, conclusion: .conclusion, runner_name: .runner_name, labels: .labels, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]}]'
-gh run view <RUN_ID> --repo <HOST>/<OWNER>/<REPO> --attempt <N> --log
+  jq '[.[].jobs[] | {id: .id, name: .name, conclusion: .conclusion, runner_name: .runner_name, labels: .labels, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]}]'
+gh run view <RUN_ID> --repo <HOST>/<OWNER>/<REPO> --attempt <N> --job <JOB_ID> --log
 ```
 
 Keep every fetched run until invocation equivalence has been derived; do not
@@ -63,10 +63,13 @@ dimension remains unavailable, record the incomplete fact as `UNKNOWN` rather
 than treating the returned page as complete.
 
 An equivalent hosted invocation has matching controlled invocation parameters
-and selected or known pre-run hosted environment identity: event, inputs,
-matrix, runner image, toolchain/runtime, and relevant environment or
+and selected or known pre-run hosted environment identity: event, trigger ref,
+inputs, matrix, runner image, toolchain/runtime, and relevant environment or
 configuration selection. It compares those pre-run facts, not runtime behavior
 or outcomes.
+In the GitHub Actions default, `headBranch` is only the available ref
+discriminator. If it cannot establish the exact runtime `github.ref`, record the
+trigger-ref dimension as `UNKNOWN`.
 
 ## Preflight
 
@@ -85,10 +88,10 @@ or outcomes.
    `ci_run_history_provider` seam and exhaustive attempt/job pagination.
 
    - The equivalence predicate is mechanically evaluable only when the
-     required dimensions above are known: event, inputs, matrix, runner image,
-     toolchain, and configuration selection. It compares controlled invocation
-     parameters and pre-run environment identity, not runtime behavior or
-     outcomes.
+     required dimensions above are known: event, trigger ref, inputs, matrix,
+     runner image, toolchain/runtime, and relevant environment or configuration
+     selection. It compares controlled invocation parameters and pre-run
+     environment identity, not runtime behavior or outcomes.
    - Only after the recipe's complete run-first, attempt/job-second pagination
      can a single verified hosted failure with no conflicting equivalent
      same-commit run proceed as a candidate deterministic/parity case.
