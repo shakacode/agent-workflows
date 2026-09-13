@@ -8326,7 +8326,8 @@ test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants() 
   git clone --quiet "$source" "$next_source"
   printf '0.1.1\n' > "$next_source/VERSION"
   git -C "$next_source" add VERSION
-  git -C "$next_source" commit --quiet -m "bump version"
+  git -C "$next_source" -c user.name="Test" -c user.email="test@example.com" \
+    commit --quiet -m "bump version"
   printf '# incomplete seam\n' > "$consumer/AGENTS.md"
 
   set +e
