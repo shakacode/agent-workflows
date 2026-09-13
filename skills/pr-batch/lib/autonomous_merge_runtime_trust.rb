@@ -35,6 +35,13 @@ module AutonomousMergeRuntimeTrust
         .agents/skills/pr-batch/lib/autonomous_merge_evidence.rb
       ]
     },
+    "github-json-string-validation-library" => {
+      path: File.expand_path("github_json_string_validation.rb", __dir__),
+      tree_paths: %w[
+        skills/pr-batch/lib/github_json_string_validation.rb
+        .agents/skills/pr-batch/lib/github_json_string_validation.rb
+      ]
+    },
     "integration-evidence-library" => {
       path: File.expand_path("current_integration_evidence.rb", __dir__),
       tree_paths: %w[

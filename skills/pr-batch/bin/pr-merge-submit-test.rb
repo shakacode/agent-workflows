@@ -2330,6 +2330,8 @@ class PrMergeSubmitTest < Minitest::Test
           "closeout-helper" => "skills/pr-batch/bin/autonomous-merge-closeout",
           "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
           "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
+          "github-json-string-validation-library" =>
+            "skills/pr-batch/lib/github_json_string_validation.rb",
           "integration-evidence-library" => "skills/pr-batch/lib/current_integration_evidence.rb",
           "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",
           "policy-glob-library" => "bin/agent_doctor/autonomous_merge_policy_globs.rb",
