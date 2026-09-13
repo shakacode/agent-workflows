@@ -8433,6 +8433,39 @@ PATCH
     fail "rollback treated a directory fingerprint as an installer-owned file"
 }
 
+test_failed_upgrade_ignores_hidden_skill_fingerprint_keys() {
+  local tmp source target consumer_file output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/.consumer"
+  printf 'source-only hidden skill\n' > "$source/skills/.consumer/SKILL.md"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  consumer_file="$target/skills/.consumer/SKILL.md"
+  mkdir -p "$(dirname "$consumer_file")"
+  printf 'consumer before upgrade\n' > "$consumer_file"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'consumer changed during upgrade\n' > $(printf '%q' "$consumer_file")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$consumer_file")" = "consumer changed during upgrade" ]] || \
+    fail "rollback treated a hidden skill fingerprint as installer-owned"
+}
+
 test_failed_upgrade_preserves_new_stack_doctor_marker() {
   local tmp source target consumer marker output status
   tmp="$(mktemp -d)"
@@ -10181,6 +10214,7 @@ main() {
     test_failed_symlink_upgrade_restores_recorded_symlinked_skill
     test_failed_companion_upgrade_restores_recorded_absolute_symlinked_skill
     test_failed_upgrade_ignores_directory_fingerprint_keys
+    test_failed_upgrade_ignores_hidden_skill_fingerprint_keys
     test_failed_upgrade_preserves_new_stack_doctor_marker
     test_failed_upgrade_removes_new_empty_container_directories
     test_upgrade_snapshot_managed_lists_match_installer

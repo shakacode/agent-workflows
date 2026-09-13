@@ -449,7 +449,7 @@ backup_target() {
           next if segments.any? { |segment| segment.empty? || segment == "." || segment == ".." }
           allowed = case field
                     when "managed_skill_copy_fingerprints"
-                      segments.length == 1
+                      segments.length == 1 && !name.start_with?(".")
                     when "managed_pack_doc_copy_fingerprints"
                       pack_docs.include?(name) || (segments.length == 2 && segments.first == "solutions") ||
                         recorded_path.call("docs/#{name}")
