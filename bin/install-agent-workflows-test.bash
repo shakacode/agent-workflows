@@ -8126,6 +8126,146 @@ PATCH
     fail "rollback reverted a consumer-owned scanner during a flat upgrade"
 }
 
+test_failed_companion_upgrade_preserves_replaced_consumer_lib_symlink() {
+  local tmp source target first_lib second_lib output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  first_lib="$tmp/first-lib"
+  second_lib="$tmp/second-lib"
+  mkdir -p "$source" "$first_lib" "$second_lib"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion >"$tmp/install.out"
+  rm -rf "${target:?}/lib"
+  ln -s "$first_lib" "$target/lib"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+rm -f $(printf '%q' "$target/lib")
+ln -s $(printf '%q' "$second_lib") $(printf '%q' "$target/lib")
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode plugin-companion --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected companion upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/lib" && "$(readlink "$target/lib")" = "$second_lib" ]] || \
+    fail "rollback restored a rejected consumer-owned lib symlink"
+}
+
+test_failed_upgrade_ignores_recorded_hidden_workflows() {
+  local tmp source target hidden output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  printf 'tracked but never installed\n' > "$source/workflows/.prior-hidden"
+  git -C "$source" add workflows/.prior-hidden
+  git -C "$source" commit --quiet -m "add hidden workflow"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  hidden="$target/workflows/.prior-hidden"
+  printf 'consumer before upgrade\n' > "$hidden"
+  git -C "$source" rm --quiet workflows/.prior-hidden
+  git -C "$source" commit --quiet -m "remove hidden workflow"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'consumer changed during upgrade\n' > $(printf '%q' "$hidden")
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$hidden")" = "consumer changed during upgrade" ]] || \
+    fail "rollback restored a hidden workflow the installer never managed"
+}
+
+test_failed_flat_upgrade_removes_new_symlinked_skill() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  ln -s address-review "$source/skills/alias-skill"
+  git -C "$source" add skills/alias-skill
+  git -C "$source" commit --quiet -m "add symlinked skill"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+"$(dirname "$0")/install-agent-workflows-real" "$@"
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ ! -e "$target/skills/alias-skill" && ! -L "$target/skills/alias-skill" ]] || \
+    fail "rollback retained a newly installed symlinked skill"
+}
+
+test_failed_upgrade_ignores_directory_fingerprint_keys() {
+  local tmp source target consumer_file output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  consumer_file="$target/docs/solutions/consumer.md"
+  printf 'consumer before upgrade\n' > "$consumer_file"
+  ruby -rjson -e '
+    path = ARGV.fetch(0)
+    metadata = JSON.parse(File.binread(path))
+    metadata.fetch("managed_pack_doc_copy_fingerprints")["solutions"] = "syntactically-valid"
+    File.write(path, JSON.pretty_generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'consumer changed during upgrade\n' > $(printf '%q' "$consumer_file")
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$consumer_file")" = "consumer changed during upgrade" ]] || \
+    fail "rollback treated a directory fingerprint as an installer-owned file"
+}
+
 test_failed_upgrade_preserves_new_stack_doctor_marker() {
   local tmp source target consumer marker output status
   tmp="$(mktemp -d)"
@@ -9867,6 +10007,10 @@ main() {
     test_failed_upgrade_restores_nested_skill_files
     test_failed_companion_upgrade_preserves_consumer_owned_lib_sibling
     test_failed_flat_upgrade_preserves_consumer_owned_lib_symlink
+    test_failed_companion_upgrade_preserves_replaced_consumer_lib_symlink
+    test_failed_upgrade_ignores_recorded_hidden_workflows
+    test_failed_flat_upgrade_removes_new_symlinked_skill
+    test_failed_upgrade_ignores_directory_fingerprint_keys
     test_failed_upgrade_preserves_new_stack_doctor_marker
     test_failed_upgrade_removes_new_empty_container_directories
     test_upgrade_snapshot_managed_lists_match_installer

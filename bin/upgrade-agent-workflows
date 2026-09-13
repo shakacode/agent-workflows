@@ -191,8 +191,17 @@ path_is_within_traversed_snapshot_symlink_root() {
 
 snapshot_root_is_active() {
   case "$1" in
-    lib|lib/agent-workflows)
-      [[ "${backup_includes_companion:-false}" = "true" ]]
+    lib)
+      [[ "${backup_includes_companion:-false}" = "true" ]] &&
+        [[ ! -L "$target/lib" ]] &&
+        [[ ! -e "$target/lib" || -d "$target/lib" ]]
+      ;;
+    lib/agent-workflows)
+      [[ "${backup_includes_companion:-false}" = "true" ]] &&
+        [[ ! -L "$target/lib" ]] &&
+        [[ ! -e "$target/lib" || -d "$target/lib" ]] &&
+        [[ ! -L "$target/lib/agent-workflows" ]] &&
+        [[ ! -e "$target/lib/agent-workflows" || -d "$target/lib/agent-workflows" ]]
       ;;
     rules)
       [[ "$host" = "cursor" ]]
@@ -219,7 +228,7 @@ source_managed_inventory_fingerprint() {
     end
     if include_flat_skills == "true"
       Dir.glob(File.join(source, "skills", "*")).each do |path|
-        paths << "skills/#{File.basename(path)}" if File.directory?(path) && !File.symlink?(path)
+        paths << "skills/#{File.basename(path)}"
       end
     end
     print Digest::SHA256.hexdigest(paths.sort.join("\0"))
@@ -372,8 +381,14 @@ backup_target() {
           system("git", "-C", root, "cat-file", "-e", "#{revision}^{commit}", out: File::NULL, err: File::NULL)
       end
       recorded_path = lambda do |path|
-        recorded_git_root &&
-          system("git", "-C", recorded_git_root, "cat-file", "-e", "#{revision}:#{path}", out: File::NULL, err: File::NULL)
+        next false unless recorded_git_root
+
+        type = IO.popen(
+          ["git", "-C", recorded_git_root, "cat-file", "-t", "#{revision}:#{path}"],
+          err: File::NULL,
+          &:read
+        )
+        $?.success? && type.strip == "blob"
       end
       legacy_guide = File.join(target, "docs/model-routing.md")
       legacy_guide_owned = if File.symlink?(legacy_guide)
@@ -435,12 +450,12 @@ backup_target() {
       if workflow_git_root
         IO.popen(["git", "-C", workflow_git_root, "ls-tree", "--name-only", "#{revision}:workflows"], &:read).lines.each do |name|
           name = name.strip
-          managed << "workflows/#{name}" unless name.empty? || name.include?("/") || [".", ".."].include?(name)
+          managed << "workflows/#{name}" unless name.empty? || name.start_with?(".") || name.include?("/") || [".", ".."].include?(name)
         end
       end
       if metadata["delivery_mode"] == "flat" || delivery_mode == "flat"
         Dir.glob(File.join(source, "skills", "*")).each do |path|
-          managed << "skills/#{File.basename(path) }" if File.directory?(path) && !File.symlink?(path)
+          managed << "skills/#{File.basename(path) }"
         end
       end
       if metadata["delivery_mode"] == "flat"
@@ -451,7 +466,7 @@ backup_target() {
         if git_root
           IO.popen(["git", "-C", git_root, "ls-tree", "--name-only", "#{revision}:skills"], &:read).lines.each do |name|
             name = name.strip
-            managed << "skills/#{name}" unless name.empty? || name.include?("/") || [".", ".."].include?(name)
+            managed << "skills/#{name}" unless name.empty? || name.start_with?(".") || name.include?("/") || [".", ".."].include?(name)
           end
         end
       end
