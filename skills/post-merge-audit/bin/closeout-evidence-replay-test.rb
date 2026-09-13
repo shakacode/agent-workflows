@@ -339,6 +339,35 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
+  def test_nested_triple_text_example_inside_qa_disclosure_does_not_authorize_evidence
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: example only
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ```text
+      This is still CommonMark code, not a second published record.
+      ```
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
   def test_unclosed_html_comment_hides_visible_evidence
     body = <<~MARKDOWN
       Evidence follows.

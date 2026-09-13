@@ -47,6 +47,21 @@ def extract_source_wait_checkpoint_filter(text)
   filter_tail[0...terminator.begin(0)]
 end
 
+def extract_source_cutoff_filter(text)
+  marker = 'SOURCE_REVIEW_CUTOFF_AT="$(printf'
+  marker_offset = text.index(marker)
+  abort("FAIL: source cutoff jq filter start missing") unless marker_offset
+
+  filter_offset = text.index("jq -r '", marker_offset)
+  abort("FAIL: source cutoff jq filter body missing") unless filter_offset
+
+  filter_start = filter_offset + "jq -r '".length
+  filter_end = text.index("')\"", filter_start)
+  abort("FAIL: source cutoff jq filter terminator missing") unless filter_end
+
+  text[filter_start...filter_end]
+end
+
 def extract_source_walkthrough_derivation(text)
   start_marker = 'SOURCE_PR_IDENTITY_JSON="$(gh api'
   start_offset = text.index(start_marker)
@@ -679,6 +694,12 @@ assert(
   skill_wait_checkpoint_filter.lines.map(&:strip) == workflow_wait_checkpoint_filter.lines.map(&:strip),
   "address-review source wait checkpoint validators must stay mirrored"
 )
+skill_cutoff_filter = extract_source_cutoff_filter(address_review)
+workflow_cutoff_filter = extract_source_cutoff_filter(address_review_workflow)
+assert(
+  skill_cutoff_filter == workflow_cutoff_filter,
+  "address-review source cutoff readers must stay mirrored"
+)
 
 valid_summary_body = <<~BODY.chomp
   <!-- address-review-summary -->
@@ -746,6 +767,20 @@ visible_enveloped_summary_payload = <<~BODY.chomp
 BODY
 enveloped_summary_body = GitHubCommentEnvelope.render(
   body: visible_enveloped_summary_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+)
+commented_visible_summary_payload = visible_enveloped_summary_payload.sub(
+  "```text\naddress-review-checkpoint:v1\nkind: summary\n```",
+  "<!--\n```text\naddress-review-checkpoint:v1\nkind: summary\n```\n-->"
+)
+commented_visible_summary_body = GitHubCommentEnvelope.render(
+  body: commented_visible_summary_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+)
+unclosed_commented_visible_summary_payload = visible_enveloped_summary_payload.sub(
+  "```text\naddress-review-checkpoint:v1\nkind: summary\n```",
+  "<!--\n```text\naddress-review-checkpoint:v1\nkind: summary\n```"
+)
+unclosed_commented_visible_summary_body = GitHubCommentEnvelope.render(
+  body: unclosed_commented_visible_summary_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
 visible_enveloped_source_reply_payload = <<~BODY.chomp
   source reply: handled in the replacement.
@@ -867,7 +902,9 @@ checkpoint_fixture = {
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:06:00Z", "body" => invalid_ask_user_summary_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:06:30Z", "body" => incomplete_summary_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:00Z", "body" => valid_generated_summary_body },
-    { "id" => 204, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:30Z", "body" => enveloped_summary_body, "payload_body" => GitHubCommentEnvelope.payload(enveloped_summary_body) }
+    { "id" => 204, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:30Z", "body" => enveloped_summary_body, "payload_body" => GitHubCommentEnvelope.payload(enveloped_summary_body) },
+    { "id" => 205, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:40Z", "body" => commented_visible_summary_body, "payload_body" => GitHubCommentEnvelope.payload(commented_visible_summary_body) },
+    { "id" => 206, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:50Z", "body" => unclosed_commented_visible_summary_body, "payload_body" => GitHubCommentEnvelope.payload(unclosed_commented_visible_summary_body) }
   ]
 }
 stdout, stderr, status = Open3.capture3(
@@ -882,6 +919,12 @@ assert(valid_checkpoints[0]["body"] == enveloped_summary_body, "source checkpoin
 assert(valid_checkpoints[1]["body"] == valid_generated_summary_body, "source checkpoint validator must accept template-generated checkpoints with a trailing state block")
 assert(valid_checkpoints[2]["body"] == valid_status_body, "source checkpoint validator must return newest valid checkpoint first")
 assert(valid_checkpoints[3]["body"] == valid_summary_body, "source checkpoint validator must accept padded Base64 node IDs")
+assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == commented_visible_summary_body }, "source checkpoint validator must reject a visible record hidden in an HTML comment")
+assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == unclosed_commented_visible_summary_body }, "source checkpoint validator must reject a visible record hidden after an unclosed HTML comment")
+assert(valid_checkpoints.first.fetch("address_review_checkpoint_kind") == "summary", "source checkpoint reader must carry parsed checkpoint kind")
+stdout, stderr, status = Open3.capture3("jq", "-r", skill_cutoff_filter, stdin_data: JSON.generate(valid_checkpoints))
+assert(status.success?, "source cutoff jq filter must execute: #{stderr}")
+assert(stdout.strip == "2026-07-15T00:07:30Z", "source cutoff jq filter must select the latest valid summary without an undefined helper")
 
 walkthrough_fixture = checkpoint_fixture.merge(
   "review_summaries" => checkpoint_fixture.fetch("review_summaries") +

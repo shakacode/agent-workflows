@@ -316,11 +316,19 @@ module CloseoutEvidenceReplay
     text = text.to_s.gsub(/<!--.*?(?:-->|\z)/m, "")
     fence = nil
     record_fence = false
+    discard_details_depth = nil
     details_stack = []
     evidence_summaries = ["QA evidence", "Hosted QA evidence", "Priority finding dispositions"]
     rendered = []
     text.each_line do |line|
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
+      if discard_details_depth
+        if line.match?(%r{</details>}) && details_stack.length <= discard_details_depth
+          details_stack.pop
+          discard_details_depth = nil
+        end
+        next
+      end
       if fence
         if opener && opener[:delimiter][0] == fence[0] && opener[:delimiter].length >= fence.length
           fence = nil
@@ -328,7 +336,15 @@ module CloseoutEvidenceReplay
         next
       end
       if record_fence
-        record_fence = false if opener && opener[:delimiter] == "```" && opener[:info].strip.empty?
+        if opener && !(opener[:delimiter] == "```" && opener[:info].strip.empty?)
+          # A second fenced opener makes this disclosure a Markdown example.
+          # CommonMark treats a ` ```text` line inside an open ` ```text`
+          # block as code, so no record in that block is published evidence.
+          record_fence = false
+          discard_details_depth = details_stack.length
+          next
+        end
+        record_fence = false if opener
         rendered << line
         next
       end

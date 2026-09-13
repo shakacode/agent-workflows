@@ -104,6 +104,27 @@ class FetchPrReviewDataTest < Minitest::Test
     assert_equal "", FetchPrReviewData.compute_cutoff([{ "body" => body, "created_at" => "2026-09-13T00:00:00Z" }])
   end
 
+  def test_visible_checkpoint_record_inside_html_comments_does_not_advance_the_cutoff
+    ["<!--\n", "<!--\n"].each_with_index do |comment_opener, index|
+      comment_closer = index.zero? ? "\n-->" : ""
+      body = <<~MARKDOWN.chomp
+        Address-review follow-up is complete. The next routine scan can start after this comment.
+
+        <details>
+        <summary>Address-review checkpoint</summary>
+
+        #{comment_opener}```text
+        address-review-checkpoint:v1
+        kind: summary
+        ```#{comment_closer}
+        </details>
+      MARKDOWN
+
+      assert_nil FetchPrReviewData.visible_checkpoint_kind(body), "comment variant #{index}"
+      assert_equal "", FetchPrReviewData.compute_cutoff([{ "body" => body, "created_at" => "2026-09-13T00:00:00Z" }])
+    end
+  end
+
   REVIEWS_RAW = <<~JSON
     [[
       {"id":10,"body":"fix the nil guard","state":"COMMENTED","user":{"login":"alice"},"submitted_at":"2026-01-04T00:00:00Z","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
