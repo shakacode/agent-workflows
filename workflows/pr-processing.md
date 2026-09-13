@@ -1960,9 +1960,10 @@ expires_at: <ISO8601_UTC>
 </details>
 ````
 
-Post this payload through `github-comment-envelope`; the public comment begins
-exactly `🤖 Codex`, while the closed disclosure retains the structured claim
-record. Use any stable session, thread, or machine identifier that lets a restarted
+Post this payload through `github-comment-envelope` with the configured
+`AGENT_COMMENT_RUNNER`; the public comment begins with that runner's visible
+attribution and claim outcome, while the closed disclosure retains the structured
+claim record. Use any stable session, thread, or machine identifier that lets a restarted
 coordinator recognize its own work; if none exists, use `thread: unavailable`
 and rely on the machine, branch, and batch fields. Set `expires_at` to a short
 bounded advisory lease, usually 2-4 hours for an active batch or no later than

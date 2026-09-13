@@ -225,6 +225,11 @@ assert(workflow.include?("For a durably overridden ad-hoc task,\n  the final han
 assert(workflow.include?("public claim fallback is unavailable because there is no issue or PR comment surface"), "canonical coordination must handle ad-hoc lanes without a public claim surface")
 assert(workflow.include?("coordination target, or a trusted `coordination_not_applicable` outcome from the applicability gate"), "ad-hoc degraded coordination must stop for a safe ownership decision")
 assert(workflow.include?("or inline `AGENTS.md` configuration"), "canonical goal handoff must support inline AGENTS configuration")
+fallback_claim_context = workflow[/Use a structured public claim comment.*?Do not use the public comment to override/m]
+assert(fallback_claim_context, "canonical coordination must define the public fallback-claim boundary")
+assert(fallback_claim_context.include?("github-comment-envelope"), "fallback claims must use the shared comment envelope")
+assert(fallback_claim_context.include?("AGENT_COMMENT_RUNNER"), "fallback claims must use the configured comment runner")
+assert(!fallback_claim_context.include?("exactly `🤖 Codex`"), "fallback claims must not hardcode the Codex runner")
 
 bounded_coord = File.join(ROOT, "skills/pr-batch/bin/agent-coord-bounded")
 Dir.mktmpdir("canonical-claim-gate") do |tmpdir|
