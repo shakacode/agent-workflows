@@ -3,12 +3,14 @@
 require "json"
 require "open3"
 require "time"
+require "timeout"
 require "yaml"
 
 module HumanAttention
   STATES = %w[walkthrough merge].freeze
   PR_LIST_LIMIT = 1000
   PR_FETCH_LIMIT = PR_LIST_LIMIT + 1
+  REPOSITORY_QUERY_TIMEOUT_SECONDS = 30
   REPOSITORY_PATTERN = %r{\A[^/\s]+/[^/\s]+\z}
 
   class Error < StandardError; end
@@ -97,16 +99,43 @@ module HumanAttention
     labels.any? { |label| label.is_a?(String) && label.casecmp?(configured_label) }
   end
 
-  def desk(config:, github_cli: ENV.fetch("HUMAN_ATTENTION_GH", "gh"), refreshed_at: Time.now.utc.iso8601)
+  def capture3_bounded(*command, timeout_seconds:)
+    Open3.popen3(*command, pgroup: true) do |stdin, stdout, stderr, wait_thread|
+      stdin.close
+      stdout_reader = Thread.new { stdout.read }
+      stderr_reader = Thread.new { stderr.read }
+      status = Timeout.timeout(timeout_seconds) { wait_thread.value }
+      [stdout_reader.value, stderr_reader.value, status]
+    rescue Timeout::Error
+      terminate_process_group(wait_thread)
+      stdout_reader.join
+      stderr_reader.join
+      raise
+    end
+  end
+
+  def terminate_process_group(wait_thread)
+    Process.kill("TERM", -wait_thread.pid)
+    return if wait_thread.join(1)
+
+    Process.kill("KILL", -wait_thread.pid)
+    wait_thread.join
+  rescue Errno::ESRCH
+    wait_thread.join
+  end
+
+  def desk(config:, github_cli: ENV.fetch("HUMAN_ATTENTION_GH", "gh"), refreshed_at: Time.now.utc.iso8601,
+           query_timeout_seconds: REPOSITORY_QUERY_TIMEOUT_SECONDS)
     entries = []
     degraded = []
     configured_repositories = repositories(config)
     base_labels = global_labels(config)
     configured_repositories.each do |repo|
       labels = labels_for(config, repo, base_labels:)
-      stdout, _stderr, status = Open3.capture3(
+      stdout, _stderr, status = capture3_bounded(
         github_cli, "pr", "list", "--repo", repo, "--state", "open",
-        "--limit", PR_FETCH_LIMIT.to_s, "--json", "number,title,url,updatedAt,headRefOid,labels"
+        "--limit", PR_FETCH_LIMIT.to_s, "--json", "number,title,url,updatedAt,headRefOid,labels",
+        timeout_seconds: query_timeout_seconds
       )
       unless status.success?
         degraded << repo
@@ -129,7 +158,7 @@ module HumanAttention
         nil
       end
       entries.concat(repo_entries)
-    rescue JSON::ParserError, Error, KeyError
+    rescue JSON::ParserError, Error, KeyError, Timeout::Error
       degraded << repo
     end
 

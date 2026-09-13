@@ -218,6 +218,37 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  def test_desk_times_out_a_stalled_repository_and_continues
+    config = YAML.safe_load(<<~YAML)
+      ---
+      human_attention:
+        labels:
+          walkthrough: human-attention:walkthrough
+          merge: human-attention:merge
+        repositories:
+          acme/a-slow: {}
+          acme/z-healthy: {}
+    YAML
+    Dir.mktmpdir("human-attention-timeout") do |root|
+      fake_gh = File.join(root, "gh")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        repo = ARGV.fetch(ARGV.index("--repo") + 1)
+        sleep 10 if repo.end_with?("a-slow")
+        puts JSON.generate([{"number" => 7, "title" => repo, "url" => "https://example.test/7", "headRefOid" => "#{'a' * 40}", "labels" => [{"name" => "human-attention:merge"}]}])
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      entries, degraded = HumanAttention.desk(
+        config: config.fetch("human_attention"), github_cli: fake_gh, query_timeout_seconds: 0.5
+      )
+
+      assert_equal(["acme/z-healthy"], entries.map { |entry| entry.fetch("repo") })
+      assert_equal ["acme/a-slow"], degraded
+    end
+  end
+
   # Production break: GitHub repository identities are case-insensitive, so
   # case-only duplicates would query one repository twice and duplicate its
   # desk cards and decision count.
