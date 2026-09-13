@@ -48,7 +48,12 @@ module AutonomousMergeCalibration
         raise CollectionError.new("GitHub API failed for #{path}: #{detail}", kind: "api")
       end
 
-      header_text, body = stdout.split(/\r?\n\r?\n/, 2)
+      response = stdout.dup.force_encoding(Encoding::UTF_8)
+      unless response.valid_encoding?
+        raise CollectionError.new("GitHub API response is not valid UTF-8 for #{path}", kind: "api")
+      end
+
+      header_text, body = response.split(/\r?\n\r?\n/, 2)
       unless body
         raise CollectionError.new("GitHub API response omitted headers for #{path}", kind: "api")
       end
@@ -58,11 +63,36 @@ module AutonomousMergeCalibration
         [key.strip.downcase, value.strip] if value
       end.to_h
       @exhausted = headers["x-ratelimit-remaining"] == "0"
-      JSON.parse(body)
+      parsed = JSON.parse(body)
+      unless decoded_json_strings_valid?(parsed)
+        raise CollectionError.new(
+          "GitHub API response contains invalid Unicode scalar data for #{path}",
+          kind: "api"
+        )
+      end
+
+      parsed
     rescue Errno::ENOENT
       raise CollectionError.new("GitHub CLI is unavailable", kind: "api")
     rescue JSON::ParserError => e
       raise CollectionError.new("GitHub API returned malformed JSON for #{path}: #{e.message}", kind: "api")
+    end
+
+    private
+
+    def decoded_json_strings_valid?(value)
+      case value
+      when String
+        value.valid_encoding?
+      when Array
+        value.all? { |item| decoded_json_strings_valid?(item) }
+      when Hash
+        value.all? do |key, item|
+          decoded_json_strings_valid?(key) && decoded_json_strings_valid?(item)
+        end
+      else
+        true
+      end
     end
   end
 
