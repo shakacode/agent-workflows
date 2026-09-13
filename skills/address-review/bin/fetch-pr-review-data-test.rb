@@ -104,6 +104,27 @@ class FetchPrReviewDataTest < Minitest::Test
     assert_equal "", FetchPrReviewData.compute_cutoff([{ "body" => body, "created_at" => "2026-09-13T00:00:00Z" }])
   end
 
+  def test_visible_checkpoint_requires_a_closed_disclosure_at_the_payload_boundary
+    body = <<~MARKDOWN.chomp
+      Address-review follow-up is complete. The next routine scan can start after this comment.
+
+      <details>
+      <summary>Address-review checkpoint</summary>
+
+      ```text
+      address-review-checkpoint:v1
+      kind: summary
+      ```
+    MARKDOWN
+
+    assert_nil FetchPrReviewData.visible_checkpoint_kind(body)
+    assert_equal "", FetchPrReviewData.compute_cutoff([{ "body" => body, "created_at" => "2026-09-13T00:00:00Z" }])
+
+    trailing_body = "#{body}\n</details>\nnot part of the checkpoint payload"
+    assert_nil FetchPrReviewData.visible_checkpoint_kind(trailing_body)
+    assert_equal "", FetchPrReviewData.compute_cutoff([{ "body" => trailing_body, "created_at" => "2026-09-13T00:00:00Z" }])
+  end
+
   def test_visible_checkpoint_record_inside_html_comments_does_not_advance_the_cutoff
     ["<!--\n", "<!--\n"].each_with_index do |comment_opener, index|
       comment_closer = index.zero? ? "\n-->" : ""

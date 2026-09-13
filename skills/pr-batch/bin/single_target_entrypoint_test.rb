@@ -782,6 +782,16 @@ unclosed_commented_visible_summary_payload = visible_enveloped_summary_payload.s
 unclosed_commented_visible_summary_body = GitHubCommentEnvelope.render(
   body: unclosed_commented_visible_summary_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
+truncated_visible_summary_payload = visible_enveloped_summary_payload.sub(/\n<\/details>\z/, "")
+truncated_visible_summary_body = GitHubCommentEnvelope.render(
+  body: truncated_visible_summary_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+)
+outer_example_source_state_payload = visible_enveloped_summary_payload
+  .sub("```text\naddress-review-source-state:v1", "````markdown\n```text\naddress-review-source-state:v1")
+  .sub("\n```\n</details>", "\n```\n````")
+outer_example_source_state_body = GitHubCommentEnvelope.render(
+  body: outer_example_source_state_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+)
 visible_enveloped_source_reply_payload = <<~BODY.chomp
   source reply: handled in the replacement.
 
@@ -904,7 +914,9 @@ checkpoint_fixture = {
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:00Z", "body" => valid_generated_summary_body },
     { "id" => 204, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:30Z", "body" => enveloped_summary_body, "payload_body" => GitHubCommentEnvelope.payload(enveloped_summary_body) },
     { "id" => 205, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:40Z", "body" => commented_visible_summary_body, "payload_body" => GitHubCommentEnvelope.payload(commented_visible_summary_body) },
-    { "id" => 206, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:50Z", "body" => unclosed_commented_visible_summary_body, "payload_body" => GitHubCommentEnvelope.payload(unclosed_commented_visible_summary_body) }
+    { "id" => 206, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:50Z", "body" => unclosed_commented_visible_summary_body, "payload_body" => GitHubCommentEnvelope.payload(unclosed_commented_visible_summary_body) },
+    { "id" => 207, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:08:00Z", "body" => truncated_visible_summary_body, "payload_body" => GitHubCommentEnvelope.payload(truncated_visible_summary_body) },
+    { "id" => 208, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:08:10Z", "body" => outer_example_source_state_body, "payload_body" => GitHubCommentEnvelope.payload(outer_example_source_state_body) }
   ]
 }
 stdout, stderr, status = Open3.capture3(
@@ -921,6 +933,8 @@ assert(valid_checkpoints[2]["body"] == valid_status_body, "source checkpoint val
 assert(valid_checkpoints[3]["body"] == valid_summary_body, "source checkpoint validator must accept padded Base64 node IDs")
 assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == commented_visible_summary_body }, "source checkpoint validator must reject a visible record hidden in an HTML comment")
 assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == unclosed_commented_visible_summary_body }, "source checkpoint validator must reject a visible record hidden after an unclosed HTML comment")
+assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == truncated_visible_summary_body }, "source checkpoint validator must reject an unclosed visible disclosure")
+assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == outer_example_source_state_body }, "source checkpoint validator must reject an outer Markdown example that supplies state after an unclosed disclosure")
 assert(valid_checkpoints.first.fetch("address_review_checkpoint_kind") == "summary", "source checkpoint reader must carry parsed checkpoint kind")
 stdout, stderr, status = Open3.capture3("jq", "-r", skill_cutoff_filter, stdin_data: JSON.generate(valid_checkpoints))
 assert(status.success?, "source cutoff jq filter must execute: #{stderr}")
