@@ -20,9 +20,10 @@ base_branch: main
 # writing_style: docs/writing-style.md
 follow_up_prefix: "Follow-up:"
 review_gate: "n/a"
-# Required with a non-n/a review_gate whenever automated reviewers are expected.
+# Required with a non-n/a review_gate whenever automated reviewers are expected;
+# omit this optional key instead of using the `n/a` sentinel.
 # automation_reviewers:
-#   reviewer-login: exact-check-run-name
+#   reviewer-base-login: exact-check-run-name
 approval_exempt: "n/a"
 coordination_backend: "n/a"
 changelog: "n/a"

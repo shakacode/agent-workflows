@@ -107,7 +107,9 @@ class ReviewWaveContractTest < Minitest::Test
       end)
       assert_equal reviewers.values.uniq, reviewers.values
     end
+    assert_equal %w[claude coderabbitai], source_reviewers.keys
     assert_equal %w[claude-review CodeRabbit], source_reviewers.values
+    assert_equal source_reviewers.keys, fixture_reviewers.keys
     assert_equal source_reviewers.values, fixture_reviewers.values
   end
 

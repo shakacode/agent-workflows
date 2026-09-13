@@ -240,13 +240,14 @@ libraries provides no guarantee of token or cost savings, quality, or security.
    Repositories that expect automated reviewers must add the
    `automation_reviewers` mapping and describe the review requirement in
    `review_gate`; do not retain `review_gate: "n/a"`. The mapping is optional
-   only when no automated reviewer is expected. Each key is a reviewer identity.
-   Each value is the exact GitHub check-run name returned by
+   only when no automated reviewer is expected; omit the key instead of using
+   the `n/a` sentinel. Each key is the reviewer's GitHub actor base login, with
+   any `[bot]` suffix omitted. Each value is the exact GitHub check-run name returned by
    `gh pr checks --json name`:
 
    ```yaml
    automation_reviewers:
-     claude-review: claude-review
+     claude: claude-review
      coderabbitai: CodeRabbit
    ```
 

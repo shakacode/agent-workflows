@@ -5,7 +5,7 @@ follow_up_prefix: "Follow-up:"
 compact_terminal_structure_max_lanes: 2
 review_gate: "independent code review for non-trivial workflow or helper changes"
 automation_reviewers:
-  claude-review: claude-review
+  claude: claude-review
   coderabbitai: CodeRabbit
 approval_exempt: "docs, workflow text, helper scripts, skill metadata, and validation fixtures when the change remains portable"
 trusted_actions:

@@ -103,11 +103,12 @@ absent optional script means that capability is n/a in that repo.
 - `hosted_ci_trigger`
 - `ci_change_detector`
 
-`automation_reviewers` is optional only when no automated reviewer is expected.
-When repository policy expects an automated reviewer, the key must map reviewer
-identities to exact `gh pr checks --json name` values and `review_gate` must
-describe the requirement. Keys and values must be non-empty strings, and
-check-name values must be unique.
+`automation_reviewers` is optional only when no automated reviewer is expected;
+omit the key instead of using the `n/a` sentinel. When repository policy expects
+an automated reviewer, the key must map each reviewer's GitHub actor base login,
+with any `[bot]` suffix omitted, to its exact `gh pr checks --json name` value,
+and `review_gate` must describe the requirement. Keys and values must be
+non-empty strings, and check-name values must be unique.
 
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
