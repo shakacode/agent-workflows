@@ -4,7 +4,42 @@
 require "optparse"
 require "open3"
 require "tempfile"
+require "timeout"
 require_relative "../lib/github_comment_envelope"
+
+def capture3_bounded(*command, timeout_seconds:)
+  stdin, stdout, stderr, wait_thread = Open3.popen3(*command, pgroup: true)
+  stdin.close
+  stdout_reader = Thread.new { read_stream(stdout) }
+  stderr_reader = Thread.new { read_stream(stderr) }
+  Timeout.timeout(timeout_seconds) do
+    status = wait_thread.value
+    return [stdout_reader.value, stderr_reader.value, status]
+  end
+rescue Timeout::Error
+  [stdout, stderr].each { |stream| stream.close unless stream.closed? }
+  process_group_signal("TERM", wait_thread.pid)
+  wait_thread.join(0.5)
+  process_group_signal("KILL", wait_thread.pid)
+  wait_thread.join(0.5)
+  [stdout_reader, stderr_reader].each { |reader| reader.join(0.5) }
+  raise ArgumentError, "GitHub comment command timed out; mutation outcome is unknown"
+ensure
+  [stdin, stdout, stderr].compact.each { |stream| stream.close unless stream.closed? }
+end
+
+def read_stream(stream)
+  stream.read
+rescue IOError
+  ""
+end
+
+def process_group_signal(signal, pid)
+  Process.kill(0, -pid)
+  Process.kill(signal, -pid)
+rescue Errno::ESRCH
+  nil
+end
 
 command = ARGV.shift
 options = {}
@@ -51,6 +86,9 @@ begin
   attachments = options.fetch(:attachments, [])
   raise ArgumentError, "attachments are supported only for PR issue comments" if command != "post-issue" && !attachments.empty?
 
+  timeout_seconds = Float(ENV.fetch("GITHUB_COMMENT_TIMEOUT_SECONDS", "30"))
+  raise ArgumentError, "GitHub comment timeout must be positive" unless timeout_seconds.positive?
+
   enveloped = GitHubCommentEnvelope.render(body: $stdin.read, runner:, host:, task_or_run:)
   Tempfile.create(["github-comment-envelope", ".md"], encoding: "UTF-8") do |file|
     file.chmod(0o600)
@@ -58,8 +96,8 @@ begin
     file.flush
     gh = ENV.fetch("GITHUB_COMMENT_GH", "gh")
     unless attachments.empty?
-      _pr_stdout, pr_stderr, pr_status = Open3.capture3(
-        gh, "api", "repos/#{repo}/pulls/#{number}", "--silent"
+      _pr_stdout, pr_stderr, pr_status = capture3_bounded(
+        gh, "api", "repos/#{repo}/pulls/#{number}", "--silent", timeout_seconds:
       )
       unless pr_status.success?
         raise ArgumentError, "attachments require a pull request: #{pr_stderr.lines.first.to_s.strip}"
@@ -72,7 +110,7 @@ begin
                   [gh, "pr", "comment", number.to_s, "--repo", repo, "--body-file", file.path] +
                     attachments.flat_map { |attachment| ["--attach", attachment] }
                 end
-    stdout, stderr, status = Open3.capture3(*arguments)
+    stdout, stderr, status = capture3_bounded(*arguments, timeout_seconds:)
     unless status.success?
       partial_result = stdout.lines.first.to_s.strip
       partial_suffix = partial_result.empty? ? "" : "; partial result: #{partial_result}"

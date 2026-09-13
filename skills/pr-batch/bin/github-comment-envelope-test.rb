@@ -26,6 +26,16 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_includes rendered, "Review complete."
   end
 
+  def test_render_accepts_cursor_as_a_truthful_runner
+    rendered = GitHubCommentEnvelope.render(
+      body: "Review complete.", runner: "cursor", host: "Cursor desktop", task_or_run: "cursor-7"
+    )
+
+    assert rendered.start_with?("🤖 Cursor\n")
+    assert_equal "cursor", GitHubCommentEnvelope.parse(rendered).fetch("runner")
+    assert GitHubCommentEnvelope.agent_authored?("🤖 Cursor\nlegacy payload")
+  end
+
   # Production break: a real runner host such as "Codex desktop" is rejected,
   # so otherwise valid agent comments cannot cross the shared boundary.
   def test_render_accepts_a_human_readable_single_line_host
@@ -120,7 +130,27 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       GitHubCommentEnvelope.render(body: "Done.", runner: "agent-workflows", host: "M5", task_or_run: "task-7")
     end
 
-    assert_equal "runner must be codex or claude", error.message
+    assert_equal "runner must be codex, claude, or cursor", error.message
+  end
+
+  def test_post_issue_times_out_with_unknown_mutation_outcome
+    Dir.mktmpdir("comment-envelope-timeout") do |directory|
+      fake_gh = File.join(directory, "gh")
+      File.write(fake_gh, "#!/usr/bin/env ruby\nsleep 5\n")
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "post-issue", "--repo", "acme/widgets", "--number", "7",
+        "--runner", "codex", "--host", "M5", "--task-or-run", "task-7",
+        stdin: "Ready.", env: {
+          "GITHUB_COMMENT_GH" => fake_gh,
+          "GITHUB_COMMENT_TIMEOUT_SECONDS" => "0.5"
+        }
+      )
+
+      refute_predicate result[:status], :success?
+      assert_includes result[:stderr], "command timed out; mutation outcome is unknown"
+    end
   end
 
   def test_autonomous_human_authority_explicitly_excludes_agent_envelopes

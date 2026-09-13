@@ -179,7 +179,7 @@ module StaleAssignmentSweep
         live item is re-fetched and re-classified, so a reply, an added exempt/agent-claim
         label, or a reassignment between scan and mutation aborts it. Environment:
         STALE_ASSIGNMENT_SWEEP_NOW, STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS.
-        Mutating --apply runs also require AGENT_COMMENT_RUNNER (codex or claude),
+        Mutating --apply runs also require AGENT_COMMENT_RUNNER (codex, claude, or cursor),
         AGENT_COMMENT_HOST, and AGENT_COMMENT_TASK_OR_RUN so every agent-authored
         comment is attributable. Invalid or missing attribution fails before any
         GitHub call.

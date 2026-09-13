@@ -48,6 +48,10 @@ module HumanAttention
 
     labels = base_labels.dup
     repositories = config.fetch("repositories", {})
+    unless repositories.is_a?(Hash) || repositories.is_a?(Array)
+      raise Error, "human_attention.repositories must be a mapping or list"
+    end
+
     if repositories.is_a?(Hash)
       matching_repositories = repositories.keys.select do |configured_repo|
         configured_repo.is_a?(String) && configured_repo.casecmp?(repo)

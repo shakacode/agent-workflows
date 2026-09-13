@@ -5,7 +5,8 @@ module GitHubCommentEnvelope
   MARKER = "agent-comment-attribution:v#{VERSION}".freeze
   RUNNER_DISPLAY = {
     "codex" => "Codex",
-    "claude" => "Claude"
+    "claude" => "Claude",
+    "cursor" => "Cursor"
   }.freeze
   VALUE_PATTERN = %r{\A[A-Za-z0-9][A-Za-z0-9._:/-]*\z}
   HOST_PATTERN = /\A(?!.*-->)[^\r\n]+\z/
@@ -19,7 +20,7 @@ module GitHubCommentEnvelope
     raise ArgumentError, "body already has an attribution envelope" if parse(body)
 
     display_runner = RUNNER_DISPLAY.fetch(runner) do
-      raise ArgumentError, "runner must be codex or claude"
+      raise ArgumentError, "runner must be codex, claude, or cursor"
     end
     visible = "🤖 #{display_runner}"
     marker = <<~MARKER.chomp
@@ -33,7 +34,7 @@ module GitHubCommentEnvelope
   end
 
   def agent_authored?(body)
-    !parse(body).nil? || body.to_s.match?(/\A🤖 (?:Codex|Claude)(?:\r?\n|\z)/)
+    !parse(body).nil? || body.to_s.match?(/\A🤖 (?:Codex|Claude|Cursor)(?:\r?\n|\z)/)
   end
 
   def payload(body)

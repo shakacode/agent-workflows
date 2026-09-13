@@ -122,6 +122,25 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  def test_labels_for_rejects_a_scalar_repository_policy_before_transition
+    policy = <<~YAML
+      ---
+      human_attention:
+        labels:
+          walkthrough: human-attention:walkthrough
+          merge: human-attention:merge
+        repositories: acme/widgets
+    YAML
+    with_repo_config(policy) do |root|
+      config = HumanAttention.load_config(root)
+      error = assert_raises(HumanAttention::Error) do
+        HumanAttention.labels_for(config, "acme/widgets")
+      end
+
+      assert_equal "human_attention.repositories must be a mapping or list", error.message
+    end
+  end
+
   def test_labels_for_matches_repository_overrides_case_insensitively
     config = <<~YAML
       ---

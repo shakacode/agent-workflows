@@ -1431,11 +1431,11 @@ reference interaction pattern.
 
 Route every Agent Workflows-authored top-level comment and review reply through
 `github-comment-envelope`: `post-issue` for PR or issue comments and
-`post-reply` for inline replies. The visible first line is exactly `🤖 Codex` or
-`🤖 Claude`; a hidden marker records the runner, host, and task-or-run ID.
+`post-reply` for inline replies. The first line identifies Codex,
+Claude, or Cursor; a hidden marker records the runner, host, and task-or-run ID.
 
-Export the real execution context as `AGENT_COMMENT_RUNNER` (`codex` or
-`claude`), `AGENT_COMMENT_HOST` (a non-empty single-line label), and
+Export the real execution context as `AGENT_COMMENT_RUNNER` (`codex`, `claude`,
+or `cursor`), `AGENT_COMMENT_HOST` (a non-empty single-line label), and
 `AGENT_COMMENT_TASK_OR_RUN` (a stable task or run ID). Publishers fail closed
 when a value is invalid or absent. They must not invent a runner or substitute
 an arbitrary batch ID.
