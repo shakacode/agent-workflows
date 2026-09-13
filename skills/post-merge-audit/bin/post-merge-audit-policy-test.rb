@@ -87,7 +87,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_ADVISORY_VERDICT_PROHIBITION = "Advisory auditors must not issue the qualifying clean/ready verdict."
   COMPLETED_BATCH_AUDIT_MARKER_HEADER = "completed-batch-audit v1"
   REQUIRED_DURABLE_RECEIPT_HEADER = "🤖 Codex completed-batch audit is clean. No reader action is needed."
-  REQUIRED_PR_DESCRIPTION_SUMMARY_RULE = "For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it inside `### Audit receipts` in the canonical `Agent details` disclosure through a separate freshly-read update, preserves all surrounding text, never duplicates the receipt section, and never reruns `publish` to retry description sync:"
+  REQUIRED_PR_DESCRIPTION_AUDIT_RECEIPTS = "### Audit receipts"
+  REQUIRED_PR_DESCRIPTION_SUMMARY_HEADING = "#### Completed-batch audit"
   REQUIRED_PR_DESCRIPTION_SUMMARY_START = "<summary>Audit receipt</summary>"
   REQUIRED_PR_DESCRIPTION_SUMMARY_END = "</details>"
   REQUIRED_COMPACT_RECEIPT_FORMAT = "Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`."
@@ -455,7 +456,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
     assert_includes body, nested_marker_rule + indented_marker_block,
                     "completed-batch-only guard must keep the marker rule, fence, wrapper, and every marker line four-space indented"
-    assert_includes body, REQUIRED_PR_DESCRIPTION_SUMMARY_RULE
+    assert_includes body, REQUIRED_PR_DESCRIPTION_AUDIT_RECEIPTS
+    assert_includes body, REQUIRED_PR_DESCRIPTION_SUMMARY_HEADING
     assert_includes body, REQUIRED_PR_DESCRIPTION_SUMMARY_START
     assert_includes body, REQUIRED_PR_DESCRIPTION_SUMMARY_END
     refute_includes body, REQUIRED_DEFAULT,
