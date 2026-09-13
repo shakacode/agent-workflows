@@ -45,7 +45,7 @@ gh api --hostname <HOST> --method GET --paginate --slurp \
   repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/attempts/<N>/jobs \
   -F per_page=100 |
   jq '[.[].jobs[] | {id: .id, name: .name, conclusion: .conclusion, runner_name: .runner_name, labels: .labels, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]}]'
-gh run view <RUN_ID> --repo <HOST>/<OWNER>/<REPO> --attempt <N> --job <JOB_ID> --log
+gh run view --repo <HOST>/<OWNER>/<REPO> --job <JOB_ID> --log
 ```
 
 Keep every fetched run until invocation equivalence has been derived; do not
