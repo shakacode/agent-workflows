@@ -312,12 +312,16 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 - Exclude the current exact-diff walkthrough review body and its original
   explanatory inline comments from triage. Retain trusted replies to those
   sections, promoting the first retained reply in each thread as the triage item
-  and using later replies as context. Identify the walkthrough as the newest trusted review whose fetched
-  `state` is `COMMENTED`, whose first line is a valid
-  `<!-- pr-walkthrough:v2 ... -->` marker, and whose bound PR number, publisher,
-  `commit_id`, full head SHA, reviewed diff base, and canonical diff identity
-  match the live target. During migration, recognize the legacy short v1 form
-  only under the authenticated-actor and exact-binding rules below. Join its sections by
+  and using later replies as context. On both full-PR and specific-review paths,
+  identify the walkthrough as the newest trusted review whose fetched `state` is
+  `COMMENTED`, whose first visible line is a runner-labelled outcome, and whose
+  closed `Walkthrough details` disclosure contains the canonical fenced
+  `pr-walkthrough:v2` record. Its bound PR number, publisher, `commit_id`, full
+  head SHA, reviewed diff base, and canonical diff identity must match the live
+  target. New walkthroughs use that visible form only. Historical HTML v2 and
+  short v1 markers are read-compatible only: v2 keeps the declared-publisher
+  and exact-binding checks, while v1 is accepted only from the authenticated
+  actor under the exact-binding rules below. Join sections by
   `pull_request_review_id`; never infer membership from explanatory comment text
   alone. Immediately after fetching the source packet and before source-checkpoint
   validation, derive `SOURCE_WALKTHROUGH_REVIEW_IDS_JSON` deterministically from
