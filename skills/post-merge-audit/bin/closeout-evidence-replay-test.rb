@@ -722,6 +722,33 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_indented_disclosure_tokens_do_not_hide_same_line_raw_openers
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      A paragraph.
+          <details></details><blockquote>
+
+      #{visible_qa_details(head_sha:, scope: 'mixed indented details and raw opener')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_indented_multiline_balanced_code_cancels_its_synthetic_guard
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+          <code>
+          </code>
+
+      #{visible_qa_details(head_sha:, scope: 'multiline balanced indented code')}
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
   def test_html_comment_cannot_close_a_raw_blockquote_before_visible_evidence
     head_sha = "1" * 40
     body = <<~MARKDOWN

@@ -526,19 +526,18 @@ module CloseoutEvidenceReplay
     discard_details_depth
   end
 
-  def advance_raw_html_containers(raw_html_containers, structural_tags)
-    structural_tags.each do |type, tag, _text|
+  def advance_raw_html_containers(raw_html_containers, structural_tags, line)
+    structural_tags.each do |type, tag, _text, indented_origin|
       next unless raw_html_tag?(tag)
 
       if type == :open
-        if (container = raw_html_containers.reverse.find { |current| current.fetch(:tag) == tag })
-          container[:depth] += 1
-        else
-          raw_html_containers << { tag:, depth: 1 }
+        raw_html_containers << { tag:, synthetic: indented_code_line?(line) || indented_origin }
+      elsif type == :close
+        index = raw_html_containers.rindex do |current|
+          current.fetch(:tag) == tag &&
+            (!(indented_code_line?(line) || indented_origin) || current.fetch(:synthetic))
         end
-      elsif type == :close && (index = raw_html_containers.rindex { |current| current.fetch(:tag) == tag })
-        raw_html_containers[index][:depth] -= 1
-        raw_html_containers.delete_at(index) if raw_html_containers[index].fetch(:depth) <= 0
+        raw_html_containers.delete_at(index) if index
       end
     end
     raw_html_containers
@@ -550,6 +549,12 @@ module CloseoutEvidenceReplay
 
   def indented_disclosure_code_line?(line)
     indented_code_line?(line) && line.match?(%r{</?(?:details|summary)(?:\s|>)}i)
+  end
+
+  def visible_disclosure_tags(structural_tags, line)
+    return structural_tags unless indented_code_line?(line)
+
+    structural_tags.reject { |_type, tag, _text, _indented_origin| %w[details summary].include?(tag) }
   end
 
   def raw_containment_tags(structural_tags, line)
@@ -567,12 +572,7 @@ module CloseoutEvidenceReplay
       end
     end
 
-    # An indented raw opener may conservatively suppress authority, but its
-    # closer is Markdown code and cannot release an active containment guard.
-    structural_tags.each_with_index.reject do |(type, tag, _text, indented_origin), index|
-      balanced.include?(index) ||
-        (type == :close && raw_html_tag?(tag) && (indented_code_line?(line) || indented_origin))
-    end.map(&:first)
+    structural_tags.each_with_index.reject { |_tag, index| balanced.include?(index) }.map(&:first)
   end
 
   def visible_markdown(text)
@@ -609,11 +609,6 @@ module CloseoutEvidenceReplay
         rendered << line
         next
       end
-      # Visible receipt disclosures are never accepted from indented code. Keep
-      # raw containment independent: treating an indented raw container as
-      # structural can only suppress untrusted evidence, never authorize it.
-      next if indented_disclosure_code_line?(line)
-
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
       structural_line, inline_code_delimiter, html_comment_open = html_context_line(
         line,
@@ -625,7 +620,7 @@ module CloseoutEvidenceReplay
       next if structural_line.empty?
 
       structural_tags, open_html_tag = structural_html_tags(structural_line, open_tag: open_html_tag)
-      current_details_tags = details_tags(structural_tags)
+      current_details_tags = details_tags(visible_disclosure_tags(structural_tags, line))
       if discard_details_depth
         discard_details_depth = advance_details_stack(details_stack, discard_details_depth, current_details_tags)
         next
@@ -634,7 +629,7 @@ module CloseoutEvidenceReplay
       # preserving that discard is intentionally fail-closed: later apparent
       # evidence is not rendered authority. Blockquotes are excluded too because
       # a canonical disclosure must be top-level published content.
-      raw_html_containers = advance_raw_html_containers(raw_html_containers, raw_containment_tags(structural_tags, line))
+      raw_html_containers = advance_raw_html_containers(raw_html_containers, raw_containment_tags(structural_tags, line), line)
       if raw_html_containers.any?
         next
       end
@@ -658,6 +653,8 @@ module CloseoutEvidenceReplay
 
       discard_details_depth = advance_details_stack(details_stack, discard_details_depth, current_details_tags)
       next if discard_details_depth
+
+      next if indented_disclosure_code_line?(line)
 
       rendered << line
     end
