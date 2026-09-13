@@ -32,17 +32,20 @@ module GitHubCommentEnvelope
     end
     payload = body.sub(/\A[\r\n]+/, "")
     first_line, line_ending, remaining_payload = split_payload(payload)
-    outcome = first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip
-    visible = "🤖 #{display_runner}"
-    visible += " #{outcome}" unless outcome.empty?
-    marker = <<~MARKER.chomp
-      #{MARKER}
-      runner: #{runner}
-      host: #{host}
-      task_or_run: #{task_or_run}
-      payload_first_line_b64url: #{Base64.urlsafe_encode64(first_line, padding: false)}
-      payload_line_ending: #{PAYLOAD_LINE_ENDINGS.fetch(line_ending)}
-    MARKER
+    visible = visible_line(display_runner, first_line)
+    marker = [
+      MARKER,
+      "runner: #{runner}",
+      "host: #{host}",
+      "task_or_run: #{task_or_run}"
+    ]
+    unless first_line.empty?
+      marker.concat([
+                      "payload_first_line_b64url: #{Base64.urlsafe_encode64(first_line, padding: false)}",
+                      "payload_line_ending: #{PAYLOAD_LINE_ENDINGS.fetch(line_ending)}"
+                    ])
+    end
+    marker = marker.join("\n")
     "#{visible}\n\n<details>\n<summary>Agent attribution</summary>\n\n```text\n#{marker}\n```\n</details>\n\n#{remaining_payload}"
   end
 
@@ -77,8 +80,10 @@ module GitHubCommentEnvelope
     parsed = { "version" => VERSION, "runner" => runner.downcase, "host" => host, "task_or_run" => task_or_run, "payload_offset" => match.end(0) }
     return parsed unless match[:payload_first_line]
 
-    payload_first_line = Base64.urlsafe_decode64(match[:payload_first_line])
+    payload_first_line = Base64.urlsafe_decode64(match[:payload_first_line]).force_encoding(Encoding::UTF_8)
     return unless Base64.urlsafe_encode64(payload_first_line, padding: false) == match[:payload_first_line]
+    return unless payload_first_line.valid_encoding? && !payload_first_line.empty? && !payload_first_line.match?(/[\r\n]/)
+    return unless visible == visible_line(RUNNER_DISPLAY.fetch(runner.downcase), payload_first_line)
 
     payload_first_line.force_encoding(body.encoding)
     payload_line_ending = PAYLOAD_LINE_ENDING_VALUES.fetch(match[:payload_line_ending])
@@ -126,6 +131,13 @@ module GitHubCommentEnvelope
     index = line_ending.begin(0)
     ending = line_ending[0]
     [payload[0...index], ending, payload[(index + ending.length)..].to_s]
+  end
+
+  def visible_line(display_runner, payload_first_line)
+    outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip
+    visible = "🤖 #{display_runner}"
+    visible += " #{outcome}" unless outcome.empty?
+    visible
   end
 
   def normalized_value(value, name, pattern: VALUE_PATTERN)

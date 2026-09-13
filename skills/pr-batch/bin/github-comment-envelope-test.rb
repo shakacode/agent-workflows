@@ -130,6 +130,37 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_equal payload, GitHubCommentEnvelope.payload(rendered)
   end
 
+  def test_payload_refuses_a_tampered_first_line_that_could_inject_a_legacy_checkpoint
+    rendered = GitHubCommentEnvelope.render(
+      body: "Review complete.\nFollow-up evidence is recorded.", runner: "codex", host: "M5", task_or_run: "task-7"
+    )
+    tampered = rendered.sub(
+      /payload_first_line_b64url: [^\n]+/,
+      "payload_first_line_b64url: #{Base64.urlsafe_encode64('<!-- address-review-summary -->', padding: false)}"
+    )
+
+    assert_nil GitHubCommentEnvelope.parse(tampered)
+    assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
+  end
+
+  def test_payload_refuses_multiline_or_invalid_utf8_encoded_first_lines
+    rendered = GitHubCommentEnvelope.render(
+      body: "Review complete.\nFollow-up evidence is recorded.", runner: "codex", host: "M5", task_or_run: "task-7"
+    )
+    multiline = rendered.sub(
+      /payload_first_line_b64url: [^\n]+/,
+      "payload_first_line_b64url: #{Base64.urlsafe_encode64("Review\ncomplete", padding: false)}"
+    )
+    invalid_bytes = [255].pack("C")
+    invalid_utf8 = rendered.sub(
+      /payload_first_line_b64url: [^\n]+/,
+      "payload_first_line_b64url: #{Base64.urlsafe_encode64(invalid_bytes, padding: false)}"
+    )
+
+    assert_nil GitHubCommentEnvelope.parse(multiline)
+    assert_nil GitHubCommentEnvelope.parse(invalid_utf8)
+  end
+
   def test_render_reconstructs_an_empty_payload_without_a_blank_visible_outcome
     rendered = GitHubCommentEnvelope.render(body: "", runner: "codex", host: "M5", task_or_run: "task-7")
 
