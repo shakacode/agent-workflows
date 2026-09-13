@@ -722,6 +722,31 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
   end
 
+  def test_indented_raw_closers_respect_tag_specific_blank_boundaries
+    expected_by_tag = {
+      "pre" => "SATISFIED",
+      "script" => "SATISFIED",
+      "style" => "SATISFIED",
+      "textarea" => "SATISFIED",
+      "blockquote" => "UNKNOWN",
+      "code" => "UNKNOWN"
+    }
+
+    expected_by_tag.each do |tag, expected|
+      head_sha = "1" * 40
+      body = <<~MARKDOWN
+        <#{tag}>
+        text
+
+            </#{tag}>
+
+        #{visible_qa_details(head_sha:, scope: "#{tag} blank-boundary closer")}
+      MARKDOWN
+
+      assert_equal expected, run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), tag
+    end
+  end
+
   def test_split_real_raw_opener_stays_real_after_an_indented_completion
     head_sha = "1" * 40
     indent = "    "
@@ -786,6 +811,40 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     MARKDOWN
 
     assert_equal "SATISFIED", run_replay(canonical, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
+  def test_content_before_a_details_summary_permanently_consumes_its_label_slot
+    head_sha = "1" * 40
+    invalid_prefixes = [
+      "<div></div>\n<summary>Agent details</summary>",
+      "<div>\n\n    </div>\n<summary>Agent details</summary>",
+      "Explanatory text.\n<summary>Agent details</summary>"
+    ]
+
+    invalid_prefixes.each do |prefix|
+      body = <<~MARKDOWN
+        <details>
+        #{prefix}
+        #{visible_qa_details(head_sha:, scope: 'content before details summary')}
+        </details>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), prefix
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", prefix
+    end
+
+    whitespace_only = <<~MARKDOWN
+      <details>
+
+
+      <summary>Agent details</summary>
+
+      #{visible_qa_details(head_sha:, scope: 'whitespace before direct details summary')}
+      </details>
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(whitespace_only, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
   end
 
   def test_indented_balanced_raw_tags_do_not_create_permanent_containment

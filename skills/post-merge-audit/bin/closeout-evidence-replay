@@ -396,10 +396,15 @@ module CloseoutEvidenceReplay
   end
 
   RAW_HTML_TAGS = %w[pre code script style textarea blockquote].freeze
+  RAW_TEXT_HTML_TAGS = %w[pre script style textarea].freeze
   STRUCTURAL_HTML_TAGS = (%w[details summary] + RAW_HTML_TAGS).freeze
 
   def raw_html_tag?(tag)
     RAW_HTML_TAGS.include?(tag)
+  end
+
+  def raw_text_html_tag?(tag)
+    RAW_TEXT_HTML_TAGS.include?(tag)
   end
 
   def structural_html_tag(token)
@@ -499,11 +504,22 @@ module CloseoutEvidenceReplay
   end
 
   def details_entry
-    { label: nil, summary_seen: false, html_children: [] }
+    { label: nil, summary_seen: false, summary_eligible: true }
   end
 
   def direct_details_child?(entry)
-    entry.fetch(:html_children).empty?
+    entry.fetch(:summary_eligible)
+  end
+
+  def mark_details_summary_content(details_stack, line)
+    return if details_stack.empty?
+
+    entry = details_stack.last
+    return if entry.fetch(:summary_seen)
+    return if line.match?(%r{\A[ \t]*<summary>[^<]*</summary>[ \t]*\r?\n?\z}i)
+
+    text = line.gsub(/<[^>]*>/, "").strip
+    entry[:summary_eligible] = false unless text.empty?
   end
 
   def advance_details_stack(details_stack, discard_details_depth, tags)
@@ -524,6 +540,7 @@ module CloseoutEvidenceReplay
         # PR bodies place trusted evidence directly in the canonical Agent
         # details disclosure. Deeper nested details remain explanatory examples
         # and cannot grant authority.
+        details_stack.last[:summary_eligible] = false if details_stack.any? && !details_stack.last.fetch(:summary_seen)
         if details_stack.empty? || (details_stack.length == 1 && details_stack.last.fetch(:label) == "Agent details")
           details_stack << details_entry
         else
@@ -547,13 +564,7 @@ module CloseoutEvidenceReplay
         entry = details_stack.last
         entry[:summary_seen] = true unless entry.fetch(:summary_seen)
       when :html_open
-        details_stack.last.fetch(:html_children) << text unless details_stack.empty?
-      when :html_close
-        next if details_stack.empty?
-
-        children = details_stack.last.fetch(:html_children)
-        index = children.rindex(text)
-        children.delete_at(index) if index
+        details_stack.last[:summary_eligible] = false if details_stack.any? && !details_stack.last.fetch(:summary_seen)
       when :close
         details_stack.pop unless details_stack.empty?
       end
@@ -578,7 +589,7 @@ module CloseoutEvidenceReplay
         index = raw_html_containers.rindex do |current|
           current.fetch(:tag) == tag &&
             (!(indented_code_line?(line) || indented_origin) || current.fetch(:synthetic) ||
-              !current.fetch(:blank_since_open))
+              !current.fetch(:blank_since_open) || raw_text_html_tag?(tag))
         end
         raw_html_containers.delete_at(index) if index
       end
@@ -700,6 +711,7 @@ module CloseoutEvidenceReplay
 
       next if indented_disclosure_code_line?(line)
 
+      mark_details_summary_content(details_stack, structural_line)
       rendered << line
     end
     rendered.join
