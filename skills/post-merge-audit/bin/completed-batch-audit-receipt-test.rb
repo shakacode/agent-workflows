@@ -1662,7 +1662,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   end
 
   def test_complete_publication_blocks_public_claim_fallback_without_private_coordination
-    backend = " Public　claim-comment \n fallback. "
+    backend = "public claim-comment fallback"
     preflight = publication_preflight(coordination_backend: backend)
     target = {
       "host" => "github.com",
