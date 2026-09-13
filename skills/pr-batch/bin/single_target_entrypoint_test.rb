@@ -1058,6 +1058,7 @@ assert(Integer(stdout, 10) == 1,
   "multiline" => "handled in the replacement.\n\nThe follow-up also updates the source test.",
   "inline markup" => "handled with `--strict` and <code>inline markup</code>.",
   "inline HTML token" => "Fixed parsing of `<!--` tokens.",
+  "double-backtick inline HTML token" => "Fixed parsing of ``<!--`` tokens.",
   "closed Ruby example" => "Example:\n\n```ruby\nputs '<!--'\n```"
 }.each_with_index do |(description, response), index|
   actual_source_reply_payload = "Source reply: #{response}\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v1\n```\n</details>"

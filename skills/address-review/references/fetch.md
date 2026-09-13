@@ -140,7 +140,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         ($line | [scan("(?i)<" + $tag + "(?:\\s|>)")] | length) -
         ($line | [scan("(?i)</" + $tag + "\\s*>")] | length);
       def source_reply_noncode:
-        gsub("`[^`]*`"; "") | gsub("<!--.*?-->"; "");
+        gsub("(?<delimiter>`+)[\\s\\S]*?\\k<delimiter>"; "") | gsub("<!--.*?-->"; "");
       def visible_source_reply_context:
         (reduce (split("\n")[] | sub("\\r$"; "")) as $source_line (
           {fence: null, raw: null, comment: false};
