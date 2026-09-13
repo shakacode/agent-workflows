@@ -775,6 +775,19 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       MARKDOWN
 
       assert_equal "UNKNOWN", run_replay(commented, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), tag
+
+      ["<!-- </#{tag}> -->\n</#{tag}>", "<!-- </#{tag}> --></#{tag}>"].each do |completed_comment|
+        head_sha = "1" * 40
+        body = <<~MARKDOWN
+          <#{tag}>
+          #{completed_comment}
+
+          #{visible_qa_details(head_sha:, scope: "#{tag} completed comment closer")}
+        MARKDOWN
+
+        assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"),
+                     "#{tag}: #{completed_comment}"
+      end
     end
 
     [

@@ -782,7 +782,8 @@ module CloseoutEvidenceReplay
         raw_text_html_comment_open = false
         raw_text_comment_text = ""
       end
-      if active_raw_text_tag && raw_text_comment_terminator?(active_raw_text_tag, raw_text_comment_text)
+      if active_raw_text_tag && raw_text_html_comment_open &&
+         raw_text_comment_terminator?(active_raw_text_tag, raw_text_comment_text)
         raw_html_containers.reverse_each do |container|
           next unless container.fetch(:tag) == active_raw_text_tag
 
