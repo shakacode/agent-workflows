@@ -226,6 +226,7 @@ class HumanAttentionTest < Minitest::Test
           walkthrough: human-attention:walkthrough
           merge: human-attention:merge
         repositories:
+          acme/a-detached: {}
           acme/a-leaky: {}
           acme/b-slow: {}
           acme/z-healthy: {}
@@ -236,7 +237,18 @@ class HumanAttentionTest < Minitest::Test
         #!/usr/bin/env ruby
         require "json"
         repo = ARGV.fetch(ARGV.index("--repo") + 1)
-        if repo.end_with?("a-leaky")
+        if repo.end_with?("a-detached")
+          ready = File.join(__dir__, "detached.ready")
+          fork do
+            Process.setsid
+            trap("TERM", "IGNORE")
+            File.write(File.join(__dir__, "detached.pid"), Process.pid)
+            File.write(ready, "ready")
+            sleep 10
+          end
+          sleep 0.01 until File.exist?(ready)
+          exit 0
+        elsif repo.end_with?("a-leaky")
           ready = File.join(__dir__, "leaky.ready")
           fork { trap("TERM", "IGNORE"); File.write(ready, "ready"); sleep 10 }
           sleep 0.01 until File.exist?(ready)
@@ -252,14 +264,19 @@ class HumanAttentionTest < Minitest::Test
       File.chmod(0o755, fake_gh)
 
       started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      entries, degraded = HumanAttention.desk(
-        config: config.fetch("human_attention"), github_cli: fake_gh, query_timeout_seconds: 0.5
-      )
-      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+      begin
+        entries, degraded = HumanAttention.desk(
+          config: config.fetch("human_attention"), github_cli: fake_gh, query_timeout_seconds: 0.5
+        )
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
 
-      assert_equal(["acme/z-healthy"], entries.map { |entry| entry.fetch("repo") })
-      assert_equal ["acme/a-leaky", "acme/b-slow"], degraded
-      assert_operator elapsed, :<, 5
+        assert_equal(["acme/z-healthy"], entries.map { |entry| entry.fetch("repo") })
+        assert_equal ["acme/a-detached", "acme/a-leaky", "acme/b-slow"], degraded
+        assert_operator elapsed, :<, 5
+      ensure
+        detached_pid_path = File.join(root, "detached.pid")
+        Process.kill("KILL", Integer(File.read(detached_pid_path))) if File.exist?(detached_pid_path)
+      end
     end
   end
 

@@ -102,18 +102,26 @@ module HumanAttention
   def capture3_bounded(*command, timeout_seconds:)
     Open3.popen3(*command, pgroup: true) do |stdin, stdout, stderr, wait_thread|
       stdin.close
-      stdout_reader = Thread.new { stdout.read }
-      stderr_reader = Thread.new { stderr.read }
+      stdout_reader = Thread.new { read_stream(stdout) }
+      stderr_reader = Thread.new { read_stream(stderr) }
       Timeout.timeout(timeout_seconds) do
         status = wait_thread.value
         [stdout_reader.value, stderr_reader.value, status]
       end
     rescue Timeout::Error
       terminate_process_group(wait_thread)
+      stdout.close unless stdout.closed?
+      stderr.close unless stderr.closed?
       stdout_reader.join
       stderr_reader.join
       raise
     end
+  end
+
+  def read_stream(stream)
+    stream.read
+  rescue IOError
+    ""
   end
 
   def terminate_process_group(wait_thread)
