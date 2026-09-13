@@ -49,9 +49,9 @@ INTEGRATION_CLOSEOUT_READINESS_LINK = "../../workflows/pr-batch-integration-clos
 # docs/ is one level below the repo root; skills/*/SKILL.md are two.
 DOCS_CANONICAL_READINESS_LINK = "../workflows/pr-processing.md#batch-handoff-format"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
-COMPACT_CONTRACT_LINE = "GMCC-v5:CI@head/configured-reviewers " \
-                        "pending|missing|untriaged|failed|threads open|UNKNOWN=>" \
-                        "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
+COMPACT_CONTRACT_LINE = "GMCC-v6:CI@head/configured-reviewers " \
+                        "pending|missing|untriaged|failed|actionable threads open|UNKNOWN=>" \
+                        "waiting-on-checks-or-review/NOT COMPLETE;walk exempt;poll/fix;" \
                         "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
                         "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
                         "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;" \
@@ -71,7 +71,8 @@ LEGACY_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, done means mer
                               "unless a real blocker prevents it."
 CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an " \
                           "overall Goal-mode terminal state; pending, missing, or untriaged current-head " \
-                          "CI or configured review agents, unresolved current-head review threads, failures, " \
+                          "CI or configured review agents, unresolved actionable current-head review threads " \
+                          "after applying the verified current exact-diff walkthrough exception, failures, " \
                           "or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE " \
                           "with resume instructions. For an autonomously clearable blocker, prefer one deduplicated " \
                           "deterministic state-change watcher with a stable persisted identity: an unchanged fingerprint " \
@@ -89,7 +90,8 @@ CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-
                           "#{CANONICAL_AUTO_MERGE_EXPANSION}".freeze
 COMPACT_CONTRACT_INVARIANTS = [
   "CI@head/configured-reviewers pending|missing|untriaged|failed",
-  "threads open",
+  "actionable threads open",
+  "walk exempt",
   "UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE",
   "poll/fix",
   "auto-clear=>watch(same:0wake,delta:gates)",
@@ -103,7 +105,7 @@ COMPACT_CONTRACT_INVARIANTS = [
   "else ready-human-review-required|autonomous-merge-evidence-unknown",
   "merge+close PR/target/issue"
 ].freeze
-GMCC_ALIGNMENT_SENTENCE = "`GMCC-v5` is a version key that pins drift, not an external-only pointer; " \
+GMCC_ALIGNMENT_SENTENCE = "`GMCC-v6` is a version key that pins drift, not an external-only pointer; " \
                           "its inline semantics remain normative when the workflow reference is missing or cannot autoload."
 HUMAN_STATUS_VERSION_KEY = "HST-v1"
 HUMAN_STATUS_HEADING = "### Human-Status Translation Contract"
@@ -470,7 +472,7 @@ def contract_line(text)
 end
 
 def compact_contract_line(text)
-  text.lines.grep(/^\s*GMCC-v5:/).first&.strip
+  text.lines.grep(/^\s*GMCC-v6:/).first&.strip
 end
 
 def render_human_status(replay_case, stable_payload:)
@@ -700,7 +702,8 @@ class GoalCompletionContractTest < Minitest::Test
       assert_text_includes text, "waiting-on-checks-or-review` is not an overall Goal-mode terminal state", label
       assert_text_includes text, "report NOT COMPLETE", label
       assert_text_includes text, "pending, missing, or untriaged current-head CI", label
-      assert_text_includes text, "unresolved current-head review threads", label
+      assert_text_includes text, "unresolved actionable current-head review threads", label
+      assert_text_includes text, "verified current exact-diff walkthrough exception", label
       assert_text_includes text, "watch window", label
       assert_text_includes text, "resume instructions", label
       assert_text_includes text, "UNKNOWN", label
@@ -1163,7 +1166,7 @@ class GoalCompletionContractTest < Minitest::Test
     actual_counts = surfaces.transform_values { |text| text.scan(GMCC_ALIGNMENT_SENTENCE).length }
     expected_counts = surfaces.transform_values { 1 }
     assert_equal expected_counts, actual_counts,
-                 "all generation surfaces must carry the exact GMCC-v5 alignment sentence once"
+                 "all generation surfaces must carry the exact GMCC-v6 alignment sentence once"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       refute_includes prompt, GMCC_ALIGNMENT_SENTENCE,
@@ -1174,22 +1177,23 @@ class GoalCompletionContractTest < Minitest::Test
   def test_triaged_but_unresolved_current_head_review_thread_is_not_complete
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
-      assert_text_includes line, "threads open", "compact completion contract"
-      assert_operator line.index("threads open"), :<,
+      assert_text_includes line, "actionable threads open", "compact completion contract"
+      assert_text_includes line, "walk exempt", "compact completion contract"
+      assert_operator line.index("actionable threads open"), :<,
                       line.index("=>waiting-on-checks-or-review/NOT COMPLETE")
     end
   end
 
   def test_compact_current_head_gate_categories_match_the_canonical_contract
     assert_text_includes @workflow_contract_section,
-                         "current-head CI or configured review agents, unresolved current-head review threads",
+                         "current-head CI or configured review agents, unresolved actionable current-head review threads",
                          "canonical completion contract"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
                            "CI@head/configured-reviewers pending|missing|untriaged|failed|" \
-                           "threads open",
+                           "actionable threads open",
                            "compact completion contract"
       refute_includes line, "CI/reviews/review agents",
                       "compact completion contract must not duplicate the review category"
@@ -1423,7 +1427,7 @@ class GoalCompletionContractTest < Minitest::Test
     }
 
     contracts.each do |label, line|
-      refute_nil line, "#{label} is missing the GMCC-v5 line"
+      refute_nil line, "#{label} is missing the GMCC-v6 line"
       assert_equal COMPACT_CONTRACT_LINE, line, "#{label} drifted"
     end
   end

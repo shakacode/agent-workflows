@@ -158,36 +158,66 @@ Then stop. Do not include the next conceptual change in the same response.
 
 In published-review mode:
 
-1. Build the complete coverage ledger and every conceptual section before any
+1. Before preparing a publication, verify both comment authority and authority
+   to resolve and reopen the resulting review threads. Establish thread-mutation
+   authority from trusted GitHub identity and repository metadata: the current
+   actor must be the PR author or have `WRITE`, `MAINTAIN`, or `ADMIN` repository
+   permission. If that prerequisite is absent or `UNKNOWN`, stop without
+   publishing and return the exact authority blocker.
+2. Build the complete coverage ledger and every conceptual section before any
    GitHub mutation.
-2. Re-fetch the diff identity immediately before submission. If it changed,
+3. Re-fetch the diff identity immediately before submission. If it changed,
    rebuild the walkthrough instead of publishing stale explanations.
-3. Submit exactly one GitHub review with event `COMMENT`, never `APPROVE` or
+4. Submit exactly one GitHub review with event `COMMENT`, never `APPROVE` or
    `REQUEST_CHANGES`. Put orientation, exact diff identity, scope limits, and an
    explicit “walkthrough is not approval” statement in the review body.
-4. Publish every conceptual section in that same review as one separately
+5. Publish every conceptual section in that same review as one separately
    replyable inline thread anchored to an honest changed line for the concept.
    Never invent an anchor or split one concept merely to create more threads;
    if a concept has no honest inline anchor, explain the limitation in the
    review body and stop rather than claiming complete threaded coverage.
-5. Each thread explains the prior problem, change, rationale, observable effect
+6. Each thread explains the prior problem, change, rationale, observable effect
    and risk, and proof to the degree relevant. Use explanatory language, not a
    review-finding severity, approval, or requested-change verdict.
-6. Include an idempotency marker and full head SHA in the review body. Before
-   retrying an uncertain submission, query existing reviews for that marker;
-   never blindly publish a duplicate walkthrough.
-7. Re-fetch the created review and its comments, verify the expected section
+7. Put this exact idempotency marker on the first line of the review body:
+   `<!-- pr-walkthrough:v2 pr=<PR_NUMBER> publisher=<GITHUB_LOGIN> base-ref-b64url=<BASE_REF_BASE64URL> diff-base=<REVIEWED_DIFF_BASE_SHA> head=<FULL_HEAD_SHA> diff=<CANONICAL_DIFF_IDENTITY> -->`.
+   Encode the UTF-8 base ref as unpadded base64url so ref characters cannot end
+   or corrupt the HTML comment. Bind `publisher` to the authenticated GitHub
+   actor that submits the review. Populate every placeholder from the verified target and canonical
+   `diff-identity` result. Before retrying an uncertain submission, query
+   existing reviews for the fully populated marker; never blindly publish a
+   duplicate walkthrough.
+   Never publish the legacy short v1 marker. Address-review and closeout may
+   recognize an existing `<!-- pr-walkthrough:v1 pr=... diff=... head=... -->`
+   marker only through the migration rules defined by those workflows.
+8. Re-fetch the created review and its comments, verify the expected section
    count and head, and return the durable review URL to the coordinator. When a
    later commit makes it stale, mark its informational threads resolved and
    publish one complete replacement review for the new exact diff.
+   Leave every thread in the current exact-diff walkthrough unresolved so the
+   walkthrough stays visible. Do not add disposition or acknowledgment replies
+   to its explanatory sections. When a verified replacement walkthrough is
+   published for a later exact diff, resolve the prior walkthrough's threads
+   without adding closeout replies, but only after every focused reply has been
+   answered or carried forward.
+   If an authorized merge is blocked solely by GitHub's conversation-resolution
+   protection, resolve the current walkthrough threads only immediately before
+   merge submission and add no replies. Keep ownership while a queue or
+   asynchronous submission remains pending; reopen only after live PR state
+   confirms the merge, or before stopping after a failed, cancelled, or rejected
+   submission, and verify that the threads are visible again. For readiness or an `ask` merge decision,
+   a `BLOCKED` merge state is clean-equivalent only when live evidence proves
+   that these exempt threads are its sole cause. Never use the narrow resolution
+   workaround merely to report readiness or ask the merge question.
 
 Published-review mode never waits for `next`. Questions may continue in the
 threads or, only when the user explicitly asks, in a separate live walkthrough.
 
-Publishing walkthrough comments requires existing repository/comment
-authority. A chat-only request to explain a PR does not itself grant an external
-write. If publication is not authorized, prepare the complete package and return
-the exact publication-authority blocker instead of silently switching modes.
+Publishing walkthrough comments requires existing repository/comment and
+walkthrough-thread mutation authority. A chat-only request to explain a PR does
+not itself grant an external write. If publication is not authorized, prepare
+the complete package and return the exact publication-authority blocker instead
+of silently switching modes.
 
 ## Consume Replies Asynchronously
 
@@ -242,11 +272,15 @@ not automatically while the task is archived; no new owner or monitor is needed.
 ## Boundaries
 
 - Remain read-only unless the user or an authorized repository workflow
-  separately authorizes published-review comments.
+  separately authorizes published-review comments and the actor passes the
+  thread-mutation authority prerequisite above.
 - Do not turn discovered concerns into fixes, code-review findings, approvals,
   requested-change reviews, or merge actions. Published-review mode may create
-  only its explanatory COMMENT review and may resolve its own stale or
-  verified-informational walkthrough threads.
+  only its explanatory COMMENT review and may resolve its own stale walkthrough
+  threads after a verified replacement exists and every focused reply is handled
+  or carried forward. It must not resolve the current
+  walkthrough's threads except for the reversible, just-in-time platform merge
+  workaround above.
 - Surface a likely defect or material risk plainly and recommend the appropriate
   review or verification workflow, but continue or pause according to the
   user's walkthrough direction.

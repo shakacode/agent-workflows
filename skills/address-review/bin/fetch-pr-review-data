@@ -198,7 +198,8 @@ module FetchPrReviewData
         "state" => review["state"],
         "user" => review.dig("user", "login"),
         "created_at" => review["submitted_at"],
-        "html_url" => review["html_url"]
+        "html_url" => review["html_url"],
+        "commit_id" => review["commit_id"]
       }
     end
     [kept, excluded]
@@ -232,6 +233,8 @@ module FetchPrReviewData
         "in_reply_to_id" => comment["in_reply_to_id"],
         "created_at" => comment["created_at"],
         "html_url" => comment["html_url"],
+        "pull_request_review_id" => comment["pull_request_review_id"],
+        "commit_id" => comment["commit_id"],
         "thread_id" => meta && meta["thread_id"],
         "is_resolved" => meta ? meta["is_resolved"] : false
       }

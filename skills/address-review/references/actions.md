@@ -239,6 +239,17 @@ Users can chain actions: e.g., `f+i` then `r7-9`. After the first action complet
 
 ### General rules for all actions
 
+Never post an unsolicited address-review disposition or acknowledgment reply to
+an explanatory root in the current exact-diff walkthrough, and do not resolve
+that walkthrough during ordinary closeout. When a trusted focused reply was
+promoted for triage, answer it in the original thread under the normal action
+rules while keeping the walkthrough visible. Resolve stale walkthrough threads
+without adding disposition replies after a verified current replacement exists,
+or after verifying that the active route neither requires nor authorizes a
+replacement. First answer or carry forward every focused reply; an unanswered
+focused reply keeps its stale thread open and actionable. Apply the normal reply
+and resolution rules to every other selected review thread.
+
 Except for action `a`, when addressing items, after completing each selected item (whether `MUST-FIX`, `DISCUSS`, or `OPTIONAL`), reply to the original review comment explaining how it was addressed.
 For actions other than `a`, if the user selects `DISCUSS` or `OPTIONAL` items to address, treat them the same as `MUST-FIX`: make the code change, reply, and resolve the thread.
 If the user selects skipped/declined items for rationale replies, post those replies too.
