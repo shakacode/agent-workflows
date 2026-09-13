@@ -445,13 +445,11 @@ source_mutation_contract = "Apply code and push only on the primary replacement 
 assert(address_review.include?(source_mutation_contract), "address-review must keep replacement mutations on the primary PR")
 assert(address_review_actions.include?(source_mutation_contract), "address-review actions must route source replies without pushing the source")
 assert(address_review_workflow.include?(source_mutation_contract), "address-review workflow mirror must route source replies without pushing the source")
-source_reply_contract = "Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an\nissue comment or review summary must start with the authenticated\n`<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked\nreply from source triage and snapshot completeness; another actor cannot use\nthe marker to suppress a source candidate."
-assert(address_review.include?(source_reply_contract), "address-review must mark generated source replies")
-assert(address_review_actions.include?(source_reply_contract), "address-review actions must mark generated source replies")
-assert(address_review_workflow.lines.map(&:strip).join("\n").include?(source_reply_contract.lines.map(&:strip).join("\n")), "address-review workflow must mark generated source replies")
+source_reply_contract = "authenticated `address-review-source-reply:v1` record in a closed `Address-review\nreply details` disclosure"
+assert(address_review_actions.include?(source_reply_contract), "address-review actions must document visible source replies")
 assert(address_review.include?('$comment.user // ""'), "address-review must authenticate source-reply marker exclusions")
 assert(address_review_workflow.include?('$comment.user // ""'), "address-review workflow must authenticate source-reply marker exclusions")
-assert(address_review_actions.include?("printf '<!-- address-review-source-reply -->\\n%s'"), "address-review actions must prepend the durable source-reply marker")
+assert(address_review_actions.include?("address-review-source-reply:v1"), "address-review actions must render the durable source-reply record")
 assert(address_review_templates.include?("A marked comment\nfrom another actor remains a candidate"), "address-review template must preserve forged-marker candidates")
 dual_target_ownership = "Replacement carryover must acquire and preserve ownership for both"
 assert(address_review.include?(dual_target_ownership), "address-review must own both carryover mutation targets")
@@ -610,7 +608,7 @@ assert(address_review_templates.include?(source_state_failure), "address-review 
 assert(address_review_templates.include?("SOURCE_STATE_ROWS"), "address-review templates must accept source state rows")
 assert(address_review_templates.include?("SOURCE_STATE_EXPECTED_COUNT"), "address-review templates must verify source state completeness")
 assert(address_review_templates.include?("SOURCE_STATE_HAS_PENDING"), "address-review templates must derive the source cutoff guard from pending state")
-assert(address_review_templates.include?("printf '<!-- address-review-source-state:v1\\n'"), "address-review templates must render the v1 source-state marker")
+assert(address_review_templates.include?("printf '```text\\naddress-review-source-state:v1\\n'"), "address-review templates must render visible v1 source state")
 assert(address_review_templates.include?("source-state rows are malformed or duplicate"), "address-review templates must validate source state rows")
 assert(address_review_templates.include?("/^$/ { next }"), "source state validation must tolerate blank records")
 assert(address_review_templates.include?("$4 !~ /^[1-9][0-9]*$/"), "source state producer must reject leading-zero item IDs like consumers")
@@ -629,10 +627,10 @@ assert(
 )
 skill_walkthrough_derivation = extract_source_walkthrough_derivation(address_review)
 workflow_walkthrough_derivation = extract_source_walkthrough_derivation(address_review_workflow)
-assert(
-  skill_walkthrough_derivation.lines.map(&:strip) == workflow_walkthrough_derivation.lines.map(&:strip),
-  "address-review source walkthrough derivations must stay mirrored"
-)
+assert(skill_walkthrough_derivation.include?("visible_v2_marker"),
+       "address-review source walkthrough discovery must accept visible walkthrough records")
+assert(workflow_walkthrough_derivation.include?("legacy_v1_marker"),
+       "aggregate address-review workflow remains a legacy-reader compatibility route")
 skill_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review)
 workflow_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review_workflow)
 assert(

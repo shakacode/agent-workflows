@@ -108,7 +108,7 @@ class PrWalkthroughContractTest < Minitest::Test
       "Re-fetch the diff identity immediately before submission.",
       "Submit exactly one GitHub review with event `COMMENT`",
       "Publish every conceptual section in that same review as one separately replyable inline thread",
-      "<!-- pr-walkthrough:v2 pr=<PR_NUMBER> publisher=<GITHUB_LOGIN> base-ref-b64url=<BASE_REF_BASE64URL> diff-base=<REVIEWED_DIFF_BASE_SHA> head=<FULL_HEAD_SHA> diff=<CANONICAL_DIFF_IDENTITY> -->",
+      "pr-walkthrough:v2 pr=<PR_NUMBER> publisher=<GITHUB_LOGIN> base-ref-b64url=<BASE_REF_BASE64URL> diff-base=<REVIEWED_DIFF_BASE_SHA> head=<FULL_HEAD_SHA> diff=<CANONICAL_DIFF_IDENTITY>",
       "Published-review mode never waits for `next`."
     ]
     positions = phrases.map do |phrase|
@@ -160,9 +160,10 @@ class PrWalkthroughContractTest < Minitest::Test
   def test_current_published_walkthrough_stays_visible_without_triage_noise
     publish = File.read(SKILL).split("## Publish One Complete Review", 2).last
                   .split("## Consume Replies Asynchronously", 2).first
-    marker = "<!-- pr-walkthrough:v2 pr=<PR_NUMBER> publisher=<GITHUB_LOGIN> base-ref-b64url=<BASE_REF_BASE64URL> " \
-             "diff-base=<REVIEWED_DIFF_BASE_SHA> head=<FULL_HEAD_SHA> diff=<CANONICAL_DIFF_IDENTITY> -->"
+    marker = "pr-walkthrough:v2 pr=<PR_NUMBER> publisher=<GITHUB_LOGIN> base-ref-b64url=<BASE_REF_BASE64URL> " \
+             "diff-base=<REVIEWED_DIFF_BASE_SHA> head=<FULL_HEAD_SHA> diff=<CANONICAL_DIFF_IDENTITY>"
     assert_includes publish, marker
+    assert_includes publish, "<summary>Walkthrough details</summary>"
     specific_fetch = File.read(ADDRESS_REVIEW_FETCH).split("**If a specific review ID", 2).last
                          .split("**If only PR number", 2).first
     assert_includes specific_fetch, "commit_id: .commit_id"

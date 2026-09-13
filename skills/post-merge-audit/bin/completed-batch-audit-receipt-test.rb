@@ -1832,7 +1832,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert published.fetch("ready")
       assert_match(/\Asha256:[0-9a-f]{64}\z/, published.fetch("publication_snapshot_digest"))
       posted_body = File.read(env.fetch("FAKE_GH_BODY"), encoding: "UTF-8")
-      assert_equal 1, posted_body.scan("<!-- completed-batch-audit v1").length
+      assert_equal 1, posted_body.scan("completed-batch-audit v1").length
+      refute_includes posted_body, "<!--"
       assert_includes posted_body, "publication_snapshot: sha256:"
 
       stale_path = File.join(directory, "stale-preflight.json")
@@ -2583,14 +2584,17 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert_match(/SHA-256 `[0-9a-f]{64}`/, reference)
       refute_includes reference, "<!-- completed-batch-audit"
       posted_comment = File.read(env.fetch("FAKE_GH_BODY"))
-      assert posted_comment.start_with?("Completed-batch audit: replay evidence follows.\n\n")
+      assert posted_comment.start_with?("🤖 Completed-batch audit is clean. No reader action is needed.\n\n")
+      assert_includes posted_comment, "<summary>Completed-batch audit receipt</summary>"
+      assert_includes posted_comment, "```text\ncompleted-batch-audit v1\n"
+      refute_includes posted_comment, "<!--"
       summary = result.fetch("pr_description_summary")
       assert_equal "https://github.com/acme/widgets/pull/184", summary.fetch("url")
-      assert_includes summary.fetch("section"), CompletedBatchAuditReceipt::PR_SUMMARY_START
       assert_includes summary.fetch("section"), "#### Completed-batch audit"
       assert_includes summary.fetch("section"), "**Status:** Clean — no outstanding findings or follow-ups."
+      assert_includes summary.fetch("section"), "<summary>Audit receipt</summary>"
       assert_includes summary.fetch("section"), "pull/184#issuecomment-9001"
-      assert_includes summary.fetch("section"), CompletedBatchAuditReceipt::PR_SUMMARY_END
+      refute_includes summary.fetch("section"), "<!--"
 
       calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
       assert_equal(1, calls.count { |call| call.include?("--method POST") })
@@ -2629,7 +2633,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         result = JSON.parse(out)
         assert result.fetch("ready")
         posted_body = File.read(env.fetch("FAKE_GH_BODY"))
-        assert posted_body.start_with?("#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n")
+        assert posted_body.start_with?("🤖 Completed-batch audit is clean. No reader action is needed.\n\n")
+        refute_includes posted_body, "<!--"
         bound_marker = CompletedBatchAuditReceipt.comment_marker(posted_body)
         assert_includes bound_marker, "publication_snapshot: sha256:"
         assert_equal "batch-184", CompletedBatchAuditReceipt.marker_fields(bound_marker).fetch("batch_id")
@@ -2679,7 +2684,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
       assert status.success?, err
       posted_body = File.read(env.fetch("FAKE_GH_BODY"))
-      assert posted_body.start_with?("#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n")
+      assert posted_body.start_with?("🤖 Completed-batch audit is clean. No reader action is needed.\n\n")
+      refute_includes posted_body, "<!--"
       refute_includes posted_body, CompletedBatchAuditReceipt::LEGACY_COMMENT_HEADER
     end
   end

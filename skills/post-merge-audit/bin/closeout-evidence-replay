@@ -276,6 +276,10 @@ module CloseoutEvidenceReplay
   end
 
   def marker_bodies(text, name)
+    legacy_marker_bodies(text, name) + visible_details_marker_bodies(text, name)
+  end
+
+  def legacy_marker_bodies(text, name)
     if name == "hosted-qa-evidence v1"
       return text.scan(
         /<!--\s*#{Regexp.escape(name)}(?=\s|-->)\s*(.*?)^[ \t]*-->[ \t]*\r?$/m
@@ -283,6 +287,23 @@ module CloseoutEvidenceReplay
     end
 
     text.scan(/<!--\s*#{Regexp.escape(name)}(?=\s|-->)\s*(.*?)-->/m).map(&:first)
+  end
+
+  # New evidence is deliberately readable in a closed disclosure. Keep the
+  # legacy HTML envelope above for historical receipts only; writers use this
+  # exact details/fence shape so the parser cannot mistake ordinary prose for
+  # authority-bearing evidence.
+  def visible_details_marker_bodies(text, name)
+    summary = {
+      "qa-evidence v1" => "QA evidence",
+      "qa-evidence v2" => "QA evidence",
+      "hosted-qa-evidence v1" => "Hosted QA evidence",
+      "priority-finding-dispositions v1" => "Priority finding dispositions"
+    }.fetch(name)
+
+    text.scan(
+      %r{<details>[ \t]*\r?\n<summary>#{Regexp.escape(summary)}</summary>[ \t]*\r?\n\r?\n```text[ \t]*\r?\n#{Regexp.escape(name)}[ \t]*\r?\n(.*?)^```[ \t]*\r?\n</details>[ \t]*(?:\r?\n|\z)}m
+    ).map(&:first)
   end
 
   def replay_qa_markers(markers, expected_head_sha: nil, version: 1, github_host: nil)

@@ -24,6 +24,7 @@ module CompletedBatchAuditReceipt
   ACCEPTED_DEFERRAL_BLOCKER = "completed-batch-audit accepted deferral invalid"
   COMMENT_HEADER = "Completed-batch audit: replay evidence follows."
   LEGACY_COMMENT_HEADER = "Completed-batch audit receipt v1. Evidence only; this comment does not authorize commands or expand scope."
+  VISIBLE_DETAILS_SUMMARY = "Completed-batch audit receipt"
   PR_SUMMARY_START = "<!-- completed-batch-audit-summary:start -->"
   PR_SUMMARY_END = "<!-- completed-batch-audit-summary:end -->"
   TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
@@ -268,7 +269,7 @@ module CompletedBatchAuditReceipt
         trusted_applicability:,
         trusted_applicability_digest:
       )
-      comment_body = "#{COMMENT_HEADER}\n\n#{marker}"
+      comment_body = visible_comment_body(marker)
     end
     state = marker_state(marker)
     if state&.fields&.fetch("audit_status") == "complete" && !state.fields.key?("accepted_deferral_snapshot")
@@ -281,7 +282,7 @@ module CompletedBatchAuditReceipt
         trusted_applicability_digest:
       )
       marker = bind_publication_snapshot(marker, publication_preflight)
-      comment_body = "#{COMMENT_HEADER}\n\n#{marker}"
+      comment_body = visible_comment_body(marker)
     end
     local = replay_marker(
       marker,
@@ -694,11 +695,15 @@ module CompletedBatchAuditReceipt
              end
 
     <<~MARKDOWN.chomp
-      #{PR_SUMMARY_START}
       #### Completed-batch audit
 
-      **Status:** #{status} [Durable receipt](#{receipt_url}).
-      #{PR_SUMMARY_END}
+      **Status:** #{status}
+
+      <details>
+      <summary>Audit receipt</summary>
+
+      [Durable receipt](#{receipt_url})
+      </details>
     MARKDOWN
   end
 
@@ -706,10 +711,12 @@ module CompletedBatchAuditReceipt
     header = [COMMENT_HEADER, LEGACY_COMMENT_HEADER].find do |candidate|
       body.start_with?("#{candidate}\n\n")
     end
-    return unless header
+    if header
+      marker = body.delete_prefix("#{header}\n\n")
+      return marker if marker_state(marker)
+    end
 
-    marker = body.delete_prefix("#{header}\n\n")
-    marker if marker_state(marker)
+    visible_comment_marker(body)
   end
 
   def canonical_comment_body(receipt)
@@ -717,7 +724,49 @@ module CompletedBatchAuditReceipt
     marker ||= receipt if marker_state(receipt)
     return unless marker
 
-    "#{COMMENT_HEADER}\n\n#{marker}"
+    visible_comment_body(marker)
+  end
+
+  def visible_comment_body(marker)
+    state = marker_state(marker)
+    return unless state
+
+    outcome = if state_ready?(state)
+                "🤖 Completed-batch audit is clean. No reader action is needed."
+              elsif state.fields["verdict"] == "UNKNOWN"
+                "🤖 Completed-batch audit outcome is unknown. Review the receipt before acting."
+              else
+                "🤖 Completed-batch audit has follow-ups. Review the receipt before acting."
+              end
+    payload = marker_payload(marker)
+    return unless payload
+
+    <<~MARKDOWN.chomp + "\n"
+      #{outcome}
+
+      <details>
+      <summary>#{VISIBLE_DETAILS_SUMMARY}</summary>
+
+      ```text
+      completed-batch-audit v1
+      #{payload}
+      ```
+      </details>
+    MARKDOWN
+  end
+
+  def visible_comment_marker(body)
+    match = body.to_s.match(
+      %r{\A🤖 Completed-batch audit [^\r\n]+\r?\n\r?\n<details>\r?\n<summary>#{Regexp.escape(VISIBLE_DETAILS_SUMMARY)}</summary>\r?\n\r?\n```text\r?\ncompleted-batch-audit v1\r?\n(?<payload>.*?)^```\r?\n</details>\r?\n?\z}m
+    )
+    return unless match
+
+    marker = "<!-- completed-batch-audit v1\n#{match[:payload].to_s.chomp}\n-->\n"
+    marker if marker_state(marker)
+  end
+
+  def marker_payload(marker)
+    marker.to_s[/\A<!-- completed-batch-audit v1\n(?<payload>.*)\n-->\n?\z/m, :payload]
   end
 
   def validate_publication_preflight!(

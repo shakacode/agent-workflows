@@ -112,12 +112,16 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   - Replay the final visible status line from the normalized blocker union: render a nonterminal record as `<ref> (<current status>): <action>`, imperfect terminal evidence as `<ref> (terminal): evidence UNKNOWN` or `evidence missing`, and exact `UNKNOWN` scalars as `<field>: UNKNOWN`. External blockers must be nonempty single-line text without HTML comment tokens; normalize and dedupe them with marker blockers. If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line. Use `Ready` iff archive-ready and the union is empty; otherwise use nonempty `Follow-ups` with that exact union.
   - Use exactly `Conversation status: Ready for archiving.` only when archive-ready and the blocker union is empty. Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and emit the [Unblock Block](pr-processing.md#unblock-block) immediately before it, with one entry per blocker in that same union.
   - In final chat, this compact receipt line opens the closing lines: it is followed by the [Unblock Block](pr-processing.md#unblock-block) whenever the status is not clean, and then by the exact `Conversation status` final line; never include the full wrapper: Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
-  - Give the local marker body below to the receipt helper. It publishes one concise header, one blank line, and exactly one canonical v1 wrapper after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; fill every operator-authored field explicitly and use `none` rather than omitting a field:
+  - Give the local receipt below to the helper. It publishes a visible outcome and reader action, then one closed `Completed-batch audit receipt` disclosure after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; historical HTML wrappers remain read-compatible only. Fill every operator-authored field explicitly and use `none` rather than omitting a field:
 
     ```text
-    Completed-batch audit: replay evidence follows.
+    🤖 Completed-batch audit is clean. No reader action is needed.
 
-    <!-- completed-batch-audit v1
+    <details>
+    <summary>Completed-batch audit receipt</summary>
+
+    ```text
+    completed-batch-audit v1
     batch_id: <opaque coordination batch id (may contain : or ;)|non-backend: identity; rationale: why no backend applies|not-applicable: rationale|UNKNOWN>
     audit_status: <complete|blocked|UNKNOWN>
     verdict: <clean|follow-ups-remain|UNKNOWN>
@@ -125,17 +129,22 @@ self-contained. Keep state-machine changes mirrored across this workflow,
     checker_evidence: <identity/route/independence refs|UNKNOWN>
     findings: <none|OUTSTANDING concise refs|UNKNOWN>
     followups_dispositions: <none|one or more ` | `-separated records with ref, owner, current status, disposition, and evidence; unescaped `;` and `|` are rejected in every record-field value; escaping is not supported; terminal disposition is resolved|accepted-waiver|accepted-deferral|not-applicable; nonterminal action is investigate|fix|await-input|retry|replay|track>
-    -->
+    ```
+    </details>
     ```
 
-  - For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it inside `### Audit receipts` in the canonical `Agent details` disclosure through a separate freshly-read update, preserves all surrounding text, never duplicates the markers, and never reruns `publish` to retry description sync:
+  - For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it inside `### Audit receipts` in the canonical `Agent details` disclosure through a separate freshly-read update, preserves all surrounding text, never duplicates the receipt section, and never reruns `publish` to retry description sync:
 
     ```markdown
-    <!-- completed-batch-audit-summary:start -->
     #### Completed-batch audit
 
-    **Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.> [Durable receipt](<exact-comment-url>).
-    <!-- completed-batch-audit-summary:end -->
+    **Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.>
+
+    <details>
+    <summary>Audit receipt</summary>
+
+    [Durable receipt](<exact-comment-url>)
+    </details>
     ```
 
   - For `non-backend` and `not-applicable`, the structured `scope_evidence` grammar is `targets=<exact refs>; source=<durable ref>`: name the exact verified target set and durable evidence source. `batch_id: UNKNOWN` is allowed only for genuinely unresolved batch identity, never for release/archive readiness.

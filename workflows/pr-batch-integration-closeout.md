@@ -499,15 +499,21 @@ includes this evidence block:
 - Process-gap disposition: <script | schema | checklist+replay | park | not applicable>
 ```
 
-For replayable post-merge audit, keep the full QA Evidence block and hidden
-`qa-evidence v2` marker adjacent whenever QA is required or explicitly not
-required. When the evidence destination is a PR description, place both inside
-the canonical `Agent details` disclosure. In a handoff, issue comment, or saved
-evidence file, keep the marker adjacent to its QA Evidence block; a PR
-description is not required.
+For replayable post-merge audit, keep the full QA Evidence block adjacent to a
+closed `QA evidence` disclosure whenever QA is required or explicitly not
+required. State the outcome and any required reader action above the disclosure.
+When the evidence destination is a PR description, place both inside the
+canonical `Agent details` disclosure. Historical hidden markers remain
+replayable, but no new comment or PR body emits one. In a handoff, issue
+comment, or saved evidence file, keep the disclosure adjacent to the QA
+Evidence block.
 
 ```markdown
-<!-- qa-evidence v2
+<details>
+<summary>QA evidence</summary>
+
+```text
+qa-evidence v2
 required: <yes | no>
 status: <satisfied | blocked | waived | in_progress | unknown | not_applicable>
 head_sha: <full 40-character current PR or repository head SHA>
@@ -529,7 +535,8 @@ performance_evidence: <repo_seam: source=<stable command/report/ref>; metric_nam
 findings: <none, fixed, waived, blocked, or follow-up link>
 release_blocking: <clear | blocked | waived | not_applicable>
 process_gap_disposition: <script | schema | checklist+replay | park | not applicable>
--->
+```
+</details>
 ```
 
 For `required: no`, record `status: not_applicable` and
@@ -554,25 +561,36 @@ rather than bypassing it. For GHEC or GHES evidence, add
 completed-batch preflight supplies it.
 
 For priority review findings that feed a strict merge ledger or final handoff,
-append a hidden disposition marker without inventing a separate review-finding
-schema. Reference the source finding URL or id; shared review-finding schema
+append a closed `Priority finding dispositions` disclosure without inventing a
+separate review-finding schema. State the disposition and any reader action
+above it. Reference the source finding URL or id; shared review-finding schema
 work remains the source of truth when the repo adopts one:
 
 ```markdown
-<!-- priority-finding-dispositions v1
+<details>
+<summary>Priority finding dispositions</summary>
+
+```text
+priority-finding-dispositions v1
 head_sha: <full 40-character current PR head SHA>
 finding: url=<review/thread/check URL> | severity=<P0|P1|P2|P3|Must-Fix|BLOCKING> | disposition=<fixed|waived|false_positive|not_applicable|deferred_with_issue> | evidence=<PR comment, commit, test, or thread URL> | waiver=<maintainer waiver URL when waived>
--->
+```
+</details>
 ```
 
 For an explicit no-findings outcome, use the `not_applicable` variant and keep
 the current head SHA:
 
 ```markdown
-<!-- priority-finding-dispositions v1
+<details>
+<summary>Priority finding dispositions</summary>
+
+```text
+priority-finding-dispositions v1
 status: not_applicable
 head_sha: <full 40-character current PR head SHA>
--->
+```
+</details>
 ```
 
 Resolve `POST_MERGE_AUDIT_SKILL_DIR` with the env-var / loaded-skill /

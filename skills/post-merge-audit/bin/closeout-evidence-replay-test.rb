@@ -134,6 +134,40 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal 1, data.fetch("qa_evidence").fetch("marker_version")
   end
 
+  # Production break: a new QA handoff hides the exact-head evidence in an
+  # HTML comment, so a reviewer sees only "evidence follows" and cannot act
+  # without inspecting source. New disclosures must remain replayable without
+  # reintroducing that invisible payload.
+  def test_visible_details_evidence_replays_without_an_html_comment_marker
+    head_sha = "1111111111111111111111111111111111111111"
+    body = <<~MARKDOWN
+      🤖 Codex QA evidence is satisfied for the exact head; no reader action is needed.
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: visible details regression
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ```
+      </details>
+    MARKDOWN
+
+    data = run_replay(body, expected_head_sha: head_sha)
+
+    assert_equal "SATISFIED", data.dig("qa_evidence", "verdict")
+    refute_includes body, "<!--"
+  end
+
   def test_hosted_v1_replays_as_distinct_exact_head_deployment_evidence
     head_sha = "1111111111111111111111111111111111111111"
 

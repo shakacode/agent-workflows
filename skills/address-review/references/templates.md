@@ -264,11 +264,6 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
 # "- N optional items remain pending/unselected from triage; no action taken this run."
 # Leave empty only when there were no optional items in scope.
 {
-  if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
-    printf '<!-- address-review-summary -->\n'
-  else
-    printf '<!-- address-review-status -->\n'
-  fi
   printf '🤖 **%s · %s**\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
   if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
     printf '## Review follow-up complete\n\n'
@@ -278,7 +273,14 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
     printf 'Some feedback in the selected scan still needs an explicit outcome, so this comment does not set a new review checkpoint.\n\n'
   fi
   printf '<details>\n'
-  printf '<summary>Agent details</summary>\n\n'
+  printf '<summary>Address-review checkpoint</summary>\n\n'
+  printf '```text\naddress-review-checkpoint:v1\n'
+  if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
+    printf 'kind: summary\n'
+  else
+    printf 'kind: status\n'
+  fi
+  printf '```\n\n'
   printf '**Scan scope:** %s\n\n' "${SCAN_SCOPE}"
   printf '### Findings that mattered\n'
   printf '%s\n\n' "<bullets for must-fix/discuss outcomes, or - None.>"
@@ -359,11 +361,6 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
     SOURCE_CUTOFF_SAFE=0
   fi
   {
-    if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
-      printf '<!-- address-review-summary -->\n'
-    else
-      printf '<!-- address-review-status -->\n'
-    fi
     printf '🤖 **%s · %s**\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
     if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
       printf '## Original review follow-up complete\n\n'
@@ -373,7 +370,14 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
       printf 'Some carried-over review items still need an explicit outcome, so this comment does not set a new checkpoint.\n\n'
     fi
     printf '<details>\n'
-    printf '<summary>Agent details</summary>\n\n'
+    printf '<summary>Address-review checkpoint</summary>\n\n'
+    printf '```text\naddress-review-checkpoint:v1\n'
+    if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
+      printf 'kind: summary\n'
+    else
+      printf 'kind: status\n'
+    fi
+    printf '```\n\n'
     printf '**Replacement PR:** %s\n\n' "${REPLACEMENT_PR_URL}"
     printf '### Carried-over review outcomes\n'
     printf '%s\n\n' "${SOURCE_OUTCOMES}"
@@ -382,12 +386,11 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
     else
       printf '**Next scan:** Pending items remain eligible; use `check all reviews` to rescan the full original PR.\n\n'
     fi
-    printf '</details>\n\n'
-    printf '<!-- address-review-source-state:v1\n'
+    printf '```text\naddress-review-source-state:v1\n'
     if [ -n "${SOURCE_STATE_ROWS}" ]; then
       printf '%s\n' "${SOURCE_STATE_ROWS}"
     fi
-    printf '%s\n' '-->'
+    printf '```\n\n</details>\n'
   } > "${source_summary_body_file}"
 fi
 

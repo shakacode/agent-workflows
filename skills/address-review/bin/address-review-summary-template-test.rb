@@ -31,27 +31,22 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     end
   end
 
-  def test_primary_checkpoint_keeps_marker_first_and_visible_content_human_ready
+  def test_primary_checkpoint_keeps_outcome_visible_and_metadata_in_closed_details
     primary = section_after(
-      '  if [ "${CUTOFF_SAFE:-0}" = "1" ]; then',
+      'POSTING_CLIENT="${POSTING_CLIENT:-UNKNOWN}"',
       '} > "${summary_body_file}"'
     )
 
-    assert_match(
-      /\A\s*if \[ "\$\{CUTOFF_SAFE:-0\}" = "1" \]; then\n    printf '<!-- address-review-summary -->\\n'/,
-      primary
-    )
-    assert_match(
-      /else\n    printf '<!-- address-review-status -->\\n'\n  fi\n  printf '🤖 \*\*%s · %s\*\*\\n\\n'/,
-      primary
-    )
     assert_in_order(
       primary,
       "printf '🤖 **%s · %s**\\n\\n'",
       "printf '## Review follow-up complete\\n\\n'",
       "printf '## Review follow-up needs another pass\\n\\n'",
       "printf '<details>\\n'",
-      "printf '<summary>Agent details</summary>\\n\\n'",
+      "printf '<summary>Address-review checkpoint</summary>\\n\\n'",
+      "printf '```text\\naddress-review-checkpoint:v1\\n'",
+      "printf 'kind: summary\\n'",
+      "printf 'kind: status\\n'",
       "printf '**Scan scope:** %s\\n\\n' \"${SCAN_SCOPE}\"",
       "printf '### Findings that mattered\\n'",
       "printf '### Optional suggestions\\n'",
@@ -62,8 +57,9 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     assert_includes primary, "**Next scan:** Start after this comment. Say `check all reviews` to rescan the full PR."
     assert_includes primary, "**Next scan:** Use `check all reviews`; this comment is not a cutoff."
     assert_equal 1, primary.scan("\${SCAN_SCOPE}").length
-    assert_operator primary.index("\${SCAN_SCOPE}"), :>, primary.index("printf '<summary>Agent details</summary>")
+    assert_operator primary.index("\${SCAN_SCOPE}"), :>, primary.index("printf '<summary>Address-review checkpoint</summary>")
     refute_includes primary, "<details open>"
+    refute_includes primary, "<!--"
   end
 
   def test_posting_identity_uses_unknown_when_runtime_metadata_is_unavailable
@@ -80,28 +76,26 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
       '} > "${source_summary_body_file}"'
     )
 
-    assert_match(
-      /if \[ "\$\{SOURCE_CUTOFF_SAFE\}" = "1" \]; then\n      printf '<!-- address-review-summary -->\\n'\n    else\n      printf '<!-- address-review-status -->\\n'\n    fi\n    printf '🤖 \*\*%s · %s\*\*\\n\\n'/,
-      source
-    )
     assert_in_order(
       source,
-      "printf '<!-- address-review-summary -->\\n'",
       "printf '🤖 **%s · %s**\\n\\n'",
       "printf '## Original review follow-up complete\\n\\n'",
       "printf '## Original review follow-up needs another pass\\n\\n'",
       "printf '<details>\\n'",
-      "printf '<summary>Agent details</summary>\\n\\n'",
+      "printf '<summary>Address-review checkpoint</summary>\\n\\n'",
+      "printf '```text\\naddress-review-checkpoint:v1\\n'",
+      "printf 'kind: summary\\n'",
+      "printf 'kind: status\\n'",
       "printf '**Replacement PR:** %s\\n\\n' \"${REPLACEMENT_PR_URL}\"",
       "printf '### Carried-over review outcomes\\n'",
       "printf '%s\\n\\n' \"${SOURCE_OUTCOMES}\"",
-      "printf '</details>\\n\\n'",
-      "printf '<!-- address-review-source-state:v1\\n'",
-      "printf '%s\\n' '-->'"
+      "printf '```text\\naddress-review-source-state:v1\\n'",
+      "printf '```\\n\\n</details>\\n'"
     )
     assert_includes source, "Every carried-over review item has a recorded outcome."
     assert_includes source, "Some carried-over review items still need an explicit outcome"
     refute_includes source, "<details open>"
+    refute_includes source, "<!--"
   end
 
   def test_template_never_requests_open_details

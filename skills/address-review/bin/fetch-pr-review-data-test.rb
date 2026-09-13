@@ -21,6 +21,32 @@ class FetchPrReviewDataTest < Minitest::Test
     ]]
   JSON
 
+  # Production break: a completed review pass said only "evidence follows"
+  # while its checkpoint was invisible. New visible checkpoints must still
+  # advance the trusted cutoff without emitting an HTML marker.
+  def test_visible_summary_checkpoint_advances_the_cutoff
+    comments = [
+      {
+        "body" => <<~MARKDOWN.chomp,
+          🤖 Codex review follow-up is complete. The next routine scan can start after this comment.
+
+          <details>
+          <summary>Address-review checkpoint</summary>
+
+          ```text
+          address-review-checkpoint:v1
+          kind: summary
+          ```
+          </details>
+        MARKDOWN
+        "created_at" => "2026-09-12T00:00:00Z"
+      }
+    ]
+
+    assert_equal "2026-09-12T00:00:00Z", FetchPrReviewData.compute_cutoff(comments)
+    refute_includes comments.first.fetch("body"), "<!--"
+  end
+
   REVIEWS_RAW = <<~JSON
     [[
       {"id":10,"body":"fix the nil guard","state":"COMMENTED","user":{"login":"alice"},"submitted_at":"2026-01-04T00:00:00Z","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},

@@ -18,10 +18,13 @@ require "timeout"
 require "yaml"
 
 module StaleAssignmentSweep
-  # Hidden markers let the sweep recognize its own prior nudge/release comments
-  # regardless of the identity that posted them.
-  NUDGE_MARKER = "<!-- stale-assignment-sweep:nudge -->"
-  RELEASE_MARKER = "<!-- stale-assignment-sweep:release -->"
+  # Historical hidden markers remain readable. New sweep comments use visible
+  # outcomes and labelled disclosures so assignment actions are actionable
+  # without inspecting HTML source.
+  LEGACY_NUDGE_MARKER = "<!-- stale-assignment-sweep:nudge -->"
+  LEGACY_RELEASE_MARKER = "<!-- stale-assignment-sweep:release -->"
+  NUDGE_MARKER = "stale-assignment-sweep:nudge:v1"
+  RELEASE_MARKER = "stale-assignment-sweep:release:v1"
 
   # Timeline event types that count as an assignee renewing their own lease.
   # These all carry a GitHub `actor`/`user` login we can attribute to the
@@ -642,7 +645,7 @@ module StaleAssignmentSweep
       return if @identities.empty?
 
       events.filter_map do |event|
-        next unless event[:type] == "commented" && event[:body].include?(NUDGE_MARKER)
+        next unless event[:type] == "commented" && nudge_comment?(event[:body])
         next unless @identities.include?(event[:login])
 
         event[:time]
@@ -741,17 +744,26 @@ module StaleAssignmentSweep
 
     def nudge_body(result)
       context = result.fetch(:context)
-      body = "Heads up #{mentions(result)} — no assignee activity on this #{result.fetch(:kind)} for " \
+      body = "🤖 Codex assignment follow-up: Heads up #{mentions(result)} — no assignee activity on this #{result.fetch(:kind)} for " \
              "#{context.fetch(:days)} days. Still on it? Any reply keeps it; otherwise it is released to the " \
-             "batch pool in #{context.fetch(:grace)} days.\n\n#{NUDGE_MARKER}"
+             "batch pool in #{context.fetch(:grace)} days.\n\n<details>\n" \
+             "<summary>Assignment sweep details</summary>\n\n```text\n#{NUDGE_MARKER}\n```\n</details>"
       reject_leading_at!(body, "nudge body")
     end
 
     def release_body(result)
       context = result.fetch(:context)
-      body = "Released #{mentions(result)} after #{context.fetch(:days)} days of inactivity with no reply to the " \
-             "#{context.fetch(:grace)}-day nudge. Reassign to reclaim.\n\n#{RELEASE_MARKER}"
+      body = "🤖 Codex assignment release: Released #{mentions(result)} after #{context.fetch(:days)} days of inactivity with no reply to the " \
+             "#{context.fetch(:grace)}-day nudge. Reassign to reclaim.\n\n<details>\n" \
+             "<summary>Assignment sweep details</summary>\n\n```text\n#{RELEASE_MARKER}\n```\n</details>"
       reject_leading_at!(body, "release body")
+    end
+
+    def nudge_comment?(body)
+      body = body.to_s
+      return true if body.include?(LEGACY_NUDGE_MARKER)
+
+      body.match?(%r{\A🤖 Codex assignment follow-up:.*?<details>\r?\n<summary>Assignment sweep details</summary>\r?\n\r?\n```text\r?\nstale-assignment-sweep:nudge:v1\r?\n```\r?\n</details>\r?\n?\z}m)
     end
 
     def post_comment(repo, number, body)

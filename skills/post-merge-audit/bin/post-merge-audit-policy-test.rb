@@ -85,11 +85,11 @@ class PostMergeAuditPolicyTest < Minitest::Test
   ].freeze
   REQUIRED_INDEPENDENT_REPORT_HANDOFF_PROHIBITION = "Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line."
   REQUIRED_ADVISORY_VERDICT_PROHIBITION = "Advisory auditors must not issue the qualifying clean/ready verdict."
-  COMPLETED_BATCH_AUDIT_MARKER_HEADER = "<!-- completed-batch-audit v1"
-  REQUIRED_DURABLE_RECEIPT_HEADER = "Completed-batch audit: replay evidence follows."
-  REQUIRED_PR_DESCRIPTION_SUMMARY_RULE = "For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it inside `### Audit receipts` in the canonical `Agent details` disclosure through a separate freshly-read update, preserves all surrounding text, never duplicates the markers, and never reruns `publish` to retry description sync:"
-  REQUIRED_PR_DESCRIPTION_SUMMARY_START = "<!-- completed-batch-audit-summary:start -->"
-  REQUIRED_PR_DESCRIPTION_SUMMARY_END = "<!-- completed-batch-audit-summary:end -->"
+  COMPLETED_BATCH_AUDIT_MARKER_HEADER = "completed-batch-audit v1"
+  REQUIRED_DURABLE_RECEIPT_HEADER = "🤖 Completed-batch audit is clean. No reader action is needed."
+  REQUIRED_PR_DESCRIPTION_SUMMARY_RULE = "For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it inside `### Audit receipts` in the canonical `Agent details` disclosure through a separate freshly-read update, preserves all surrounding text, never duplicates the receipt section, and never reruns `publish` to retry description sync:"
+  REQUIRED_PR_DESCRIPTION_SUMMARY_START = "<summary>Audit receipt</summary>"
+  REQUIRED_PR_DESCRIPTION_SUMMARY_END = "</details>"
   REQUIRED_COMPACT_RECEIPT_FORMAT = "Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`."
   REQUIRED_RECEIPT_PUBLISH_ORDER = "Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync."
   REQUIRED_RECEIPT_REPLAY_RULE = "Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result."
@@ -431,11 +431,15 @@ class PostMergeAuditPolicyTest < Minitest::Test
     ].each do |rule|
       assert_includes body, rule, "completed-batch-only guard must contain #{rule.inspect}"
     end
-    nested_marker_rule = "  - Give the local marker body below to the receipt helper. It publishes one concise header, one blank line, and exactly one canonical v1 wrapper after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; fill every operator-authored field explicitly and use `none` rather than omitting a field:\n\n"
+    nested_marker_rule = "  - Give the local receipt below to the helper. It publishes a visible outcome and reader action, then one closed `Completed-batch audit receipt` disclosure after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; historical HTML wrappers remain read-compatible only. Fill every operator-authored field explicitly and use `none` rather than omitting a field:\n\n"
     indented_marker_block = [
       "    ```text\n",
       "    #{REQUIRED_DURABLE_RECEIPT_HEADER}\n",
       "\n",
+      "    <details>\n",
+      "    <summary>Completed-batch audit receipt</summary>\n",
+      "\n",
+      "    ```text\n",
       "    #{COMPLETED_BATCH_AUDIT_MARKER_HEADER}\n",
       "    #{REQUIRED_BATCH_IDENTITY_FIELD}\n",
       "    audit_status: <complete|blocked|UNKNOWN>\n",
@@ -444,7 +448,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "    checker_evidence: <identity/route/independence refs|UNKNOWN>\n",
       "    #{REQUIRED_FINDINGS_FIELD}\n",
       "    #{REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD}\n",
-      "    -->\n",
+      "    ```\n",
+      "    </details>\n",
       "    ```\n"
     ].join
 

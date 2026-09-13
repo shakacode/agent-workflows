@@ -51,14 +51,16 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
   PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
   SOURCE_DIFF_IDENTITY="$("${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref "${SOURCE_BASE_REF}" --diff-base-sha "${SOURCE_DIFF_BASE_SHA}" --head-sha "${SOURCE_HEAD_SHA}")"
   jq -cr --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
-    def v2_marker: "^<!-- pr-walkthrough:v2 pr=(?<pr>[1-9][0-9]*) publisher=(?<publisher>[A-Za-z0-9_-]+(?:\\[bot\\])?) base-ref-b64url=(?<base>[A-Za-z0-9_-]+) diff-base=(?<diff_base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) diff=(?<diff>[0-9a-f]{64}) -->$";
+    def v2_marker: "pr-walkthrough:v2 pr=(?<pr>[1-9][0-9]*) publisher=(?<publisher>[A-Za-z0-9_-]+(?:\\[bot\\])?) base-ref-b64url=(?<base>[A-Za-z0-9_-]+) diff-base=(?<diff_base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) diff=(?<diff>[0-9a-f]{64})";
+    def visible_v2_marker: "(?ms)\\A🤖 [^\\r\\n]+\\r?\\n\\r?\\n<details>\\r?\\n<summary>Walkthrough details</summary>\\r?\\n\\r?\\n```text\\r?\\n" + v2_marker + "\\r?\\n```\\r?\\n</details>\\r?\\n?\\z";
     def legacy_v1_marker: "^<!-- pr-walkthrough:v1 pr=(?<pr>[1-9][0-9]*) diff=(?<diff>[0-9a-f]{64}) head=(?<head>[0-9a-f]{40}) -->$";
     .review_summaries[]? |
      select((.id | type) == "number") |
      select(.state == "COMMENTED") |
-     ((.body // "") | split("\n")[0]) as $line |
-     (if ($line | test(v2_marker)) then
-        ($line | capture(v2_marker) + {version: "v2"})
+     (.body // "") as $body |
+     ($body | split("\n")[0]) as $line |
+     (if ($body | test(visible_v2_marker)) then
+        ($body | capture(visible_v2_marker) + {version: "v2"})
       elif ($line | test(legacy_v1_marker)) then
         ($line | capture(legacy_v1_marker) + {version: "v1", publisher: $actor})
       else null end) as $marker |

@@ -50,8 +50,8 @@ class PrBodyHumanFirstContractTest < Minitest::Test
 
     ["### Commands and results", "### Exact-head and replay evidence",
      "### Coordination and reviewer telemetry", "### Decision log",
-     "### Merge confidence", "### Audit receipts", "<!-- qa-evidence v2",
-     "<!-- priority-finding-dispositions v1"].each do |agent_detail|
+     "### Merge confidence", "### Audit receipts", "qa-evidence v2",
+     "priority-finding-dispositions v1"].each do |agent_detail|
       assert_includes template, agent_detail
     end
     refute_match(/^### QA Evidence$/, template)
