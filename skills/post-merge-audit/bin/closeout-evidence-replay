@@ -332,8 +332,42 @@ module CloseoutEvidenceReplay
 
   # Structural HTML tags inside a Markdown code span or escaped as literal text
   # are not rendered tags. Keep those literals from changing disclosure depth.
-  def html_context_line(line)
-    line.gsub(/(?<!\\)(`+).*?\1/, "").gsub(/\\</, "")
+  def html_context_line(line, code_delimiter:, remaining_text:, allow_new_code_span:)
+    rendered = +""
+    index = 0
+    while index < line.length
+      if code_delimiter
+        closing = line.index(code_delimiter, index)
+        return [rendered, code_delimiter] unless closing
+
+        index = closing + code_delimiter.length
+        code_delimiter = nil
+        next
+      end
+
+      if line[index] == "\\" && line[index + 1] == "<"
+        rendered << "\\"
+        index += 2
+        next
+      end
+
+      if allow_new_code_span && line[index] == "`" && (index.zero? || line[index - 1] != "\\")
+        delimiter = line[index..].match(/\A`+/)[0]
+        closing = line.index(delimiter, index + delimiter.length)
+        if closing
+          index = closing + delimiter.length
+          next
+        end
+        if remaining_text.include?(delimiter)
+          code_delimiter = delimiter
+          break
+        end
+      end
+
+      rendered << line[index]
+      index += 1
+    end
+    [rendered, code_delimiter]
   end
 
   def visible_markdown(text)
@@ -342,10 +376,12 @@ module CloseoutEvidenceReplay
     discard_details_depth = nil
     raw_html_container = nil
     html_comment_open = false
+    inline_code_delimiter = nil
     details_stack = []
     evidence_summaries = ["QA evidence", "Hosted QA evidence", "Priority finding dispositions"]
     rendered = []
-    text.each_line do |line|
+    lines = text.each_line.to_a
+    lines.each_with_index do |line, line_index|
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
       if fence
         if opener && opener[:delimiter][0] == fence[0] && opener[:delimiter].length >= fence.length &&
@@ -370,8 +406,13 @@ module CloseoutEvidenceReplay
       line, html_comment_open = visible_line_without_html_comments(line, open: html_comment_open)
       next if line.empty?
 
-      structural_line = html_context_line(line)
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
+      structural_line, inline_code_delimiter = html_context_line(
+        line,
+        code_delimiter: inline_code_delimiter,
+        remaining_text: lines[(line_index + 1)..]&.join.to_s,
+        allow_new_code_span: opener.nil?
+      )
       if discard_details_depth
         details_stack << nil if structural_line.match?(/<details(?:\s|>)/)
         if structural_line.match?(%r{</details>}) && !details_stack.empty?
@@ -382,8 +423,8 @@ module CloseoutEvidenceReplay
       end
       if raw_html_container
         tag = Regexp.escape(raw_html_container.fetch(:tag))
-        raw_html_container[:depth] += line.scan(/<#{tag}(?:\s|>)/i).length
-        raw_html_container[:depth] -= line.scan(%r{</#{tag}\s*>}i).length
+        raw_html_container[:depth] += structural_line.scan(/<#{tag}(?:\s|>)/i).length
+        raw_html_container[:depth] -= structural_line.scan(%r{</#{tag}\s*>}i).length
         raw_html_container = nil if raw_html_container.fetch(:depth) <= 0
         next
       end

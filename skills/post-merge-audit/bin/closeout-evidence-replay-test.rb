@@ -634,6 +634,42 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_multiline_inline_details_closer_cannot_escape_a_nested_example
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      <details>
+      <summary>Example</summary>
+      This literal `</details>
+      continued` is not an HTML closer.
+      #{visible_qa_details(head_sha:, scope: 'multiline inline closer')}
+      </details>
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_inline_blockquote_closer_cannot_escape_raw_blockquote_context
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <blockquote>
+
+      This literal `</blockquote>` is not an HTML closer.
+
+      #{visible_qa_details(head_sha:, scope: 'inline blockquote closer')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
   def test_unclosed_html_comment_in_raw_text_container_hides_following_visible_evidence
     head_sha = "1" * 40
     %w[textarea script style].each do |tag|
