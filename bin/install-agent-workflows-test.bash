@@ -8279,6 +8279,8 @@ test_failed_symlink_upgrade_restores_recorded_symlinked_skill() {
   expected="$(readlink "$target/skills/alias-skill")"
   git -C "$source" rm --quiet skills/alias-skill
   git -C "$source" commit --quiet -m "remove symlinked skill"
+  [[ ! -e "$source/skills/alias-skill" && ! -L "$source/skills/alias-skill" ]] || \
+    fail "test setup retained the recorded-only symlinked skill"
   mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
   cat > "$source/bin/install-agent-workflows" <<PATCH
 #!/usr/bin/env bash

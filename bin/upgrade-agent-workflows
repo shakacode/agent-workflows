@@ -472,15 +472,18 @@ backup_target() {
               break false if current.absolute? || resolved == ".." || resolved.start_with?("../") || visited[resolved]
 
               visited[resolved] = true
+              parent = Pathname.new(resolved).dirname.to_s
+              basename = Pathname.new(resolved).basename.to_s
+              treeish = parent == "." ? revision : "#{revision}:#{parent}"
               entry = IO.popen(
-                ["git", "-C", git_root, "ls-tree", "-z", revision, "--", resolved],
+                ["git", "-C", git_root, "ls-tree", "-z", treeish, "--", basename],
                 err: File::NULL,
                 &:read
               )
               break false unless $?.success?
 
               object, entry_name = entry.delete_suffix("\0").split("\t", 2)
-              break false unless entry_name == resolved
+              break false unless entry_name == basename
 
               file_mode, object_type = object.split(" ", 3)
               break true if object_type == "tree"
