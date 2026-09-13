@@ -17,6 +17,7 @@ require "timeout"
 require "time"
 require "uri"
 require "yaml"
+require File.expand_path("../../pr-batch/lib/github_comment_envelope", __dir__)
 
 load File.expand_path("closeout-evidence-replay", __dir__) unless defined?(CloseoutEvidenceReplay)
 
@@ -1173,6 +1174,7 @@ module CompletedBatchPublicationPreflight
 
     body = comment["body"]
     return unless body.is_a?(String) && !body.empty?
+    return if GitHubCommentEnvelope.agent_authored?(body)
 
     fields = exact_marker_fields(
       body,
@@ -1416,6 +1418,7 @@ module CompletedBatchPublicationPreflight
 
     body = comment["body"]
     return unless body.is_a?(String) && !body.empty?
+    return if GitHubCommentEnvelope.agent_authored?(body)
 
     fields = waiver_marker_fields(body, marker_name:, marker_bindings:)
     return unless fields
