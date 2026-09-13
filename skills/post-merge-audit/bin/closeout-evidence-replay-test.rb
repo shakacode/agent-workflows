@@ -824,6 +824,39 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
+  def test_multiline_unquoted_raw_html_tags_remain_containment
+    head_sha = "1" * 40
+    %w[blockquote BLOCKQUOTE].each do |tag|
+      body = <<~MARKDOWN
+        <#{tag}
+        >
+
+        #{visible_qa_details(head_sha:, scope: 'multiline raw blockquote')}
+        </#{tag}>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), tag
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", tag
+    end
+  end
+
+  def test_malformed_unquoted_tag_prefix_restarts_at_a_real_raw_tag
+    head_sha = "1" * 40
+    %w[word details].each do |malformed_name|
+      body = <<~MARKDOWN
+        A literal <#{malformed_name} <blockquote>
+
+        #{visible_qa_details(head_sha:, scope: 'nested malformed tag prefix')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), malformed_name
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", malformed_name
+    end
+  end
+
   def test_multiline_quoted_details_attributes_remain_nested
     head_sha = "1" * 40
     [["\"", "\""], ["'", "'"]].each do |opening_quote, closing_quote|

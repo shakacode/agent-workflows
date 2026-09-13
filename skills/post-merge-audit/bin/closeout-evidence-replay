@@ -449,6 +449,14 @@ module CloseoutEvidenceReplay
 
       while index < line.length
         character = line[index]
+        # An unquoted attribute cannot contain `<`. Treat a nested opener as
+        # the next candidate so malformed literal text cannot consume a real
+        # structural tag later on the line.
+        if character == "<" && !open_tag[:quote]
+          open_tag = nil
+          break
+        end
+
         open_tag[:text] << character
         if open_tag[:quote]
           open_tag[:quote] = nil if character == open_tag[:quote]
@@ -464,9 +472,6 @@ module CloseoutEvidenceReplay
         index += 1
       end
     end
-    # A bare tag-like token is literal Markdown unless it has entered a quoted
-    # attribute. Only the latter can validly continue across a line boundary.
-    open_tag = nil if open_tag && !open_tag[:quote]
     [tags, open_tag]
   end
 
