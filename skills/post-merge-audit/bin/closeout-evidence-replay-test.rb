@@ -654,6 +654,43 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
+  def test_non_equal_backtick_runs_cannot_close_an_inline_details_literal
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      <details>
+      <summary>Example</summary>
+      This literal ``first ``` b ` </details> continued`` trailing ``.
+      #{visible_qa_details(head_sha:, scope: 'non-equal backtick runs')}
+      </details>
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_unmatched_backticks_do_not_cross_paragraph_or_raw_html_boundaries
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      Unmatched ` before a block.
+
+      <blockquote>
+
+      Another unmatched ` in a different paragraph.
+
+      #{visible_qa_details(head_sha:, scope: 'paragraph boundary')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
   def test_inline_blockquote_closer_cannot_escape_raw_blockquote_context
     head_sha = "1" * 40
     body = <<~MARKDOWN

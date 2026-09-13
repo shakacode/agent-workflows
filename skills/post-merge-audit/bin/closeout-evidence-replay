@@ -332,12 +332,28 @@ module CloseoutEvidenceReplay
 
   # Structural HTML tags inside a Markdown code span or escaped as literal text
   # are not rendered tags. Keep those literals from changing disclosure depth.
+  def matching_backtick_run_index(text, delimiter, start_index)
+    index = start_index
+    while (opening = text.index("`", index))
+      run = text[opening..].match(/\A`+/)[0]
+      return opening if run.length == delimiter.length
+
+      index = opening + run.length
+    end
+  end
+
+  def inline_code_lookahead(lines, start_index)
+    lines[start_index..].to_a.take_while do |line|
+      !line.strip.empty? && !line.match?(%r{\A[ \t]*</?(?:blockquote|code|details|pre|script|style|textarea)(?:\s|>)}i)
+    end.join
+  end
+
   def html_context_line(line, code_delimiter:, remaining_text:, allow_new_code_span:)
     rendered = +""
     index = 0
     while index < line.length
       if code_delimiter
-        closing = line.index(code_delimiter, index)
+        closing = matching_backtick_run_index(line, code_delimiter, index)
         return [rendered, code_delimiter] unless closing
 
         index = closing + code_delimiter.length
@@ -353,12 +369,12 @@ module CloseoutEvidenceReplay
 
       if allow_new_code_span && line[index] == "`" && (index.zero? || line[index - 1] != "\\")
         delimiter = line[index..].match(/\A`+/)[0]
-        closing = line.index(delimiter, index + delimiter.length)
+        closing = matching_backtick_run_index(line, delimiter, index + delimiter.length)
         if closing
           index = closing + delimiter.length
           next
         end
-        if remaining_text.include?(delimiter)
+        if matching_backtick_run_index(remaining_text, delimiter, 0)
           code_delimiter = delimiter
           break
         end
@@ -410,7 +426,7 @@ module CloseoutEvidenceReplay
       structural_line, inline_code_delimiter = html_context_line(
         line,
         code_delimiter: inline_code_delimiter,
-        remaining_text: lines[(line_index + 1)..]&.join.to_s,
+        remaining_text: inline_code_lookahead(lines, line_index + 1),
         allow_new_code_span: opener.nil?
       )
       if discard_details_depth
