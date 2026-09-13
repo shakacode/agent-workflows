@@ -496,7 +496,10 @@ assert(address_review_actions.include?(source_reply_contract), "address-review a
 assert(address_review_workflow.include?(source_reply_contract), "address-review workflow must mark generated source replies")
 assert(address_review.include?('$comment.user // ""'), "address-review must authenticate source-reply marker exclusions")
 assert(address_review_workflow.include?('$comment.user // ""'), "address-review workflow must authenticate source-reply marker exclusions")
-assert(address_review_actions.include?("Source reply: %s"), "address-review actions must put the source-reply outcome in the visible payload")
+assert(address_review_actions.scan("Source reply recorded for the replacement.").length == 2,
+       "address-review actions must put the fixed source-reply receipt before each source response")
+assert(address_review_actions.scan("</details>\\n\\n%s").length == 2,
+       "address-review actions must append the original source response after the receipt")
 assert(address_review_actions.include?("github-comment-envelope"), "address-review actions must delegate source-reply attribution to the shared envelope")
 assert(address_review_templates.include?("A marked comment\nfrom another actor remains a candidate"), "address-review template must preserve forged-marker candidates")
 dual_target_ownership = "Replacement carryover must acquire and preserve ownership for both"
@@ -924,7 +927,7 @@ outer_example_source_state_body = GitHubCommentEnvelope.render(
   body: outer_example_source_state_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
 visible_enveloped_source_reply_payload = <<~BODY.chomp
-  source reply: handled in the replacement.
+  Source reply recorded for the replacement.
 
   <details>
   <summary>Address-review reply details</summary>
@@ -933,7 +936,11 @@ visible_enveloped_source_reply_payload = <<~BODY.chomp
   address-review-source-reply:v1
   ```
   </details>
+
+  handled in the replacement.
 BODY
+source_reply_receipt = visible_enveloped_source_reply_payload.sub("\n\nhandled in the replacement.", "")
+source_reply_payload = ->(response) { "#{source_reply_receipt}\n\n#{response}" }
 enveloped_source_reply_body = GitHubCommentEnvelope.render(
   body: visible_enveloped_source_reply_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
@@ -1031,6 +1038,7 @@ checkpoint_fixture = {
   "issue_comments" => [
     { "id" => 201, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:10Z", "body" => valid_summary_body },
     { "id" => 103, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:30Z", "body" => enveloped_source_reply_body, "payload_body" => GitHubCommentEnvelope.payload(enveloped_source_reply_body) },
+    { "id" => 108, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:35Z", "body" => "<!-- address-review-source-reply -->\nHistorical recorded reply." },
     { "id" => 104, "user" => "other-reviewer", "created_at" => "2026-07-15T00:00:45Z", "body" => "<!-- address-review-source-reply -->\nThis is still an actionable source comment." },
     { "id" => 102, "user" => "reviewer", "created_at" => "2026-07-15T00:01:00Z", "body" => "Please verify the source behavior." },
     { "id" => 150, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:01:05Z", "body" => enveloped_claim_body, "payload_body" => GitHubCommentEnvelope.payload(enveloped_claim_body) },
@@ -1117,12 +1125,20 @@ assert(Integer(stdout, 10) == 1,
   "inline HTML token" => "Fixed parsing of `<!--` tokens.",
   "double-backtick inline HTML token" => "Fixed parsing of ``<!--`` tokens.",
   "multiline inline HTML token" => "Fixed parsing of `<!--\ntoken`.",
-  "closed Ruby example" => "Example:\n\n```ruby\nputs '<!--'\n```"
+  "closed Ruby example" => "Example:\n\n```ruby\nputs '<!--'\n```",
+  "unclosed HTML comment" => "Example only:\n\n<!--",
+  "unclosed raw pre block" => "<pre>",
+  "unclosed Markdown example" => "Example only:\n\n````markdown",
+  "nested raw blockquote" => "<blockquote>\n<blockquote>\nExample only.\n</blockquote>"
 }.each_with_index do |(description, response), index|
-  actual_source_reply_payload = "Source reply: #{response}\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v1\n```\n</details>"
+  actual_source_reply_payload = source_reply_payload.call(response)
   actual_source_reply_body = GitHubCommentEnvelope.render(
     body: actual_source_reply_payload, runner: "codex", host: "M5", task_or_run: "address-review"
   )
+  assert(actual_source_reply_body.start_with?("🤖 Codex"),
+         "source-reply envelope must keep the public Codex prefix for an actual #{description} response")
+  assert(GitHubCommentEnvelope.payload(actual_source_reply_body) == actual_source_reply_payload,
+         "source-reply envelope must preserve an actual #{description} response after the receipt")
   actual_source_reply_comment = {
     "id" => 220 + index,
     "user" => "trusted-reviewer",
@@ -1141,28 +1157,24 @@ assert(Integer(stdout, 10) == 1,
 end
 
 {
-  "source reply inside an unclosed HTML comment" => "Example only:\n\n<!--",
-  "source reply inside an unclosed raw pre block" => "<pre>",
-  "source reply inside an unclosed Markdown example" => "Example only:\n\n````markdown",
-  "source reply inside a nested raw blockquote" => "<blockquote>\n<blockquote>\nExample only.\n</blockquote>",
-  "source reply with a duplicate details header before an unclosed comment" => "Example only:\n\n<details>\n<summary>Address-review reply details</summary>\n\nNot a record.\n</details>\n\n<!--",
-  "source reply with an invalid duplicate record before an unclosed comment" => "Example only:\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v0\n```\n</details>\n\n<!--"
-}.each_with_index do |(description, response), index|
-  hidden_source_reply_payload = "Source reply: #{response}\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v1\n```\n</details>"
-  hidden_source_reply_body = GitHubCommentEnvelope.render(
-    body: hidden_source_reply_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+  "malformed source-reply receipt" => source_reply_payload.call("handled").sub("address-review-source-reply:v1", "address-review-source-reply:v0"),
+  "prefixed source-reply receipt" => "Example only:\n\n#{source_reply_payload.call('handled')}",
+  "quoted source-reply receipt" => source_reply_payload.call("handled").each_line.map { |line| "> #{line}" }.join
+}.each_with_index do |(description, payload), index|
+  invalid_source_reply_body = GitHubCommentEnvelope.render(
+    body: payload, runner: "codex", host: "M5", task_or_run: "address-review"
   )
-  hidden_source_reply_comment = {
+  invalid_source_reply_comment = {
     "id" => 225 + index,
     "user" => "trusted-reviewer",
     "created_at" => "2026-07-15T00:07:20Z",
-    "body" => hidden_source_reply_body,
-    "payload_body" => GitHubCommentEnvelope.payload(hidden_source_reply_body)
+    "body" => invalid_source_reply_body,
+    "payload_body" => GitHubCommentEnvelope.payload(invalid_source_reply_body)
   }
   stdout, stderr, status = Open3.capture3(
     "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
     "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
-    stdin_data: JSON.generate(checkpoint_fixture.merge("issue_comments" => checkpoint_fixture.fetch("issue_comments") + [hidden_source_reply_comment]))
+    stdin_data: JSON.generate(checkpoint_fixture.merge("issue_comments" => checkpoint_fixture.fetch("issue_comments") + [invalid_source_reply_comment]))
   )
   assert(status.success?, "source checkpoint jq validator must execute with a #{description}: #{stderr}")
   assert(JSON.parse(stdout).none? { |checkpoint| checkpoint["body"] == enveloped_summary_body },
@@ -1181,8 +1193,7 @@ end
   ),
   "visible source reply in a Markdown example" => GitHubCommentEnvelope.render(
     body: "````markdown\n#{visible_enveloped_source_reply_payload}\n````", runner: "codex", host: "M5", task_or_run: "address-review"
-  ),
-  "visible source reply with trailing content" => "#{enveloped_source_reply_body}\nUnrelated trailing content."
+  )
 }.each_with_index do |(description, body), index|
   bookkeeping_comment = {
     "id" => 230 + index,

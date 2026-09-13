@@ -594,55 +594,11 @@ Execution flow when terminal access is available:
            def marker_body:
              checkpoint_kind != null or startswith("<!-- codex-claim v1") or visible_claim;
            def comment_body($comment): $comment.payload_body // $comment.body // "";
-           def source_reply_fence:
-             ([try capture("^[ \\t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\\r\\n]*)$") catch null] | first);
-           def source_reply_raw_opener:
-             ([try capture("(?i)<(?<tag>pre|code|script|style|textarea|blockquote)(?:\\s|>)") catch null] | first);
-           def source_reply_raw_delta($line; $tag):
-             ($line | [scan("(?i)<" + $tag + "(?:\\s|>)")] | length) -
-             ($line | [scan("(?i)</" + $tag + "\\s*>")] | length);
-           def source_reply_noncode:
-             gsub("(?<prefix>[^\\n`]*?[^\\s`][ \\t]*)(?<delimiter>`+)[\\s\\S]*?\\k<delimiter>"; "\(.prefix)") | gsub("<!--.*?-->"; "");
-           def visible_source_reply_context:
-             (source_reply_noncode | reduce (split("\n")[] | sub("\\r$"; "")) as $source_line (
-               {fence: null, raw: null, comment: false};
-               if .raw != null then
-                      .raw.tag as $tag |
-                      (source_reply_raw_delta($source_line; $tag)) as $delta |
-                      .raw.depth += $delta |
-                      if .raw.depth <= 0 then .raw = null else . end
-               elif .fence != null then
-                      .fence as $fence |
-                      ($source_line | source_reply_fence) as $closer |
-                      if $closer != null and
-                         $closer.delimiter[0:1] == $fence[0:1] and
-                         ($closer.delimiter | length) >= ($fence | length) and
-                         ($closer.info | test("^[ \\t]*$"))
-                      then .fence = null else . end
-               elif .comment then
-                      if ($source_line | contains("-->")) then .comment = false else . end
-               else
-                      ($source_line | source_reply_fence) as $fence |
-                      if $fence != null then .fence = $fence.delimiter
-                      else
-                        $source_line as $line |
-                        ($line | source_reply_raw_opener) as $opener |
-                        if $opener != null then
-                          ($opener.tag | ascii_downcase) as $tag |
-                          (source_reply_raw_delta($line; $tag)) as $depth |
-                          if $depth > 0 then .raw = {tag: $tag, depth: $depth} else . end
-                        elif ($line | contains("<!--")) then .comment = true
-                        else . end
-                      end
-               end
-             ) | .fence == null and .raw == null and (.comment | not));
            def visible_source_reply:
-             ([try capture("(?ms)\\A(?:🤖 Codex )?[Ss]ource reply: (?<outcome>[\\s\\S]*?)\\r?\\n\\r?\\n<details>\\r?\\n<summary>Address-review reply details</summary>\\r?\\n\\r?\\n```text\\r?\\naddress-review-source-reply:v1\\r?\\n```\\r?\\n</details>\\r?\\n?\\z") catch null] | first);
+             test("(?ms)\\ASource reply recorded for the replacement\\.\\r?\\n\\r?\\n<details>\\r?\\n<summary>Address-review reply details</summary>\\r?\\n\\r?\\n```text\\r?\\naddress-review-source-reply:v1\\r?\\n```\\r?\\n</details>(?:\\r?\\n[\\s\\S]*)?\\z");
            def generated_source_reply($comment):
              ((comment_body($comment) | startswith("<!-- address-review-source-reply -->")) or
-              ((comment_body($comment) | visible_source_reply) as $reply |
-               ($reply != null and
-                ($reply.outcome | visible_source_reply_context)))) and
+              (comment_body($comment) | visible_source_reply)) and
              ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
            def item_key($kind; $id; $thread_id):
              [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
@@ -1137,11 +1093,11 @@ before mutating GitHub or the branch.
      `THREAD_ID`. Never use `ITEM_SOURCE_PR` for code, commit, or push work.
      Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
      issue comment or review summary must use `github-comment-envelope`, whose
-     public comment begins exactly `🤖 Codex`; its payload states the source reply
-     outcome and contains an `address-review-source-reply:v1` record. Exclude only a same-actor marked
+     public comment begins exactly `🤖 Codex`; its payload begins with a fixed source-reply
+     receipt and contains an `address-review-source-reply:v1` record before the original response. Exclude only a same-actor marked
      reply from source triage and snapshot completeness; another actor cannot use
      the marker to suppress a source candidate.
-     - Issue comments: when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, set `RESPONSE_BODY` to the source-reply outcome plus a closed `Address-review reply details` disclosure containing `address-review-source-reply:v1`; otherwise set `RESPONSE_BODY="<response>"`. Pipe it to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue` with the target repo/number and required runner/host/task context.
+     - Issue comments: when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, prepend the fixed source-reply receipt and closed `Address-review reply details` disclosure containing `address-review-source-reply:v1`, then append the original `RESPONSE_BODY`; otherwise set `RESPONSE_BODY="<response>"`. Pipe it to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue` with the target repo/number and required runner/host/task context.
      - Review comment replies: for every item assign `REVIEW_COMMENT_ID="<current-item-id>"` and `CURRENT_ITEM_IN_REPLY_TO_ID="<current-item-in_reply_to_id-or-null>"`; reset `REVIEW_COMMENT_IN_REPLY_TO_ID=""`, then overwrite it from `CURRENT_ITEM_IN_REPLY_TO_ID` only when that value is not `null`. Run `REVIEW_REPLY_TARGET_ID="${REVIEW_COMMENT_IN_REPLY_TO_ID:-${REVIEW_COMMENT_ID}}"` followed by piping the response to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-reply` with the target repo/number, reply target, and required runner/host/task context. Never inherit item variables from a prior persistent-shell iteration or pass a literal `null`. This posts a promoted `root_excluded` reply through its top-level parent without changing the item's tracked identity; never substitute the parsed input `COMMENT_ID`.
      - Review summary body replies: apply the same source-only `RESPONSE_BODY` record rule as issue comments, then pipe it to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue`.
    - Resolve threads only when the issue is actually handled, explicitly declined with my approval, autonomously declined under a trusted `COORDINATED_AUTOFIX=1` evidence-backed recommendation with the rationale recorded, or autonomously deferred/declined as a low-risk behavior-preserving `OPTIONAL` item under the Maintainer Attention Contract with rationale recorded. Generic handled/declined thread resolution must exclude coordinated `defer`; it follows the ordered durable-evidence path above. Autonomous deferred/declined optional replies must use the `AGENTS.md` tag format: include `[auto-deferred]` on its own line plus a one-line rationale before the thread is resolved. An auto-resolved optional thread that lacks that tag is a spec violation; do not resolve the thread if you cannot post the tag and rationale first:

@@ -291,17 +291,17 @@ Before posting, export `AGENT_COMMENT_RUNNER` as exactly `codex`, `claude`, or `
 invalid context blocks the post; never synthesize a generic runner identity.
 
 Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
-issue comment or review summary must state its outcome visibly, then carry the
-authenticated `address-review-source-reply:v1` record in a closed `Address-review
-reply details` disclosure. Exclude only a same-actor recorded reply from source
-triage and snapshot completeness; another actor cannot use the record to
-suppress a source candidate. Historical HTML-marked replies remain readable.
+issue comment or review summary must begin with the fixed visible source-reply
+receipt and its closed `Address-review reply details` disclosure, then append the
+original response. Exclude only a same-actor recorded reply from source triage
+and snapshot completeness; another actor cannot use the record to suppress a
+source candidate. Historical HTML-marked replies remain readable.
 
 ```bash
 ITEM_SOURCE_PR="${ITEM_SOURCE_PR:-${PRIMARY_PR_NUMBER}}"
 RESPONSE_BODY="<response>"
 if [ -n "${SOURCE_PR_NUMBER:-}" ] && [ "${ITEM_SOURCE_PR}" = "${SOURCE_PR_NUMBER}" ]; then
-  RESPONSE_BODY="$(printf 'Source reply: %s\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v1\n```\n</details>' "${RESPONSE_BODY}")"
+  RESPONSE_BODY="$(printf 'Source reply recorded for the replacement.\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v1\n```\n</details>\n\n%s' "${RESPONSE_BODY}")"
 fi
 printf '%s' "${RESPONSE_BODY}" | "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
   --repo "${REPO}" --number "${ITEM_SOURCE_PR}" \
@@ -339,7 +339,7 @@ Review summary bodies do not have a `comment_id` and cannot be replied to via th
 ITEM_SOURCE_PR="${ITEM_SOURCE_PR:-${PRIMARY_PR_NUMBER}}"
 RESPONSE_BODY="<response>"
 if [ -n "${SOURCE_PR_NUMBER:-}" ] && [ "${ITEM_SOURCE_PR}" = "${SOURCE_PR_NUMBER}" ]; then
-  RESPONSE_BODY="$(printf 'Source reply: %s\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v1\n```\n</details>' "${RESPONSE_BODY}")"
+  RESPONSE_BODY="$(printf 'Source reply recorded for the replacement.\n\n<details>\n<summary>Address-review reply details</summary>\n\n```text\naddress-review-source-reply:v1\n```\n</details>\n\n%s' "${RESPONSE_BODY}")"
 fi
 printf '%s' "${RESPONSE_BODY}" | "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
   --repo "${REPO}" --number "${ITEM_SOURCE_PR}" \
