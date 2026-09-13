@@ -7993,6 +7993,78 @@ PATCH
     fail "rollback reverted a consumer-owned workflow"
 }
 
+test_upgrade_snapshot_ignores_unmanaged_metadata_root() {
+  local tmp source target consumer wrap real_rsync marker output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  wrap="$tmp/wrap"
+  marker="$tmp/unmanaged-root-snapshotted"
+  mkdir -p "$source" "$consumer" "$wrap"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  mkdir -p "$target/sessions"
+  printf 'consumer session\n' > "$target/sessions/state"
+  ruby -rjson -e '
+    path = ARGV.fetch(0)
+    metadata = JSON.parse(File.read(path))
+    metadata.fetch("managed_pack_root_copy_fingerprints")["sessions"] = "a" * 64
+    File.write(path, JSON.pretty_generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+  real_rsync="$(command -v rsync)"
+  cat > "$wrap/bash-env" <<WRAP
+rsync() {
+  for arg in "\$@"; do
+    case "\$arg" in
+      --files-from=*)
+        if tr '\\0' '\\n' < "\${arg#--files-from=}" | grep -Fx 'sessions/' >/dev/null; then
+          touch $(printf '%q' "$marker")
+        fi
+        ;;
+    esac
+  done
+  command $(printf '%q' "$real_rsync") "\$@"
+}
+WRAP
+
+  set +e
+  output="$(BASH_ENV="$wrap/bash-env" "$source/bin/upgrade-agent-workflows" --host codex --target "$target" \
+    --source "$source" --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ ! -e "$marker" ]] || fail "snapshot trusted an unmanaged metadata root"
+  [[ "$(cat "$target/sessions/state")" = "consumer session" ]] || fail "rollback touched an unmanaged session"
+}
+
+test_failed_symlink_upgrade_removes_new_workflows_root_before_children() {
+  local tmp source target consumer source_workflow output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$target" "$consumer"
+  new_source_repo "$source"
+  source_workflow="$source/workflows/pr-batch-intake.md"
+  [[ -f "$source_workflow" ]] || fail "missing source workflow fixture"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --mode symlink --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected symlink upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -f "$source_workflow" ]] || fail "rollback deleted a source workflow through the new root symlink"
+  [[ ! -e "$target/workflows" && ! -L "$target/workflows" ]] || fail "rollback left a newly created workflows root"
+}
+
 test_failed_flat_upgrade_restores_skill_removed_from_new_source() {
   local tmp source target consumer output exit_code
   tmp="$(mktemp -d)"
@@ -9226,6 +9298,8 @@ main() {
     test_failed_upgrade_restores_nested_skill_files
     test_failed_companion_upgrade_preserves_consumer_owned_lib_sibling
     test_failed_upgrade_preserves_consumer_owned_workflow
+    test_upgrade_snapshot_ignores_unmanaged_metadata_root
+    test_failed_symlink_upgrade_removes_new_workflows_root_before_children
     test_failed_flat_upgrade_restores_skill_removed_from_new_source
     test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion
     test_flat_skill_snapshot_manifest_excludes_dot_entries

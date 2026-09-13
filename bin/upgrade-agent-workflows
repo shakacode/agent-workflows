@@ -190,39 +190,45 @@ backup_target() {
     # can replace so rollback remains bounded by the pack installation.
     ruby -rjson -e '
       target, source, host, delivery_mode, metadata_path = ARGV
+      bin_helpers = %w[
+        agent-workflow-seam-doctor
+        agent-workflow-writing-style
+        agent-workflows-delivery-state
+        agent-workflows-doctor
+        agent-workflows-refresh
+        agent-workflows-status
+        agent-workflows-trust-audit
+        install-agent-workflows
+        upgrade-agent-workflows
+        validate-execution-provenance
+        validate-review-findings
+      ]
+      pack_docs = %w[
+        coordination-backend.md
+        execution-provenance-schema.md
+        review-finding-schema.md
+        schemas/task-review-loop-v1.schema.json
+        agent-workflows-model-routing.md
+        user-facing-coordination.md
+        writing-style.md
+        writing-style-asd-ste100.md
+      ]
       managed = [
         ".agent-workflows-install.json",
         "LICENSE",
         "THIRD_PARTY-NOTICES.md",
         "docs/model-routing.md",
-        "bin/agent_doctor/",
-        "bin/agent-workflow-seam-doctor",
-        "bin/agent-workflow-writing-style",
-        "bin/agent-workflows-delivery-state",
-        "bin/agent-workflows-doctor",
-        "bin/agent-workflows-refresh",
-        "bin/agent-workflows-status",
-        "bin/agent-workflows-trust-audit",
-        "bin/install-agent-workflows",
-        "bin/upgrade-agent-workflows",
-        "bin/validate-execution-provenance",
-        "bin/validate-review-findings"
+        "bin/agent_doctor/"
       ]
+      managed.concat(bin_helpers.map { |name| "bin/#{name}" })
+      managed.concat(pack_docs.map { |name| "docs/#{name}" })
       managed << "rules/agent-workflows.mdc" if host == "cursor"
       managed << "lib/agent-workflows/secure_github_actions_scanner.rb"
-      managed.concat(%w[
-        docs/coordination-backend.md
-        docs/execution-provenance-schema.md
-        docs/review-finding-schema.md
-        docs/schemas/task-review-loop-v1.schema.json
-        docs/agent-workflows-model-routing.md
-        docs/user-facing-coordination.md
-        docs/writing-style.md
-        docs/writing-style-asd-ste100.md
-      ])
       Dir.glob(File.join(source, "docs/solutions", "*"), File::FNM_DOTMATCH).each do |path|
         managed << "docs/solutions/#{File.basename(path)}" if File.file?(path) && !File.symlink?(path)
       end
+      workflows_root = File.join(target, "workflows")
+      managed << "workflows" unless File.directory?(workflows_root) && !File.symlink?(workflows_root)
       Dir.children(File.join(source, "workflows")).each do |name|
         managed << "workflows/#{name}"
       end
@@ -230,6 +236,16 @@ backup_target() {
         JSON.parse(File.binread(metadata_path))
       rescue StandardError
         {}
+      end
+      revision = metadata["source_revision"]
+      roots = [metadata["source"], source].compact.uniq
+      recorded_git_root = roots.find do |root|
+        File.directory?(root) && revision.to_s.match?(/\A[0-9a-f]{40}\z/i) &&
+          system("git", "-C", root, "cat-file", "-e", "#{revision}^{commit}", out: File::NULL, err: File::NULL)
+      end
+      recorded_path = lambda do |path|
+        recorded_git_root &&
+          system("git", "-C", recorded_git_root, "cat-file", "-e", "#{revision}:#{path}", out: File::NULL, err: File::NULL)
       end
       {
         "managed_skill_copy_fingerprints" => "skills/",
@@ -243,11 +259,21 @@ backup_target() {
           next unless name.is_a?(String) && !name.empty? && !name.start_with?("/") && !name.include?("\0")
           segments = name.split("/", -1)
           next if segments.any? { |segment| segment.empty? || segment == "." || segment == ".." }
+          allowed = case field
+                    when "managed_skill_copy_fingerprints"
+                      segments.length == 1
+                    when "managed_pack_doc_copy_fingerprints"
+                      pack_docs.include?(name) || (segments.length == 2 && segments.first == "solutions") ||
+                        recorded_path.call("docs/#{name}")
+                    when "managed_pack_helper_copy_fingerprints"
+                      bin_helpers.include?(name) || (segments.length == 1 && recorded_path.call("bin/#{name}"))
+                    when "managed_pack_root_copy_fingerprints"
+                      name == "THIRD_PARTY-NOTICES.md"
+                    end
+          next unless allowed
           managed << "#{prefix}#{name}"
         end
       end
-      revision = metadata["source_revision"]
-      roots = [metadata["source"], source].compact.uniq
       workflow_git_root = roots.find do |root|
         File.directory?(root) && revision.to_s.match?(/\A[0-9a-f]{40}\z/i) &&
           system("git", "-C", root, "cat-file", "-e", "#{revision}:workflows", out: File::NULL, err: File::NULL)
