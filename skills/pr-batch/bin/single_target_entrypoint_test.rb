@@ -826,6 +826,16 @@ nested_raw_html_source_state_payload = template_source_payload
 nested_raw_html_source_state_body = GitHubCommentEnvelope.render(
   body: nested_raw_html_source_state_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
+intro_raw_html_source_state_payload = template_source_payload.sub("\n<details>", "\n<pre>\n<details>")
+intro_raw_html_source_state_body = GitHubCommentEnvelope.render(
+  body: intro_raw_html_source_state_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+)
+summary_raw_html_source_state_payload = template_source_payload.sub(
+  "</summary>\n\n", "</summary>\n\n<pre>\n"
+)
+summary_raw_html_source_state_body = GitHubCommentEnvelope.render(
+  body: summary_raw_html_source_state_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+)
 commented_visible_summary_payload = visible_enveloped_summary_payload.sub(
   "```text\naddress-review-checkpoint:v1\nkind: summary\n```",
   "<!--\n```text\naddress-review-checkpoint:v1\nkind: summary\n```\n-->"
@@ -1027,7 +1037,9 @@ assert(Integer(stdout, 10) == 1,
 {
   "raw HTML code container" => raw_html_source_state_body,
   "multiline raw HTML code container" => multiline_raw_html_source_state_body,
-  "nested raw HTML code container" => nested_raw_html_source_state_body
+  "nested raw HTML code container" => nested_raw_html_source_state_body,
+  "raw HTML container before the disclosure" => intro_raw_html_source_state_body,
+  "raw HTML container after the summary" => summary_raw_html_source_state_body
 }.each_with_index do |(description, body), index|
   raw_html_source_state_comment = {
     "id" => 210 + index,

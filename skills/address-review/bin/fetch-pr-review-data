@@ -317,7 +317,7 @@ module FetchPrReviewData
     return if body.include?("<!--")
 
     match = body.match(
-      %r{\A(?:(?:🤖 Codex )?address-review|Address-review) [^\r\n]+\r?\n\r?\n(?:(?![ \t]{0,3}(?:`{3,}|~{3,})|<details>)[^\r\n]*(?:\r?\n|\z))*?<details>\r?\n<summary>#{Regexp.escape(VISIBLE_CHECKPOINT_SUMMARY)}</summary>\r?\n\r?\n(?:(?![ \t]{0,3}(?:`{3,}|~{3,}))[\s\S])*?^```text\r?\naddress-review-checkpoint:v1\r?\nkind: (?<kind>summary|status)\r?\n```[\s\S]*?</details>\r?\n?\z}m
+      %r{\A(?:(?:🤖 Codex )?address-review|Address-review) [^\r\n]+\r?\n\r?\n(?:(?![ \t]{0,3}(?:`{3,}|~{3,}))[^\r\n<]*(?:\r?\n|\z))*?<details>\r?\n<summary>#{Regexp.escape(VISIBLE_CHECKPOINT_SUMMARY)}</summary>\r?\n\r?\n(?:(?![ \t]{0,3}(?:`{3,}|~{3,})|<)[\s\S])*?^```text\r?\naddress-review-checkpoint:v1\r?\nkind: (?<kind>summary|status)\r?\n```(?:(?!<)[\s\S])*?</details>\r?\n?\z}m
     )
     match && match[:kind]
   end

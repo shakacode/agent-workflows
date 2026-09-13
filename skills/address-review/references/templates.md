@@ -291,13 +291,13 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
   printf '```\n\n'
   printf '**Scan scope:** %s\n\n' "${SCAN_SCOPE}"
   printf '### Findings that mattered\n'
-  printf '%s\n\n' "<bullets for must-fix/discuss outcomes, or - None.>"
+  printf '%s\n\n' "Bullets for must-fix/discuss outcomes, or - None."
   if [ -n "${OPTIONAL_OUTCOMES:-}" ]; then
     printf '### Optional suggestions\n'
     printf '%s\n\n' "${OPTIONAL_OUTCOMES}"
   fi
   printf '### Skipped items\n'
-  printf '%s\n\n' "<bullets for skipped items, or - None.>"
+  printf '%s\n\n' "Bullets for skipped items, or - None."
   if [ -n "${TRACKING_OUTCOME:-}" ]; then
     printf '**Deferred-work tracking:** %s\n\n' "${TRACKING_OUTCOME}"
   fi

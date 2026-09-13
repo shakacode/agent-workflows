@@ -99,6 +99,19 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
       assert_equal "2026-09-13T00:00:00Z", FetchPrReviewData.compute_cutoff([
         { "body" => body, "payload_body" => normalized_payload, "created_at" => "2026-09-13T00:00:00Z" }
       ])
+
+      {
+        "before the disclosure" => payload.sub("\n<details>", "\n<pre>\n<details>"),
+        "after the summary" => payload.sub("</summary>\n\n", "</summary>\n\n<pre>\n")
+      }.each do |placement, malformed_payload|
+        malformed_body = GitHubCommentEnvelope.render(
+          body: malformed_payload, runner: "codex", host: "test-host", task_or_run: "template"
+        )
+        assert_nil FetchPrReviewData.visible_checkpoint_kind(malformed_body), placement
+        assert_equal "", FetchPrReviewData.compute_cutoff([
+          { "body" => malformed_body, "payload_body" => malformed_payload, "created_at" => "2026-09-13T00:00:00Z" }
+        ]), placement
+      end
     end
   end
 
