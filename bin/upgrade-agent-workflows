@@ -257,6 +257,8 @@ backup_target() {
     if [[ -e "$target/.agent-workflows-migration-staging" ||
           -L "$target/.agent-workflows-migration-staging" ]]; then
       migration_receipt_existed=true
+      local migration_receipt_status
+      set +e
       backup_migration_staging_path="$(ruby -e '
         target, receipt = ARGV
         target = File.realpath(target)
@@ -273,7 +275,13 @@ backup_target() {
         abort unless File.dirname(canonical_staging) == target &&
                      canonical_stat.dev == staging_stat.dev && canonical_stat.ino == staging_stat.ino
         print canonical_staging
-      ' "$target" "$target/.agent-workflows-migration-staging")"
+      ' "$target" "$target/.agent-workflows-migration-staging" 2>/dev/null)"
+      migration_receipt_status=$?
+      set -e
+      if [[ "$migration_receipt_status" -ne 0 ]]; then
+        echo "CHECK_FAILED invalid migration recovery receipt: $target/.agent-workflows-migration-staging" >&2
+        return 3
+      fi
       cp -a "$target/.agent-workflows-migration-staging" "$backup_migration_receipt"
       cp -a "$backup_migration_staging_path" "$backup_migration_staging_dir"
     fi

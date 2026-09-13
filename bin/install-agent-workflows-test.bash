@@ -7885,6 +7885,29 @@ test_failed_upgrade_restores_preexisting_migration_recovery_artifacts() {
   [[ ! -e "$staging" && ! -L "$staging" ]] || fail "retry did not consume the restored migration staging"
 }
 
+test_upgrade_rejects_stale_migration_receipt_without_traceback() {
+  local tmp source target missing_staging output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  missing_staging="$target/.agent-workflows-flat-migration-missing"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  printf '%s\n' "$missing_staging" > "$target/.agent-workflows-migration-staging"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 3 ]] || fail "expected stale migration receipt to exit 3, got $status"
+  assert_contains "$output" "CHECK_FAILED invalid migration recovery receipt"
+  assert_not_contains "$output" "Errno::ENOENT"
+  [[ -f "$target/.agent-workflows-install.json" ]] || fail "stale receipt check mutated the existing install"
+}
+
 test_failed_upgrade_removes_new_install_lock() {
   local tmp source target injection output status
   tmp="$(mktemp -d)"
@@ -9759,6 +9782,7 @@ main() {
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_failed_upgrade_removes_new_migration_recovery_artifacts
     test_failed_upgrade_restores_preexisting_migration_recovery_artifacts
+    test_upgrade_rejects_stale_migration_receipt_without_traceback
     test_failed_upgrade_removes_new_install_lock
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills
