@@ -393,7 +393,7 @@ module CloseoutEvidenceReplay
           index = closing + delimiter.length
           next
         end
-        if matching_backtick_run_index(remaining_text, delimiter, 0)
+        if matching_backtick_run_index(remaining_text.call, delimiter, 0)
           code_delimiter = delimiter
           break
         end
@@ -790,7 +790,7 @@ module CloseoutEvidenceReplay
         line,
         code_delimiter: inline_code_delimiter,
         html_comment_open:,
-        remaining_text: inline_code_lookahead(lines, line_index + 1),
+        remaining_text: -> { inline_code_lookahead(lines, line_index + 1) },
         allow_new_code_span: opener.nil?
       )
       active_raw_text_tag = active_raw_text_tag(raw_html_containers)

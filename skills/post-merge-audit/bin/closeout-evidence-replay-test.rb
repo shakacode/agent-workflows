@@ -1403,6 +1403,25 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
+  def test_large_plain_body_does_not_eagerly_compute_inline_code_lookahead
+    head_sha = "1" * 40
+    body = ("Ordinary review context without inline code.\n" * 8_000) + visible_qa_details(
+      head_sha:, scope: "large plain body"
+    )
+
+    original_lookahead = CloseoutEvidenceReplay.method(:inline_code_lookahead)
+    CloseoutEvidenceReplay.define_singleton_method(:inline_code_lookahead) do |*|
+      raise "plain Markdown must not scan a code lookahead"
+    end
+    begin
+      rendered = CloseoutEvidenceReplay.visible_markdown(body)
+
+      assert_includes rendered, "qa-evidence v1"
+    ensure
+      CloseoutEvidenceReplay.define_singleton_method(:inline_code_lookahead, original_lookahead)
+    end
+  end
+
   def test_multiline_quoted_details_attributes_remain_nested
     head_sha = "1" * 40
     [["\"", "\""], ["'", "'"]].each do |opening_quote, closing_quote|

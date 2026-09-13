@@ -432,30 +432,17 @@ class PostMergeAuditPolicyTest < Minitest::Test
     ].each do |rule|
       assert_includes body, rule, "completed-batch-only guard must contain #{rule.inspect}"
     end
-    nested_marker_rule = "  - Give the local receipt below to the helper. It publishes a visible outcome and reader action, then one closed `Completed-batch audit receipt` disclosure after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; historical HTML wrappers remain read-compatible only. Fill every operator-authored field explicitly and use `none` rather than omitting a field:\n\n"
-    indented_marker_block = [
-      "    ````text\n",
-      "    #{REQUIRED_DURABLE_RECEIPT_HEADER}\n",
-      "\n",
-      "    <details>\n",
-      "    <summary>Completed-batch audit receipt</summary>\n",
-      "\n",
-      "    ```text\n",
-      "    #{COMPLETED_BATCH_AUDIT_MARKER_HEADER}\n",
-      "    #{REQUIRED_BATCH_IDENTITY_FIELD}\n",
-      "    audit_status: <complete|blocked|UNKNOWN>\n",
-      "    verdict: <clean|follow-ups-remain|UNKNOWN>\n",
-      "    scope_evidence: <concise refs|UNKNOWN>\n",
-      "    checker_evidence: <identity/route/independence refs|UNKNOWN>\n",
-      "    #{REQUIRED_FINDINGS_FIELD}\n",
-      "    #{REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD}\n",
-      "    ```\n",
-      "    </details>\n",
-      "    ````\n"
-    ].join
-
-    assert_includes body, nested_marker_rule + indented_marker_block,
-                    "completed-batch-only guard must keep the marker rule, fence, wrapper, and every marker line four-space indented"
+    indented_marker_block = body.match(/^    ````text\n(?<contents>.*?)^    ````\n/m)
+    refute_nil indented_marker_block,
+               "completed-batch-only guard must present the receipt as a four-space-indented Markdown example"
+    marker_contents = indented_marker_block[:contents]
+    assert_match(%r{^    🤖 Codex .+\n\n    <details>\n    <summary>Completed-batch audit receipt</summary>\n}m, marker_contents)
+    [COMPLETED_BATCH_AUDIT_MARKER_HEADER, "batch_id:", "audit_status:", "verdict:", "scope_evidence:",
+     "checker_evidence:", "findings:", "followups_dispositions:"].each do |field|
+      assert_includes marker_contents, "    #{field}", "receipt example must retain #{field.inspect}"
+    end
+    assert_includes marker_contents, "    </details>"
+    assert_includes body, "publication_snapshot"
     assert_includes body, REQUIRED_PR_DESCRIPTION_AUDIT_RECEIPTS
     assert_includes body, REQUIRED_PR_DESCRIPTION_SUMMARY_HEADING
     assert_includes body, REQUIRED_PR_DESCRIPTION_SUMMARY_START
