@@ -356,7 +356,8 @@ backup_target() {
       fi
     done < "$backup_manifest"
     # --files-from changes rsync's -a behavior: recursion must be explicit.
-    rsync -a -r --from0 --files-from="$backup_existing_manifest" "$target/" "$backup_target_dir/"
+    rsync -a -r --exclude='/bin/agent_doctor/.agent-stack-managed' \
+      --from0 --files-from="$backup_existing_manifest" "$target/" "$backup_target_dir/"
   fi
 }
 
@@ -376,7 +377,11 @@ restore_target() {
       path_is_within_snapshot_symlink_root "$path" && continue
       if [[ -d "$backup_target_dir/$path" && ! -L "$backup_target_dir/$path" ]]; then
         mkdir -p "$target/$path"
-        rsync -a --delete "$backup_target_dir/$path"/ "$target/$path"/
+        if [[ "${path%/}" = "bin/agent_doctor" ]]; then
+          rsync -a --delete --exclude='/.agent-stack-managed' "$backup_target_dir/$path"/ "$target/$path"/
+        else
+          rsync -a --delete "$backup_target_dir/$path"/ "$target/$path"/
+        fi
       elif [[ -e "$backup_target_dir/$path" || -L "$backup_target_dir/$path" ]]; then
         if [[ -L "$target/$path" || -e "$target/$path" ]]; then
           rm -rf -- "${target:?}/$path"

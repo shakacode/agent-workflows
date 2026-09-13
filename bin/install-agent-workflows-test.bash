@@ -7959,6 +7959,54 @@ PATCH
     fail "rollback reverted a consumer-owned companion library file"
 }
 
+test_failed_upgrade_preserves_new_stack_doctor_marker() {
+  local tmp source target consumer marker output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  marker="$target/bin/agent_doctor/.agent-stack-managed"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+printf 'agent-stack-module-v1:agent_doctor\n' > $(printf '%q' "$marker")
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$marker")" = "agent-stack-module-v1:agent_doctor" ]] || \
+    fail "rollback removed the stack-owned doctor marker"
+}
+
+test_upgrade_snapshot_managed_lists_match_installer() {
+  ruby -e '
+    installer, upgrade = ARGV.map { |path| File.read(path) }
+    {
+      "bin_helpers" => [/^bin_helpers=\(\n(?<body>.*?)^\)\n/m, /^      bin_helpers = %w\[\n(?<body>.*?)^      \]\n/m],
+      "pack_docs" => [/^pack_docs=\(\n(?<body>.*?)^\)\n/m, /^      pack_docs = %w\[\n(?<body>.*?)^      \]\n/m]
+    }.each do |name, patterns|
+      lists = [installer, upgrade].zip(patterns).map do |text, pattern|
+        match = text.match(pattern) or abort "missing #{name} inventory"
+        match[:body].lines.map(&:strip).reject(&:empty?)
+      end
+      abort "#{name} inventories differ" unless lists[0] == lists[1]
+    end
+  ' "$ROOT/bin/install-agent-workflows" "$ROOT/bin/upgrade-agent-workflows"
+}
+
 test_failed_upgrade_preserves_consumer_owned_workflow() {
   local tmp source target workflow output status
   tmp="$(mktemp -d)"
@@ -9322,6 +9370,8 @@ main() {
     test_companion_to_flat_upgrade_preserves_unowned_same_named_skill
     test_failed_upgrade_restores_nested_skill_files
     test_failed_companion_upgrade_preserves_consumer_owned_lib_sibling
+    test_failed_upgrade_preserves_new_stack_doctor_marker
+    test_upgrade_snapshot_managed_lists_match_installer
     test_failed_upgrade_preserves_consumer_owned_workflow
     test_upgrade_snapshot_ignores_unmanaged_metadata_root
     test_failed_symlink_upgrade_removes_new_workflows_root_before_children
