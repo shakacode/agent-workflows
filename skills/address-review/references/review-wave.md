@@ -93,7 +93,7 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
         def checkpoint_kind:
           if startswith("<!-- address-review-summary -->") then "summary"
           elif startswith("<!-- address-review-status -->") then "status"
-          elif test("(?ms)\\A🤖 Codex [^\\r\\n]+.*?<summary>Address-review checkpoint</summary>.*?address-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n")
+          elif test("(?ms)\\A(?:🤖 Codex )?[^\\r\\n]+.*?<summary>Address-review checkpoint</summary>.*?address-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n")
           then capture("(?ms)^.*?address-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n").kind else null end;
         def source_state_count:
           if startswith("<!-- address-review-")

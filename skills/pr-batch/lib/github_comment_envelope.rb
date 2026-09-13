@@ -12,6 +12,7 @@ module GitHubCommentEnvelope
   HOST_PATTERN = /\A(?!.*-->)[^\r\n]+\z/
   LEGACY_WORKFLOW_MARKER = /\A<!-- address-review-(?:summary|status) -->\r?\n/
   LEGACY_AGENT_HEADER = /\A🤖 \*\*(?:Codex|Claude|Cursor)(?: · [^*\r\n]+)?\*\*(?:\r?\n|\z)/
+  VISIBLE_AGENT_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?=[\s:—-]|\z)/
 
   module_function
 
@@ -35,7 +36,7 @@ module GitHubCommentEnvelope
   end
 
   def agent_authored?(body)
-    !parse(body).nil? || body.to_s.match?(/\A🤖 (?:Codex|Claude|Cursor)(?:\r?\n|\z)/) ||
+    !parse(body).nil? || body.to_s.match?(VISIBLE_AGENT_PREFIX) ||
       body.to_s.sub(LEGACY_WORKFLOW_MARKER, "").match?(LEGACY_AGENT_HEADER)
   end
 
@@ -71,7 +72,10 @@ module GitHubCommentEnvelope
     host = lines[3].delete_prefix("host: ")
     task_or_run = lines[4].delete_prefix("task_or_run: ")
     return unless valid_fields?(visible, runner, host, task_or_run)
-    { "version" => VERSION, "runner" => runner.downcase, "host" => host, "task_or_run" => task_or_run, "payload_offset" => body.lines.first(6).join.length }
+    payload_offset = body.lines.first(6).join.length
+    payload_offset += 2 if body[payload_offset, 2] == "\r\n"
+    payload_offset += 1 if body[payload_offset, 1] == "\n"
+    { "version" => VERSION, "runner" => runner.downcase, "host" => host, "task_or_run" => task_or_run, "payload_offset" => payload_offset }
   end
 
   def valid_fields?(visible, runner, host, task_or_run)

@@ -177,6 +177,13 @@ class FetchPrReviewDataTest < Minitest::Test
     assert_empty out.fetch("review_threads")
   end
 
+  def test_issue_comments_only_option_is_parsed_and_documented
+    options = FetchPrReviewData::Runner.new.send(:parse_args, ["1234", "--issue-comments-only"])
+
+    assert options.fetch(:issue_comments_only)
+    assert_includes FetchPrReviewData::USAGE, "--issue-comments-only"
+  end
+
   def test_self_check_passes
     out, status = Open3.capture2("ruby", SCRIPT, "--self-check")
     assert status.success?, out

@@ -26,6 +26,10 @@ Include the review body as a general comment when it contains actionable feedbac
 
 **If only PR number is provided (full-PR scan), fetch all review data with the helper:**
 
+For the review-wave source-checkpoint probe, pass `--issue-comments-only`; it
+keeps the same trusted-body normalization while avoiding unrelated review and
+GraphQL reads.
+
 Set `TRUST_CONFIG_PATH`, `TRUST_CONFIG_SOURCE`, `TRUST_CONFIG_SCOPE`, and
 `TRUST_CONFIG_DIGEST` to the exact absolute path, selection source, `global` or
 `repository` scope, and `sha256:` digest emitted by trusted-base security
@@ -111,7 +115,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         ($fields[6] | valid_outcome);
       . as $inventory |
       def visible_checkpoint_kind:
-        if test("(?ms)\\A🤖 Codex [^\\r\\n]+\\r?\\n\\r?\\n.*?<details>\\r?\\n<summary>Address-review checkpoint</summary>.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n```")
+        if test("(?ms)\\A(?:🤖 Codex )?[^\\r\\n]+\\r?\\n\\r?\\n.*?<details>\\r?\\n<summary>Address-review checkpoint</summary>.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n```")
         then capture("(?ms)^.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```").kind else null end;
       def checkpoint_kind:
         if startswith("<!-- address-review-summary -->") then "summary"
@@ -122,12 +126,13 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)
         else ([scan("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?$")] | length) end;
       def visible_claim:
-        test("(?ms)\\A🤖 Codex claim .*?<details>\\r?\\n<summary>Claim details</summary>.*?^```text\\r?\\ncodex-claim v1\\r?\\n");
+        test("(?ms)\\A(?:🤖 Codex )?claim .*?<details>\\r?\\n<summary>Claim details</summary>.*?^```text\\r?\\ncodex-claim v1\\r?\\n");
       def marker_body:
         checkpoint_kind != null or startswith("<!-- codex-claim v1") or visible_claim;
+      def comment_body($comment): $comment.payload_body // $comment.body // "";
       def generated_source_reply($comment):
-        ((($comment.body // "") | startswith("<!-- address-review-source-reply -->")) or
-         (($comment.body // "") | test("(?ms)\\A🤖 Codex source reply: .*?<details>\\r?\\n<summary>Address-review reply details</summary>.*?^```text\\r?\\naddress-review-source-reply:v1\\r?\\n"))) and
+        ((comment_body($comment) | startswith("<!-- address-review-source-reply -->")) or
+         (comment_body($comment) | test("(?ms)\\A(?:🤖 Codex )?source reply: .*?<details>\\r?\\n<summary>Address-review reply details</summary>.*?^```text\\r?\\naddress-review-source-reply:v1\\r?\\n"))) and
         ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
       def item_key($kind; $id; $thread_id):
         [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
@@ -167,7 +172,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
           $inventory.issue_comments[]? |
           . as $comment |
           select((.created_at // "") <= $checkpoint_created_at) |
-          select((((.body // "") | marker_body) or generated_source_reply($comment)) | not) |
+          select(((comment_body($comment) | marker_body) or generated_source_reply($comment)) | not) |
           candidate_state("issue-comment"; .id; "-"; (.created_at // ""))
         ] + [
           $inventory.review_summaries[]? |
@@ -209,11 +214,11 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
       [.issue_comments[] |
         select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
         . as $checkpoint |
-        select(($checkpoint.body // "") | valid_body($checkpoint.created_at // ""))] |
+        select((comment_body($checkpoint)) | valid_body($checkpoint.created_at // ""))] |
       sort_by(.created_at) | reverse
     ' source-review-data.json)"; then
-      SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"
-      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->") or test("(?ms)\\A🤖 Codex .*?address-review-checkpoint:v1\\r?\\nkind: summary\\r?\\n"))][0].created_at // ""')"
+      SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].payload_body // .[0].body // ""')"
+      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.payload_body // .body // "") | startswith("<!-- address-review-summary -->") or test("(?ms)\\A(?:🤖 Codex )?.*?address-review-checkpoint:v1\\r?\\nkind: summary\\r?\\n"))][0].created_at // ""')"
     else
       echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
     fi

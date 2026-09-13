@@ -39,7 +39,7 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
 
     assert_in_order(
       primary,
-      "printf '🤖 Codex address-review follow-up is complete.",
+      "printf 'Address-review follow-up is complete.",
       "printf '## Review follow-up complete\\n\\n'",
       "printf '## Review follow-up needs another pass\\n\\n'",
       "printf '<details>\\n'",
@@ -61,6 +61,7 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     assert_operator primary.index("\${SCAN_SCOPE}"), :>, primary.index("printf '<summary>Address-review checkpoint</summary>")
     refute_includes primary, "<details open>"
     refute_includes primary, "<!--"
+    assert_includes template, '"${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue'
   end
 
   def test_posting_identity_uses_unknown_when_runtime_metadata_is_unavailable
@@ -79,7 +80,7 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
 
     assert_in_order(
       source,
-      "printf '🤖 Codex original review follow-up is complete.",
+      "printf 'Original review follow-up is complete.",
       "printf '## Original review follow-up complete\\n\\n'",
       "printf '## Original review follow-up needs another pass\\n\\n'",
       "printf '<details>\\n'",

@@ -312,20 +312,28 @@ module CloseoutEvidenceReplay
   def visible_markdown(text)
     text = text.to_s.gsub(/<!--.*?-->/m, "")
     fence = nil
+    record_fence = false
     details_depth = 0
     text.each_line.filter_map do |line|
-      opener = line.match(/\A[ \t]{0,3}(`{3,}|~{3,})/)
+      opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
       if fence
-        if opener && opener[1][0] == fence[0] && opener[1].length >= fence.length
+        if opener && opener[:delimiter][0] == fence[0] && opener[:delimiter].length >= fence.length
           fence = nil
         end
         next
       end
+      if record_fence
+        record_fence = false if opener && opener[:delimiter] == "```" && opener[:info].strip.empty?
+        next line
+      end
       if opener
-        # The record itself is fenced inside a visible disclosure. Only a
-        # fence opened outside one can be an outer Markdown example.
-        if details_depth.zero? || opener[1].length >= 4
-          fence = opener[1]
+        # The record itself is the exact ```text fence inside a visible
+        # disclosure. Every other Markdown fence is an outer example, even
+        # when nested in a descriptive details block.
+        if details_depth.positive? && opener[:delimiter] == "```" && opener[:info].strip == "text"
+          record_fence = true
+        else
+          fence = opener[:delimiter]
           next
         end
       end

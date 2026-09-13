@@ -1474,7 +1474,7 @@ module CompletedBatchPublicationPreflight
     return unless marker_name == HOSTED_QA_WAIVER_MARKER
 
     match = body.to_s.match(
-      %r{\A🤖 Codex [^\r\n]+\r?\n\r?\n<details>\r?\n<summary>Hosted QA waiver details</summary>\r?\n\r?\n```text\r?\n#{Regexp.escape(marker_name)}\r?\n(?<payload>.*?)^```\r?\n</details>\r?\n?\z}m
+      %r{\A[^\r\n]+\r?\n\r?\n<details>\r?\n<summary>Hosted QA waiver details</summary>\r?\n\r?\n```text\r?\n#{Regexp.escape(marker_name)}\r?\n(?<payload>.*?)^```\r?\n</details>\r?\n?\z}m
     )
     match && match[:payload]
   end

@@ -2958,6 +2958,19 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                     "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable"
   end
 
+  def test_agent_labelled_visible_hosted_qa_waiver_cannot_grant_human_authority
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    row = input.fetch("qa_evidence").find { |candidate| candidate.key?("maintainer_waiver") }
+    comment = valid_waiver_comment(row, input)
+    comment["body"] = "🤖 Codex hosted QA waiver: awaiting maintainer action\n\n#{comment.fetch('body')}"
+
+    result = assess_input(input, waiver_verifier: ->(**_keywords) { comment })
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable"
+  end
+
   def test_eligible_waiver_receipt_requires_an_authenticated_comment_refresh
     input = fixture("completed-batch-publication-hichee-terminal.json")
     receipt = assess_input(input)
@@ -3648,7 +3661,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     PAYLOAD
     legacy = "<!-- hosted-qa-maintainer-waiver v1\n#{payload}\n-->"
     visible = <<~MARKDOWN.chomp
-      🤖 Codex hosted QA waiver is recorded. No reader action is needed.
+      Maintainer hosted QA waiver is recorded. No reader action is needed.
 
       <details>
       <summary>Hosted QA waiver details</summary>
@@ -3684,6 +3697,16 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         verifier: ->(**_keywords) { comment }
       )
     end
+
+    agent_visible = visible.sub("Maintainer hosted QA waiver", "🤖 Codex hosted QA waiver")
+    assert_nil CompletedBatchPublicationPreflight.canonical_hosted_qa_waiver(
+      { "url" => waiver_url }, target, waiver_url, head_sha:, hosted_target: "staging",
+      verifier: ->(**_keywords) { { "id" => 817, "html_url" => waiver_url,
+                                   "issue_url" => "https://api.github.com/repos/shakacode/agent-workflows/issues/817",
+                                   "created_at" => "2026-09-12T00:00:00Z", "updated_at" => "2026-09-12T00:00:00Z",
+                                   "user" => { "login" => "maintainer", "type" => "User" },
+                                   "author_association" => "MEMBER", "body" => agent_visible } }
+    )
 
     quoted = "Example:\n\n````markdown\n#{visible}\n````"
     assert_nil CompletedBatchPublicationPreflight.waiver_marker_fields(

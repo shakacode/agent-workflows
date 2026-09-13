@@ -241,6 +241,16 @@ trap _cleanup_addr_review EXIT
 if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
   source_summary_body_file="$(mktemp)"
 fi
+if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
+  if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
+    PR_BATCH_SKILL_DIR="$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch"
+  elif [ -d ".agents/skills/pr-batch" ]; then
+    PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
+  else
+    echo "Refusing to post: set PR_BATCH_SKILL_DIR or install/pin the pr-batch skill." >&2
+    exit 1
+  fi
+fi
 # Set SCAN_SCOPE before this block, e.g.:
 #   SCAN_SCOPE="since previous summary at ${REVIEW_CUTOFF_AT}"  # cutoff active
 #   SCAN_SCOPE="full history via check all reviews"              # CHECK_ALL_REVIEWS set
@@ -261,11 +271,11 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
 # Leave empty only when there were no optional items in scope.
 {
   if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
-    printf '🤖 Codex address-review follow-up is complete. The next routine scan can start after this comment.\n\n'
+    printf 'Address-review follow-up is complete. The next routine scan can start after this comment.\n\n'
     printf '## Review follow-up complete\n\n'
     printf 'Every review item in the selected scan has a recorded outcome, so the next routine check can start after this comment.\n\n'
   else
-    printf '🤖 Codex address-review follow-up needs another pass. Use `check all reviews` before acting.\n\n'
+    printf 'Address-review follow-up needs another pass. Use `check all reviews` before acting.\n\n'
     printf '## Review follow-up needs another pass\n\n'
     printf 'Some feedback in the selected scan still needs an explicit outcome, so this comment does not set a new review checkpoint.\n\n'
   fi
@@ -360,11 +370,11 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
   fi
   {
     if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
-      printf '🤖 Codex original review follow-up is complete. The next routine scan can start after this comment.\n\n'
+      printf 'Original review follow-up is complete. The next routine scan can start after this comment.\n\n'
       printf '## Original review follow-up complete\n\n'
       printf 'Every carried-over review item has a recorded outcome. Future checks of the original PR can start after this comment.\n\n'
     else
-      printf '🤖 Codex original review follow-up needs another pass. Use `check all reviews` before acting.\n\n'
+      printf 'Original review follow-up needs another pass. Use `check all reviews` before acting.\n\n'
       printf '## Original review follow-up needs another pass\n\n'
       printf 'Some carried-over review items still need an explicit outcome, so this comment does not set a new checkpoint.\n\n'
     fi
@@ -394,9 +404,15 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
   } > "${source_summary_body_file}"
 fi
 
-gh api repos/${REPO}/issues/${PR_NUMBER}/comments -X POST -F body=@"${summary_body_file}"
+"${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
+  --repo "${REPO}" --number "${PR_NUMBER}" \
+  --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+  --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" < "${summary_body_file}"
 if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
-  gh api repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments -X POST -F body=@"${source_summary_body_file}"
+  "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
+    --repo "${REPO}" --number "${SOURCE_PR_NUMBER}" \
+    --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+    --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" < "${source_summary_body_file}"
 fi
 ```
 

@@ -36,6 +36,13 @@ instruction before making code changes unless I initiated the run with
 below.
 
 Behavior rules:
+- Before any public GitHub post, require the trusted caller to export
+  `AGENT_COMMENT_RUNNER` as exactly `codex`, `claude`, or `cursor`,
+  `AGENT_COMMENT_HOST` as the actual runner host, and
+  `AGENT_COMMENT_TASK_OR_RUN` as the stable task/run identifier. Resolve
+  `PR_BATCH_SKILL_DIR` from the loaded `ADDRESS_REVIEW_SKILL_DIR` sibling or
+  `.agents/skills/pr-batch`; if neither is available, stop rather than
+  bypassing `github-comment-envelope`.
 - Apply `workflows/pr-processing.md` → **Initial-Pass Optional-Nit Cutoff**
   before triage, menus, worklists, and every Step 8 action below. Its phase and
   authority rules take precedence over optional action defaults, including
@@ -232,9 +239,16 @@ Execution flow when terminal access is available:
        exit 1
      fi
      if [ "${SPECIFIC_TARGET}" != "1" ]; then
+       # The narrow normalized helper unwraps authenticated agent envelopes into
+       # `payload_body` without making unrelated review or GraphQL requests.
+       ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"
        SOURCE_HAS_CHECKPOINT=0
        if [ -n "${SOURCE_PR_NUMBER}" ]; then
-         if SOURCE_CHECKPOINT_JSON="$(gh api --paginate --slurp "repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments" 2>/dev/null)"; then
+         if SOURCE_CHECKPOINT_JSON="$("${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" \
+           "${SOURCE_PR_NUMBER}" --repo "${REPO}" --issue-comments-only \
+           --trust-config "${TRUST_CONFIG_PATH}" --trust-config-source "${TRUST_CONFIG_SOURCE}" \
+           --trust-config-scope "${TRUST_CONFIG_SCOPE}" \
+           --expected-trust-digest "${TRUST_CONFIG_DIGEST}" 2>/dev/null)"; then
            SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
            SOURCE_CHECKPOINT_COUNT="$(printf '%s' "${SOURCE_CHECKPOINT_JSON}" | jq --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
              def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";
@@ -244,7 +258,7 @@ Execution flow when terminal access is available:
              def checkpoint_kind:
                if startswith("<!-- address-review-summary -->") then "summary"
                elif startswith("<!-- address-review-status -->") then "status"
-               elif test("(?ms)\\A🤖 Codex [^\\r\\n]+.*?<summary>Address-review checkpoint</summary>.*?address-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n")
+               elif test("(?ms)\\A(?:🤖 Codex )?[^\\r\\n]+.*?<summary>Address-review checkpoint</summary>.*?address-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n")
                then capture("(?ms)^.*?address-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n").kind else null end;
              def source_state_count:
                if startswith("<!-- address-review-")
@@ -272,9 +286,9 @@ Execution flow when terminal access is available:
                    all($rows[]; valid_row) and
                    (($kind == "status") or (($kind == "summary") and all($rows[]; terminal_row))) and
                    (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
-             [.[][] |
-               select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase)) |
-               select((.body // "") | valid_body)] | length
+             [.issue_comments[] |
+               select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
+               select((.payload_body // .body // "") | valid_body)] | length
            ' 2>/dev/null || echo 0)"
            case "${SOURCE_CHECKPOINT_COUNT}" in
              ''|*[!0-9]*) SOURCE_CHECKPOINT_COUNT=0 ;;
@@ -501,9 +515,9 @@ Execution flow when terminal access is available:
        PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
        SOURCE_DIFF_IDENTITY="$("${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref "${SOURCE_BASE_REF}" --diff-base-sha "${SOURCE_DIFF_BASE_SHA}" --head-sha "${SOURCE_HEAD_SHA}")"
        jq -cr --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
-         def v2_record: "pr-walkthrough:v2 pr=(?<pr>[1-9][0-9]*) publisher=(?<publisher>[A-Za-z0-9_-]+(?:\\[bot\\])?) base-ref-b64url=(?<base>[A-Za-z0-9_-]+) diff-base=(?<diff_base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) diff=(?<diff>[0-9a-f]{64})";
-         def visible_v2_marker: "(?ms)\\A🤖 Codex [^\\r\\n]+\\r?\\n\\r?\\n.*?<details>\\r?\\n<summary>Walkthrough details</summary>.*?^```text\\r?\\n" + v2_record + "\\r?\\n```\\r?\\n</details>\\r?\\n?\\z";
-         def legacy_v2_marker: "^<!-- " + v2_record + " -->$";
+         def v2_marker: "pr-walkthrough:v2 pr=(?<pr>[1-9][0-9]*) publisher=(?<publisher>[A-Za-z0-9_-]+(?:\\[bot\\])?) base-ref-b64url=(?<base>[A-Za-z0-9_-]+) diff-base=(?<diff_base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) diff=(?<diff>[0-9a-f]{64})";
+         def visible_v2_marker: "(?ms)\\A🤖 Codex [^\\r\\n]+\\r?\\n\\r?\\n.*?<details>\\r?\\n<summary>Walkthrough details</summary>\\r?\\n.*?^```text\\r?\\n" + v2_marker + "\\r?\\n```\\r?\\n</details>\\r?\\n?\\z";
+         def legacy_v2_marker: "^<!-- " + v2_marker + " -->$";
          def legacy_v1_marker: "^<!-- pr-walkthrough:v1 pr=(?<pr>[1-9][0-9]*) diff=(?<diff>[0-9a-f]{64}) head=(?<head>[0-9a-f]{40}) -->$";
          .review_summaries[]? |
           select((.id | type) == "number") |
@@ -561,7 +575,7 @@ Execution flow when terminal access is available:
            ($fields[6] | valid_outcome);
            . as $inventory |
            def visible_checkpoint_kind:
-             if test("(?ms)\\A🤖 Codex [^\\r\\n]+\\r?\\n\\r?\\n.*?<details>\\r?\\n<summary>Address-review checkpoint</summary>.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n```")
+             if test("(?ms)\\A(?:🤖 Codex )?[^\\r\\n]+\\r?\\n\\r?\\n.*?<details>\\r?\\n<summary>Address-review checkpoint</summary>.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n```")
              then capture("(?ms)^.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```").kind else null end;
            def checkpoint_kind:
              if startswith("<!-- address-review-summary -->") then "summary"
@@ -572,12 +586,13 @@ Execution flow when terminal access is available:
              then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)
              else ([scan("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?$")] | length) end;
            def visible_claim:
-             test("(?ms)\\A🤖 Codex claim .*?<details>\\r?\\n<summary>Claim details</summary>.*?^```text\\r?\\ncodex-claim v1\\r?\\n");
+             test("(?ms)\\A(?:🤖 Codex )?claim .*?<details>\\r?\\n<summary>Claim details</summary>.*?^```text\\r?\\ncodex-claim v1\\r?\\n");
            def marker_body:
              checkpoint_kind != null or startswith("<!-- codex-claim v1") or visible_claim;
+           def comment_body($comment): $comment.payload_body // $comment.body // "";
            def generated_source_reply($comment):
-             ((($comment.body // "") | startswith("<!-- address-review-source-reply -->")) or
-              (($comment.body // "") | test("(?ms)\\A🤖 Codex source reply: .*?<details>\\r?\\n<summary>Address-review reply details</summary>.*?^```text\\r?\\naddress-review-source-reply:v1\\r?\\n"))) and
+             ((comment_body($comment) | startswith("<!-- address-review-source-reply -->")) or
+              (comment_body($comment) | test("(?ms)\\A(?:🤖 Codex )?source reply: .*?<details>\\r?\\n<summary>Address-review reply details</summary>.*?^```text\\r?\\naddress-review-source-reply:v1\\r?\\n"))) and
              ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
            def item_key($kind; $id; $thread_id):
              [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
@@ -617,7 +632,7 @@ Execution flow when terminal access is available:
                $inventory.issue_comments[]? |
                . as $comment |
                select((.created_at // "") <= $checkpoint_created_at) |
-               select((((.body // "") | marker_body) or generated_source_reply($comment)) | not) |
+               select(((comment_body($comment) | marker_body) or generated_source_reply($comment)) | not) |
                candidate_state("issue-comment"; .id; "-"; (.created_at // ""))
              ] + [
                $inventory.review_summaries[]? |
@@ -659,11 +674,11 @@ Execution flow when terminal access is available:
            [.issue_comments[] |
              select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
              . as $checkpoint |
-             select(($checkpoint.body // "") | valid_body($checkpoint.created_at // ""))] |
+             select((comment_body($checkpoint)) | valid_body($checkpoint.created_at // ""))] |
            sort_by(.created_at) | reverse
          ' source-review-data.json)"; then
-           SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"
-           SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->") or test("(?ms)\\A🤖 Codex .*?address-review-checkpoint:v1\\r?\\nkind: summary\\r?\\n"))][0].created_at // ""')"
+           SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].payload_body // .[0].body // ""')"
+           SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.payload_body // .body // "") | startswith("<!-- address-review-summary -->") or test("(?ms)\\A(?:🤖 Codex )?.*?address-review-checkpoint:v1\\r?\\nkind: summary\\r?\\n"))][0].created_at // ""')"
          else
            echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
          fi
@@ -848,7 +863,7 @@ before mutating GitHub or the branch.
   comment using this marker shape only when a
   GitHub-mutating action is selected:
   ````markdown
-  🤖 Codex claim is active. Do not start competing work.
+  Claim is active. Do not start competing work.
 
   <details>
   <summary>Claim details</summary>
@@ -1065,14 +1080,14 @@ before mutating GitHub or the branch.
      replacement carryover), and keep its own `REVIEW_COMMENT_ID` and
      `THREAD_ID`. Never use `ITEM_SOURCE_PR` for code, commit, or push work.
      Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
-     issue comment or review summary must start with the authenticated
-     visible `🤖 Codex source reply:` disclosure with an `address-review-source-reply:v1`
-     record. Exclude only a same-actor marked
+     issue comment or review summary must use `github-comment-envelope`, whose
+     public comment begins exactly `🤖 Codex`; its payload states the source reply
+     outcome and contains an `address-review-source-reply:v1` record. Exclude only a same-actor marked
      reply from source triage and snapshot completeness; another actor cannot use
      the marker to suppress a source candidate.
-     - Issue comments: when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, prefix the response with `🤖 Codex source reply: <outcome>` and put `address-review-source-reply:v1` in a closed `Address-review reply details` disclosure; otherwise set `RESPONSE_BODY="<response>"`. Then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
-     - Review comment replies: for every item assign `REVIEW_COMMENT_ID="<current-item-id>"` and `CURRENT_ITEM_IN_REPLY_TO_ID="<current-item-in_reply_to_id-or-null>"`; reset `REVIEW_COMMENT_IN_REPLY_TO_ID=""`, then overwrite it from `CURRENT_ITEM_IN_REPLY_TO_ID` only when that value is not `null`. Run `REVIEW_REPLY_TARGET_ID="${REVIEW_COMMENT_IN_REPLY_TO_ID:-${REVIEW_COMMENT_ID}}"` followed by `gh api repos/${REPO}/pulls/${ITEM_SOURCE_PR}/comments/${REVIEW_REPLY_TARGET_ID}/replies -X POST -f body="<response>"`. Never inherit item variables from a prior persistent-shell iteration or pass a literal `null`. This posts a promoted `root_excluded` reply through its top-level parent without changing the item's tracked identity; never substitute the parsed input `COMMENT_ID`.
-     - Review summary body replies: apply the same source-only `RESPONSE_BODY` marker rule as issue comments, then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
+     - Issue comments: when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, set `RESPONSE_BODY` to the source-reply outcome plus a closed `Address-review reply details` disclosure containing `address-review-source-reply:v1`; otherwise set `RESPONSE_BODY="<response>"`. Pipe it to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue` with the target repo/number and required runner/host/task context.
+     - Review comment replies: for every item assign `REVIEW_COMMENT_ID="<current-item-id>"` and `CURRENT_ITEM_IN_REPLY_TO_ID="<current-item-in_reply_to_id-or-null>"`; reset `REVIEW_COMMENT_IN_REPLY_TO_ID=""`, then overwrite it from `CURRENT_ITEM_IN_REPLY_TO_ID` only when that value is not `null`. Run `REVIEW_REPLY_TARGET_ID="${REVIEW_COMMENT_IN_REPLY_TO_ID:-${REVIEW_COMMENT_ID}}"` followed by piping the response to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-reply` with the target repo/number, reply target, and required runner/host/task context. Never inherit item variables from a prior persistent-shell iteration or pass a literal `null`. This posts a promoted `root_excluded` reply through its top-level parent without changing the item's tracked identity; never substitute the parsed input `COMMENT_ID`.
+     - Review summary body replies: apply the same source-only `RESPONSE_BODY` record rule as issue comments, then pipe it to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue`.
    - Resolve threads only when the issue is actually handled, explicitly declined with my approval, autonomously declined under a trusted `COORDINATED_AUTOFIX=1` evidence-backed recommendation with the rationale recorded, or autonomously deferred/declined as a low-risk behavior-preserving `OPTIONAL` item under the Maintainer Attention Contract with rationale recorded. Generic handled/declined thread resolution must exclude coordinated `defer`; it follows the ordered durable-evidence path above. Autonomous deferred/declined optional replies must use the `AGENTS.md` tag format: include `[auto-deferred]` on its own line plus a one-line rationale before the thread is resolved. An auto-resolved optional thread that lacks that tag is a spec violation; do not resolve the thread if you cannot post the tag and rationale first:
      `gh api graphql -f query='mutation($threadId:ID!) { resolveReviewThread(input:{threadId:$threadId}) { thread { id isResolved } } }' -f threadId="<THREAD_ID>"`
    - Do not resolve anything still in progress or uncertain.
@@ -1108,9 +1123,10 @@ before mutating GitHub or the branch.
    - Mention whether the run used the default cutoff or the explicit `check all reviews` override.
    - For marked summaries, end with a note that future full-PR scans should start after this comment unless I say `check all reviews`. For non-cutoff status comments, end with a note that the next run must use `check all reviews`.
    - Use exact timestamps in the summary when referring to the scan window.
-   - When replacement carryover is inactive, post it directly with:
-     `gh api repos/${REPO}/issues/${PR_NUMBER}/comments -X POST -F body=@"${summary_body_file}"`
-     When replacement carryover is active, do not run that direct post; delegate
+   - When replacement carryover is inactive, pipe it through
+     `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue` with the
+     target repo/number and required runner/host/task context.
+     When replacement carryover is active, do not post it outside the template; delegate
      both checkpoint posts to the Step 10 template below.
    - In replacement carryover, build `source_summary_body_file` through
      `references/templates.md` with the replacement link and every original-item

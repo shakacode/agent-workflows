@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../lib/skill_stage_source"
+require_relative "../lib/github_comment_envelope"
 
 require "json"
 require "open3"
@@ -553,7 +554,7 @@ assert(address_review_workflow.include?(source_cutoff_contract), "address-review
 source_cutoff_binding = 'SOURCE_REVIEW_CUTOFF_AT="$(printf \'%s\' "${SOURCE_VALID_CHECKPOINTS}" | jq -r'
 assert(address_review.include?(source_cutoff_binding), "address-review must bind source cutoff from validated checkpoints")
 assert(address_review_workflow.include?(source_cutoff_binding), "address-review workflow mirror must bind source cutoff from validated checkpoints")
-source_status_exclusion = "Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid `address-review-source-state:v1` block, whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it."
+source_status_exclusion = "Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid visible `address-review-checkpoint:v1` summary and `address-review-source-state:v1` block, may advance this cutoff; a visible `kind: status` checkpoint never advances it. Historical HTML forms are read-compatible only."
 assert(address_review.include?(source_status_exclusion), "address-review must reject source status markers as cutoffs")
 assert(address_review_actions.include?(source_status_exclusion), "address-review actions must reject source status markers as cutoffs")
 assert(address_review_workflow.include?(source_status_exclusion), "address-review workflow mirror must reject source status markers as cutoffs")
@@ -574,7 +575,7 @@ assert(address_review.include?("SOURCE_HAS_CHECKPOINT"), "address-review must pr
 assert(address_review_workflow.include?("SOURCE_HAS_CHECKPOINT"), "address-review workflow mirror must probe prior source checkpoint state before the wait")
 assert(address_review.scan(/def valid_body(?:\(|:)/).length >= 2, "address-review must schema-validate both source wait and cutoff checkpoints")
 assert(address_review_workflow.scan(/def valid_body(?:\(|:)/).length >= 2, "address-review workflow mirror must schema-validate both source wait and cutoff checkpoints")
-summary_terminal_guard = '(($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))'
+summary_terminal_guard = '(($kind == "status") or (($kind == "summary") and all($rows[]; terminal_row)))'
 assert(address_review.scan(summary_terminal_guard).length >= 2, "address-review summaries must require terminal-only source rows")
 assert(address_review_workflow.scan(summary_terminal_guard).length >= 2, "address-review workflow summaries must require terminal-only source rows")
 normalized_source_actor = 'select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase))'
@@ -622,9 +623,9 @@ assert(address_review_actions.include?(source_post_ownership), "address-review a
 assert(address_review_workflow.include?(source_post_ownership), "address-review workflow mirror must delegate both checkpoint posts to the template")
 legacy_unconditional_primary_post = '- Post it with: `gh api repos/${REPO}/issues/${PR_NUMBER}/comments -X POST -F body=@"${summary_body_file}"`'
 assert(!address_review_workflow.include?(legacy_unconditional_primary_post), "address-review workflow must not post the primary checkpoint before template delegation")
-scoped_primary_post = "When replacement carryover is inactive, post it directly with:"
-assert(address_review_workflow.include?(scoped_primary_post), "address-review workflow must preserve direct primary posting outside replacement carryover")
-template_primary_ownership = "When replacement carryover is active, do not run that direct post; delegate\n     both checkpoint posts to the Step 10 template below."
+scoped_primary_post = "When replacement carryover is inactive, pipe it through\n     `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue`"
+assert(address_review_workflow.include?(scoped_primary_post), "address-review workflow must route primary checkpoints through the envelope")
+template_primary_ownership = "When replacement carryover is active, do not post it outside the template; delegate\n     both checkpoint posts to the Step 10 template below."
 assert(address_review_workflow.include?(template_primary_ownership), "address-review workflow must give the template sole checkpoint-post ownership during carryover")
 source_state_format = "Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` under `<!-- address-review-source-state:v1`; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`."
 assert(address_review.include?(source_state_format), "address-review must define deterministic source restart state")
@@ -648,7 +649,7 @@ assert(address_review_templates.include?(source_state_failure), "address-review 
 assert(address_review_templates.include?("SOURCE_STATE_ROWS"), "address-review templates must accept source state rows")
 assert(address_review_templates.include?("SOURCE_STATE_EXPECTED_COUNT"), "address-review templates must verify source state completeness")
 assert(address_review_templates.include?("SOURCE_STATE_HAS_PENDING"), "address-review templates must derive the source cutoff guard from pending state")
-assert(address_review_templates.include?("printf '<!-- address-review-source-state:v1\\n'"), "address-review templates must render the v1 source-state marker")
+assert(address_review_templates.include?("printf '```text\\naddress-review-source-state:v1\\n'"), "address-review templates must render the visible v1 source-state record")
 assert(address_review_templates.include?("source-state rows are malformed or duplicate"), "address-review templates must validate source state rows")
 assert(address_review_templates.include?("/^$/ { next }"), "source state validation must tolerate blank records")
 assert(address_review_templates.include?("$4 !~ /^[1-9][0-9]*$/"), "source state producer must reject leading-zero item IDs like consumers")
@@ -721,6 +722,44 @@ valid_generated_summary_body = <<~BODY.chomp
   item\t160\treview-summary\t105\t-\t2026-07-15T00:05:00Z\thandled
   -->
 BODY
+visible_enveloped_summary_payload = <<~BODY.chomp
+  Original review follow-up is complete. The next routine scan can start after this comment.
+
+  <details>
+  <summary>Address-review checkpoint</summary>
+
+  ```text
+  address-review-checkpoint:v1
+  kind: summary
+  ```
+
+  ```text
+  address-review-source-state:v1
+  item\t160\tinline-comment\t101\tPRRT_kwD==/+\t2026-07-15T00:00:00Z\thandled
+  item\t160\tissue-comment\t104\t-\t2026-07-15T00:00:45Z\tsafe-to-skip
+  item\t160\tissue-comment\t102\t-\t2026-07-15T00:01:00Z\tsafe-to-skip
+  item\t160\tinline-comment\t106\tPRRT_resolved\t2026-07-15T00:02:00Z\thandled
+  item\t160\treview-summary\t105\t-\t2026-07-15T00:05:00Z\thandled
+  ```
+  </details>
+BODY
+enveloped_summary_body = GitHubCommentEnvelope.render(
+  body: visible_enveloped_summary_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+)
+visible_enveloped_source_reply_payload = <<~BODY.chomp
+  source reply: handled in the replacement.
+
+  <details>
+  <summary>Address-review reply details</summary>
+
+  ```text
+  address-review-source-reply:v1
+  ```
+  </details>
+BODY
+enveloped_source_reply_body = GitHubCommentEnvelope.render(
+  body: visible_enveloped_source_reply_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+)
 valid_cumulative_history_summary_body = <<~BODY.chomp
   <!-- address-review-summary -->
   ## Address-review replacement carryover
@@ -794,7 +833,7 @@ checkpoint_fixture = {
   ],
   "issue_comments" => [
     { "id" => 201, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:10Z", "body" => valid_summary_body },
-    { "id" => 103, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:30Z", "body" => "<!-- address-review-source-reply -->\nHandled in the replacement." },
+    { "id" => 103, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:30Z", "body" => enveloped_source_reply_body, "payload_body" => GitHubCommentEnvelope.payload(enveloped_source_reply_body) },
     { "id" => 104, "user" => "other-reviewer", "created_at" => "2026-07-15T00:00:45Z", "body" => "<!-- address-review-source-reply -->\nThis is still an actionable source comment." },
     { "id" => 102, "user" => "reviewer", "created_at" => "2026-07-15T00:01:00Z", "body" => "Please verify the source behavior." },
     { "id" => 202, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:01:10Z", "body" => valid_status_body },
@@ -805,7 +844,8 @@ checkpoint_fixture = {
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:05:00Z", "body" => invalid_pending_summary_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:06:00Z", "body" => invalid_ask_user_summary_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:06:30Z", "body" => incomplete_summary_body },
-    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:00Z", "body" => valid_generated_summary_body }
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:00Z", "body" => valid_generated_summary_body },
+    { "id" => 204, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:30Z", "body" => enveloped_summary_body, "payload_body" => GitHubCommentEnvelope.payload(enveloped_summary_body) }
   ]
 }
 stdout, stderr, status = Open3.capture3(
@@ -815,10 +855,11 @@ stdout, stderr, status = Open3.capture3(
 )
 assert(status.success?, "source checkpoint jq validator must execute: #{stderr}")
 valid_checkpoints = JSON.parse(stdout)
-assert(valid_checkpoints.length == 3, "source checkpoint validator must reject invalid state and non-terminal summaries")
-assert(valid_checkpoints[0]["body"] == valid_generated_summary_body, "source checkpoint validator must accept template-generated checkpoints with a trailing state block")
-assert(valid_checkpoints[1]["body"] == valid_status_body, "source checkpoint validator must return newest valid checkpoint first")
-assert(valid_checkpoints[2]["body"] == valid_summary_body, "source checkpoint validator must accept padded Base64 node IDs")
+assert(valid_checkpoints.length == 4, "source checkpoint validator must reject invalid state and non-terminal summaries")
+assert(valid_checkpoints[0]["body"] == enveloped_summary_body, "source checkpoint validator must accept an enveloped visible checkpoint payload")
+assert(valid_checkpoints[1]["body"] == valid_generated_summary_body, "source checkpoint validator must accept template-generated checkpoints with a trailing state block")
+assert(valid_checkpoints[2]["body"] == valid_status_body, "source checkpoint validator must return newest valid checkpoint first")
+assert(valid_checkpoints[3]["body"] == valid_summary_body, "source checkpoint validator must accept padded Base64 node IDs")
 
 walkthrough_fixture = checkpoint_fixture.merge(
   "review_summaries" => checkpoint_fixture.fetch("review_summaries") +
@@ -833,7 +874,7 @@ stdout, stderr, status = Open3.capture3(
   stdin_data: JSON.generate(walkthrough_fixture)
 )
 assert(status.success?, "source checkpoint jq validator must execute with walkthrough fixture: #{stderr}")
-assert(JSON.parse(stdout).length == 3,
+assert(JSON.parse(stdout).length == 4,
        "source checkpoint validator must exclude verified walkthrough summaries and roots from completeness")
 
 replacement_walkthrough_fixture = walkthrough_fixture.merge(
@@ -846,7 +887,7 @@ stdout, stderr, status = Open3.capture3(
   stdin_data: JSON.generate(replacement_walkthrough_fixture)
 )
 assert(status.success?, "source checkpoint jq validator must execute with replacement walkthrough fixture: #{stderr}")
-assert(JSON.parse(stdout).length == 3,
+assert(JSON.parse(stdout).length == 4,
        "source checkpoint validator must exclude both stale and current walkthrough summaries")
 
 walkthrough_reply_fixture = walkthrough_fixture.merge(
@@ -977,7 +1018,7 @@ stdout, stderr, status = Open3.capture3(
   stdin_data: JSON.generate(wait_checkpoint_fixture)
 )
 assert(status.success?, "source wait checkpoint jq validator must execute: #{stderr}")
-assert(Integer(stdout, 10) == 3, "source wait checkpoint validator must accept pending status and generated summaries but reject non-terminal summaries")
+assert(Integer(stdout, 10) == 4, "source wait checkpoint validator must accept pending status and generated summaries but reject non-terminal summaries")
 
 source_template_awk = extract_source_template_awk(address_review_templates)
 valid_source_rows = <<~ROWS

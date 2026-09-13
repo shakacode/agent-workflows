@@ -99,6 +99,16 @@ class StaleAssignmentSweepTest < Minitest::Test
     end
   end
 
+  def test_nudge_reader_recognizes_the_actual_enveloped_writer_output
+    payload = "🤖 Codex assignment follow-up: Heads up @alice.\n\n<details>\n<summary>Assignment sweep details</summary>\n\n```text\n#{VISIBLE_NUDGE_MARKER}\n```\n</details>"
+    rendered = GitHubCommentEnvelope.render(
+      body: payload, runner: "codex", host: "M5", task_or_run: "stale-assignment-sweep"
+    )
+
+    assert StaleAssignmentSweep::Runner.new.send(:nudge_comment?, rendered)
+    assert StaleAssignmentSweep::Runner.new.send(:nudge_comment?, "#{LEGACY_NUDGE_MARKER}\nlegacy")
+  end
+
   # --- apply: release ----------------------------------------------------
 
   def test_apply_release_removes_assignee_and_posts_audit_comment
