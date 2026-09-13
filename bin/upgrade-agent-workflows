@@ -197,7 +197,10 @@ backup_target() {
   backup_followed_dir="$backup_dir/followed-symlink-roots"
   backup_followed_manifest="$backup_dir/followed-symlink-paths"
   backup_absent_container_manifest="$backup_dir/absent-containers"
+  backup_migration_receipt="$backup_dir/migration-staging-receipt"
+  backup_migration_staging_dir="$backup_dir/migration-staging"
   : > "$backup_absent_container_manifest"
+  backup_migration_staging_path=""
   migration_receipt_existed=false
   target_existed=false
   if [[ -d "$target" ]]; then
@@ -205,6 +208,25 @@ backup_target() {
     if [[ -e "$target/.agent-workflows-migration-staging" ||
           -L "$target/.agent-workflows-migration-staging" ]]; then
       migration_receipt_existed=true
+      backup_migration_staging_path="$(ruby -e '
+        target, receipt = ARGV
+        target = File.realpath(target)
+        receipt_stat = File.lstat(receipt)
+        abort unless receipt_stat.file? && !receipt_stat.symlink?
+        lines = File.binread(receipt).lines(chomp: true)
+        abort unless lines.length == 1
+        staging = File.expand_path(lines.fetch(0))
+        abort unless File.basename(staging).match?(/\A\.agent-workflows-flat-migration-.+\z/)
+        staging_stat = File.lstat(staging)
+        abort unless staging_stat.directory? && !staging_stat.symlink?
+        canonical_staging = File.realpath(staging)
+        canonical_stat = File.lstat(canonical_staging)
+        abort unless File.dirname(canonical_staging) == target &&
+                     canonical_stat.dev == staging_stat.dev && canonical_stat.ino == staging_stat.ino
+        print canonical_staging
+      ' "$target" "$target/.agent-workflows-migration-staging")"
+      cp -a "$target/.agent-workflows-migration-staging" "$backup_migration_receipt"
+      cp -a "$backup_migration_staging_path" "$backup_migration_staging_dir"
     fi
     mkdir -p "$backup_target_dir"
     for path in "${managed_snapshot_roots[@]}"; do
@@ -454,6 +476,14 @@ restore_target() {
     for ((index = ${#absent_containers[@]} - 1; index >= 0; index--)); do
       rmdir "$target/${absent_containers[index]}" 2>/dev/null || true
     done
+    if [[ "${migration_receipt_existed:-false}" = "true" ]]; then
+      if [[ -e "$backup_migration_staging_path" || -L "$backup_migration_staging_path" ]]; then
+        rm -rf -- "${backup_migration_staging_path:?}"
+      fi
+      cp -a "$backup_migration_staging_dir" "$backup_migration_staging_path"
+      rm -f -- "$target/.agent-workflows-migration-staging"
+      cp -a "$backup_migration_receipt" "$target/.agent-workflows-migration-staging"
+    fi
   else
     rm -rf "$target"
   fi

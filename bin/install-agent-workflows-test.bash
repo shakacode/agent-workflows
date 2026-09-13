@@ -7848,6 +7848,41 @@ BASH_ENV
   ' "$target/.agent-workflows-install.json"
 }
 
+test_failed_upgrade_restores_preexisting_migration_recovery_artifacts() {
+  local tmp source target consumer output status receipt staging
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  receipt="$target/.agent-workflows-migration-staging"
+  staging="$target/.agent-workflows-flat-migration-before-upgrade"
+  mkdir "$staging"
+  mv "$target/skills/pr-batch" "$staging/pr-batch"
+  printf '%s\n' "$staging" > "$receipt"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  assert_file "$receipt"
+  [[ "$(cat "$receipt")" = "$staging" ]] || fail "rollback changed the migration receipt"
+  [[ -d "$staging/pr-batch" ]] || fail "rollback did not restore staged recovery content"
+  [[ ! -e "$target/skills/pr-batch" ]] || fail "rollback did not restore the pending migration layout"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/retry.out"
+  [[ -d "$target/skills/pr-batch" ]] || fail "restored migration state could not recover on retry"
+  [[ ! -e "$receipt" && ! -L "$receipt" ]] || fail "retry did not consume the restored migration receipt"
+  [[ ! -e "$staging" && ! -L "$staging" ]] || fail "retry did not consume the restored migration staging"
+}
+
 test_failed_upgrade_restores_companion_delivery_mode_and_layout() {
   local tmp source target consumer output status
   tmp="$(mktemp -d)"
@@ -9434,6 +9469,7 @@ main() {
     test_upgrade_reports_missing_source_as_check_failed
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_failed_upgrade_removes_new_migration_recovery_artifacts
+    test_failed_upgrade_restores_preexisting_migration_recovery_artifacts
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills
     test_companion_to_flat_upgrade_preserves_unowned_same_named_skill
