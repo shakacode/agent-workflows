@@ -573,6 +573,10 @@ module CloseoutEvidenceReplay
         rendered << line
         next
       end
+      # Markdown treats four spaces or a tab-expanded indentation as code, so
+      # an apparent HTML disclosure there cannot publish authority.
+      next if line.match?(/\A(?: {4}| {0,3}\t)/)
+
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
       structural_line, inline_code_delimiter, html_comment_open = html_context_line(
         line,

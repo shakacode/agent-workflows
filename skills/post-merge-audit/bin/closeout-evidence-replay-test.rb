@@ -584,6 +584,16 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
   end
 
+  def test_indented_details_openers_are_not_visible_evidence_disclosures
+    head_sha = "1" * 40
+    { "    " => "UNKNOWN", "\t" => "UNKNOWN", " \t" => "UNKNOWN", "   " => "SATISFIED" }.each do |indent, expected|
+      body = visible_qa_details(head_sha:, scope: "indented details opener").sub("<details>", "#{indent}<details>")
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+
+      assert_equal expected, evidence.fetch("verdict"), indent.inspect
+    end
+  end
+
   def test_html_comment_cannot_close_a_raw_blockquote_before_visible_evidence
     head_sha = "1" * 40
     body = <<~MARKDOWN
