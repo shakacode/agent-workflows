@@ -691,6 +691,48 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
+  def test_unmatched_backtick_does_not_cross_a_markdown_blockquote_boundary
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      Unmatched ` before a new block.
+      > Quoted <blockquote> `
+
+      #{visible_qa_details(head_sha:, scope: 'blockquote boundary')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_backslash_parity_controls_literal_html_and_inline_code_context
+    head_sha = "1" * 40
+    { "\\" => "SATISFIED", "\\\\" => "UNKNOWN" }.each do |slashes, expected_verdict|
+      nested = <<~MARKDOWN
+        <details>
+        <summary>Agent details</summary>
+
+        <details>
+        <summary>Example</summary>
+        This literal #{slashes}`</details>` trailing.
+        #{visible_qa_details(head_sha:, scope: "#{slashes.length} backslash code parity")}
+        </details>
+        </details>
+      MARKDOWN
+      raw_blockquote = <<~MARKDOWN
+        #{slashes}<blockquote>
+
+        #{visible_qa_details(head_sha:, scope: "#{slashes.length} backslash HTML parity")}
+        </blockquote>
+      MARKDOWN
+
+      [nested, raw_blockquote].each do |body|
+        assert_equal expected_verdict, run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), slashes.inspect
+      end
+    end
+  end
+
   def test_inline_blockquote_closer_cannot_escape_raw_blockquote_context
     head_sha = "1" * 40
     body = <<~MARKDOWN

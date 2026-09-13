@@ -342,9 +342,20 @@ module CloseoutEvidenceReplay
     end
   end
 
+  def markdown_escaped?(line, index)
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 && line[cursor] == "\\"
+      backslashes += 1
+      cursor -= 1
+    end
+    backslashes.odd?
+  end
+
   def inline_code_lookahead(lines, start_index)
     lines[start_index..].to_a.take_while do |line|
-      !line.strip.empty? && !line.match?(%r{\A[ \t]*</?(?:blockquote|code|details|pre|script|style|textarea)(?:\s|>)}i)
+      !line.strip.empty? && !line.match?(/\A[ \t]{0,3}>/) &&
+        !line.match?(%r{\A[ \t]*</?(?:blockquote|code|details|pre|script|style|textarea)(?:\s|>)}i)
     end.join
   end
 
@@ -361,13 +372,13 @@ module CloseoutEvidenceReplay
         next
       end
 
-      if line[index] == "\\" && line[index + 1] == "<"
+      if line[index] == "\\" && line[index + 1] == "<" && markdown_escaped?(line, index + 1)
         rendered << "\\"
         index += 2
         next
       end
 
-      if allow_new_code_span && line[index] == "`" && (index.zero? || line[index - 1] != "\\")
+      if allow_new_code_span && line[index] == "`" && !markdown_escaped?(line, index)
         delimiter = line[index..].match(/\A`+/)[0]
         closing = matching_backtick_run_index(line, delimiter, index + delimiter.length)
         if closing
