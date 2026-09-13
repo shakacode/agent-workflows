@@ -8068,6 +8068,41 @@ PATCH
     fail "rollback reverted a consumer-owned companion library file"
 }
 
+test_failed_flat_upgrade_preserves_consumer_owned_lib_symlink() {
+  local tmp source target external_lib scanner output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external_lib="$tmp/external-lib"
+  scanner="$external_lib/agent-workflows/secure_github_actions_scanner.rb"
+  mkdir -p "$source" "$target" "$(dirname "$scanner")"
+  new_source_repo "$source"
+  ln -s "$external_lib" "$target/lib"
+  printf 'consumer scanner before upgrade\n' > "$scanner"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+printf 'consumer scanner changed during upgrade\n' > $(printf '%q' "$scanner")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode flat --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected flat upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/lib" && "$(readlink "$target/lib")" = "$external_lib" ]] || \
+    fail "rollback changed the consumer-owned lib symlink"
+  [[ "$(cat "$scanner")" = "consumer scanner changed during upgrade" ]] || \
+    fail "rollback reverted a consumer-owned scanner during a flat upgrade"
+}
+
 test_failed_upgrade_preserves_new_stack_doctor_marker() {
   local tmp source target consumer marker output status
   tmp="$(mktemp -d)"
@@ -8413,11 +8448,13 @@ test_flat_skill_snapshot_manifest_excludes_dot_entries() {
   new_source_repo "$source"
   "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
   mkdir -p "$source/skills/.scratch" "$source/workflows/.scratch" \
-    "$target/skills/.scratch" "$target/workflows/.scratch"
+    "$target/skills/.scratch" "$target/workflows/.scratch" "$target/docs/solutions"
   printf 'source-only hidden skill\n' > "$source/skills/.scratch/SKILL.md"
   printf 'source-only hidden workflow\n' > "$source/workflows/.scratch/state"
+  printf 'source-only hidden solution\n' > "$source/docs/solutions/.scratch.md"
   printf 'consumer hidden skill\n' > "$target/skills/.scratch/SKILL.md"
   printf 'consumer hidden workflow\n' > "$target/workflows/.scratch/state"
+  printf 'consumer hidden solution\n' > "$target/docs/solutions/.scratch.md"
   printf '0.1.1\n' > "$source/VERSION"
   git -C "$source" add VERSION
   git -C "$source" commit --quiet -m "bump version"
@@ -8447,6 +8484,7 @@ WRAP
   assert_not_contains "$(cat "$manifest_log")" "skills/."
   assert_not_contains "$(cat "$manifest_log")" "skills/.."
   assert_not_contains "$(cat "$manifest_log")" "workflows/.scratch"
+  assert_not_contains "$(cat "$manifest_log")" "docs/solutions/.scratch.md"
 }
 
 test_failed_upgrade_reports_incomplete_rollback_and_preserves_original_status() {
@@ -9727,6 +9765,7 @@ main() {
     test_companion_to_flat_upgrade_preserves_unowned_same_named_skill
     test_failed_upgrade_restores_nested_skill_files
     test_failed_companion_upgrade_preserves_consumer_owned_lib_sibling
+    test_failed_flat_upgrade_preserves_consumer_owned_lib_symlink
     test_failed_upgrade_preserves_new_stack_doctor_marker
     test_failed_upgrade_removes_new_empty_container_directories
     test_upgrade_snapshot_managed_lists_match_installer

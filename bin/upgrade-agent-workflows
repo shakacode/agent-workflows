@@ -189,6 +189,23 @@ path_is_within_traversed_snapshot_symlink_root() {
   return 1
 }
 
+snapshot_root_is_active() {
+  case "$1" in
+    lib|lib/agent-workflows)
+      [[ "${backup_includes_companion:-false}" = "true" ]]
+      ;;
+    rules)
+      [[ "$host" = "cursor" ]]
+      ;;
+    skills)
+      [[ "${backup_includes_flat_skills:-false}" = "true" ]]
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
 source_managed_inventory_fingerprint() {
   local include_flat_skills="$1"
   ruby -rdigest -e '
@@ -227,10 +244,14 @@ backup_target() {
   if [[ -d "$target" ]]; then
     target_existed=true
     backup_canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+    installed_delivery_mode="$(metadata_value "$metadata_path" delivery_mode 2>/dev/null || printf 'flat\n')"
     backup_includes_flat_skills=false
-    if [[ "$delivery_mode" = "flat" ||
-          "$(metadata_value "$metadata_path" delivery_mode 2>/dev/null || printf 'flat\n')" = "flat" ]]; then
+    if [[ "$delivery_mode" = "flat" || "$installed_delivery_mode" = "flat" ]]; then
       backup_includes_flat_skills=true
+    fi
+    backup_includes_companion=false
+    if [[ "$delivery_mode" = "plugin-companion" || "$installed_delivery_mode" = "plugin-companion" ]]; then
+      backup_includes_companion=true
     fi
     backup_source_inventory_fingerprint="$(source_managed_inventory_fingerprint "$backup_includes_flat_skills")"
     if [[ -e "$target/.agent-workflows-migration-staging" ||
@@ -258,6 +279,7 @@ backup_target() {
     fi
     mkdir -p "$backup_target_dir"
     for path in "${managed_snapshot_roots[@]}"; do
+      snapshot_root_is_active "$path" || continue
       if [[ ! -e "$target/$path" && ! -L "$target/$path" ]]; then
         printf '%s\0' "$path" >> "$backup_absent_container_manifest"
       fi
@@ -301,8 +323,7 @@ backup_target() {
       managed.concat(bin_helpers.map { |name| "bin/#{name}" })
       managed.concat(pack_docs.map { |name| "docs/#{name}" })
       managed << "rules/agent-workflows.mdc" if host == "cursor"
-      managed << "lib/agent-workflows/secure_github_actions_scanner.rb"
-      Dir.glob(File.join(source, "docs/solutions", "*"), File::FNM_DOTMATCH).each do |path|
+      Dir.glob(File.join(source, "docs/solutions", "*")).each do |path|
         managed << "docs/solutions/#{File.basename(path)}" if File.file?(path) && !File.symlink?(path)
       end
       workflows_root = File.join(target, "workflows")
@@ -314,6 +335,9 @@ backup_target() {
         JSON.parse(File.binread(metadata_path))
       rescue StandardError
         {}
+      end
+      if metadata["delivery_mode"] == "plugin-companion" || delivery_mode == "plugin-companion"
+        managed << "lib/agent-workflows/secure_github_actions_scanner.rb"
       end
       revision = metadata["source_revision"]
       roots = [metadata["source"], source].compact.uniq
@@ -416,6 +440,7 @@ backup_target() {
     : > "$backup_symlink_manifest"
     snapshot_symlink_roots=()
     for path in "${managed_snapshot_roots[@]}"; do
+      snapshot_root_is_active "$path" || continue
       path_is_within_snapshot_symlink_root "$path" && continue
       if [[ -L "$target/$path" ]]; then
         printf '%s\0' "$path" >> "$backup_symlink_manifest"
