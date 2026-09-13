@@ -403,19 +403,64 @@ module CloseoutEvidenceReplay
     [rendered, code_delimiter]
   end
 
+  def html_tag_end(line, start_index)
+    quote = nil
+    index = start_index + 1
+    while index < line.length
+      character = line[index]
+      if quote
+        quote = nil if character == quote
+      elsif ['"', "'"].include?(character)
+        quote = character
+      elsif character == ">"
+        return index
+      end
+      index += 1
+    end
+  end
+
+  RAW_HTML_TAGS = %w[pre code script style textarea blockquote].freeze
+  STRUCTURAL_HTML_TAGS = (%w[details summary] + RAW_HTML_TAGS).freeze
+  STRUCTURAL_HTML_TAG_PATTERN = STRUCTURAL_HTML_TAGS.map { |tag| Regexp.escape(tag) }.join("|").freeze
+
+  def raw_html_tag?(tag)
+    RAW_HTML_TAGS.include?(tag)
+  end
+
+  def structural_html_tags(line)
+    tags = []
+    index = 0
+    while (opening = line.index("<", index))
+      remaining = line[opening..]
+      if (summary = remaining.match(%r{\A<summary>(?<text>[^<]+)</summary>}i))
+        tags << [:summary, "summary", summary[:text].strip]
+        index = opening + summary[0].length
+        next
+      end
+
+      tag_match = remaining.match(%r{\A<(?<closing>/)?(?<tag>#{STRUCTURAL_HTML_TAG_PATTERN})(?=\s|>)}i)
+      unless tag_match
+        index = opening + 1
+        next
+      end
+
+      ending = html_tag_end(line, opening)
+      break unless ending
+
+      type = tag_match[:closing] ? :close : :open
+      tags << [type, tag_match[:tag].downcase, nil]
+      index = ending + 1
+    end
+    tags
+  end
+
   def details_tags(line)
-    line.to_enum(:scan, %r{
-      (?<open><details(?:\s[^>]*)?>)
-      |(?<close></details\s*>)
-      |<summary>(?<summary>[^<]+)</summary>
-    }ix).map do
-      match = Regexp.last_match
-      if match[:open]
-        [:open, nil]
-      elsif match[:close]
-        [:close, nil]
-      else
-        [:summary, match[:summary].strip]
+    structural_html_tags(line).filter_map do |type, tag, text|
+      case tag
+      when "details"
+        [type, nil]
+      when "summary"
+        [:summary, text] if type == :summary
       end
     end
   end
@@ -497,14 +542,18 @@ module CloseoutEvidenceReplay
         remaining_text: inline_code_lookahead(lines, line_index + 1),
         allow_new_code_span: opener.nil?
       )
+      structural_tags = structural_html_tags(structural_line)
       if discard_details_depth
         discard_details_depth = advance_details_stack(details_stack, discard_details_depth, structural_line)
         next
       end
       if raw_html_container
-        tag = Regexp.escape(raw_html_container.fetch(:tag))
-        raw_html_container[:depth] += structural_line.scan(/<#{tag}(?:\s|>)/i).length
-        raw_html_container[:depth] -= structural_line.scan(%r{</#{tag}\s*>}i).length
+        tag = raw_html_container.fetch(:tag)
+        structural_tags.each do |type, current_tag, _text|
+          next unless current_tag == tag
+
+          raw_html_container[:depth] += type == :open ? 1 : -1 if %i[open close].include?(type)
+        end
         raw_html_container = nil if raw_html_container.fetch(:depth) <= 0
         next
       end
@@ -512,9 +561,10 @@ module CloseoutEvidenceReplay
       # preserving that discard is intentionally fail-closed: later apparent
       # evidence is not rendered authority. Blockquotes are excluded too because
       # a canonical disclosure must be top-level published content.
-      if (container = structural_line.match(/<(?<tag>pre|code|script|style|textarea|blockquote)(?:\s|>)/i))
-        tag = container[:tag].downcase
-        depth = structural_line.scan(/<#{Regexp.escape(tag)}(?:\s|>)/i).length - structural_line.scan(%r{</#{Regexp.escape(tag)}\s*>}i).length
+      if (container = structural_tags.find { |type, tag, _text| type == :open && raw_html_tag?(tag) })
+        tag = container[1]
+        depth = structural_tags.count { |type, current_tag, _text| type == :open && current_tag == tag }
+        depth -= structural_tags.count { |type, current_tag, _text| type == :close && current_tag == tag }
         raw_html_container = { tag:, depth: } if depth.positive?
         next
       end

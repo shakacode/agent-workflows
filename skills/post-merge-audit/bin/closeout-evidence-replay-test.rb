@@ -727,6 +727,45 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_quoted_details_attributes_do_not_close_nested_disclosures
+    head_sha = "1" * 40
+    [
+      'title="x> </details>"',
+      "title='x> </details>'",
+      'title="x&gt; &lt;/details&gt; &quot; escaped&quot;"'
+    ].each do |attributes|
+      body = <<~MARKDOWN
+        <details>
+        <summary>Agent details</summary>
+
+        <details #{attributes}>
+        #{visible_qa_details(head_sha:, scope: 'quoted details attribute')}
+        </details>
+        </details>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), attributes
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", attributes
+    end
+  end
+
+  def test_quoted_raw_html_attributes_do_not_close_a_blockquote
+    head_sha = "1" * 40
+    ['title="</blockquote>"', "title='</blockquote>'"].each do |attributes|
+      body = <<~MARKDOWN
+        <blockquote #{attributes}>
+
+        #{visible_qa_details(head_sha:, scope: 'quoted blockquote attribute')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), attributes
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", attributes
+    end
+  end
+
   def test_unmatched_backticks_do_not_cross_paragraph_or_raw_html_boundaries
     head_sha = "1" * 40
     body = <<~MARKDOWN
