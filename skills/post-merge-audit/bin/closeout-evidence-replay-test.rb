@@ -549,6 +549,35 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
   end
 
+  def test_fenced_unclosed_html_comment_literal_does_not_hide_following_visible_evidence
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      ```text
+      <!-- literal example text without a closing comment delimiter
+      ```
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: fenced literal comment regression
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ```
+      </details>
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
   def test_unclosed_html_comment_hides_visible_evidence
     body = <<~MARKDOWN
       Evidence follows.

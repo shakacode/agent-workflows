@@ -307,17 +307,35 @@ module CloseoutEvidenceReplay
   end
 
   # Evidence-like text inside a quoted Markdown example or HTML comment is not
-  # a published receipt. Strip those containers before recognizing the visible
-  # disclosure, while leaving legacy HTML parsing above read-compatible.
+  # a published receipt. Strip comments only after code contexts are known, so
+  # literal comment delimiters in fenced code cannot hide later evidence.
+  def visible_line_without_html_comments(line, open:)
+    rendered = +""
+    remaining = line
+    loop do
+      if open
+        closing = remaining.index("-->")
+        return [rendered, true] unless closing
+
+        remaining = remaining[(closing + 3)..] || ""
+        open = false
+      end
+
+      opening = remaining.index("<!--")
+      return [rendered << remaining, false] unless opening
+
+      rendered << remaining[0...opening]
+      remaining = remaining[(opening + 4)..] || ""
+      open = true
+    end
+  end
+
   def visible_markdown(text)
-    # An unclosed HTML comment hides the remaining rendered text too. Treat it
-    # exactly like a closed comment rather than letting invisible evidence
-    # become authoritative at EOF.
-    text = text.to_s.gsub(/<!--.*?(?:-->|\z)/m, "")
     fence = nil
     record_fence = false
     discard_details_depth = nil
     raw_html_container = nil
+    html_comment_open = false
     details_stack = []
     evidence_summaries = ["QA evidence", "Hosted QA evidence", "Priority finding dispositions"]
     rendered = []
@@ -358,6 +376,9 @@ module CloseoutEvidenceReplay
         raw_html_container = nil if raw_html_container.fetch(:depth) <= 0
         next
       end
+      line, html_comment_open = visible_line_without_html_comments(line, open: html_comment_open)
+      next if line.empty?
+
       # CommonMark keeps an unclosed raw code container literal through EOF, so
       # preserving that discard is intentionally fail-closed: later apparent
       # evidence is not rendered authority. Blockquotes are excluded too because
