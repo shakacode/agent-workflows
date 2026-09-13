@@ -543,12 +543,8 @@ module CloseoutEvidenceReplay
     line.match?(/\A(?: {4}| {0,3}\t)/)
   end
 
-  def indented_code_block_start?(lines, line_index)
-    previous_line = lines[line_index - 1] unless line_index.zero?
-    return true unless previous_line && !previous_line.strip.empty?
-
-    previous_line.match?(/\A[ \t]{0,3}\#{1,6}(?:[ \t]|$)/) ||
-      previous_line.match?(/\A[ \t]{0,3}(?:[-*_][ \t]*){3,}(?:\r?\n)?\z/)
+  def indented_disclosure_code_line?(line)
+    indented_code_line?(line) && line.match?(%r{</?(?:details|summary)(?:\s|>)}i)
   end
 
   def visible_markdown(text)
@@ -558,7 +554,6 @@ module CloseoutEvidenceReplay
     raw_html_containers = []
     html_comment_open = false
     open_html_tag = nil
-    indented_code_block = false
     inline_code_delimiter = nil
     details_stack = []
     evidence_summaries = ["QA evidence", "Hosted QA evidence", "Priority finding dispositions"]
@@ -586,20 +581,10 @@ module CloseoutEvidenceReplay
         rendered << line
         next
       end
-      if indented_code_block
-        if line.strip.empty? || indented_code_line?(line)
-          next
-        end
-
-        indented_code_block = false
-      end
-      # Indented code persists through its indented lines and blank separators.
-      # A paragraph or HTML block can instead continue with indented HTML, while
-      # headings and thematic breaks start a new block where indentation is code.
-      if indented_code_line?(line) && indented_code_block_start?(lines, line_index)
-        indented_code_block = true
-        next
-      end
+      # Visible receipt disclosures are never accepted from indented code. Keep
+      # raw containment independent: treating an indented raw container as
+      # structural can only suppress untrusted evidence, never authorize it.
+      next if indented_disclosure_code_line?(line)
 
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
       structural_line, inline_code_delimiter, html_comment_open = html_context_line(

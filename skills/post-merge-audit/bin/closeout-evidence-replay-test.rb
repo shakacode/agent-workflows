@@ -646,6 +646,34 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_indented_disclosures_fail_closed_across_markdown_blocks
+    head_sha = "1" * 40
+    ["Heading\n=", "Heading\n--", "```text\nexample\n```", "- item", "> text"].each do |prefix|
+      body = visible_qa_details(head_sha:, scope: "indented markdown block").sub("<details>", "#{prefix}\n    <details>")
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), prefix
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", prefix
+    end
+  end
+
+  def test_raw_html_context_keeps_indented_raw_blockquotes_structural
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <div>
+      # This is raw HTML text
+          <blockquote>
+
+      #{visible_qa_details(head_sha:, scope: 'indented raw HTML blockquote')}
+      </blockquote>
+      </div>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
   def test_html_comment_cannot_close_a_raw_blockquote_before_visible_evidence
     head_sha = "1" * 40
     body = <<~MARKDOWN
