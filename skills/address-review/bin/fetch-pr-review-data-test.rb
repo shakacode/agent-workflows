@@ -222,6 +222,23 @@ class FetchPrReviewDataTest < Minitest::Test
     assert_equal body, normalized.fetch("body")
   end
 
+  def test_all_trusted_comment_collections_expose_the_unwrapped_payload_body
+    payload = "Visible review feedback."
+    body = GitHubCommentEnvelope.render(body: payload, runner: "codex", host: "M5", task_or_run: "task-7")
+    review = { "id" => 10, "body" => body, "state" => "COMMENTED", "user" => { "login" => "alice" } }
+    inline = { "id" => 20, "node_id" => "RC_20", "body" => body, "user" => { "login" => "alice" } }
+    issue = { "id" => 30, "node_id" => "IC_30", "body" => body, "user" => { "login" => "alice" } }
+
+    summary = FetchPrReviewData.build_review_summaries([review], trust).first.first
+    comment = FetchPrReviewData.build_inline_comments([inline], {}, trust).first.first
+    discussion = FetchPrReviewData.build_issue_comments([issue], trust).first.first
+
+    [summary, comment, discussion].each do |row|
+      assert_equal payload, row.fetch("payload_body")
+      assert_equal body, row.fetch("body")
+    end
+  end
+
   def test_cutoff_rejects_a_legacy_html_envelope_with_a_suffixed_denial
     body = <<~BODY
       🤖 Codex No review checkpoint was recorded.

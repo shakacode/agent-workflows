@@ -745,13 +745,20 @@ walkthrough_summary = {
   "commit_id" => walkthrough_head,
   "body" => walkthrough_body
 }
-stdout, stderr, status = Open3.capture3(
-  "jq", "-r", "--arg", "actor", "codex", "--arg", "source", "160", skill_walkthrough_marker_filter,
-  stdin_data: JSON.generate("review_summaries" => [walkthrough_summary])
-)
-assert(status.success?, "source walkthrough marker reader must execute: #{stderr}")
-assert(stdout.start_with?("v2\t777\tcodex\t"),
-       "source walkthrough marker reader must accept a canonical visible walkthrough: #{stdout.inspect}")
+%w[Codex Claude Cursor].each do |runner|
+  publisher = runner.downcase
+  summary = walkthrough_summary.merge(
+    "user" => publisher,
+    "body" => walkthrough_body.sub("🤖 Codex", "🤖 #{runner}").sub("publisher=codex", "publisher=#{publisher}")
+  )
+  stdout, stderr, status = Open3.capture3(
+    "jq", "-r", "--arg", "actor", "codex", "--arg", "source", "160", skill_walkthrough_marker_filter,
+    stdin_data: JSON.generate("review_summaries" => [summary])
+  )
+  assert(status.success?, "source walkthrough marker reader must execute: #{stderr}")
+  assert(stdout.start_with?("v2\t777\t#{publisher}\t"),
+         "source walkthrough marker reader must accept a canonical #{runner} walkthrough: #{stdout.inspect}")
+end
 hidden_walkthrough_summary = walkthrough_summary.merge(
   "id" => 778,
   "body" => walkthrough_body.sub("\n<details>", "\n````markdown\n<details>")
