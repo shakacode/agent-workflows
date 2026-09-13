@@ -7883,6 +7883,36 @@ test_failed_upgrade_restores_preexisting_migration_recovery_artifacts() {
   [[ ! -e "$staging" && ! -L "$staging" ]] || fail "retry did not consume the restored migration staging"
 }
 
+test_failed_upgrade_removes_new_install_lock() {
+  local tmp source target injection output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/fail-install-lock-cleanup.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  cat > "$injection" <<'RUBY'
+module BoundDirCleanupHook
+  def self.call(path)
+    raise Errno::EIO if path.end_with?(".agent-workflows-install.lock")
+  end
+end
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$source/bin/upgrade-agent-workflows" --host codex \
+    --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "rollback left a new install lock"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/retry.out"
+}
+
 test_failed_upgrade_restores_companion_delivery_mode_and_layout() {
   local tmp source target consumer output status
   tmp="$(mktemp -d)"
@@ -9470,6 +9500,7 @@ main() {
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_failed_upgrade_removes_new_migration_recovery_artifacts
     test_failed_upgrade_restores_preexisting_migration_recovery_artifacts
+    test_failed_upgrade_removes_new_install_lock
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills
     test_companion_to_flat_upgrade_preserves_unowned_same_named_skill

@@ -264,6 +264,8 @@ backup_target() {
       ]
       managed = [
         ".agent-workflows-install.json",
+        ".agent-workflows-install.json.tmp",
+        ".agent-workflows-install.lock/",
         "LICENSE",
         "THIRD_PARTY-NOTICES.md",
         "docs/model-routing.md",
