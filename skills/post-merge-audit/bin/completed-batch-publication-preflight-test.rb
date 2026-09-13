@@ -1015,6 +1015,70 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_noncanonical_public_claim_comment_fallback_variants_invoke_private_coordination
+    # A case or spacing variant must not bypass the selected private backend.
+    variants = [
+      "Public claim-comment fallback",
+      "public  claim-comment fallback",
+      " public claim-comment fallback "
+    ]
+    calls = []
+    payload = {
+      "scope" => { "kind" => "batch", "batch_id" => "batch-public" },
+      "batches" => []
+    }
+    capture = lambda do |command, input:, timeout:|
+      calls << { "command" => command, "input" => input, "timeout" => timeout }
+      [JSON.generate(payload), "", Struct.new(:success?).new(true)]
+    end
+    original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &capture)
+
+    variants.each do |backend|
+      assert_equal payload, CompletedBatchPublicationPreflight.authenticated_coordination_status(
+        backend:,
+        batch_id: "batch-public"
+      )
+    end
+
+    assert_equal variants.length, calls.length
+  ensure
+    if original_capture
+      CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture)
+    end
+  end
+
+  def test_assessment_noncanonical_public_fallback_whitespace_invokes_private_coordination
+    # Normalizing configured whitespace before transport can silently bypass private coordination.
+    variants = [
+      "public  claim-comment fallback",
+      " public claim-comment fallback "
+    ]
+    calls = []
+    payload = fixture("completed-batch-publication-hichee-terminal.json").fetch("coordination_status")
+    capture = lambda do |command, input:, timeout:|
+      calls << { "command" => command, "input" => input, "timeout" => timeout }
+      [JSON.generate(payload), "", Struct.new(:success?).new(true)]
+    end
+    original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &capture)
+
+    variants.each do |backend|
+      assessment = assess_input(
+        fixture("completed-batch-publication-hichee-terminal.json"),
+        backend:,
+        coordination_verifier: CompletedBatchPublicationPreflight.method(:authenticated_coordination_status)
+      )
+      assert assessment.fetch("eligible"), assessment.fetch("blockers").join("\n")
+    end
+
+    assert_equal variants.length, calls.length
+  ensure
+    if original_capture
+      CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture)
+    end
+  end
+
   def test_premature_hichee_publication_replays_blocked_for_coordination_target_and_qa
     result = assess_input(fixture("completed-batch-publication-hichee-premature.json"))
 
