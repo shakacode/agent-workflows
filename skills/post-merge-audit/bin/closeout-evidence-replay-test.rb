@@ -613,6 +613,39 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_indented_code_blocks_cannot_close_nested_details_examples
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      <details>
+      <summary>Example</summary>
+
+          example
+          </details>
+
+      #{visible_qa_details(head_sha:, scope: 'nested indented code')}
+      </details>
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_headings_and_thematic_breaks_start_indented_code_blocks
+    head_sha = "1" * 40
+    ["# Heading\n    <details>", "---\n    <details>"].each do |prefix|
+      body = visible_qa_details(head_sha:, scope: "indented block after heading").sub("<details>", prefix)
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), prefix
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", prefix
+    end
+  end
+
   def test_html_comment_cannot_close_a_raw_blockquote_before_visible_evidence
     head_sha = "1" * 40
     body = <<~MARKDOWN
