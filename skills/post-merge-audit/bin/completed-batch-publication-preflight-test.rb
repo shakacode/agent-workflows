@@ -3591,4 +3591,69 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       end
     end
   end
+
+  def test_hosted_waiver_marker_accepts_visible_and_legacy_forms_but_not_examples
+    head_sha = "a" * 40
+    target = { "host" => "github.com", "repo" => "shakacode/agent-workflows", "type" => "pull_request", "number" => 817 }
+    waiver_url = "https://github.com/shakacode/agent-workflows/pull/817#issuecomment-817"
+    payload = <<~PAYLOAD.chomp
+      target: https://github.com/shakacode/agent-workflows/pull/817
+      head_sha: #{head_sha}
+      hosted_target: staging
+      decision: waived
+    PAYLOAD
+    legacy = "<!-- hosted-qa-maintainer-waiver v1\n#{payload}\n-->"
+    visible = <<~MARKDOWN.chomp
+      🤖 Codex hosted QA waiver is recorded. No reader action is needed.
+
+      <details>
+      <summary>Hosted QA waiver details</summary>
+
+      ```text
+      hosted-qa-maintainer-waiver v1
+      #{payload}
+      ```
+      </details>
+    MARKDOWN
+
+    [legacy, visible].each do |body|
+      fields = CompletedBatchPublicationPreflight.waiver_marker_fields(
+        body,
+        marker_name: CompletedBatchPublicationPreflight::HOSTED_QA_WAIVER_MARKER,
+        marker_bindings: { "hosted_target" => "staging" }
+      )
+      assert_equal(
+        {
+          "target" => "https://github.com/shakacode/agent-workflows/pull/817",
+          "head_sha" => head_sha,
+          "hosted_target" => "staging", "decision" => "waived"
+        }, fields
+      )
+      comment = {
+        "id" => 817, "html_url" => waiver_url,
+        "issue_url" => "https://api.github.com/repos/shakacode/agent-workflows/issues/817",
+        "created_at" => "2026-09-12T00:00:00Z", "updated_at" => "2026-09-12T00:00:00Z",
+        "user" => { "login" => "maintainer", "type" => "User" }, "author_association" => "MEMBER", "body" => body
+      }
+      refute_nil CompletedBatchPublicationPreflight.canonical_hosted_qa_waiver(
+        { "url" => waiver_url }, target, waiver_url, head_sha:, hosted_target: "staging",
+        verifier: ->(**_keywords) { comment }
+      )
+    end
+
+    quoted = "Example:\n\n````markdown\n#{visible}\n````"
+    assert_nil CompletedBatchPublicationPreflight.waiver_marker_fields(
+      quoted,
+      marker_name: CompletedBatchPublicationPreflight::HOSTED_QA_WAIVER_MARKER,
+      marker_bindings: { "hosted_target" => "staging" }
+    )
+    assert_nil CompletedBatchPublicationPreflight.canonical_hosted_qa_waiver(
+      { "url" => waiver_url }, target, waiver_url, head_sha:, hosted_target: "staging",
+      verifier: ->(**_keywords) { { "id" => 817, "html_url" => waiver_url,
+                                   "issue_url" => "https://api.github.com/repos/shakacode/agent-workflows/issues/817",
+                                   "created_at" => "2026-09-12T00:00:00Z", "updated_at" => "2026-09-12T00:00:00Z",
+                                   "user" => { "login" => "maintainer", "type" => "User" },
+                                   "author_association" => "MEMBER", "body" => quoted } }
+    )
+  end
 end

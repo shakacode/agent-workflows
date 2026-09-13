@@ -34,15 +34,16 @@ On rerun, suppress a source item only when its exact source PR, kind, immutable 
 Missing, duplicate, malformed, identity-mismatched, or incomplete source state suppresses no item and makes source readiness `UNKNOWN` until corrected; a status checkpoint never acts as a global cutoff.
 Every new source checkpoint carries forward unchanged valid rows and records every source candidate since `SOURCE_REVIEW_CUTOFF_AT`, including pending rows, so the latest checkpoint is a complete restart snapshot rather than a delta.
 On source-aware reruns, keep the complete source inventory for context and readiness, apply `SOURCE_REVIEW_CUTOFF_AT` from the latest valid source summary as the only global cutoff, then consume the latest summary/status checkpoint's per-item state for remaining candidates.
-Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid `address-review-source-state:v1` block, whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it.
+Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid visible `address-review-checkpoint:v1` summary and `address-review-source-state:v1` block, may advance this cutoff; a visible `kind: status` checkpoint never advances it. Historical HTML forms are read-compatible only.
 Use `SOURCE_STATE_CHECKPOINT_BODY` only from the newest authenticated, schema-valid summary/status checkpoint. A marker-only, wrong-author, malformed, duplicate, or incomplete checkpoint supplies neither restart state nor a cutoff.
 For each reply or resolution, bind `ITEM_SOURCE_PR` to the worklist item's
 preserved source PR; when replacement carryover is inactive, default it to
 `${PRIMARY_PR_NUMBER}`. Keep `REVIEW_COMMENT_ID` and `THREAD_ID` from that same
 item. Never use `ITEM_SOURCE_PR` for checkout, code edits, commits, or pushes.
-Build the source checkpoint file with `references/templates.md`. Put
-`<!-- address-review-summary -->` on its first line only when that source
-cutoff guard passes; otherwise use `<!-- address-review-status -->`.
+Build the source checkpoint file with `references/templates.md`. Start it
+exactly `🤖 Codex` with outcome and reader action, then put the summary/status
+kind and source-state records in the closed `Address-review checkpoint`
+disclosure; use `kind: summary` only when the source cutoff guard passes.
 Populate its cumulative state rows from the verified source-aware worklist,
 including terminal and pending outcomes, after comparing each item's current
 latest activity with any valid carried row.

@@ -121,12 +121,14 @@ Behavior rules:
   - Promote optional items that need judgment, change behavior, or expand scope
     to `DISCUSS`; record behavior-preserving nits that would only create review
     churn as deferred/declined instead.
-- For full-PR scans, default to feedback after the latest PR summary comment whose body starts with `<!-- address-review-summary -->` on its very first line.
+- For full-PR scans, default to feedback after the latest valid visible summary
+  checkpoint; historical first-line `<!-- address-review-summary -->` comments
+  remain read-compatible only.
 - If I say `check all reviews`, ignore that cutoff and rescan the full PR history.
 - If I give a specific review URL or specific issue-comment URL, fetch that exact target even if it predates the latest summary comment.
 - Except for action `a` (including `autopilot` initiation), after selected items are addressed, reply to the original GitHub comments and resolve threads when appropriate. Under `COORDINATED_AUTOFIX=1`, pure status, acknowledgment, or boilerplate skipped items without an actionable thread are the exception; record their explicit no-action outcomes in the cutoff-safe summary instead.
 - Never post an unsolicited address-review disposition or acknowledgment reply to an explanatory root in the current exact-diff walkthrough, and do not resolve that walkthrough during ordinary closeout. When a trusted focused reply was promoted for triage, answer it in the original thread under the normal action rules while keeping the walkthrough visible. Resolve stale walkthrough threads without adding disposition replies after a verified current replacement exists, or after verifying that the active route neither requires nor authorizes a replacement. First answer or carry forward every focused reply; an unanswered focused reply keeps its stale thread open and actionable. Apply the normal reply and resolution rules to every other selected review thread.
-- Except for action `a` and inspect-only bare `o`, after each completed action or action chain, post a new PR summary comment with the `<!-- address-review-summary -->` marker that says what mattered and what was skipped, but only when every older review item is addressed, resolved, deferred/tracked, declined with rationale, or explicitly left pending by user choice on the original thread. If older optional items remain pending/unselected without that thread-level outcome, post a non-cutoff status comment with the `<!-- address-review-status -->` marker and tell the next run to use `check all reviews`; do not advance the cutoff.
+- Except for action `a` and inspect-only bare `o`, after each completed action or action chain, post a new PR summary comment that begins exactly `🤖 Codex`, states what mattered and the reader action, and puts `address-review-checkpoint:v1` in a closed disclosure. Use `kind: summary` only when every older review item is addressed, resolved, deferred/tracked, declined with rationale, or explicitly left pending by user choice on the original thread. Otherwise post `kind: status` and tell the next run to use `check all reviews`; do not advance the cutoff. Historical HTML markers are read-only.
 
 Execution flow when terminal access is available:
 
@@ -661,7 +663,7 @@ Execution flow when terminal access is available:
            sort_by(.created_at) | reverse
          ' source-review-data.json)"; then
            SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"
-           SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
+           SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->") or test("(?ms)\\A🤖 Codex .*?address-review-checkpoint:v1\\r?\\nkind: summary\\r?\\n"))][0].created_at // ""')"
          else
            echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
          fi
@@ -671,7 +673,7 @@ Execution flow when terminal access is available:
      fi
      ```
      On source-aware reruns, keep the complete source inventory for context and readiness, apply `SOURCE_REVIEW_CUTOFF_AT` from the latest valid source summary as the only global cutoff, then consume the latest summary/status checkpoint's per-item state for remaining candidates.
-     Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid `address-review-source-state:v1` block, whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it.
+     Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid visible `address-review-checkpoint:v1` summary and `address-review-source-state:v1` block, may advance this cutoff; a visible `kind: status` checkpoint never advances it. Historical HTML forms are read-compatible only.
      Use `SOURCE_STATE_CHECKPOINT_BODY` only from the newest authenticated, schema-valid summary/status checkpoint. A marker-only, wrong-author, malformed, duplicate, or incomplete checkpoint supplies neither restart state nor a cutoff.
      Unless `check all reviews` was explicit, apply the same timestamp filter as
      the primary inventory: source issue comments/review summaries must be
@@ -1050,7 +1052,7 @@ before mutating GitHub or the branch.
      record. Exclude only a same-actor marked
      reply from source triage and snapshot completeness; another actor cannot use
      the marker to suppress a source candidate.
-     - Issue comments: when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, prefix the response with `🤖 Codex source reply: <outcome>` and put `address-review-source-reply:v1` in a closed `Source reply details` disclosure; otherwise set `RESPONSE_BODY="<response>"`. Then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
+     - Issue comments: when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, prefix the response with `🤖 Codex source reply: <outcome>` and put `address-review-source-reply:v1` in a closed `Address-review reply details` disclosure; otherwise set `RESPONSE_BODY="<response>"`. Then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
      - Review comment replies: for every item assign `REVIEW_COMMENT_ID="<current-item-id>"` and `CURRENT_ITEM_IN_REPLY_TO_ID="<current-item-in_reply_to_id-or-null>"`; reset `REVIEW_COMMENT_IN_REPLY_TO_ID=""`, then overwrite it from `CURRENT_ITEM_IN_REPLY_TO_ID` only when that value is not `null`. Run `REVIEW_REPLY_TARGET_ID="${REVIEW_COMMENT_IN_REPLY_TO_ID:-${REVIEW_COMMENT_ID}}"` followed by `gh api repos/${REPO}/pulls/${ITEM_SOURCE_PR}/comments/${REVIEW_REPLY_TARGET_ID}/replies -X POST -f body="<response>"`. Never inherit item variables from a prior persistent-shell iteration or pass a literal `null`. This posts a promoted `root_excluded` reply through its top-level parent without changing the item's tracked identity; never substitute the parsed input `COMMENT_ID`.
      - Review summary body replies: apply the same source-only `RESPONSE_BODY` marker rule as issue comments, then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
    - Resolve threads only when the issue is actually handled, explicitly declined with my approval, autonomously declined under a trusted `COORDINATED_AUTOFIX=1` evidence-backed recommendation with the rationale recorded, or autonomously deferred/declined as a low-risk behavior-preserving `OPTIONAL` item under the Maintainer Attention Contract with rationale recorded. Generic handled/declined thread resolution must exclude coordinated `defer`; it follows the ordered durable-evidence path above. Autonomous deferred/declined optional replies must use the `AGENTS.md` tag format: include `[auto-deferred]` on its own line plus a one-line rationale before the thread is resolved. An auto-resolved optional thread that lacks that tag is a spec violation; do not resolve the thread if you cannot post the tag and rationale first:

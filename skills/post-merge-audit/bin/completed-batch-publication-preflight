@@ -1443,12 +1443,10 @@ module CompletedBatchPublicationPreflight
   end
 
   def waiver_marker_fields(body, marker_name: QA_WAIVER_MARKER, marker_bindings: {})
-    return unless body.scan("<!-- #{marker_name}").length == 1
+    payload = legacy_waiver_marker_payload(body, marker_name) || visible_waiver_marker_payload(body, marker_name)
+    return unless payload
 
-    matches = body.scan(/<!-- #{Regexp.escape(marker_name)}\n(.*?)\n-->/m)
-    return unless matches.one?
-
-    lines = matches.first.fetch(0).lines(chomp: true)
+    lines = payload.lines(chomp: true)
     return if lines.empty? || lines.any? { |line| line.include?("<!--") || line.include?("-->") }
 
     expected_fields = %w[target head_sha decision] + marker_bindings.keys
@@ -1460,6 +1458,22 @@ module CompletedBatchPublicationPreflight
       parsed[match[1]] = match[2]
     end
     fields if fields&.keys&.sort == expected_fields.sort
+  end
+
+  def legacy_waiver_marker_payload(body, marker_name)
+    return unless body.scan("<!-- #{marker_name}").length == 1
+
+    matches = body.scan(/<!-- #{Regexp.escape(marker_name)}\n(.*?)\n-->/m)
+    matches.one? && matches.first.fetch(0)
+  end
+
+  def visible_waiver_marker_payload(body, marker_name)
+    return unless marker_name == HOSTED_QA_WAIVER_MARKER
+
+    match = body.to_s.match(
+      %r{\A🤖 Codex [^\r\n]+\r?\n\r?\n<details>\r?\n<summary>Hosted QA waiver details</summary>\r?\n\r?\n```text\r?\n#{Regexp.escape(marker_name)}\r?\n(?<payload>.*?)^```\r?\n</details>\r?\n?\z}m
+    )
+    match && match[:payload]
   end
 
   def issue_api_url_matches_target?(value, target)

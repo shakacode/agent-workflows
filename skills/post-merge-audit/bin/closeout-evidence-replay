@@ -324,7 +324,7 @@ module CloseoutEvidenceReplay
       if opener
         # The record itself is fenced inside a visible disclosure. Only a
         # fence opened outside one can be an outer Markdown example.
-        if details_depth.zero?
+        if details_depth.zero? || opener[1].length >= 4
           fence = opener[1]
           next
         end

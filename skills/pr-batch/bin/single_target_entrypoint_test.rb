@@ -530,7 +530,7 @@ assert(address_review_workflow.include?(source_cutoff_contract), "address-review
 source_cutoff_binding = 'SOURCE_REVIEW_CUTOFF_AT="$(printf \'%s\' "${SOURCE_VALID_CHECKPOINTS}" | jq -r'
 assert(address_review.include?(source_cutoff_binding), "address-review must bind source cutoff from validated checkpoints")
 assert(address_review_workflow.include?(source_cutoff_binding), "address-review workflow mirror must bind source cutoff from validated checkpoints")
-source_status_exclusion = "Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid `address-review-source-state:v1` block, whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it."
+source_status_exclusion = "Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid visible `address-review-checkpoint:v1` summary and `address-review-source-state:v1` block, may advance this cutoff; a visible `kind: status` checkpoint never advances it. Historical HTML forms are read-compatible only."
 assert(address_review.include?(source_status_exclusion), "address-review must reject source status markers as cutoffs")
 assert(address_review_actions.include?(source_status_exclusion), "address-review actions must reject source status markers as cutoffs")
 assert(address_review_workflow.include?(source_status_exclusion), "address-review workflow mirror must reject source status markers as cutoffs")
