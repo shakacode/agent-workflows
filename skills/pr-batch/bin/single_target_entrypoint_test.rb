@@ -5,6 +5,7 @@ require_relative "../lib/github_comment_envelope"
 
 require "json"
 require "open3"
+require "shellwords"
 require "tmpdir"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -87,6 +88,18 @@ def extract_source_template_awk(text)
   abort("FAIL: source template awk validator terminator missing") unless terminator
 
   filter_tail[0...terminator.begin(0)]
+end
+
+def extract_source_checkpoint_writer(text)
+  start_marker = "  SOURCE_STATE_HAS_PENDING=0"
+  start = text.index(start_marker)
+  abort("FAIL: source checkpoint writer start missing") unless start
+
+  finish_marker = '} > "${source_summary_body_file}"'
+  finish = text.index(finish_marker, start)
+  abort("FAIL: source checkpoint writer terminator missing") unless finish
+
+  text[start...(finish + finish_marker.length)]
 end
 
 batch = read_repo_file("skills/pr-batch/SKILL.md")
@@ -768,6 +781,33 @@ BODY
 enveloped_summary_body = GitHubCommentEnvelope.render(
   body: visible_enveloped_summary_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
+source_checkpoint_writer = extract_source_checkpoint_writer(address_review_templates)
+source_writer_rows = <<~ROWS.chomp
+  item\t160\tinline-comment\t101\tPRRT_kwD==/+\t2026-07-15T00:00:00Z\thandled
+  item\t160\tissue-comment\t104\t-\t2026-07-15T00:00:45Z\tsafe-to-skip
+  item\t160\tissue-comment\t102\t-\t2026-07-15T00:01:00Z\tsafe-to-skip
+  item\t160\tinline-comment\t106\tPRRT_resolved\t2026-07-15T00:02:00Z\thandled
+  item\t160\treview-summary\t105\t-\t2026-07-15T00:05:00Z\thandled
+ROWS
+template_source_payload = Dir.mktmpdir do |dir|
+  output = File.join(dir, "source-summary.md")
+  environment = {
+    "SOURCE_CUTOFF_SAFE" => "1",
+    "SOURCE_STATE_ROWS" => source_writer_rows,
+    "REPLACEMENT_PR_URL" => "https://github.com/shakacode/agent-workflows/pull/260",
+    "SOURCE_OUTCOMES" => "- Source feedback handled.",
+    "POSTING_CLIENT" => "Codex",
+    "POSTING_MODEL_FAMILY" => "Astra"
+  }
+  _stdout, stderr, status = Open3.capture3(
+    environment, "sh", "-c", "source_summary_body_file=#{Shellwords.escape(output)}\n#{source_checkpoint_writer}"
+  )
+  assert(status.success?, "source checkpoint template must execute: #{stderr}")
+  File.read(output)
+end
+template_source_body = GitHubCommentEnvelope.render(
+  body: template_source_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+)
 commented_visible_summary_payload = visible_enveloped_summary_payload.sub(
   "```text\naddress-review-checkpoint:v1\nkind: summary\n```",
   "<!--\n```text\naddress-review-checkpoint:v1\nkind: summary\n```\n-->"
@@ -939,6 +979,32 @@ assert(valid_checkpoints.first.fetch("address_review_checkpoint_kind") == "summa
 stdout, stderr, status = Open3.capture3("jq", "-r", skill_cutoff_filter, stdin_data: JSON.generate(valid_checkpoints))
 assert(status.success?, "source cutoff jq filter must execute: #{stderr}")
 assert(stdout.strip == "2026-07-15T00:07:30Z", "source cutoff jq filter must select the latest valid summary without an undefined helper")
+
+template_source_comment = {
+  "id" => 209,
+  "user" => "trusted-reviewer",
+  "created_at" => "2026-07-15T00:07:35Z",
+  "body" => template_source_body,
+  "payload_body" => GitHubCommentEnvelope.payload(template_source_body)
+}
+template_source_fixture = checkpoint_fixture.merge(
+  "issue_comments" => checkpoint_fixture.fetch("issue_comments") + [template_source_comment]
+)
+stdout, stderr, status = Open3.capture3(
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+  "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
+  stdin_data: JSON.generate(template_source_fixture)
+)
+assert(status.success?, "source checkpoint jq validator must execute with the actual source template: #{stderr}")
+assert(JSON.parse(stdout).any? { |checkpoint| checkpoint["body"] == template_source_body },
+       "source checkpoint validator must accept the actual source template after envelope unwrapping")
+stdout, stderr, status = Open3.capture3(
+  "jq", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_wait_checkpoint_filter,
+  stdin_data: JSON.generate("issue_comments" => [template_source_comment])
+)
+assert(status.success?, "source wait checkpoint jq validator must execute with the actual source template: #{stderr}")
+assert(Integer(stdout, 10) == 1,
+       "source wait checkpoint validator must accept the actual source template after envelope unwrapping")
 
 walkthrough_fixture = checkpoint_fixture.merge(
   "review_summaries" => checkpoint_fixture.fetch("review_summaries") +
