@@ -966,17 +966,12 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
     CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &capture)
 
-    [
-      "public claim-comment fallback",
-      " Public　claim-comment \n fallback. "
-    ].each do |backend|
-      result = CompletedBatchPublicationPreflight.authenticated_coordination_status(
-        backend:,
-        batch_id: "batch-public"
-      )
+    result = CompletedBatchPublicationPreflight.authenticated_coordination_status(
+      backend: "public claim-comment fallback",
+      batch_id: "batch-public"
+    )
 
-      assert_nil result, backend.inspect
-    end
+    assert_nil result
     assert_empty calls
 
     input = fixture("completed-batch-publication-hichee-terminal.json")
@@ -988,6 +983,32 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute assessment.fetch("eligible")
     assert_includes assessment.fetch("blockers"), "coordination status is not authenticated or fresh"
     assert_empty calls
+  ensure
+    if original_capture
+      CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture)
+    end
+  end
+
+  def test_legacy_dotted_public_claim_comment_spelling_is_not_a_fallback
+    calls = []
+    capture = lambda do |command, input:, timeout:|
+      calls << { "command" => command, "input" => input, "timeout" => timeout }
+      payload = {
+        "scope" => { "kind" => "batch", "batch_id" => "batch-public" },
+        "batches" => []
+      }
+      [JSON.generate(payload), "", Struct.new(:success?).new(true)]
+    end
+    original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &capture)
+
+    result = CompletedBatchPublicationPreflight.authenticated_coordination_status(
+      backend: "public claim-comment fallback.",
+      batch_id: "batch-public"
+    )
+
+    assert_equal({ "scope" => { "kind" => "batch", "batch_id" => "batch-public" }, "batches" => [] }, result)
+    assert_equal 1, calls.length
   ensure
     if original_capture
       CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture)

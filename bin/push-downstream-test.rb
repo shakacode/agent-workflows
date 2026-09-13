@@ -784,6 +784,22 @@ class PushDownstreamSecurityAuditFleetTest < Minitest::Test
 end
 
 class PushDownstreamAdapterTest < Minitest::Test
+  def test_shipped_default_uses_the_closed_agent_coord_backend_contract
+    presets = PushDownstream.load_presets(File.expand_path("../seam-presets.yml", __dir__))
+    repo = { repo: "consumer", base_branch: "main", preset: nil, overrides: {} }
+
+    policy = PushDownstream.resolve_contract(repo, presets).fetch(:policy)
+
+    assert_equal "agent-coord private backend", policy.fetch("coordination_backend")
+    assert_equal(
+      {
+        "version" => 1,
+        "allowed_identifiers" => ["agent-coord private backend"]
+      },
+      policy.fetch("coordination_backend_contract")
+    )
+  end
+
   def test_resolve_contract_layers_defaults_preset_and_overrides
     presets = {
       "defaults" => {
@@ -921,7 +937,7 @@ class PushDownstreamScaffoldTest < Minitest::Test
       "follow_up_prefix" => "Follow-up:",
       "review_gate" => "AI reviewers are advisory.",
       "approval_exempt" => "docs and workflow text.",
-      "coordination_backend" => "public claim-comment fallback.",
+      "coordination_backend" => "public claim-comment fallback",
       "changelog" => "CHANGELOG.md; user-visible changes only.",
       "benchmark_labels" => "n/a",
       "merge_ledger" => "n/a",
