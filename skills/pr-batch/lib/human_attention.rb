@@ -100,22 +100,21 @@ module HumanAttention
   end
 
   def capture3_bounded(*command, timeout_seconds:)
-    Open3.popen3(*command, pgroup: true) do |stdin, stdout, stderr, wait_thread|
-      stdin.close
-      stdout_reader = Thread.new { read_stream(stdout) }
-      stderr_reader = Thread.new { read_stream(stderr) }
-      Timeout.timeout(timeout_seconds) do
-        status = wait_thread.value
-        [stdout_reader.value, stderr_reader.value, status]
-      end
-    rescue Timeout::Error
-      terminate_process_group(wait_thread)
-      stdout.close unless stdout.closed?
-      stderr.close unless stderr.closed?
-      stdout_reader.join
-      stderr_reader.join
-      raise
+    stdin, stdout, stderr, wait_thread = Open3.popen3(*command, pgroup: true)
+    stdin.close
+    stdout_reader = Thread.new { read_stream(stdout) }
+    stderr_reader = Thread.new { read_stream(stderr) }
+    Timeout.timeout(timeout_seconds) do
+      status = wait_thread.value
+      [stdout_reader.value, stderr_reader.value, status]
     end
+  rescue Timeout::Error
+    [stdout, stderr].each { |stream| stream.close unless stream.closed? }
+    terminate_process_group(wait_thread)
+    [stdout_reader, stderr_reader].each { |reader| reader.join(0.5) }
+    raise
+  ensure
+    [stdin, stdout, stderr].compact.each { |stream| stream.close unless stream.closed? }
   end
 
   def read_stream(stream)
@@ -125,12 +124,16 @@ module HumanAttention
   end
 
   def terminate_process_group(wait_thread)
-    Process.kill("TERM", -wait_thread.pid)
-    wait_thread.join(1)
-    Process.kill("KILL", -wait_thread.pid)
-    wait_thread.join
+    signal_process_group("TERM", wait_thread.pid)
+    wait_thread.join(0.5)
+    signal_process_group("KILL", wait_thread.pid)
+    wait_thread.join(0.5)
+  end
+
+  def signal_process_group(signal, pid)
+    Process.kill(signal, -pid)
   rescue Errno::ESRCH
-    wait_thread.join
+    nil
   end
 
   def desk(config:, github_cli: ENV.fetch("HUMAN_ATTENTION_GH", "gh"), refreshed_at: Time.now.utc.iso8601,

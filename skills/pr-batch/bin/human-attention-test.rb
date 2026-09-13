@@ -280,6 +280,21 @@ class HumanAttentionTest < Minitest::Test
     end
   end
 
+  def test_timeout_cleanup_never_waits_without_a_bound
+    waiter = Struct.new(:pid, :joins) do
+      def join(seconds = nil)
+        raise "unbounded join" unless seconds
+
+        joins << seconds
+        nil
+      end
+    end.new(999_999_999, [])
+
+    HumanAttention.terminate_process_group(waiter)
+
+    assert_equal [0.5, 0.5], waiter.joins
+  end
+
   # Production break: GitHub repository identities are case-insensitive, so
   # case-only duplicates would query one repository twice and duplicate its
   # desk cards and decision count.
