@@ -332,7 +332,7 @@ module CloseoutEvidenceReplay
     lines[start_index..].to_a.take_while do |line|
       !line.strip.empty? && !line.match?(/\A[ \t]{0,3}>/) &&
         !line.match?(%r{\A[ \t]*</?(?:blockquote|code|details|pre|script|style|textarea)(?:\s|>)}i) &&
-        !line.include?("<!--")
+        !line.match?(/\A[ \t]{0,3}<!--/)
     end.join
   end
 

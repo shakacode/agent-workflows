@@ -934,7 +934,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     [
       ["`<!--`", "`-->`"],
       ["``<!--``", "``-->``"],
-      ["`<!--\nliteral`", "`-->`"]
+      ["`<!--\nliteral`", "`-->`"],
+      ["`a multiline\nvalue <!--`", "`-->`"]
     ].each do |opening_literal, closing_literal|
       body = <<~MARKDOWN
         Use #{opening_literal} literally.
@@ -951,6 +952,42 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       assert_equal "UNKNOWN", evidence.fetch("verdict"), [opening_literal, closing_literal].inspect
       assert_includes evidence.fetch("missing"), "qa-evidence marker missing", [opening_literal, closing_literal].inspect
     end
+  end
+
+  def test_multiline_inline_code_comment_literals_preserve_later_visible_evidence
+    head_sha = "1" * 40
+    ["value <!--", "  indented value <!--"].each do |literal_line|
+      body = <<~MARKDOWN
+        Use `a multiline
+        #{literal_line}` literally.
+
+        <blockquote>
+
+        Use `-->` literally.
+
+        #{visible_qa_details(head_sha:, scope: 'quoted multiline literal')}
+        </blockquote>
+
+        #{visible_qa_details(head_sha:, scope: 'visible evidence after quote')}
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "SATISFIED", evidence.fetch("verdict"), literal_line
+    end
+  end
+
+  def test_column_start_comment_still_blocks_multiline_inline_code_lookahead
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      Use `a multiline
+      <!-- literal comment delimiter`
+
+      #{visible_qa_details(head_sha:, scope: 'column start comment')}
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
   def test_multiline_quoted_details_attributes_remain_nested
