@@ -143,6 +143,16 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
   end
 
+  def test_payload_refuses_an_outcome_first_envelope_downgraded_to_legacy_metadata
+    rendered = GitHubCommentEnvelope.render(
+      body: "No current checkpoint.\n<!-- address-review-summary -->", runner: "codex", host: "M5", task_or_run: "task-7"
+    )
+    downgraded = rendered.sub(/payload_first_line_b64url: [^\n]+\npayload_line_ending: [^\n]+\n/, "")
+
+    assert_nil GitHubCommentEnvelope.parse(downgraded)
+    assert_equal downgraded, GitHubCommentEnvelope.payload(downgraded)
+  end
+
   def test_payload_refuses_multiline_or_invalid_utf8_encoded_first_lines
     rendered = GitHubCommentEnvelope.render(
       body: "Review complete.\nFollow-up evidence is recorded.", runner: "codex", host: "M5", task_or_run: "task-7"
@@ -210,6 +220,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     BODY
 
     assert_equal "legacy payload\n", GitHubCommentEnvelope.payload(body)
+    assert_equal "codex", GitHubCommentEnvelope.parse(body).fetch("runner")
   end
 
   def test_legacy_parser_requires_all_field_labels

@@ -78,7 +78,11 @@ module GitHubCommentEnvelope
     return unless valid_fields?(visible, runner, host, task_or_run)
 
     parsed = { "version" => VERSION, "runner" => runner.downcase, "host" => host, "task_or_run" => task_or_run, "payload_offset" => match.end(0) }
-    return parsed unless match[:payload_first_line]
+    unless match[:payload_first_line]
+      return unless visible == "🤖 #{RUNNER_DISPLAY.fetch(runner.downcase)}"
+
+      return parsed
+    end
 
     payload_first_line = Base64.urlsafe_decode64(match[:payload_first_line]).force_encoding(Encoding::UTF_8)
     return unless Base64.urlsafe_encode64(payload_first_line, padding: false) == match[:payload_first_line]
