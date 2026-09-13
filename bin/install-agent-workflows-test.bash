@@ -7837,6 +7837,60 @@ test_failed_upgrade_restores_companion_delivery_mode_and_layout() {
   ' "$target/.agent-workflows-install.json"
 }
 
+test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills() {
+  local tmp source target consumer output exit_code
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion >"$tmp/install.out"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode flat --consumer-root "$consumer" --no-fetch 2>&1)"
+  exit_code=$?
+  set -e
+
+  [[ "$exit_code" -ne 0 ]] || fail "expected flat upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ ! -e "$target/skills/pr-batch" ]] || fail "rollback left a new flat skill beside companion metadata"
+}
+
+test_failed_flat_upgrade_restores_skill_removed_from_new_source() {
+  local tmp source target consumer output exit_code
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+  [[ -L "$target/skills/pr-batch" ]] || fail "expected initial flat skill link"
+  rm -rf "$source/skills/pr-batch"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add -A
+  git -C "$source" commit --quiet -m "remove pr-batch"
+  write_native_scw_state codex "$target"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode plugin-companion --consumer-root "$consumer" --no-fetch 2>&1)"
+  exit_code=$?
+  set -e
+
+  [[ "$exit_code" -ne 0 ]] || fail "expected companion upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/skills/pr-batch" ]] || fail "rollback did not restore the removed flat skill"
+}
+
 test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion() {
   local tmp source target consumer output status
   tmp="$(mktemp -d)"
@@ -9033,6 +9087,8 @@ main() {
     test_upgrade_reports_missing_source_as_check_failed
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
+    test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills
+    test_failed_flat_upgrade_restores_skill_removed_from_new_source
     test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion
     test_flat_skill_snapshot_manifest_excludes_dot_entries
     test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants

@@ -178,7 +178,7 @@ backup_target() {
     # under worktrees/, tmp/, and sessions/. Snapshot only paths the installer
     # can replace so rollback remains bounded by the pack installation.
     ruby -rjson -e '
-      target, source, host, _delivery_mode, metadata_path = ARGV
+      target, source, host, delivery_mode, metadata_path = ARGV
       managed = [
         ".agent-workflows-install.json",
         "LICENSE",
@@ -233,10 +233,24 @@ backup_target() {
           managed << "#{prefix}#{name}"
         end
       end
-      if metadata["delivery_mode"] == "flat"
+      if metadata["delivery_mode"] == "flat" || delivery_mode == "flat"
         Dir.children(File.join(source, "skills")).each do |name|
           path = File.join(source, "skills", name)
           managed << "skills/#{File.basename(path) }" if File.directory?(path) && !File.symlink?(path)
+        end
+      end
+      if metadata["delivery_mode"] == "flat"
+        revision = metadata["source_revision"]
+        roots = [metadata["source"], source].compact.uniq
+        git_root = roots.find do |root|
+          File.directory?(root) && revision.to_s.match?(/\A[0-9a-f]{40}\z/i) &&
+            system("git", "-C", root, "cat-file", "-e", "#{revision}:skills", out: File::NULL, err: File::NULL)
+        end
+        if git_root
+          IO.popen(["git", "-C", git_root, "ls-tree", "--name-only", "#{revision}:skills"], &:read).lines.each do |name|
+            name = name.strip
+            managed << "skills/#{name}" unless name.empty? || name.include?("/") || [".", ".."].include?(name)
+          end
         end
       end
       managed.uniq.each do |path|
