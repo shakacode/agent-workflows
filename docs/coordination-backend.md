@@ -264,7 +264,7 @@ its batch-registration seam. A representative dry-run manifest is:
     {
       "name": "implementation",
       "owner": "batch-a-implementation",
-      "targets": ["issue:123"],
+      "targets": ["123"],
       "worker_preference": {
         "model": "gpt-5.6-terra",
         "effort": "high"
@@ -278,6 +278,18 @@ its batch-registration seam. A representative dry-run manifest is:
   ]
 }
 ```
+
+The `targets[]` strings are exact raw target identities. Use the same exact
+string for batch registration, `agent-coord claim`, and `agent-coord release`;
+the backend does not normalize equivalent forms such as `123` and `issue:123`.
+If terminal closeout reports `terminal closeout does not match exactly one lane
+in batch <id>`, inspect the registered manifest and claim/release target for
+this mismatch. Only when the installed backend supports an exact whole-manifest
+update or re-registration operation, re-register the complete manifest using
+one target form consistently, then retry the release. For `agent-coord`, use
+`register-batch --file`. Otherwise leave closeout `UNKNOWN` and report the
+required operator action. Do not invent a lane-only repair operation that the
+backend does not support.
 
 `pack_sha` is the verified full git SHA of the loaded Agent Workflows pack, or
 the verified installed-release identifier when the pack is not a git checkout.
