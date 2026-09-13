@@ -8412,6 +8412,12 @@ test_flat_skill_snapshot_manifest_excludes_dot_entries() {
   mkdir -p "$source" "$consumer" "$wrap"
   new_source_repo "$source"
   "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  mkdir -p "$source/skills/.scratch" "$source/workflows/.scratch" \
+    "$target/skills/.scratch" "$target/workflows/.scratch"
+  printf 'source-only hidden skill\n' > "$source/skills/.scratch/SKILL.md"
+  printf 'source-only hidden workflow\n' > "$source/workflows/.scratch/state"
+  printf 'consumer hidden skill\n' > "$target/skills/.scratch/SKILL.md"
+  printf 'consumer hidden workflow\n' > "$target/workflows/.scratch/state"
   printf '0.1.1\n' > "$source/VERSION"
   git -C "$source" add VERSION
   git -C "$source" commit --quiet -m "bump version"
@@ -8440,6 +8446,44 @@ WRAP
   assert_contains "$output" "ROLLBACK_COMPLETE"
   assert_not_contains "$(cat "$manifest_log")" "skills/."
   assert_not_contains "$(cat "$manifest_log")" "skills/.."
+  assert_not_contains "$(cat "$manifest_log")" "workflows/.scratch"
+}
+
+test_failed_upgrade_reports_incomplete_rollback_and_preserves_original_status() {
+  local tmp source target wrap output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  wrap="$tmp/wrap"
+  mkdir -p "$source" "$wrap"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+"$(dirname "$0")/install-agent-workflows-real" "$@"
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+  cat > "$wrap/bash-env" <<'BASH_ENV'
+cp() {
+  if [[ "${1:-}" = "-a" && "${2:-}" == */target/LICENSE ]]; then
+    return 1
+  fi
+  command cp "$@"
+}
+BASH_ENV
+
+  set +e
+  output="$(BASH_ENV="$wrap/bash-env" "$source/bin/upgrade-agent-workflows" --host codex \
+    --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "rollback replaced original exit 7 with $status: $output"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
 }
 
 test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants() {
@@ -9662,6 +9706,7 @@ main() {
     test_failed_flat_upgrade_restores_skill_removed_from_new_source
     test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion
     test_flat_skill_snapshot_manifest_excludes_dot_entries
+    test_failed_upgrade_reports_incomplete_rollback_and_preserves_original_status
     test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants
     test_failed_copy_upgrade_does_not_restore_through_symlinked_bin_root
     test_failed_copy_upgrade_does_not_restore_through_symlinked_skills_root

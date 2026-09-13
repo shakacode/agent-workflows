@@ -281,8 +281,8 @@ backup_target() {
       end
       workflows_root = File.join(target, "workflows")
       managed << "workflows" unless File.directory?(workflows_root) && !File.symlink?(workflows_root)
-      Dir.children(File.join(source, "workflows")).each do |name|
-        managed << "workflows/#{name}"
+      Dir.glob(File.join(source, "workflows", "*")).each do |path|
+        managed << "workflows/#{File.basename(path)}"
       end
       metadata = begin
         JSON.parse(File.binread(metadata_path))
@@ -363,8 +363,7 @@ backup_target() {
         end
       end
       if metadata["delivery_mode"] == "flat" || delivery_mode == "flat"
-        Dir.children(File.join(source, "skills")).each do |name|
-          path = File.join(source, "skills", name)
+        Dir.glob(File.join(source, "skills", "*")).each do |path|
           managed << "skills/#{File.basename(path) }" if File.directory?(path) && !File.symlink?(path)
         end
       end
@@ -460,6 +459,10 @@ restore_target() {
   local path index
   local -a absent_containers=()
   local rollback_complete=true
+  # Rollback is best-effort across every managed path. Record individual I/O
+  # failures and continue so the operator gets a reliable incomplete receipt.
+  set +e
+  trap 'rollback_complete=false' ERR
   if [[ "${target_existed:-false}" = "true" ]]; then
     cleanup_new_migration_staging || rollback_complete=false
     mkdir -p "$target"
@@ -517,6 +520,7 @@ restore_target() {
   else
     rm -rf "$target"
   fi
+  trap - ERR
   if [[ "$rollback_complete" != "true" ]]; then
     echo "ROLLBACK_INCOMPLETE: preserved unverified migration recovery artifacts under $target" >&2
     return 1
@@ -646,7 +650,7 @@ fi
 
 backup_target
 completed=false
-trap 'status=$?; if [[ "$completed" != "true" ]]; then restore_target; fi; exit "$status"' ERR
+trap 'status=$?; set +e; if [[ "$completed" != "true" ]]; then (restore_target); fi; exit "$status"' ERR
 
 "$install_script" --host "$host" --target "$target" --mode "$mode" --delivery-mode "$delivery_mode"
 
