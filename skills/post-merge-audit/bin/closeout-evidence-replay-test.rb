@@ -709,6 +709,40 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
+  def test_split_real_raw_opener_stays_real_after_an_indented_completion
+    head_sha = "1" * 40
+    indent = "    "
+    body = <<~MARKDOWN
+      <blockquote
+      #{indent}>
+      text
+
+      #{indent}</blockquote>
+
+      #{visible_qa_details(head_sha:, scope: 'split real raw opener')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_later_details_summary_cannot_relabel_an_example
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>Example</summary>
+      <summary>Agent details</summary>
+      #{visible_qa_details(head_sha:, scope: 'duplicate details summary')}
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
   def test_indented_balanced_raw_tags_do_not_create_permanent_containment
     head_sha = "1" * 40
     ["    <code></code>", "A paragraph.\n    <blockquote></blockquote>"].each do |prefix|

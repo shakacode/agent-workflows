@@ -517,7 +517,9 @@ module CloseoutEvidenceReplay
           discard_details_depth = details_stack.length
         end
       when :summary
-        details_stack[-1] = text unless details_stack.empty?
+        # The first summary labels a disclosure. A later summary is ordinary
+        # disclosure content and must not relabel an explanatory example.
+        details_stack[-1] = text if !details_stack.empty? && details_stack[-1].nil?
       when :close
         details_stack.pop unless details_stack.empty?
       end
@@ -531,7 +533,9 @@ module CloseoutEvidenceReplay
       next unless raw_html_tag?(tag)
 
       if type == :open
-        raw_html_containers << { tag:, synthetic: indented_code_line?(line) || indented_origin }
+        # A split tag retains the context of its opening '<'. An indented
+        # completion must not turn a real opener into a synthetic one.
+        raw_html_containers << { tag:, synthetic: indented_origin }
       elsif type == :close
         index = raw_html_containers.rindex do |current|
           current.fetch(:tag) == tag &&
