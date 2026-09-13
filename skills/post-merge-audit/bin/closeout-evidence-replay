@@ -573,9 +573,11 @@ module CloseoutEvidenceReplay
         rendered << line
         next
       end
-      # Markdown treats four spaces or a tab-expanded indentation as code, so
-      # an apparent HTML disclosure there cannot publish authority.
-      next if line.match?(/\A(?: {4}| {0,3}\t)/)
+      # A standalone four-space or tab-expanded indentation is Markdown code.
+      # After nonblank paragraph or HTML-block content, the same text remains
+      # in that block context and can still open a structural raw container.
+      standalone_indentation = line_index.zero? || lines[line_index - 1].strip.empty?
+      next if standalone_indentation && line.match?(/\A(?: {4}| {0,3}\t)/)
 
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
       structural_line, inline_code_delimiter, html_comment_open = html_context_line(
