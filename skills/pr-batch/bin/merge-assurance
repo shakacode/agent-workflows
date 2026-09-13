@@ -80,6 +80,7 @@ module MergeAssurance
     helper
     closeout-helper
     decision-library
+    comment-envelope-library
     evidence-library
     github-json-string-validation-library
     integration-evidence-library

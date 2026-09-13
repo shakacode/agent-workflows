@@ -5145,6 +5145,7 @@ class MergeAssuranceTest < Minitest::Test
       "helper" => "skills/pr-batch/bin/autonomous-merge-eligibility",
       "closeout-helper" => "skills/pr-batch/bin/autonomous-merge-closeout",
       "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
+      "comment-envelope-library" => "skills/pr-batch/lib/github_comment_envelope.rb",
       "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
       "github-json-string-validation-library" =>
         "skills/pr-batch/lib/github_json_string_validation.rb",

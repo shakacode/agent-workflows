@@ -47,6 +47,12 @@ the production receipt parser loaded by the sibling `pr-batch` contract test;
 an isolated pinned copy must include both companions or stop with a precise
 missing-companion blocker.
 
+Before the coordinator invokes `completed-batch-audit-receipt publish` or
+`supersede`, export `AGENT_COMMENT_RUNNER`, `AGENT_COMMENT_HOST`, and
+`AGENT_COMMENT_TASK_OR_RUN` from the actual execution context. Do not substitute
+the batch ID for the task or run identifier. Missing or invalid attribution must
+stop publication before the comment is posted.
+
 For a verified Codex GPT-5.6 batch, record the originating preferences and use
 this recommended advisory route profile:
 
