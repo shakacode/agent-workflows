@@ -421,6 +421,31 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
+  def test_nested_raw_blockquotes_keep_inner_disclosures_non_authoritative
+    body = <<~MARKDOWN
+      <blockquote>
+      <blockquote>
+      Example:
+      </blockquote>
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{'1' * 40}
+      ```
+      </details>
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
   def test_nested_details_and_fence_edge_cases_do_not_promote_examples
     head_sha = "1" * 40
     nested = <<~MARKDOWN

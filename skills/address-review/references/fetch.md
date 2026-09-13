@@ -116,7 +116,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
       . as $inventory |
       def visible_checkpoint_kind:
         if test("<!--") then null
-        else try capture("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```(?:(?!<)[\\s\\S])*?</details>\\r?\\n?\\z").kind catch null end;
+        else ([try capture("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```(?:(?!<)[\\s\\S])*?</details>\\r?\\n?\\z").kind catch null] | first) end;
       def checkpoint_kind:
         if startswith("<!-- address-review-summary -->") then "summary"
         elif startswith("<!-- address-review-status -->") then "status"
@@ -128,13 +128,13 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)
         else ([visible_source_state] | length) end;
       def visible_claim:
-        test("(?ms)\\A(?:🤖 Codex )?[Cc]laim is active\\. Do not start competing work\\.\\r?\\n\\r?\\n<details>\\r?\\n<summary>Claim details</summary>\\r?\\n\\r?\\n```text\\r?\\ncodex-claim v1\\r?\\n");
+        test("(?ms)\\A(?:🤖 Codex )?[Cc]laim is active\\. Do not start competing work\\.\\r?\\n\\r?\\n<details>\\r?\\n<summary>Claim details</summary>\\r?\\n\\r?\\n```text\\r?\\ncodex-claim v1\\r?\\nbatch: [^\\r\\n<]+\\r?\\nmachine: [^\\r\\n<]+\\r?\\nthread: [^\\r\\n<]+\\r?\\nbranch: [^\\r\\n<]+\\r?\\nstatus: [^\\r\\n<]+\\r?\\nexpires_at: [^\\r\\n<]+\\r?\\n```\\r?\\n</details>\\r?\\n?\\z");
       def marker_body:
         checkpoint_kind != null or startswith("<!-- codex-claim v1") or visible_claim;
       def comment_body($comment): $comment.payload_body // $comment.body // "";
       def generated_source_reply($comment):
         ((comment_body($comment) | startswith("<!-- address-review-source-reply -->")) or
-         (comment_body($comment) | test("(?ms)\\A(?:🤖 Codex )?[Ss]ource reply: .*?<details>\\r?\\n<summary>Address-review reply details</summary>.*?^```text\\r?\\naddress-review-source-reply:v1\\r?\\n"))) and
+         (comment_body($comment) | test("(?ms)\\A(?:🤖 Codex )?[Ss]ource reply: [^\\r\\n<>]+\\r?\\n\\r?\\n<details>\\r?\\n<summary>Address-review reply details</summary>\\r?\\n\\r?\\n```text\\r?\\naddress-review-source-reply:v1\\r?\\n```\\r?\\n</details>\\r?\\n?\\z"))) and
         ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
       def item_key($kind; $id; $thread_id):
         [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");

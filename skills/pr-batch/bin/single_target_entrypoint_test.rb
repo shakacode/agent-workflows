@@ -1010,6 +1010,20 @@ assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == unclosed_com
 assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == truncated_visible_summary_body }, "source checkpoint validator must reject an unclosed visible disclosure")
 assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == outer_example_source_state_body }, "source checkpoint validator must reject a source-state record nested in an outer Markdown example")
 assert(valid_checkpoints.first.fetch("address_review_checkpoint_kind") == "summary", "source checkpoint reader must carry parsed checkpoint kind")
+uncovered_source_comment = {
+  "id" => 299,
+  "user" => "trusted-reviewer",
+  "created_at" => "2026-07-15T00:07:20Z",
+  "body" => "Please verify this uncovered source concern."
+}
+stdout, stderr, status = Open3.capture3(
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+  "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
+  stdin_data: JSON.generate(checkpoint_fixture.merge("issue_comments" => checkpoint_fixture.fetch("issue_comments") + [uncovered_source_comment]))
+)
+assert(status.success?, "source checkpoint jq validator must preserve an uncovered source comment: #{stderr}")
+assert(JSON.parse(stdout).none? { |checkpoint| checkpoint["body"] == enveloped_summary_body },
+       "source checkpoint validator must not drop ordinary source comments when visible checkpoint parsing misses")
 stdout, stderr, status = Open3.capture3("jq", "-r", skill_cutoff_filter, stdin_data: JSON.generate(valid_checkpoints))
 assert(status.success?, "source cutoff jq filter must execute: #{stderr}")
 assert(stdout.strip == "2026-07-15T00:07:30Z", "source cutoff jq filter must select the latest valid summary without an undefined helper")
@@ -1039,6 +1053,38 @@ stdout, stderr, status = Open3.capture3(
 assert(status.success?, "source wait checkpoint jq validator must execute with the actual source template: #{stderr}")
 assert(Integer(stdout, 10) == 1,
        "source wait checkpoint validator must accept the actual source template after envelope unwrapping")
+
+{
+  "truncated visible claim" => GitHubCommentEnvelope.render(
+    body: visible_claim_payload.sub(%r{\n</details>\z}, ""), runner: "codex", host: "M5", task_or_run: "address-review"
+  ),
+  "visible claim missing a required record field" => GitHubCommentEnvelope.render(
+    body: visible_claim_payload.sub(/^branch: .*\n/, ""), runner: "codex", host: "M5", task_or_run: "address-review"
+  ),
+  "quoted visible claim" => GitHubCommentEnvelope.render(
+    body: visible_claim_payload.each_line.map { |line| "> #{line}" }.join, runner: "codex", host: "M5", task_or_run: "address-review"
+  ),
+  "visible source reply in a Markdown example" => GitHubCommentEnvelope.render(
+    body: "````markdown\n#{visible_enveloped_source_reply_payload}\n````", runner: "codex", host: "M5", task_or_run: "address-review"
+  ),
+  "visible source reply with trailing content" => "#{enveloped_source_reply_body}\nUnrelated trailing content."
+}.each_with_index do |(description, body), index|
+  bookkeeping_comment = {
+    "id" => 230 + index,
+    "user" => "trusted-reviewer",
+    "created_at" => "2026-07-15T00:07:20Z",
+    "body" => body,
+    "payload_body" => GitHubCommentEnvelope.payload(body)
+  }
+  stdout, stderr, status = Open3.capture3(
+    "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+    "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
+    stdin_data: JSON.generate(checkpoint_fixture.merge("issue_comments" => checkpoint_fixture.fetch("issue_comments") + [bookkeeping_comment]))
+  )
+  assert(status.success?, "source checkpoint jq validator must execute with a #{description}: #{stderr}")
+  assert(JSON.parse(stdout).none? { |checkpoint| checkpoint["body"] == enveloped_summary_body },
+         "source checkpoint validator must keep a #{description} as a source candidate")
+end
 
 {
   "raw HTML code container" => raw_html_source_state_body,

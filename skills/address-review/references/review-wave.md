@@ -94,7 +94,7 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
           if startswith("<!-- address-review-summary -->") then "summary"
           elif startswith("<!-- address-review-status -->") then "status"
           elif test("<!--") then null
-          else try capture("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```(?:(?!<)[\\s\\S])*?</details>\\r?\\n?\\z").kind catch null end;
+          else ([try capture("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```(?:(?!<)[\\s\\S])*?</details>\\r?\\n?\\z").kind catch null] | first) end;
         def visible_source_state:
           capture("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?:summary|status)\\r?\\n```\\r?\\n(?:(?!^(?:[ \\t]{0,3}(?:`{3,}|~{3,}))|<)[\\s\\S])*?^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```\\r?\\n(?:\\r?\\n)?</details>\\r?\\n?\\z")?;
         def source_state_count:

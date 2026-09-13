@@ -352,7 +352,10 @@ module CloseoutEvidenceReplay
         next
       end
       if raw_html_container
-        raw_html_container = nil if line.match?(%r{</#{Regexp.escape(raw_html_container)}\s*>}i)
+        tag = Regexp.escape(raw_html_container.fetch(:tag))
+        raw_html_container[:depth] += line.scan(/<#{tag}(?:\s|>)/i).length
+        raw_html_container[:depth] -= line.scan(%r{</#{tag}\s*>}i).length
+        raw_html_container = nil if raw_html_container.fetch(:depth) <= 0
         next
       end
       # CommonMark keeps an unclosed raw code container literal through EOF, so
@@ -360,7 +363,9 @@ module CloseoutEvidenceReplay
       # evidence is not rendered authority. Blockquotes are excluded too because
       # a canonical disclosure must be top-level published content.
       if (container = line.match(/<(?<tag>pre|code|script|style|textarea|blockquote)(?:\s|>)/i))
-        raw_html_container = container[:tag].downcase unless line.match?(%r{</#{Regexp.escape(container[:tag])}\s*>}i)
+        tag = container[:tag].downcase
+        depth = line.scan(/<#{Regexp.escape(tag)}(?:\s|>)/i).length - line.scan(%r{</#{Regexp.escape(tag)}\s*>}i).length
+        raw_html_container = { tag:, depth: } if depth.positive?
         next
       end
       if opener
