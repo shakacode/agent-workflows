@@ -423,6 +423,10 @@ module CloseoutEvidenceReplay
       text.match?(/\A<![A-Za-z]/) || text.start_with?("<?")
   end
 
+  def attribute_assignment?(text)
+    text.match?(/(?:\s|\A)[A-Za-z_:][A-Za-z0-9:_.-]*\s*=\z/)
+  end
+
   def structural_html_tags(line, open_tag: nil)
     tags = []
     index = 0
@@ -470,7 +474,7 @@ module CloseoutEvidenceReplay
           index += 1
           break
         elsif character == "="
-          open_tag[:attribute_value_pending] = true
+          open_tag[:attribute_value_pending] = attribute_assignment?(open_tag[:text])
         elsif !character.match?(/\s/)
           open_tag[:attribute_value_pending] = false
         end
@@ -525,25 +529,29 @@ module CloseoutEvidenceReplay
     discard_details_depth
   end
 
-  def advance_raw_html_container(raw_html_container, structural_tags)
+  def advance_raw_html_containers(raw_html_containers, structural_tags)
     structural_tags.each do |type, tag, _text|
-      if raw_html_container
-        next unless tag == raw_html_container.fetch(:tag)
+      next unless raw_html_tag?(tag)
 
-        raw_html_container[:depth] += type == :open ? 1 : -1 if %i[open close].include?(type)
-        raw_html_container = nil if raw_html_container.fetch(:depth) <= 0
-      elsif type == :open && raw_html_tag?(tag)
-        raw_html_container = { tag:, depth: 1 }
+      if type == :open
+        if (container = raw_html_containers.reverse.find { |current| current.fetch(:tag) == tag })
+          container[:depth] += 1
+        else
+          raw_html_containers << { tag:, depth: 1 }
+        end
+      elsif type == :close && (index = raw_html_containers.rindex { |current| current.fetch(:tag) == tag })
+        raw_html_containers[index][:depth] -= 1
+        raw_html_containers.delete_at(index) if raw_html_containers[index].fetch(:depth) <= 0
       end
     end
-    raw_html_container
+    raw_html_containers
   end
 
   def visible_markdown(text)
     fence = nil
     record_fence = false
     discard_details_depth = nil
-    raw_html_container = nil
+    raw_html_containers = []
     html_comment_open = false
     open_html_tag = nil
     inline_code_delimiter = nil
@@ -593,8 +601,8 @@ module CloseoutEvidenceReplay
       # preserving that discard is intentionally fail-closed: later apparent
       # evidence is not rendered authority. Blockquotes are excluded too because
       # a canonical disclosure must be top-level published content.
-      raw_html_container = advance_raw_html_container(raw_html_container, structural_tags)
-      if raw_html_container
+      raw_html_containers = advance_raw_html_containers(raw_html_containers, structural_tags)
+      if raw_html_containers.any?
         next
       end
 

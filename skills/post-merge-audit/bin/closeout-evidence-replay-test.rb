@@ -893,6 +893,42 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_equals_without_an_attribute_name_does_not_quote_a_raw_tag
+    head_sha = "1" * 40
+    ["'", '"'].each do |quote|
+      body = <<~MARKDOWN
+        <word =#{quote} <blockquote> #{quote}>
+
+        #{visible_qa_details(head_sha:, scope: 'unnamed attribute assignment')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), quote
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", quote
+    end
+  end
+
+  def test_overlapping_raw_html_containers_remain_excluded_until_each_closes
+    head_sha = "1" * 40
+    [
+      ["<code><blockquote></code>", "</blockquote>"],
+      ["<blockquote><code></blockquote>", "</code>"],
+      ["<code><blockquote></blockquote>", "</code>"]
+    ].each do |prefix, suffix|
+      body = <<~MARKDOWN
+        #{prefix}
+
+        #{visible_qa_details(head_sha:, scope: 'overlapping raw containers')}
+        #{suffix}
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), prefix
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", prefix
+    end
+  end
+
   def test_multiline_quoted_details_attributes_remain_nested
     head_sha = "1" * 40
     [["\"", "\""], ["'", "'"]].each do |opening_quote, closing_quote|
