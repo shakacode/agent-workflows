@@ -7871,6 +7871,47 @@ test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion() {
   ' "$target/.agent-workflows-install.json"
 }
 
+test_flat_skill_snapshot_manifest_excludes_dot_entries() {
+  local tmp source target consumer wrap real_rsync manifest_log output exit_code
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  wrap="$tmp/wrap"
+  manifest_log="$tmp/managed-paths.log"
+  mkdir -p "$source" "$consumer" "$wrap"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+  real_rsync="$(command -v rsync)"
+  cat > "$wrap/bash-env" <<WRAP
+rsync() {
+  for arg in "\$@"; do
+    case "\$arg" in
+      --files-from=*)
+        tr '\\0' '\\n' < "\${arg#--files-from=}" >> $(printf '%q' "$manifest_log")
+        ;;
+    esac
+  done
+  command $(printf '%q' "$real_rsync") "\$@"
+}
+WRAP
+
+  set +e
+  output="$(BASH_ENV="$wrap/bash-env" "$source/bin/upgrade-agent-workflows" --host codex --target "$target" \
+    --source "$source" --consumer-root "$consumer" --no-fetch 2>&1)"
+  exit_code=$?
+  set -e
+
+  [[ "$exit_code" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  assert_not_contains "$(cat "$manifest_log")" "skills/."
+  assert_not_contains "$(cat "$manifest_log")" "skills/.."
+}
+
 test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants() {
   local tmp source target consumer external_bin output status
   tmp="$(mktemp -d)"
@@ -8993,6 +9034,7 @@ main() {
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion
+    test_flat_skill_snapshot_manifest_excludes_dot_entries
     test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants
     test_failed_upgrade_restores_flat_skill_symlinks_after_copy_mode_switch
     test_upgrade_validates_consumer_root_after_install
