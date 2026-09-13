@@ -12,20 +12,23 @@ SCRIPT = File.expand_path("github-comment-envelope", __dir__)
 VISIBLE_PREFIX = "🤖 Codex"
 
 class GitHubCommentEnvelopeTest < Minitest::Test
-  def test_render_adds_visible_first_line_and_closed_visible_attribution
+  def test_render_puts_the_payload_outcome_before_closed_visible_attribution
+    payload = "Review complete.\nFollow-up evidence is recorded."
     rendered = GitHubCommentEnvelope.render(
-      body: "Review complete.", runner: "codex", host: "M5", task_or_run: "aw-pr731-m5"
+      body: payload, runner: "codex", host: "M5", task_or_run: "aw-pr731-m5"
     )
 
     lines = rendered.lines
-    assert_equal "#{VISIBLE_PREFIX}\n", lines.first
+    assert_equal "#{VISIBLE_PREFIX} Review complete.\n", lines.first
+    assert_operator rendered.index("Review complete."), :<, rendered.index("<summary>Agent attribution</summary>")
     refute_includes rendered, "<!--"
     assert_includes rendered, "<summary>Agent attribution</summary>"
     assert_includes rendered, "```text\nagent-comment-attribution:v1"
     assert_includes rendered, "runner: codex"
     assert_includes rendered, "host: M5"
     assert_includes rendered, "task_or_run: aw-pr731-m5"
-    assert_includes rendered, "Review complete."
+    assert_includes rendered, "Follow-up evidence is recorded."
+    assert_equal payload, GitHubCommentEnvelope.payload(rendered)
   end
 
   def test_render_accepts_cursor_as_a_truthful_runner
@@ -33,7 +36,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       body: "Review complete.", runner: "cursor", host: "Cursor desktop", task_or_run: "cursor-7"
     )
 
-    assert rendered.start_with?("🤖 Cursor\n")
+    assert rendered.start_with?("🤖 Cursor Review complete.\n")
     assert_equal "cursor", GitHubCommentEnvelope.parse(rendered).fetch("runner")
     assert GitHubCommentEnvelope.agent_authored?("🤖 Cursor\nlegacy payload")
   end
@@ -117,6 +120,23 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_equal payload, GitHubCommentEnvelope.payload(body)
   end
 
+  def test_render_avoids_a_duplicate_runner_prefix_and_reconstructs_the_original_payload
+    payload = "🤖 Codex Review complete.\r\nFollow-up evidence is recorded."
+    rendered = GitHubCommentEnvelope.render(
+      body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
+    )
+
+    assert_equal "🤖 Codex Review complete.\n", rendered.lines.first
+    assert_equal payload, GitHubCommentEnvelope.payload(rendered)
+  end
+
+  def test_render_reconstructs_an_empty_payload_without_a_blank_visible_outcome
+    rendered = GitHubCommentEnvelope.render(body: "", runner: "codex", host: "M5", task_or_run: "task-7")
+
+    assert_equal "🤖 Codex\n", rendered.lines.first
+    assert_equal "", GitHubCommentEnvelope.payload(rendered)
+  end
+
   def test_payload_unwraps_an_envelope_with_crlf_line_endings
     body = GitHubCommentEnvelope.render(
       body: "<!-- address-review-summary -->\n", runner: "codex", host: "M5", task_or_run: "task-7"
@@ -138,6 +158,27 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     BODY
 
     assert_equal "<!-- address-review-summary -->\n", GitHubCommentEnvelope.payload(body)
+  end
+
+  def test_payload_unwraps_the_previous_visible_envelope_shape
+    body = <<~BODY
+      🤖 Codex
+
+      <details>
+      <summary>Agent attribution</summary>
+
+      ```text
+      agent-comment-attribution:v1
+      runner: codex
+      host: M5
+      task_or_run: task-7
+      ```
+      </details>
+
+      legacy payload
+    BODY
+
+    assert_equal "legacy payload\n", GitHubCommentEnvelope.payload(body)
   end
 
   def test_legacy_parser_requires_all_field_labels
@@ -224,7 +265,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
 
       assert_predicate result[:status], :success?, result[:stderr]
       assert_includes posted.fetch("args"), "repos/acme/widgets/issues/7/comments"
-      assert posted.fetch("body").start_with?("🤖 Codex\n")
+      assert posted.fetch("body").start_with?("🤖 Codex Ready.\n")
     end
   end
 
@@ -251,7 +292,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
 
       assert_predicate result[:status], :success?, result[:stderr]
       assert_includes posted.fetch("args"), "repos/acme/widgets/pulls/7/comments/99/replies"
-      assert posted.fetch("body").start_with?("🤖 Codex\n")
+      assert posted.fetch("body").start_with?("🤖 Codex Fixed.\n")
     end
   end
 
@@ -281,7 +322,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       assert_predicate result[:status], :success?, result[:stderr]
       assert_equal "repos/acme/widgets/issues/comments/99", posted.fetch("args").fetch(1)
       assert_equal "PATCH", posted.fetch("args").fetch(posted.fetch("args").index("-X") + 1)
-      assert posted.fetch("body").start_with?("🤖 Codex\n")
+      assert posted.fetch("body").start_with?("🤖 Codex Claim refreshed.\n")
       assert_includes posted.fetch("body"), "Claim refreshed."
     end
   end
@@ -315,7 +356,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
         posted.fetch("args")[index + 1] if posted.fetch("args")[index] == "--attach"
       end
       assert_equal ["evidence.png#Before and after", "evidence.mp4"], attachments
-      assert posted.fetch("body").start_with?("🤖 Codex\n")
+      assert posted.fetch("body").start_with?("🤖 Codex Verified.\n")
     end
   end
 

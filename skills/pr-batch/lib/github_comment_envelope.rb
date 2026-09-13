@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "base64"
+
 module GitHubCommentEnvelope
   VERSION = 1
   MARKER = "agent-comment-attribution:v#{VERSION}".freeze
@@ -13,6 +15,9 @@ module GitHubCommentEnvelope
   LEGACY_WORKFLOW_MARKER = /\A<!-- address-review-(?:summary|status) -->\r?\n/
   LEGACY_AGENT_HEADER = /\A🤖 \*\*(?:Codex|Claude|Cursor)(?: · [^*\r\n]+)?\*\*(?:\r?\n|\z)/
   VISIBLE_AGENT_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:\r?\n|\z)/
+  PAYLOAD_RUNNER_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:[ \t]+|(?=\z))/
+  PAYLOAD_LINE_ENDINGS = { "\r\n" => "crlf", "\n" => "lf", "\r" => "cr", "" => "none" }.freeze
+  PAYLOAD_LINE_ENDING_VALUES = PAYLOAD_LINE_ENDINGS.invert.freeze
 
   module_function
 
@@ -25,14 +30,20 @@ module GitHubCommentEnvelope
     display_runner = RUNNER_DISPLAY.fetch(runner) do
       raise ArgumentError, "runner must be codex, claude, or cursor"
     end
+    payload = body.sub(/\A[\r\n]+/, "")
+    first_line, line_ending, remaining_payload = split_payload(payload)
+    outcome = first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip
     visible = "🤖 #{display_runner}"
+    visible += " #{outcome}" unless outcome.empty?
     marker = <<~MARKER.chomp
       #{MARKER}
       runner: #{runner}
       host: #{host}
       task_or_run: #{task_or_run}
+      payload_first_line_b64url: #{Base64.urlsafe_encode64(first_line, padding: false)}
+      payload_line_ending: #{PAYLOAD_LINE_ENDINGS.fetch(line_ending)}
     MARKER
-    "#{visible}\n\n<details>\n<summary>Agent attribution</summary>\n\n```text\n#{marker}\n```\n</details>\n\n#{body.sub(/\A[\r\n]+/, '')}"
+    "#{visible}\n\n<details>\n<summary>Agent attribution</summary>\n\n```text\n#{marker}\n```\n</details>\n\n#{remaining_payload}"
   end
 
   def agent_authored?(body)
@@ -44,13 +55,16 @@ module GitHubCommentEnvelope
     parsed = parse(body)
     return body unless parsed
 
-    body[parsed.fetch("payload_offset")..].to_s
+    remaining_payload = body[parsed.fetch("payload_offset")..].to_s
+    return remaining_payload unless parsed.key?("payload_first_line")
+
+    "#{parsed.fetch('payload_first_line')}#{parsed.fetch('payload_line_ending')}#{remaining_payload}"
   end
 
   def parse(body)
     return unless body.is_a?(String)
 
-    match = body.match(%r{\A(?<visible>🤖 [^\r\n]+)\r?\n\r?\n<details>\r?\n<summary>Agent attribution</summary>\r?\n\r?\n```text\r?\n#{MARKER}\r?\nrunner: (?<runner>[^\r\n]+)\r?\nhost: (?<host>[^\r\n]+)\r?\ntask_or_run: (?<task>[^\r\n]+)\r?\n```\r?\n</details>\r?\n\r?\n}m)
+    match = body.match(%r{\A(?<visible>🤖 [^\r\n]+)\r?\n\r?\n<details>\r?\n<summary>Agent attribution</summary>\r?\n\r?\n```text\r?\n#{MARKER}\r?\nrunner: (?<runner>[^\r\n]+)\r?\nhost: (?<host>[^\r\n]+)\r?\ntask_or_run: (?<task>[^\r\n]+)\r?\n(?:payload_first_line_b64url: (?<payload_first_line>[A-Za-z0-9_-]*)\r?\npayload_line_ending: (?<payload_line_ending>crlf|lf|cr|none)\r?\n)?```\r?\n</details>\r?\n\r?\n}m)
     return parse_legacy(body) unless match
 
     visible = match[:visible]
@@ -58,8 +72,25 @@ module GitHubCommentEnvelope
     host = match[:host]
     task_or_run = match[:task]
 
-    parsed_at = match.end(0)
-    { "version" => VERSION, "runner" => runner.downcase, "host" => host, "task_or_run" => task_or_run, "payload_offset" => parsed_at } if valid_fields?(visible, runner, host, task_or_run)
+    return unless valid_fields?(visible, runner, host, task_or_run)
+
+    parsed = { "version" => VERSION, "runner" => runner.downcase, "host" => host, "task_or_run" => task_or_run, "payload_offset" => match.end(0) }
+    return parsed unless match[:payload_first_line]
+
+    payload_first_line = Base64.urlsafe_decode64(match[:payload_first_line])
+    return unless Base64.urlsafe_encode64(payload_first_line, padding: false) == match[:payload_first_line]
+
+    payload_first_line.force_encoding(body.encoding)
+    payload_line_ending = PAYLOAD_LINE_ENDING_VALUES.fetch(match[:payload_line_ending])
+    envelope_line_ending = body[/\r\n|\n|\r/]
+    payload_line_ending = "\r\n" if payload_line_ending == "\n" && envelope_line_ending == "\r\n"
+
+    parsed.merge(
+      "payload_first_line" => payload_first_line,
+      "payload_line_ending" => payload_line_ending
+    )
+  rescue ArgumentError
+    nil
   end
 
   def parse_legacy(body)
@@ -85,7 +116,16 @@ module GitHubCommentEnvelope
 
   def valid_fields?(visible, runner, host, task_or_run)
     runner.match?(VALUE_PATTERN) && host.match?(HOST_PATTERN) && task_or_run.match?(VALUE_PATTERN) &&
-      RUNNER_DISPLAY[runner.downcase] && visible == "🤖 #{RUNNER_DISPLAY.fetch(runner.downcase)}"
+      RUNNER_DISPLAY[runner.downcase] && visible.match?(/\A🤖 #{Regexp.escape(RUNNER_DISPLAY.fetch(runner.downcase))}(?: |\z)/)
+  end
+
+  def split_payload(payload)
+    line_ending = payload.match(/\r\n|\n|\r/)
+    return [payload, "", ""] unless line_ending
+
+    index = line_ending.begin(0)
+    ending = line_ending[0]
+    [payload[0...index], ending, payload[(index + ending.length)..].to_s]
   end
 
   def normalized_value(value, name, pattern: VALUE_PATTERN)
