@@ -10,6 +10,8 @@ module GitHubCommentEnvelope
   }.freeze
   VALUE_PATTERN = %r{\A[A-Za-z0-9][A-Za-z0-9._:/-]*\z}
   HOST_PATTERN = /\A(?!.*-->)[^\r\n]+\z/
+  LEGACY_WORKFLOW_MARKER = /\A<!-- address-review-(?:summary|status) -->\r?\n/
+  LEGACY_AGENT_HEADER = /\A🤖 \*\*(?:Codex|Claude|Cursor)(?: · [^*\r\n]+)?\*\*(?:\r?\n|\z)/
 
   module_function
 
@@ -34,7 +36,8 @@ module GitHubCommentEnvelope
   end
 
   def agent_authored?(body)
-    !parse(body).nil? || body.to_s.match?(/\A🤖 (?:Codex|Claude|Cursor)(?:\r?\n|\z)/)
+    !parse(body).nil? || body.to_s.match?(/\A🤖 (?:Codex|Claude|Cursor)(?:\r?\n|\z)/) ||
+      body.to_s.sub(LEGACY_WORKFLOW_MARKER, "").match?(LEGACY_AGENT_HEADER)
   end
 
   def payload(body)

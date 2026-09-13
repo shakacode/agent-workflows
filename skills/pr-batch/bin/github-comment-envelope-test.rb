@@ -89,7 +89,15 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert GitHubCommentEnvelope.agent_authored?(rendered)
     assert GitHubCommentEnvelope.agent_authored?("🤖 Codex\nlegacy payload")
     assert GitHubCommentEnvelope.agent_authored?("🤖 Claude\nlegacy payload")
+    assert GitHubCommentEnvelope.agent_authored?("🤖 **Codex · GPT-5**\n\nlegacy payload")
+    assert GitHubCommentEnvelope.agent_authored?(<<~BODY)
+      <!-- address-review-summary -->
+      🤖 **Claude · Opus 5**
+
+      legacy payload
+    BODY
     refute GitHubCommentEnvelope.agent_authored?("🤖 Justin\nI approve this change.")
+    refute GitHubCommentEnvelope.agent_authored?("A human quote:\n🤖 **Codex · GPT-5**\n")
     refute GitHubCommentEnvelope.agent_authored?("I approve this change.\n")
   end
 
