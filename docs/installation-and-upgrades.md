@@ -650,7 +650,10 @@ home content such as `worktrees/`, `tmp/`, or `sessions/`, so large homes do
 not make the pre-install backup unnecessarily expensive.
 
 The command prints `UPGRADE_COMPLETE` on success and `ROLLBACK_COMPLETE` when it
-restores the prior install after a failed upgrade. Rollback restores the prior
+restores the prior install after a failed upgrade. `ROLLBACK_INCOMPLETE` means
+the restore could not be fully completed or verified and the target needs
+manual inspection. `ROLLBACK_SOURCE_CHANGED` accompanies it when the managed
+source inventory changed after the snapshot. Rollback restores the prior
 delivery mode and skill layout. `upgrade-agent-workflows` never installs or
 updates the native plugin itself.
 
