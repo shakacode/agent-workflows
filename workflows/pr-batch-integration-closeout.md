@@ -1992,16 +1992,13 @@ Then pass the corresponding provenance claim:
 For an independently verified installed pack, use
 `verified-installed-pack:<64-lowercase-sha256>` instead, after binding
 `TRUSTED_PR_BATCH_SKILL_DIR` to the independently verified pack directory.
-For a complete flat copy, use
-`runtime_manifest_digests["autonomous-merge"]` only from an eligible installed
-`agent-workflows-status --json` result; absence disables this route. Never
-learn this expected digest from the evaluated helper. The evaluator recomputes
-a length-framed manifest over its runtime closure and selected calibration
-decision.
-For `trusted-base:<SHA>`, it instead compares every one of those runtime bytes
-with the claimed commit tree. A missing source or byte mismatch yields
-`UNKNOWN`. The claim flag supplies an expected identity; it cannot create
-trust.
+For a flat copy, use `runtime_manifest_digests["autonomous-merge"]` from an
+eligible installed `agent-workflows-status --json` result; absence disables
+this route. Never learn it from the evaluated helper. The evaluator
+mechanically recomputes a length-framed manifest over its runtime closure,
+including `autonomous_merge_runtime_trust.rb`, and selected calibration decision.
+For `trusted-base:<SHA>`, it compares those bytes with the claimed commit tree.
+Missing or mismatched source yields `UNKNOWN`; a claim cannot create trust.
 
 The trust boundary has both mechanical and procedural parts. Runtime-byte
 matching and live mutation-stable objective collection are mechanically
