@@ -1992,17 +1992,12 @@ Then pass the corresponding provenance claim:
 For an independently verified installed pack, use
 `verified-installed-pack:<64-lowercase-sha256>` instead, after binding
 `TRUSTED_PR_BATCH_SKILL_DIR` to the independently verified pack directory.
-For a complete flat copy, obtain the expected value only from the installed
-`agent-workflows-status --json` result after an `UP_TO_DATE` or
-`UPGRADE_AVAILABLE` exit; read
-`runtime_manifest_digests["autonomous-merge"]`. A missing value means this
-trust route is unavailable. A malformed or redirected metadata file, failed
-delivery check, or tampered managed policy state returns no usable value.
-The expected digest is trusted coordinator or installation state, not output
-learned from the helper being evaluated. The evaluator
-mechanically recomputes a length-framed manifest over the executing evaluator
-and closeout helpers, decision/evidence/policy/trust libraries (including
-`autonomous_merge_runtime_trust.rb`), and selected calibration decision.
+For a complete flat copy, use
+`runtime_manifest_digests["autonomous-merge"]` only from an eligible installed
+`agent-workflows-status --json` result; absence disables this route. Never
+learn this expected digest from the evaluated helper. The evaluator recomputes
+a length-framed manifest over its runtime closure and selected calibration
+decision.
 For `trusted-base:<SHA>`, it instead compares every one of those runtime bytes
 with the claimed commit tree. A missing source or byte mismatch yields
 `UNKNOWN`. The claim flag supplies an expected identity; it cannot create
