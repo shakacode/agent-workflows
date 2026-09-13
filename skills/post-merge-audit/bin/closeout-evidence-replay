@@ -414,7 +414,8 @@ module CloseoutEvidenceReplay
     return unless tag
 
     uncommented = line.gsub(/<!--.*?(?:-->|\z)/, "")
-    tag if uncommented.match?(%r{</#{Regexp.escape(tag)}\s*>}i)
+    tags, = structural_html_tags(uncommented)
+    tag if tags.any? { |type, found, *_| type == :close && found == tag }
   end
 
   def structural_html_tag(token)
@@ -528,8 +529,14 @@ module CloseoutEvidenceReplay
     return if entry.fetch(:summary_seen)
     return if line.match?(%r{\A[ \t]*<summary>[^<]*</summary>[ \t]*\r?\n?\z}i)
 
-    text = line.gsub(/<[^>]*>/, "").strip
+    text = line.gsub(%r{</?[A-Za-z][A-Za-z0-9:-]*(?=\s|/?>)[^>]*>}, "").strip
     entry[:summary_eligible] = false unless text.empty?
+  end
+
+  def visible_summary_content_line(line, structural_line)
+    return structural_line unless structural_line.strip.empty?
+
+    line.gsub(/<!--.*?(?:-->|\z)/, "").strip.empty? ? "" : line
   end
 
   def advance_details_stack(details_stack, discard_details_depth, tags)
@@ -687,7 +694,11 @@ module CloseoutEvidenceReplay
         raw_html_containers,
         html_comment_open: html_comment_was_open
       )
-      next if structural_line.empty? && !raw_text_closer
+      summary_content_line = visible_summary_content_line(line, structural_line)
+      if structural_line.empty? && !raw_text_closer
+        mark_details_summary_content(details_stack, summary_content_line)
+        next
+      end
 
       continuing_html_tag = !open_html_tag.nil?
       structural_tags, open_html_tag = structural_html_tags(structural_line, open_tag: open_html_tag)
@@ -701,7 +712,7 @@ module CloseoutEvidenceReplay
       end
       # A label is valid only when it is the first rendered direct child. Mark
       # visible Markdown before fence, quote, or raw-HTML branches can skip it.
-      mark_details_summary_content(details_stack, structural_line)
+      mark_details_summary_content(details_stack, summary_content_line)
       discard_details_depth = advance_details_stack(details_stack, discard_details_depth, current_details_tags)
       next if discard_details_depth
 
