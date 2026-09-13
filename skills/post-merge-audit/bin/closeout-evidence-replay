@@ -317,6 +317,7 @@ module CloseoutEvidenceReplay
     fence = nil
     record_fence = false
     discard_details_depth = nil
+    raw_html_container = nil
     details_stack = []
     evidence_summaries = ["QA evidence", "Hosted QA evidence", "Priority finding dispositions"]
     rendered = []
@@ -346,6 +347,14 @@ module CloseoutEvidenceReplay
         end
         record_fence = false if opener
         rendered << line
+        next
+      end
+      if raw_html_container
+        raw_html_container = nil if line.match?(%r{</#{Regexp.escape(raw_html_container)}\s*>}i)
+        next
+      end
+      if (container = line.match(/<(?<tag>pre|code|script|style|textarea)(?:\s|>)/i))
+        raw_html_container = container[:tag].downcase unless line.match?(%r{</#{Regexp.escape(container[:tag])}\s*>}i)
         next
       end
       if opener

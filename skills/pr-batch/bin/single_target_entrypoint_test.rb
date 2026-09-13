@@ -788,7 +788,7 @@ truncated_visible_summary_body = GitHubCommentEnvelope.render(
 )
 outer_example_source_state_payload = visible_enveloped_summary_payload
   .sub("```text\naddress-review-source-state:v1", "````markdown\n```text\naddress-review-source-state:v1")
-  .sub("\n```\n</details>", "\n```\n````")
+  .sub("\n```\n</details>", "\n```\n````\n</details>")
 outer_example_source_state_body = GitHubCommentEnvelope.render(
   body: outer_example_source_state_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
@@ -934,7 +934,7 @@ assert(valid_checkpoints[3]["body"] == valid_summary_body, "source checkpoint va
 assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == commented_visible_summary_body }, "source checkpoint validator must reject a visible record hidden in an HTML comment")
 assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == unclosed_commented_visible_summary_body }, "source checkpoint validator must reject a visible record hidden after an unclosed HTML comment")
 assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == truncated_visible_summary_body }, "source checkpoint validator must reject an unclosed visible disclosure")
-assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == outer_example_source_state_body }, "source checkpoint validator must reject an outer Markdown example that supplies state after an unclosed disclosure")
+assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == outer_example_source_state_body }, "source checkpoint validator must reject a source-state record nested in an outer Markdown example")
 assert(valid_checkpoints.first.fetch("address_review_checkpoint_kind") == "summary", "source checkpoint reader must carry parsed checkpoint kind")
 stdout, stderr, status = Open3.capture3("jq", "-r", skill_cutoff_filter, stdin_data: JSON.generate(valid_checkpoints))
 assert(status.success?, "source cutoff jq filter must execute: #{stderr}")

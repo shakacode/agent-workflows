@@ -368,6 +368,37 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
+  def test_raw_html_code_containers_do_not_authorize_visible_evidence
+    head_sha = "1" * 40
+    %w[pre code].each do |tag|
+      body = <<~MARKDOWN
+        <#{tag}>
+        <details>
+        <summary>QA evidence</summary>
+
+        ```text
+        qa-evidence v1
+        required: yes
+        status: satisfied
+        head_sha: #{head_sha}
+        tested_at: PR #123 head #{head_sha}
+        scope: example only
+        automated_checks: bin/validate
+        manual_checks: browser path
+        findings: none
+        release_blocking: clear
+        process_gap_disposition: schema
+        ```
+        </details>
+        </#{tag}>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), tag
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", tag
+    end
+  end
+
   def test_unclosed_html_comment_hides_visible_evidence
     body = <<~MARKDOWN
       Evidence follows.

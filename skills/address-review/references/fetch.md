@@ -122,10 +122,12 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         if startswith("<!-- address-review-summary -->") then "summary"
         elif startswith("<!-- address-review-status -->") then "status"
         else visible_checkpoint_kind end;
+      def visible_source_state:
+        capture("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<details>)[^\\r\\n]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?:summary|status)\\r?\\n```\\r?\\n\\r?\\n^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```\\r?\\n</details>\\r?\\n?\\z")?;
       def source_state_count:
         if startswith("<!-- address-review-")
         then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)
-        else ([scan("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?$")] | length) end;
+        else ([visible_source_state] | length) end;
       def visible_claim:
         test("(?ms)\\A(?:🤖 Codex )?[Cc]laim is active\\. Do not start competing work\\.\\r?\\n\\r?\\n<details>\\r?\\n<summary>Claim details</summary>\\r?\\n\\r?\\n```text\\r?\\ncodex-claim v1\\r?\\n");
       def marker_body:
@@ -202,7 +204,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         ($body | source_state_count) == 1 and
         (($body | if startswith("<!-- address-review-")
           then capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?
-          else capture("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```")? end) as $state |
+          else visible_source_state end) as $state |
           $state != null and
           (($state.rows | split("\n") | map(select(length > 0))) as $rows |
             all($rows[]; valid_row) and

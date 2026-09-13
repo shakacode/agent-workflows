@@ -520,14 +520,10 @@ includes this evidence block:
 - Process-gap disposition: <script | schema | checklist+replay | park | not applicable>
 ```
 
-For replayable post-merge audit, keep the full QA Evidence block adjacent to a
-closed `QA evidence` disclosure whenever QA is required or explicitly not
-required. State the outcome and any required reader action above the disclosure.
-When the evidence destination is a PR description, place both inside the
-canonical `Agent details` disclosure. Historical hidden markers remain
-replayable, but no new comment or PR body emits one. In a handoff, issue
-comment, or saved evidence file, keep the disclosure adjacent to the QA
-Evidence block.
+Keep QA Evidence adjacent to a closed `QA evidence` disclosure whenever QA is
+declared. State the outcome and required reader action above it; PR bodies keep
+both in `Agent details`. Historical hidden markers are read-only; new comments
+and PR bodies use this disclosure.
 
 ````markdown
 <details>
@@ -560,32 +556,24 @@ process_gap_disposition: <script | schema | checklist+replay | park | not applic
 </details>
 ````
 
-For `required: no`, record `status: not_applicable` and
-`release_blocking: not_applicable`. Replay treats any other terminal pair as an
-inconsistent omission record and returns `UNKNOWN`.
+For `required: no`, record both `status` and `release_blocking` as
+`not_applicable`; every other terminal pair replays as `UNKNOWN`.
 
-Use `visual_evidence_blocked_reason` only with `human_attachment_pending`; other
-uses replay as `UNKNOWN`. Before `uploader_absent`, check
-GitHub CLI 2.99.0+ `--attach` on GitHub.com/GHE Cloud and browser upload. Use
-`uploader_denied` for unsupported Actions/App tokens or access/host denial, and
+Use `visual_evidence_blocked_reason` only with `human_attachment_pending`.
+Before `uploader_absent`, check GitHub CLI 2.99.0+ `--attach` and browser
+upload; use `uploader_denied` for unsupported tokens/access and
 `upload_failed: reason` for media, size, or transient failures.
 
-Historical `qa-evidence v1` receipts remain replayable for backward
-compatibility. Do not emit v1 for new closeout evidence. The presence of any v2
-marker explicitly supersedes all v1 markers for that evidence input: a current
-valid v2 ignores legacy v1 history, while a stale or malformed v2 cannot be
-rescued by a current v1. When auditing a current user-visible UI change, run
+Historical `qa-evidence v1` receipts remain replayable but are never newly
+emitted. A v2 marker supersedes v1 for that input: stale or malformed v2 cannot
+fall back to v1. For current UI changes run
 `closeout-evidence-replay --expected-head-sha <full-final-head-SHA>
---require-visual-evidence-v2`; v1-only or stale evidence then fails closed
-rather than bypassing it. For GHEC or GHES evidence, add
-`--github-host <repository GitHub host>` from trusted context;
-completed-batch preflight supplies it.
+--require-visual-evidence-v2`; v1-only or stale evidence fails closed. Supply
+the trusted `--github-host` for GHEC/GHES; preflight provides it.
 
-For priority review findings that feed a strict merge ledger or final handoff,
-append a closed `Priority finding dispositions` disclosure without inventing a
-separate review-finding schema. State the disposition and any reader action
-above it. Reference the source finding URL or id; shared review-finding schema
-work remains the source of truth when the repo adopts one:
+For priority findings used by a strict ledger or handoff, append a closed
+`Priority finding dispositions` disclosure. State disposition and reader action
+above it and reference the source finding URL or id:
 
 ````markdown
 <details>
@@ -614,34 +602,22 @@ head_sha: <full 40-character current PR head SHA>
 </details>
 ````
 
-Resolve `POST_MERGE_AUDIT_SKILL_DIR` with the env-var / loaded-skill /
-repo-local chain, then run
-`"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay" <file-or->` to
-replay these markers and report `SATISFIED`, `WAIVED`, `NOT_APPLICABLE`,
-`BLOCKED`, or `UNKNOWN` for post-merge audits. Treat `SATISFIED`, `WAIVED`,
-and `NOT_APPLICABLE` as replayed terminal evidence; carry `BLOCKED` and
-`UNKNOWN` into the audit findings for operator action.
+Resolve `POST_MERGE_AUDIT_SKILL_DIR` through env-var / loaded-skill / repo-local
+resolution and run `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"
+<file-or->`. `SATISFIED`, `WAIVED`, and `NOT_APPLICABLE` are terminal; carry
+`BLOCKED` and `UNKNOWN` into audit findings.
 
 When a repository pins this helper under `.agents/skills/post-merge-audit`, use
 that repo-local copy for the pre-merge gate so the helper version stays aligned
 with the repository's schema and workflow text.
 
-For a pre-merge current-head gate, run the helper separately for each PR or
-target with `--expected-head-sha <full-final-head-SHA>`, feeding it only that
-PR's evidence block or a per-PR evidence file. Do not pass a combined multi-PR
-handoff to a single expected SHA. This is a
-`checklist+replay` control: the coordinator checklist below re-fetches the final
-head, and the replay helper returns `UNKNOWN` when QA evidence omits
-`head_sha`, records any other SHA there, or does not list the expected head as
-the final full SHA token in `tested_at` (the endpoint for an audited range). It
-also returns `UNKNOWN` when a priority-disposition marker records another head.
-Full hexadecimal SHA comparisons are case-normalized. Repeated scalar marker or
-per-finding keys also return `UNKNOWN` instead of overwriting earlier values.
-When append-only history contains both old and current-head markers, the gate
-replays only the current-head markers and aggregates all of them; when no
-current marker exists, stale markers remain `UNKNOWN`. Historical evidence
-remains replayable without this option,
-but it does not qualify as current-head readiness evidence.
+For a pre-merge current-head gate, replay each PR separately with
+`--expected-head-sha <full-final-head-SHA>`; never apply one expected SHA to a
+combined handoff. This `checklist+replay` control re-fetches the final head and
+returns `UNKNOWN` for missing, mismatched, repeated, or stale SHA evidence,
+including priority dispositions. SHA comparison is case-normalized. It
+aggregates current-head markers only; historical evidence remains replayable but
+never qualifies as current-head readiness.
 
 `Release-blocking status` is derived from `QA lane status`: `satisfied` ->
 `clear`, `blocked` -> `blocked`, `waived` -> `waived`, `not_applicable` ->

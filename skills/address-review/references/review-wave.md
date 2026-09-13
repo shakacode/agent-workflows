@@ -95,10 +95,12 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
           elif startswith("<!-- address-review-status -->") then "status"
           elif (test("<!--") | not) and test("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<details>)[^\\r\\n]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n```[\\s\\S]*?</details>\\r?\\n?\\z")
           then capture("(?ms)^.*?address-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n").kind else null end;
+        def visible_source_state:
+          capture("(?ms)\\A(?:🤖 Codex )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<details>)[^\\r\\n]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?:summary|status)\\r?\\n```\\r?\\n\\r?\\n^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```\\r?\\n</details>\\r?\\n?\\z")?;
         def source_state_count:
           if startswith("<!-- address-review-")
           then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)
-          else ([scan("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?$")] | length) end;
+          else ([visible_source_state] | length) end;
         def valid_row:
           split("\t") as $fields |
           ($fields | length) == 7 and
@@ -115,7 +117,7 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
           ($body | source_state_count) == 1 and
           (($body | if startswith("<!-- address-review-")
             then capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?
-            else capture("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```")? end) as $state |
+            else visible_source_state end) as $state |
             $state != null and
             (($state.rows | split("\n") | map(select(length > 0))) as $rows |
               all($rows[]; valid_row) and
