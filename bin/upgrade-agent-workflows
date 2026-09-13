@@ -189,6 +189,17 @@ path_is_within_traversed_snapshot_symlink_root() {
   return 1
 }
 
+restore_path_parent_is_safe() {
+  local path="$1"
+  local parent="${path%/}"
+  while [[ "$parent" == */* ]]; do
+    parent="${parent%/*}"
+    if [[ -L "$target/$parent" ]]; then
+      path_is_within_traversed_snapshot_symlink_root "$path" || return 1
+    fi
+  done
+}
+
 snapshot_root_is_active() {
   case "$1" in
     lib)
@@ -244,7 +255,9 @@ recovery_artifact_inventory() {
     target = ARGV.fetch(0)
     patterns = [
       ".agent-workflows-install.json.recovery-*",
-      ".agent-workflows-install.json.cleanup-complete-*"
+      ".agent-workflows-install.json.cleanup-complete-*",
+      ".agent-workflows-recovery-cleanup-*",
+      ".agent-workflows-recovery-delete-*"
     ]
     paths = patterns.flat_map { |pattern| Dir.glob(File.join(target, pattern), File::FNM_DOTMATCH) }
     paths.map! { |path| File.basename(path) }
@@ -261,6 +274,7 @@ backup_target() {
   backup_manifest="$backup_dir/managed-paths"
   backup_existing_manifest="$backup_dir/existing-managed-paths"
   backup_symlink_manifest="$backup_dir/managed-symlinks"
+  backup_real_container_manifest="$backup_dir/managed-real-containers"
   backup_followed_dir="$backup_dir/followed-symlink-roots"
   backup_followed_manifest="$backup_dir/followed-symlink-paths"
   backup_absent_container_manifest="$backup_dir/absent-containers"
@@ -268,6 +282,7 @@ backup_target() {
   backup_migration_staging_dir="$backup_dir/migration-staging"
   backup_recovery_artifact_manifest="$backup_dir/recovery-artifacts"
   : > "$backup_absent_container_manifest"
+  : > "$backup_real_container_manifest"
   backup_migration_staging_path=""
   migration_receipt_existed=false
   target_existed=false
@@ -457,7 +472,7 @@ backup_target() {
           managed << "workflows/#{name}" unless name.empty? || name.start_with?(".") || name.include?("/") || [".", ".."].include?(name)
         end
       end
-      if metadata["delivery_mode"] == "flat" || delivery_mode == "flat"
+      if delivery_mode == "flat"
         Dir.glob(File.join(source, "skills", "*")).each do |path|
           managed << "skills/#{File.basename(path) }" if mode == "copy" || File.directory?(path)
         end
@@ -516,6 +531,13 @@ backup_target() {
             managed_entry = metadata["mode"] == "copy" || object_type == "tree"
             if !managed_entry && file_mode == "120000"
               managed_entry = recorded_directory.call("skills/#{name}")
+              installed_path = File.join(target, "skills", name)
+              if !managed_entry && File.symlink?(installed_path)
+                installed_target = File.expand_path(File.readlink(installed_path), File.dirname(installed_path))
+                managed_entry = roots.any? do |root|
+                  root.is_a?(String) && installed_target == File.expand_path(File.join(root, "skills", name))
+                end
+              end
             end
             managed << "skills/#{name}" if managed_entry
           end
@@ -540,6 +562,8 @@ backup_target() {
         mkdir -p "$backup_target_dir/$(dirname "$path")"
         cp -a "$target/$path" "$backup_target_dir/$path"
         snapshot_symlink_roots+=("$path")
+      elif [[ -d "$target/$path" ]]; then
+        printf '%s\0' "$path" >> "$backup_real_container_manifest"
       fi
     done
     : > "$backup_existing_manifest"
@@ -611,6 +635,12 @@ restore_target() {
     cleanup_new_migration_staging || rollback_complete=false
     mkdir -p "$target"
     while IFS= read -r -d '' path; do
+      if [[ -L "$target/$path" || ( -e "$target/$path" && ! -d "$target/$path" ) ]]; then
+        rm -rf -- "${target:?}/$path"
+      fi
+      mkdir -p "$target/$path"
+    done < "$backup_real_container_manifest"
+    while IFS= read -r -d '' path; do
       if [[ -L "$target/$path" ]]; then
         rm -f "$target/$path"
       elif [[ -e "$target/$path" ]]; then
@@ -621,6 +651,10 @@ restore_target() {
     done < "$backup_symlink_manifest"
     while IFS= read -r -d '' path; do
       path_is_within_snapshot_symlink_root "$path" && continue
+      if ! restore_path_parent_is_safe "$path"; then
+        rollback_complete=false
+        continue
+      fi
       if [[ -d "$backup_target_dir/$path" && ! -L "$backup_target_dir/$path" ]]; then
         if [[ -L "$target/$path" || ( -e "$target/$path" && ! -d "$target/$path" ) ]]; then
           rm -rf -- "${target:?}/$path"
@@ -646,6 +680,10 @@ restore_target() {
       fi
     done < "$backup_manifest"
     while IFS= read -r -d '' path; do
+      if ! restore_path_parent_is_safe "$path"; then
+        rollback_complete=false
+        continue
+      fi
       if [[ -L "$target/$path" || -e "$target/$path" ]]; then
         rm -rf -- "${target:?}/$path"
       fi
@@ -809,6 +847,11 @@ old_revision="$(metadata_value "$metadata_path" source_revision 2>/dev/null || p
 
 if [[ "$fetch" = "true" ]]; then
   update_source_clone
+fi
+
+if [[ -e "$target/.agent-workflows-install.lock" || -L "$target/.agent-workflows-install.lock" ]]; then
+  echo "CHECK_FAILED existing install lock: $target/.agent-workflows-install.lock" >&2
+  exit 3
 fi
 
 backup_target

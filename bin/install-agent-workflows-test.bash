@@ -7938,6 +7938,60 @@ RUBY
   "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/retry.out"
 }
 
+test_upgrade_refuses_preexisting_install_lock_before_snapshot() {
+  local tmp source target lock output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  lock="$target/.agent-workflows-install.lock"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  mkdir "$lock"
+  printf 'live transaction\n' > "$lock/marker"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 3 ]] || fail "expected existing install lock to exit 3, got $status"
+  assert_contains "$output" "CHECK_FAILED existing install lock"
+  [[ "$(cat "$lock/marker")" = "live transaction" ]] || fail "upgrade changed a pre-existing install lock"
+}
+
+test_failed_upgrade_replaces_unexpected_container_symlink_without_following_it() {
+  local tmp source target external marker output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external="$tmp/external-bin"
+  marker="$external/marker"
+  mkdir -p "$source" "$external"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  printf 'external content\n' > "$marker"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+rm -rf $(printf '%q' "$target/bin")
+ln -s $(printf '%q' "$external") $(printf '%q' "$target/bin")
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "expected upgrade failure 7, got $status"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -d "$target/bin" && ! -L "$target/bin" ]] || fail "rollback retained a replaced bin symlink"
+  [[ "$(cat "$marker")" = "external content" ]] || fail "rollback followed a replaced bin symlink"
+}
+
 test_failed_upgrade_restores_companion_delivery_mode_and_layout() {
   local tmp source target consumer output status
   tmp="$(mktemp -d)"
@@ -8301,6 +8355,45 @@ PATCH
   assert_contains "$output" "ROLLBACK_COMPLETE"
   [[ -L "$target/skills/alias-skill" && "$(readlink "$target/skills/alias-skill")" = "$expected" ]] || \
     fail "rollback did not restore a recorded chained symlink-to-directory skill"
+}
+
+test_failed_companion_upgrade_restores_recorded_absolute_symlinked_skill() {
+  local tmp source target external expected output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external="$tmp/external-skill"
+  mkdir -p "$source" "$external"
+  printf '%s\n' '---' 'name: external-skill' 'description: fixture' '---' > "$external/SKILL.md"
+  new_source_repo "$source"
+  ln -s "$external" "$source/skills/absolute-alias"
+  git -C "$source" add skills/absolute-alias
+  git -C "$source" commit --quiet -m "add absolute symlinked skill"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    --delivery-mode flat >"$tmp/install.out"
+  expected="$(readlink "$target/skills/absolute-alias")"
+  write_native_scw_state codex "$target"
+  git -C "$source" rm --quiet skills/absolute-alias
+  git -C "$source" commit --quiet -m "remove absolute symlinked skill"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+"$(dirname "$0")/install-agent-workflows-real" "$@"
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --mode symlink --delivery-mode plugin-companion --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "expected companion upgrade failure 7, got $status"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/skills/absolute-alias" && "$(readlink "$target/skills/absolute-alias")" = "$expected" ]] || \
+    fail "rollback did not restore a recorded absolute-target symlinked skill"
 }
 
 test_failed_upgrade_ignores_directory_fingerprint_keys() {
@@ -10073,6 +10166,8 @@ main() {
     test_failed_upgrade_restores_preexisting_migration_recovery_artifacts
     test_upgrade_rejects_stale_migration_receipt_without_traceback
     test_failed_upgrade_removes_new_install_lock
+    test_upgrade_refuses_preexisting_install_lock_before_snapshot
+    test_failed_upgrade_replaces_unexpected_container_symlink_without_following_it
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills
     test_companion_to_flat_upgrade_preserves_unowned_same_named_skill
@@ -10084,6 +10179,7 @@ main() {
     test_failed_flat_upgrade_removes_new_symlinked_skill
     test_failed_symlink_upgrade_ignores_non_directory_skill
     test_failed_symlink_upgrade_restores_recorded_symlinked_skill
+    test_failed_companion_upgrade_restores_recorded_absolute_symlinked_skill
     test_failed_upgrade_ignores_directory_fingerprint_keys
     test_failed_upgrade_preserves_new_stack_doctor_marker
     test_failed_upgrade_removes_new_empty_container_directories
