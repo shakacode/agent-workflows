@@ -814,6 +814,18 @@ raw_html_source_state_payload = template_source_payload
 raw_html_source_state_body = GitHubCommentEnvelope.render(
   body: raw_html_source_state_payload, runner: "codex", host: "M5", task_or_run: "address-review"
 )
+multiline_raw_html_source_state_payload = template_source_payload
+  .sub("```text\naddress-review-source-state:v1", "<pre\n>\n```text\naddress-review-source-state:v1")
+  .sub("\n```\n\n</details>", "\n```\n</pre>\n\n</details>")
+multiline_raw_html_source_state_body = GitHubCommentEnvelope.render(
+  body: multiline_raw_html_source_state_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+)
+nested_raw_html_source_state_payload = template_source_payload
+  .sub("```text\naddress-review-source-state:v1", "<div><pre>\n```text\naddress-review-source-state:v1")
+  .sub("\n```\n\n</details>", "\n```\n</pre></div>\n\n</details>")
+nested_raw_html_source_state_body = GitHubCommentEnvelope.render(
+  body: nested_raw_html_source_state_payload, runner: "codex", host: "M5", task_or_run: "address-review"
+)
 commented_visible_summary_payload = visible_enveloped_summary_payload.sub(
   "```text\naddress-review-checkpoint:v1\nkind: summary\n```",
   "<!--\n```text\naddress-review-checkpoint:v1\nkind: summary\n```\n-->"
@@ -1012,31 +1024,37 @@ assert(status.success?, "source wait checkpoint jq validator must execute with t
 assert(Integer(stdout, 10) == 1,
        "source wait checkpoint validator must accept the actual source template after envelope unwrapping")
 
-raw_html_source_state_comment = {
-  "id" => 210,
-  "user" => "trusted-reviewer",
-  "created_at" => "2026-07-15T00:07:36Z",
-  "body" => raw_html_source_state_body,
-  "payload_body" => GitHubCommentEnvelope.payload(raw_html_source_state_body)
-}
-raw_html_source_state_fixture = checkpoint_fixture.merge(
-  "issue_comments" => checkpoint_fixture.fetch("issue_comments") + [raw_html_source_state_comment]
-)
-stdout, stderr, status = Open3.capture3(
-  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
-  "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
-  stdin_data: JSON.generate(raw_html_source_state_fixture)
-)
-assert(status.success?, "source checkpoint jq validator must execute with a raw HTML code container: #{stderr}")
-assert(JSON.parse(stdout).none? { |checkpoint| checkpoint["body"] == raw_html_source_state_body },
-       "source checkpoint validator must reject a source-state record inside a raw HTML code container")
-stdout, stderr, status = Open3.capture3(
-  "jq", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_wait_checkpoint_filter,
-  stdin_data: JSON.generate("issue_comments" => [raw_html_source_state_comment])
-)
-assert(status.success?, "source wait checkpoint jq validator must execute with a raw HTML code container: #{stderr}")
-assert(Integer(stdout, 10).zero?,
-       "source wait checkpoint validator must reject a source-state record inside a raw HTML code container")
+{
+  "raw HTML code container" => raw_html_source_state_body,
+  "multiline raw HTML code container" => multiline_raw_html_source_state_body,
+  "nested raw HTML code container" => nested_raw_html_source_state_body
+}.each_with_index do |(description, body), index|
+  raw_html_source_state_comment = {
+    "id" => 210 + index,
+    "user" => "trusted-reviewer",
+    "created_at" => "2026-07-15T00:07:36Z",
+    "body" => body,
+    "payload_body" => GitHubCommentEnvelope.payload(body)
+  }
+  raw_html_source_state_fixture = checkpoint_fixture.merge(
+    "issue_comments" => checkpoint_fixture.fetch("issue_comments") + [raw_html_source_state_comment]
+  )
+  stdout, stderr, status = Open3.capture3(
+    "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160",
+    "--argjson", "walkthrough_review_ids", "[]", skill_checkpoint_filter,
+    stdin_data: JSON.generate(raw_html_source_state_fixture)
+  )
+  assert(status.success?, "source checkpoint jq validator must execute with a #{description}: #{stderr}")
+  assert(JSON.parse(stdout).none? { |checkpoint| checkpoint["body"] == body },
+         "source checkpoint validator must reject a source-state record inside a #{description}")
+  stdout, stderr, status = Open3.capture3(
+    "jq", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_wait_checkpoint_filter,
+    stdin_data: JSON.generate("issue_comments" => [raw_html_source_state_comment])
+  )
+  assert(status.success?, "source wait checkpoint jq validator must execute with a #{description}: #{stderr}")
+  assert(Integer(stdout, 10).zero?,
+         "source wait checkpoint validator must reject a source-state record inside a #{description}")
+end
 
 walkthrough_fixture = checkpoint_fixture.merge(
   "review_summaries" => checkpoint_fixture.fetch("review_summaries") +
