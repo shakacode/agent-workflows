@@ -202,9 +202,9 @@ Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt t
 
 ## Entry Points
 
-- **Batch default: `post-merge-audit`.** Structural drift accumulated across a
-  concurrent-agent batch is exactly what no other axis reviews. Run this over
-  the audited range and file findings into the audit's issue plan.
+- **After a batch audit:** invoke `$structural-review` explicitly on the same
+  range audited by `$post-merge-audit` when you want the codebase-health lens.
+  `post-merge-audit` does not auto-run `structural-review` for you.
 - **On demand pre-merge**, when a PR grows a file substantially, adds a flag,
   or moves logic between layers.
 

@@ -1,33 +1,44 @@
 # PR-Batch Worker Execution
 
-This component owns bounded implementation for an accepted lane.
-Load after prompt intake, planning, dependency preflight, and dispatch, before
-creating the lane worktree or editing files.
+Load after intake, planning, dependency preflight, and dispatcher selection;
+before dispatch, worktree creation, or editing.
 
 ## Boundary
 
-Worker execution owns isolated setup, implementation, focused validation,
-meaningful stops, the human-attention queue, and implementation-head handoff.
+Owns isolated setup, implementation, focused validation, meaningful stops,
+human-attention queuing, and implementation-head handoff.
 
-It consumes, without redefining, verified [`pr-batch-intake`](pr-batch-intake.md),
+Consume verified [`pr-batch-intake`](pr-batch-intake.md),
 [`stage-dependency-gate`](pr-processing.md#stage-typed-dependency-gate) action,
 the approved execution envelope, and optional
-[`Coordination State`](pr-processing.md#coordination-state) ownership. It calls
-the shared security floor before using public GitHub content; it does not own
-security, dependency planning, dispatch, claims, liveness, or telemetry.
+[`Coordination State`](pr-processing.md#coordination-state) ownership without
+redefining them. Call the shared security floor before using public GitHub
+content. Security, planning, dispatch, claims, liveness, and telemetry remain
+externally owned.
+
+Apply trusted [coordination applicability](pr-processing.md#coordination-applicability-gate).
+Only `coordination_required` makes ownership or event calls below. For
+`coordination_not_applicable`, keep reservations, lifecycle, and stop packets in
+durable controller-local state; no backend calls or unavailable/degraded warnings.
 
 It emits a committed implementation head and replayable evidence. It does not
-own base integration, conflict resolution, final validation, PR publication,
+own base integration, conflicts, final validation, publication,
 review convergence, hosted CI, readiness, merge, production, promotion, or
 release.
 
+Before implementation dispatch, use the [Task Review Loop](pr-batch-task-review.md)
+to create the task brief consumed here. Return after the committed handoff for
+its task review and fix rounds.
+
 ## Input Contract
 
-Consume one lane record with known values for:
+Required lane inputs:
 
 - the exact accepted target and stable coordination identity;
-- lane id, goal, non-goals, supported diagnosis, invariants, acceptance
-  criteria, required verification, stop conditions, and owned paths;
+- the accepted task brief with its exact identity and digest as the sole source
+  of the task goal and acceptance requirements;
+- execution controls for non-goals, supported diagnosis, invariants, required
+  verification, stop conditions, and owned paths;
 - repository root, accepted base commit, worktree path, and branch name;
 - the latest dependency-gate permission for the requested action;
 - focused verification commands or their repository discovery seam;
@@ -145,6 +156,12 @@ material security, privacy, compliance, or release-policy changes; an
 uncoordinatable active lane; consequential ambiguity; or verification would be
 weakened.
 
+A worker stop returns control to the coordinator, not directly to the user.
+Resolve from existing authority and evidence, including bounded diagnosis or
+independent review; ask the user only for required decisions beyond that authority.
+Keep the lane stopped on its actual security, ownership, scope, or verification gate
+until resolved.
+
 Queue one compact `worker-attention v1` record rather than a transcript:
 
 - target, lane, current branch/worktree/head, and safe working-tree state;
@@ -155,10 +172,10 @@ Queue one compact `worker-attention v1` record rather than a transcript:
 - the safe resume instruction plus any dependency, claim, or path-expansion
   state that must be replayed.
 
-When an active private backend advertises typed events, emit the corresponding
-`help_requested` event through its bounded transport; backend absence or
-unadvertised transport does not invent an execution blocker. Do not ask merely
-because a dependency is still progressing or optional telemetry is unavailable.
+For `coordination_required` with advertised private-backend support, emit bounded
+`help_requested`; unavailable transport is nonblocking. For
+`coordination_not_applicable`, emit and probe nothing. Do not ask merely because
+a dependency is progressing or optional telemetry is unavailable.
 
 ## Worker-To-Coordinator Handoff
 

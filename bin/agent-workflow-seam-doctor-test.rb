@@ -725,6 +725,69 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_ci_readiness_accepts_closed_optional_approval_hold_rules
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "ci_readiness" => {
+            "version" => 1,
+            "optional_approval_held_checks" => [{
+              "id" => "storybook-review-app", "app_slug" => "circleci-checks",
+              "name" => "storybook-review-app"
+            }]
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_ci_readiness_rejects_unknown_malformed_and_ambiguous_rules
+    valid_rule = {
+      "id" => "storybook-review-app", "app_slug" => "circleci-checks",
+      "name" => "storybook-review-app"
+    }
+    invalid = {
+      "literal UNKNOWN name" => { "version" => 1, "optional_approval_held_checks" => [valid_rule.merge("name" => "UNKNOWN")] },
+      "blank name" => { "version" => 1, "optional_approval_held_checks" => [valid_rule.merge("name" => " ")] },
+      "non-CircleCI provider" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("app_slug" => "other-ci")]
+      },
+      "unknown key" => { "version" => 1, "optional_approval_held_checks" => [valid_rule], "waive" => true },
+      "duplicate identity" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule, valid_rule.merge("id" => "duplicate")]
+      },
+      "empty rules" => { "version" => 1, "optional_approval_held_checks" => [] }
+    }
+
+    invalid.each do |label, policy|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("ci_readiness" => policy))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        expected = if label == "blank name"
+                     "unresolved policy value for key: ci_readiness"
+                   else
+                     "invalid ci_readiness policy"
+                   end
+        assert_includes out, expected, label
+      end
+    end
+  end
+
   def test_writing_style_accepts_a_repository_relative_markdown_file
     with_repo do |root|
       write_valid_binstub_contract(root)
@@ -1251,6 +1314,46 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     assert_equal PRIVATE_COORDINATION_BACKEND, config.fetch("coordination_backend")
     assert_equal coordination_backend_contract(PRIVATE_COORDINATION_BACKEND),
                  config.fetch("coordination_backend_contract")
+  end
+
+  def test_automation_reviewers_accepts_a_typed_identity_to_check_name_mapping
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge("automation_reviewers" => { "claude-review" => "claude-review", "coderabbitai" => "CodeRabbit" })
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+    end
+  end
+
+  def test_automation_reviewers_rejects_ambiguous_or_incomplete_shapes
+    invalid_values = {
+      "free-form scalar" => "claude-review (check: claude-review)",
+      "list" => ["claude-review"],
+      "empty mapping" => {},
+      "non-string identity" => { 1 => "claude-review" },
+      "blank identity" => { " " => "claude-review" },
+      "blank check name" => { "claude-review" => " " },
+      "duplicate check name" => { "first" => "shared-check", "second" => "shared-check" }
+    }
+
+    invalid_values.each do |label, value|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("automation_reviewers" => value))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, "#{label}: #{out}"
+        assert_includes out, "invalid automation_reviewers policy", label
+      end
+    end
   end
 
   def test_incomplete_untrusted_contributor_intake_policy_fails
@@ -2734,6 +2837,12 @@ end
 
 class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
   include AgentWorkflowSeamDoctorTestHelpers
+
+  def test_init_command_shell_helpers_remain_public_module_methods
+    AgentWorkflowSeamDoctor::InitCommandShell::PUBLIC_METHODS.each do |method_name|
+      assert_includes AgentWorkflowSeamDoctor.public_methods, method_name
+    end
+  end
 
   def test_help_advertises_init
     out, status = Open3.capture2e("ruby", SCRIPT, "--help")

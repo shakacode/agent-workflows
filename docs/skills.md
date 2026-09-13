@@ -5,6 +5,10 @@ skill by naming it in your request, for example `$verify`. The linked
 `SKILL.md` files are the agent-facing contracts; the descriptions here explain
 when a person would choose each one.
 
+If you also use Caveman, Ponytail, or another skill library, see
+[Compose With Other Skill Libraries](adoption.md#compose-with-other-skill-libraries)
+for workflow ownership, writing style, and compression boundaries.
+
 ## Plan the work
 
 ### [`$spec`](../skills/spec/SKILL.md)
@@ -169,8 +173,11 @@ running, blocked, or awaiting a decision.
 ### [`$pr-walkthrough`](../skills/pr-walkthrough/SKILL.md)
 
 Use `$pr-walkthrough` when a human wants to understand a PR before deciding on
-it. The agent explains one conceptual change at a time—problem, rationale,
-design, risks, and validation—and pauses for questions between sections.
+it. A direct chat request uses live, read-only, one-concept-at-a-time exploration.
+The agent prepares the complete exact-diff map first. When a recorded `ask`
+workflow selects publication, or the user explicitly requests published-review
+mode with comment authority, it publishes separately replyable GitHub threads
+for asynchronous discussion under the skill's publication contract.
 
 ### [`$close-batch`](../skills/close-batch/SKILL.md)
 
@@ -180,9 +187,11 @@ decision, and archives tasks only when their work is durably handed off.
 
 ### [`$post-merge-audit`](../skills/post-merge-audit/SKILL.md)
 
-Use `$post-merge-audit` after concurrent PRs merge or before a release
-candidate. It checks cross-PR interactions, missed reviews, unresolved
-follow-ups, changelog coverage, and release risk.
+Use `$post-merge-audit` when the canonical
+[audit applicability rules](../workflows/pr-batch-integration-closeout.md#audit-applicability)
+require one, such as for release assurance, verified cross-PR integration risk,
+or a suspected bad merge. It checks cross-PR interactions, missed reviews,
+unresolved follow-ups, changelog coverage, and release risk.
 
 ### [`$update-changelog`](../skills/update-changelog/SKILL.md)
 
@@ -208,11 +217,44 @@ Use `$pause` before restarting Codex, Claude, or another agent runner. It
 produces restart-safe pause and resume prompts that preserve the current work
 and recovery steps.
 
+### [`$restart-codex-subagents`](../skills/restart-codex-subagents/SKILL.md)
+
+Use `$restart-codex-subagents` to prepare or recover tasks around a Codex
+restart, crash, or account change. Preparation is optional and bounded; recovery
+reconciles checkpoints, logs, and live state, then verifies that every intended
+task resumed or preserved its prior pause.
+
 ### [`$close-session`](../skills/close-session/SKILL.md)
 
 Use `$close-session` when a task may be finished and you want to know whether
 it is safe to archive. It verifies live state, records the outcome and
 follow-up owner, and gives an explicit archive-readiness verdict.
+
+### [`$audit-chats`](../skills/audit-chats/SKILL.md)
+
+Use `$audit-chats` for a read-only review of multiple local Codex tasks and the
+visible ChatGPT subset. It separates work state, next owner, and archive
+readiness, verifies stale blockers when they change the recommendation, and
+groups the report by the next useful action.
+
+After quota exhaustion or an app restart, explicitly request its optional
+[interrupted-task recovery mode](../skills/audit-chats/references/interrupted-task-recovery.md):
+
+```text
+Use $audit-chats to recover interrupted Codex tasks for this repository on
+this host. Resume only existing, still-authorized work; prioritize PRs close to
+completion. Leave active, priority-paused, and genuinely blocked tasks alone.
+Recover pause-for-restart handoffs only after verifying their restart condition.
+Show me only exceptions needing my decision and save the recovery report.
+```
+
+Add your required model and effort to that prompt when applicable. Recovery
+uses supported task controls, not the local inventory database. It verifies
+actual execution instead of assuming a sent message restarted a task. If the
+host lacks those controls, it reports the limitation without starting a
+replacement worker. Access to another machine's files is not task-control
+access; run the scoped recovery there when remote controls are unavailable.
+An ordinary audit remains read-only, and installing this skill starts nothing.
 
 ### [`$task-observer`](../skills/task-observer/SKILL.md)
 

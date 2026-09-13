@@ -8,6 +8,11 @@ syntax stay in `SKILL.md` or `workflows/address-review.md`, which are covered by
 
 <!-- Keep this action-routing section in sync with .agents/workflows/address-review.md Step 8. -->
 
+Apply [Initial-Pass Optional-Nit Cutoff](../../../workflows/pr-processing.md#initial-pass-optional-nit-cutoff)
+before every action below, including `a`, `f`, `f+i`, `f+o`, autopilot, and
+replacement carryover. Their optional defaults operate only within that rule;
+an explicit later human scope decision may select work without resetting phase.
+
 ### Action `a` — Apply, stage, and recommend
 
 Fix all `MUST-FIX` and `OPTIONAL` items inline after the user selects `a`, or automatically when `autopilot` was requested at initiation. Run relevant checks and the self-review gate. Stage only the intended changed files with explicit `git add` paths instead of committing them. Do **not** commit, push, post GitHub replies, resolve review threads, create follow-up issues, or post the PR summary checkpoint. Return a local summary with: fixed `MUST-FIX` items, fixed `OPTIONAL` items, staged files, validation commands/results, unresolved/skipped items, and detailed `DISCUSS` recommendations. Each `DISCUSS` recommendation must include the reviewer/comment link, recommended decision (`fix now`, `defer`, `decline`, or `ask user`), rationale/evidence, risk/tradeoff, and concrete next step. If validation fails after reasonable local repair, still report the staged-file state clearly and mark the PR as not ready for commit/push.
@@ -234,6 +239,17 @@ Users can chain actions: e.g., `f+i` then `r7-9`. After the first action complet
 
 ### General rules for all actions
 
+Never post an unsolicited address-review disposition or acknowledgment reply to
+an explanatory root in the current exact-diff walkthrough, and do not resolve
+that walkthrough during ordinary closeout. When a trusted focused reply was
+promoted for triage, answer it in the original thread under the normal action
+rules while keeping the walkthrough visible. Resolve stale walkthrough threads
+without adding disposition replies after a verified current replacement exists,
+or after verifying that the active route neither requires nor authorizes a
+replacement. First answer or carry forward every focused reply; an unanswered
+focused reply keeps its stale thread open and actionable. Apply the normal reply
+and resolution rules to every other selected review thread.
+
 Except for action `a`, when addressing items, after completing each selected item (whether `MUST-FIX`, `DISCUSS`, or `OPTIONAL`), reply to the original review comment explaining how it was addressed.
 For actions other than `a`, if the user selects `DISCUSS` or `OPTIONAL` items to address, treat them the same as `MUST-FIX`: make the code change, reply, and resolve the thread.
 If the user selects skipped/declined items for rationale replies, post those replies too.
@@ -282,10 +298,17 @@ gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPON
 
 ```bash
 ITEM_SOURCE_PR="${ITEM_SOURCE_PR:-${PRIMARY_PR_NUMBER}}"
-gh api repos/${REPO}/pulls/${ITEM_SOURCE_PR}/comments/${REVIEW_COMMENT_ID}/replies -X POST -f body="<response>"
+REVIEW_COMMENT_ID="<current-item-id>"
+CURRENT_ITEM_IN_REPLY_TO_ID="<current-item-in_reply_to_id-or-null>"
+REVIEW_COMMENT_IN_REPLY_TO_ID=""
+if [ "${CURRENT_ITEM_IN_REPLY_TO_ID}" != "null" ]; then
+  REVIEW_COMMENT_IN_REPLY_TO_ID="${CURRENT_ITEM_IN_REPLY_TO_ID}"
+fi
+REVIEW_REPLY_TARGET_ID="${REVIEW_COMMENT_IN_REPLY_TO_ID:-${REVIEW_COMMENT_ID}}"
+gh api repos/${REPO}/pulls/${ITEM_SOURCE_PR}/comments/${REVIEW_REPLY_TARGET_ID}/replies -X POST -f body="<response>"
 ```
 
-Use the selected item's review comment `id` as `REVIEW_COMMENT_ID`; do not use the parsed input `COMMENT_ID` except for the specific-comment fetch path. Use the `/replies` endpoint for all existing review comments, including standalone top-level comments.
+Use the selected item's review comment `id` as `REVIEW_COMMENT_ID`; it remains the tracked item identity. Assign the current item's raw `in_reply_to_id` (number or `null`) to `CURRENT_ITEM_IN_REPLY_TO_ID` on every iteration, then reset and populate `REVIEW_COMMENT_IN_REPLY_TO_ID` exactly as shown. Never inherit either item value from a prior persistent-shell iteration and never pass the literal string `null`. A promoted `root_excluded` reply therefore posts through its excluded top-level parent while its own ID remains in worklists and checkpoints. Do not use the parsed input `COMMENT_ID` except for the specific-comment fetch path. Use the `/replies` endpoint for all existing review comments, including standalone top-level comments.
 
 **For review summary bodies (from `/pulls/{PR_NUMBER}/reviews/{REVIEW_ID}`):**
 

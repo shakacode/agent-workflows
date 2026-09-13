@@ -1,0 +1,33 @@
+---
+description: Route Agent Workflows skills for Cursor and Grok
+alwaysApply: true
+---
+
+# Agent Workflows on Cursor
+
+When the user asks to plan or run PR lanes, verify a branch, address review
+comments, update a changelog, follow TDD, audit a merged batch, or monitor
+coordinated agent work, read the matching Agent Workflows skill before acting.
+
+Resolve the skill body in this order:
+
+1. `~/.cursor/skills/<name>/SKILL.md` when this host installed the pack
+2. `~/.claude/skills/<name>/SKILL.md` or `~/.codex/skills/<name>/SKILL.md`
+3. A repo-pinned `.agents/skills/<name>/SKILL.md`
+
+Day-one and fleet names: `tdd`, `verify`, `address-review`, `update-changelog`,
+`adversarial-pr-review`, `pr-batch`, `plan-pr-batch`, `close-batch`,
+`post-merge-audit`, `batch-status`, `pr-monitoring`, `continue`,
+`close-session`.
+
+Do not substitute a different skill ecosystem for this process. Invoke with
+`/<name>`. Cursor also loads Claude and Codex skill homes; prefer the
+Cursor-installed copy when the same name exists in more than one home.
+
+<!-- host-branch: cursor-only start -->
+Pin the skill as a Custom Mode when you want it for the whole session.
+Cursor Plan mode uses `SwitchMode` to `plan`. File-editing workers need their
+own `git worktree add`; do not silently share the parent worktree. Overnight
+multi-lane batches remain blocked on Cursor until worktree isolation is proven.
+Never write into `~/.cursor/skills-cursor`.
+<!-- host-branch: cursor-only end -->

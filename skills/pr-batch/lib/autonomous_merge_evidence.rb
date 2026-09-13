@@ -142,6 +142,8 @@ module AutonomousMergeEvidence
     parsed
   rescue Errno::ENOENT
     raise CollectionError, "GitHub CLI is unavailable"
+  rescue JSON::ParserError => e
+    raise CollectionError, "malformed or invalid GitHub evidence: malformed JSON response for #{path}: #{e.message}"
   end
 
   def normalize_file(file)

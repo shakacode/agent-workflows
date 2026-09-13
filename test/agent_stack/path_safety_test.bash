@@ -87,3 +87,18 @@ test_value_options_return_usage_for_missing_or_empty_operands() {
     assert_contains "$output" "$option requires"
   done
 }
+
+test_colocated_sync_uses_implicit_cursor_home_target() {
+  local temporary target
+  temporary="$(make_tmp_dir)"
+  target="$temporary/cursor-home"
+  with_current_workflows_origin "$temporary"
+
+  CURSOR_HOME="$target" run_sync "$temporary" --host cursor --agent-coord-install-dir "$target/bin" \
+    --mode symlink --no-fetch
+
+  [[ -L "$target/bin/agent_doctor" ]] || fail "implicit CURSOR_HOME did not establish workflow doctor ownership"
+  [[ "$(cd "$target/bin/agent_doctor" && pwd -P)" = "$(cd "$temporary/src/agent-workflows/bin/agent_doctor" && pwd -P)" ]] ||
+    fail "implicit CURSOR_HOME doctor link points at the wrong source"
+  "$target/bin/agent-stack" doctor --help >/dev/null
+}

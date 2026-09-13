@@ -1,0 +1,72 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+
+# Audit recovery acknowledgments in an existing fleet manifest; never dispatch work.
+module RecoveryStatus
+  module_function
+
+  def audit(manifest)
+    raise ArgumentError, "manifest must be an object" unless manifest.is_a?(Hash)
+
+    generation = manifest["restart_id"]
+    parents = manifest["parents"]
+    unless generation.is_a?(String) && !generation.empty? && parents.is_a?(Array) && !parents.empty?
+      raise ArgumentError, "restart_id and nonempty parents are required"
+    end
+
+    seen = []
+    expected = { "resume" => "resumed", "keep-paused" => "preserved-pause", "complete" => "already-complete" }
+    results = parents.map do |parent|
+      raise ArgumentError, "parent must be an object" unless parent.is_a?(Hash)
+
+      identity = parent["id"]
+      unless identity.is_a?(String) && !identity.empty? && !seen.include?(identity)
+        raise ArgumentError, "parent identities must be nonempty and unique"
+      end
+
+      seen << identity
+      receipt = parent["recovery"]
+      disposition = parent["resume_disposition"]
+      handoff = parent["handoff"]
+      reason = if handoff && handoff != "" && (!handoff.is_a?(String) || File.basename(handoff, File.extname(handoff)) != identity)
+                 "handoff filename belongs to another parent"
+               elsif !expected.key?(disposition)
+                 "pre-restart pause/authority disposition needs reconciliation"
+               elsif !receipt.is_a?(Hash)
+                 "no recovery acknowledgment; readiness or dispatch is not recovery"
+               elsif receipt["restart_id"] != generation || receipt["parent_id"] != identity
+                 "recovery acknowledgment belongs to another restart or parent"
+               elsif !%w[evidence next_action].all? { |key| receipt[key].is_a?(String) && !receipt[key].strip.empty? }
+                 "recovery acknowledgment lacks evidence or next action"
+               elsif receipt["status"] != expected[disposition]
+                 "recovery is incomplete or conflicts with the saved disposition"
+               end
+      { "parent_id" => identity, "status" => reason ? "needs-attention" : receipt["status"], "reason" => reason }
+    end
+    { "restart_id" => generation,
+      "status" => results.any? { |row| row["reason"] } ? "RECOVERY_INCOMPLETE" : "RECOVERY_COMPLETE",
+      "parents" => results }
+  end
+
+  def main(argv)
+    raise ArgumentError, "usage: recovery-status /path/to/existing-fleet.json" unless argv.length == 1
+
+    source = File.read(argv.first, encoding: Encoding::UTF_8)
+    raise EncodingError, "manifest must be UTF-8" unless source.valid_encoding?
+
+    result = audit(JSON.parse(source))
+    puts JSON.pretty_generate(result)
+    result["status"] == "RECOVERY_COMPLETE" ? 0 : 2
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  begin
+    exit RecoveryStatus.main(ARGV)
+  rescue SystemCallError, IOError, ArgumentError, EncodingError, JSON::ParserError
+    warn "recovery-status: invalid or unavailable manifest; recovery is UNKNOWN"
+    exit 2
+  end
+end

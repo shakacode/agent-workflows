@@ -17,6 +17,35 @@ See [seam-design.md](seam-design.md) for the design rationale. See
 paths, upgrade commands, status states, rollback behavior, and Codex/Claude
 notes.
 
+## Choose Integration And Promotion Checks
+
+Start with the existing `.agents/bin/validate` wrapper and its command table.
+The [delivery policy](delivery-policy.md) supports repository-owned selection
+and consistent reporting across verify, run-ci, autoreview preparation, and
+closeout. It introduces no YAML key, shared effort preset, or universal flag.
+Repositories that omit this customization keep their existing validation.
+
+Document project type, collaborator impact, required integration checks,
+the complete promotion invocation, and who repairs full-mainline failures.
+Wrappers control checks; existing `review_gate` notes control required review,
+`hosted_qa_gate` controls configured runtime QA, and `ci_change_detector` notes
+can point to the routing contract. Review depth and repair stopping limits
+remain governed by repository requirements and the existing review workflow.
+
+The [two executable examples](../examples/delivery-policy/README.md) show an
+internal tool selecting lint and docs for narrow prose changes while a
+critical service runs all checks for the same change. Policy comes from the
+trusted base; risky, unknown, or malformed selection inputs cannot reduce
+coverage. Report phase, candidate/base identity, required results,
+selected/full coverage, omissions, and the reason. A failed required check
+remains blocking when an existing repair budget stops automatic work.
+
+Require complete feedback after integration and complete checks for the exact
+promotion candidate. Current-head CI, independent review, security, and any
+configured hosted QA remain required. Merge permission does not authorize a
+release or deployment. Named fast/balanced/strict presets and a unified effort
+resolver remain proposals, not supported configuration.
+
 ## Configure Project Writing Style
 
 To give a project its own writing guidance, create
@@ -83,6 +112,58 @@ Do not vendor or copy the copyrighted standard PDF or its dictionary into this
 repository or a project guide. Formal ASD-STE100 work requires access to an
 authorized specification and review by a qualified human. The packaged adapter
 and AI tools do not establish ASD approval, certification, or conformance.
+
+## Compose With Other Skill Libraries
+
+Select one workflow owner and activate add-ons explicitly for each run.
+When Agent Workflows owns the run, keep its required scope, ownership,
+repository checks, review and approval gates, and exact evidence. Disable
+conflicting add-ons for that run. Do not rely on installation order to resolve
+conflicts. Behavior depends on the exact library version, host, and delivery
+mode; this guidance does not establish tested compatibility or automatic
+instruction precedence.
+
+Treat these concerns separately:
+
+- **Chat style.** The pinned [Caveman prose skill][composition-caveman-skill]
+  requests terse replies and suppresses tool narration. Use the existing
+  [`writing_style` seam](#configure-project-writing-style) for writing guidance.
+  Optional terseness must retain uncertainty, qualifiers, exact identifiers,
+  commands, URLs, and machine-readable records. Keep required progress updates
+  and handoffs.
+- **Implementation simplification.** The pinned
+  [Ponytail skill][composition-ponytail-skill] favors minimal implementations,
+  caps ordinary explanations, and suggests one runnable check for non-trivial
+  logic. Those preferences cannot remove requested behavior or reduce the
+  repository's required validation.
+- **Overlapping workflows and delegation.** Caveman's
+  [delivery documentation][composition-caveman-delivery] also lists work
+  patterns, subagent presets, and review skills. Select which workflow controls
+  assignments and completion. An add-on review or compressed summary does not
+  automatically supply the independent review evidence Agent Workflows requires.
+- **Persisted-file compression.** Caveman also offers Markdown compression and
+  installed-skill conversion in its [delivery documentation][composition-caveman-delivery].
+  Do not overwrite installed workflow files or `AGENTS.md` with compressed
+  copies as an installation step.
+- **Runtime proxies.** Caveman's [proxy][composition-caveman-delivery] changes
+  what the agent reads before provider calls. Treat input compression as a
+  separate runtime choice. Check its settings and retain access to the exact
+  evidence required by the selected workflow.
+
+For later evaluations, record each active library version, host version,
+delivery mode, hooks, and proxy settings. Isolate the control condition from
+global activation. Ponytail's pinned [hook registration][composition-ponytail-hooks]
+includes `SessionStart`; its [benchmark report][composition-ponytail-benchmark]
+describes global hooks contaminating an earlier no-skill baseline. This is an
+upstream report, not measured compatibility with Agent Workflows. Keep input
+compression experiments separate from prose-only comparisons. Combining these
+libraries provides no guarantee of token or cost savings, quality, or security.
+
+[composition-caveman-skill]: https://github.com/JuliusBrussee/caveman/blob/15581d14007fd01fb3f132016741962f34936ca2/skills/caveman/SKILL.md
+[composition-caveman-delivery]: https://github.com/JuliusBrussee/caveman/blob/15581d14007fd01fb3f132016741962f34936ca2/README.md
+[composition-ponytail-skill]: https://github.com/DietrichGebert/ponytail/blob/356918eba965ee1eac64bd3a7f0dd02108350de5/skills/ponytail/SKILL.md
+[composition-ponytail-hooks]: https://github.com/DietrichGebert/ponytail/blob/356918eba965ee1eac64bd3a7f0dd02108350de5/hooks/claude-codex-hooks.json
+[composition-ponytail-benchmark]: https://github.com/DietrichGebert/ponytail/blob/356918eba965ee1eac64bd3a7f0dd02108350de5/benchmarks/results/2026-06-18-agentic.md
 
 ## One-Time Adoption
 
@@ -155,6 +236,20 @@ and AI tools do not establish ASD approval, certification, or conformance.
    [Configure Project Writing Style](#configure-project-writing-style) to add a
    repository guide or personal fallback. The initializer leaves the optional
    repository key absent until the project chooses to enable it.
+
+   Repositories that expect automated reviewers must add the
+   `automation_reviewers` mapping and describe the review requirement in
+   `review_gate`; do not retain `review_gate: "n/a"`. The mapping is optional
+   only when no automated reviewer is expected; omit the key instead of using
+   the `n/a` sentinel. Each key is the reviewer's GitHub actor base login, with
+   any `[bot]` suffix omitted. Each value is the exact GitHub check-run name returned by
+   `gh pr checks --json name`:
+
+   ```yaml
+   automation_reviewers:
+     claude: claude-review
+     coderabbitai: CodeRabbit
+   ```
 
    Repositories that use repository-based GitHub Actions and reusable workflows
    must also add a closed, exact `trusted_actions` allowlist. Its entries are

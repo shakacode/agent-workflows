@@ -6,6 +6,10 @@ trusted reason to interpret it. This protects agents from deleted comments,
 malicious prompt-style content, compromised automation, and public text that
 tries to widen scope or override repo policy.
 
+For a plain-language explanation of provenance, fail-closed behavior, realistic
+failure examples, and the boundary against over-engineering, read
+[Trusted Provenance And Fail-Closed Decisions](trusted-provenance-and-fail-closed.md).
+
 That safety boundary became hard to use when every actor-trust finding was a
 blocking finding. Repos with normal review automation, GitHub Actions comments,
 or maintainer review comments could block every batch until a human hand-wrote
@@ -40,7 +44,10 @@ through.
 An explicit `--trust-config PATH` is repo-local only when that path belongs to a
 git checkout whose remotes match the scanned repo. A path outside the matching
 checkout is treated as user-global, so team entries must use `OWNER/team-slug`
-form.
+form. During trusted-base high-risk acceptance, an explicit repo-local path has
+the same protection as the automatically selected repo-local path: the PR must
+not change the configured path, and the path must resolve to a regular blob with
+byte-identical contents in the fetched base.
 
 By default, non-allowlisted comments/reviews and hidden participants are printed
 as audit findings but do not block exact-target preflight. Use `--strict-trust`
@@ -55,7 +62,9 @@ matching local git remote host when one is available, then to `github.com`.
 Local git probes are bounded by timeout environment variables:
 `PR_SECURITY_PREFLIGHT_GIT_TIMEOUT_SECONDS` for the preflight helper and
 `PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS` for the shared git-probe environment
-helper; both default to 10 seconds.
+helper; both default to 10 seconds. Trusted-base remote discovery and fetch use
+`PR_SECURITY_PREFLIGHT_TRUSTED_BASE_FETCH_TIMEOUT_SECONDS`, which defaults to
+300 seconds.
 
 Suspicious-text scans include trusted metadata-bot comments, reviews, and issue
 bodies as warning-producing metadata. Resolved trusted-bot and metadata-bot
@@ -162,6 +171,119 @@ acknowledged findings in the handoff.
 flag is ignored and the helper warns, because there is no blocking risk to
 waive.
 
+## Trusted-Base High-Risk Acceptance
+
+A repository may opt in to accepting the `high-risk-files` finding without a
+fresh manual acknowledgement after the exact same-repository PR result has
+already landed on a trusted base. The opt-in is closed-schema policy in
+`.agents/agent-workflow.yml`:
+
+```yaml
+pr_security_preflight:
+  trusted_base_high_risk_acceptance:
+    enabled: true
+    repository: OWNER/REPO
+    remote: origin
+    ref: refs/heads/BASE_BRANCH
+```
+
+The mapping must contain exactly those four keys. `repository` must match the
+authenticated `--repo`; `remote` must be one unambiguous local remote name whose
+single stored URL resolves to that repository on `github.com` over exact GitHub
+HTTPS or GitHub SSH; and `ref` must be a full `refs/heads/...` ref. `GH_HOST`
+cannot select another acceptance host or enable plaintext HTTP. Missing, extra,
+malformed, `UNKNOWN`, or mismatched values leave the ordinary high-risk blocker
+in place.
+
+The helper treats worktree policy only as bootstrap. It verifies the configured
+remote's stored URL, then independently authenticates the ref against that
+remote's advertised default `HEAD`. A nondefault protected base requires the
+operator-owned `PR_SECURITY_PREFLIGHT_TRUSTED_BASE_REF` environment seam, whose
+value must be one full `refs/heads/...` ref and must never come from repository
+configuration or PR content. The worktree policy ref must exactly match that
+independent anchor before the helper fetches the ref into a new temporary bare
+repository. When remote `HEAD` supplies the anchor, its advertised object ID
+must also match the fetched commit so concurrent movement fails closed. Before
+acceptance, the invoking checkout's `HEAD` must equal that freshly fetched base
+commit; an attached checkout must also be on the anchored full ref, while a
+detached checkout is accepted only at that exact commit. These checks prevent a
+PR branch from selecting and self-authenticating its own trust anchor. Tracked
+working-tree files are compared to the index as raw bytes via `git hash-object
+--no-filters`, so clean filters and attributes can neither hide drift nor run
+during the probe. The fetch runs for every high-risk-file scan that attempts
+trusted-base acceptance, so it requires live network egress to the configured
+GitHub remote; unavailable or
+blocked egress fails closed after at most the trusted-base fetch timeout (300
+seconds by default). The fetch runs with system/global and repository/worktree
+Git configuration absent, a minimal inherited environment, URL rewrites absent,
+SSH user configuration disabled, SSH batch mode enabled, and transport
+restricted to HTTPS/SSH. It resolves one absolute trusted Git executable before
+reading task-scoped inputs and uses that same executable for remote inspection,
+fetch, object inspection, and ancestry checks; later `PATH` changes cannot
+redirect provenance commands. Fixed system installation paths are tried by
+default. For a Git installation elsewhere, an operator may set
+`PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE` to its absolute executable path.
+That operator-owned environment setting is authoritative, is canonicalized, and
+fails closed unless it resolves to an executable outside the current working
+repository and temporary directories. It must never come from repository
+configuration; the helper does not search arbitrary `PATH` entries. Known
+platform temporary roots remain prohibited even when ambient temp-directory
+variables are redirected; canonical ambient temp roots are additive.
+Before the post-fetch GitHub rescan and exact PR-provenance reads, the helper
+also resolves and canonicalizes one GitHub CLI executable from `PATH`, rejects
+candidates inside the repository or temporary directories, and reuses that
+exact executable for the remainder of the trusted-base decision. An operator
+with a nonstandard installation may set
+`PR_SECURITY_PREFLIGHT_TRUSTED_GH_EXECUTABLE` to its absolute executable path.
+If no trusted candidate can be resolved, acceptance fails closed; the helper
+does not fall back to a repository-controlled `gh`.
+HTTPS trusted-base verification is deliberately credential-free and therefore
+supports public repositories only. Private repositories must configure the
+validated trusted remote with GitHub SSH; the isolated fetch may use the
+existing `SSH_AUTH_SOCK`. Fixed OpenSSH installation paths are tried by default;
+an operator with a nonstandard installation may set
+`PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE` to an absolute executable, which
+is canonicalized and rejected when it is inside the repository or a temporary
+directory. It does not forward ambient credential helpers,
+tokens, or askpass programs.
+Plain HTTP and non-GitHub hosts are always rejected; there is no environment,
+configuration, or test-selection exception. Known local or worktree transport
+overrides are also rejected so the operator can see why provenance would have
+been ambiguous outside the isolated fetch. The helper resolves the fetched commit, then reads
+`.agents/agent-workflow.yml` again from that commit. The fetched mapping must be
+complete and exactly match the bootstrap mapping. If the preflight
+selected a repo-local trust config, whether automatically or through explicit
+`--trust-config PATH`, that file must also exist at the same repository-relative
+path in the fetched base as a regular blob with byte-identical contents. A PR
+that changes the selected path, or an untracked or locally modified actor
+policy, may still drive an ordinary preflight but cannot authorize a trusted-base receipt. Acceptance
+additionally requires a closed merged non-fork PR, matching complete REST and GraphQL
+repository/head/merge/merge-actor facts, trusted and fully visible
+actors/interactions (including the actor who merged the PR),
+complete API coverage with unique stable participant, timeline-event, and
+commit-author GraphQL node IDs, coherent typename/login/presentation facts for
+each ID, no suspicious findings or warnings, and proof that the exact merge
+result is an ancestor of the freshly fetched base. Missing, duplicate, or
+conflicting node identities are printed in `GitHub API coverage findings` and
+block the receipt.
+
+Success emits a separate one-line JSON receipt beginning with
+`TRUSTED_BASE_HIGH_RISK_ACCEPTED`. It binds the repository, PR number, head SHA,
+merge SHA, fetched base SHA, fetched policy source, configured remote/ref, and
+every detected high-risk path, plus the independent ref-anchor source and the
+advertised object ID when remote `HEAD` supplied the anchor. When a repo-local
+trust layer is selected automatically or explicitly, the receipt also binds the
+fetched trust-config source, content digest, and file mode. It is not an
+`Acknowledged security preflight
+findings` record. A supplied `--acknowledge-risk ...:high-risk-files` remains the
+manual path and does not emit the trusted-base receipt.
+
+This opt-in recognizes repository history as durable acceptance of the exact
+merge result; it does not make PR text, green checks, or an arbitrary local
+branch provenance. Any base movement invalidates the prior base binding. Rerun
+the preflight immediately before worker launch or other dependent action so it
+fetches again and emits a receipt for the current trusted base.
+
 ## Interaction Queue Artifact Retention
 
 When an untrusted or metadata-only interaction queue exceeds the bounded
@@ -201,7 +323,10 @@ Be especially careful with:
   trust. Use exact acknowledgement only after reading the location.
 - high-risk files: changed workflows, scripts, hooks, and agent instructions are
   reported even when they are not blocking by default. Keep them visible in PR
-  handoffs.
+  handoffs. Trusted-base acceptance is appropriate only when repository policy
+  deliberately treats the fetched base's containment of that exact merge result
+  as sufficient high-risk review history; all other security findings still
+  fail closed.
 
 ## Operator Flow
 

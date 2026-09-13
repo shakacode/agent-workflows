@@ -769,10 +769,9 @@ class AutonomousMergeCalibrateTest < Minitest::Test
         end
 
         assert_equal "api", error.kind
-        assert_equal(
-          "GitHub API response contains invalid Unicode scalar data for repos/example/repo/pulls/7",
-          error.message
-        )
+        assert_match(/\AGitHub API /, error.message)
+        assert_match(/invalid Unicode scalar data|surrogate/i, error.message)
+        assert_includes error.message, "repos/example/repo/pulls/7"
       end
     end
   end

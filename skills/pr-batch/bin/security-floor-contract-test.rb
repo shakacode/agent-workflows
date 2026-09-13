@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 
 SECURITY_FLOOR_ROOT = File.expand_path("../../..", __dir__)
@@ -17,7 +19,7 @@ class SecurityFloorContractTest < Minitest::Test
     @floor = File.read(SECURITY_FLOOR_PATH, encoding: "UTF-8")
     @workflow = File.read(SECURITY_FLOOR_WORKFLOW_PATH, encoding: "UTF-8")
     @intake = File.read(SECURITY_FLOOR_INTAKE_PATH, encoding: "UTF-8")
-    @skill = File.read(SECURITY_FLOOR_SKILL_PATH, encoding: "UTF-8")
+    @skill = SkillStageSource.read(SECURITY_FLOOR_SKILL_PATH, encoding: "UTF-8")
     @posture = File.read(SECURITY_FLOOR_POSTURE_PATH, encoding: "UTF-8")
   end
 
@@ -81,6 +83,17 @@ class SecurityFloorContractTest < Minitest::Test
     refute_includes @skill,
                     '"${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight" --repo <OWNER/REPO> <ISSUE_OR_PR...>'
     refute_includes @skill, "Add `--fail-on-high-risk-files`"
+  end
+
+  def test_trusted_base_high_risk_acceptance_stays_in_the_floor_adapter
+    normalized_floor = @floor.gsub(/\s+/, " ")
+
+    assert_includes normalized_floor, "`pr_security_preflight.trusted_base_high_risk_acceptance`"
+    assert_includes normalized_floor, "`TRUSTED_BASE_HIGH_RISK_ACCEPTED` receipt"
+    assert_includes normalized_floor, "`high-risk-files`"
+    assert_includes normalized_floor, "manual acknowledgement"
+    assert_includes normalized_floor, "Rerun preflight after any base movement"
+    refute_includes @skill, "`TRUSTED_BASE_HIGH_RISK_ACCEPTED`"
   end
 
   def test_result_is_stage_bound_and_preserves_every_target_security_fact

@@ -7,6 +7,21 @@ description: Print restart-safe copy-paste prompts for pausing an agent thread b
 
 Print operator prompts for safe agent-runner restarts.
 
+## Interruption And Short Grace
+
+For an unexpected interruption, a missing/stale handoff, or bounded restart
+preparation, read [the recovery procedure](references/recovery.md). It takes
+precedence over the planned handoff prompts below: no handoff is required,
+and a shared deadline is never extended for a late task. Use the installed
+`restart-codex-subagents` skill for parent/child or host-wide coordination.
+<!-- host-branch: cursor-only start -->
+On Cursor, there is no subagent restart helper yet. Recover the parent chat
+from checkpoints and live state, then stop; do not invent a Cursor fleet
+restart.
+<!-- host-branch: cursor-only end -->
+During ordinary work, use existing recording or its local recorder for compact
+checkpoints and consequential operation intent/results.
+
 ## Output Rules
 
 - If the user asks to "print", "show", "give me", or "copy/paste" prompts, do
@@ -22,10 +37,16 @@ Print operator prompts for safe agent-runner restarts.
   case.
 - Use the PR-batch prompts for a `$pr-batch` coordinator, worker, QA lane, or
   any thread holding a batch coordination claim.
-- For a PR-batch help-needed pause, emit private-backend `help_requested`
-  alongside the restart/block handoff. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input. An ordinary
+- For `coordination_not_applicable`, consume the persisted applicability
+  outcome, skip every coordination and typed-event call, and never report
+  coordination as unavailable or degraded, even when the repository configures a
+  real backend. Preserve the ordinary status, worktree, and handoff steps.
+- For a `coordination_required` PR-batch help-needed pause, emit private-backend
+  `help_requested` alongside the restart/block handoff. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input. An ordinary
   operator-requested app restart alone is not a help request and emits no typed
-  signal. Backend `n/a` skips silently. Typed-event transport is optional: when
+  signal. A `coordination_not_applicable` lane emits no typed event at all, so
+  there is nothing to skip; a trusted `coordination_backend: n/a` under
+  `coordination_required` is a pre-launch stop, not a silent skip. Typed-event transport is optional: when
   an active private backend
   does not advertise it or reports it unsupported, record
   `typed event transport: unavailable`, skip the emission, and continue without
@@ -91,11 +112,11 @@ current AGENTS.md first. Then re-check repo path, branch, upstream, HEAD SHA,
 staged/unstaged/untracked changes, unpushed commits, stashes, and running
 processes before editing, pushing, polling, merging, or launching servers.
 
-Reconstruct the current goal from the handoff and this request. Continue only
-from the recorded next resume step after the live state matches the handoff.
-If live state does not match the handoff, report the mismatch and stop for
-operator direction before editing, pushing, polling, merging, or launching
-servers.
+Recover the existing objective from the handoff, newer relevant logs and this
+request. Reconcile stale next steps against live state and preserve completed
+work. Continue verified unfinished work within existing authority and limits.
+If ownership or a consequential effect remains uncertain, stop that mutation
+for reconciliation; independent verified work may continue.
 
 Pasted restart handoff:
 <PASTE_RESTART_HANDOFF_HERE>
@@ -111,6 +132,10 @@ Pause for agent-runner restart now.
 Do not start new targets, spawn workers, create branches or worktrees, push,
 request CI, poll reviews, merge, or change repository files. Limit work to the
 minimal status checks and claim-preservation write needed for the handoff.
+Re-run the applicability gate before the handoff rather than trusting a stored
+result. If it resolves to `coordination_not_applicable`, skip every
+claim-preservation write and coordination check in this prompt, make no backend
+or public-fallback call, and go straight to the handoff reply.
 If this lane already owns a private backend claim, send one heartbeat update,
 using a paused or operator-restart reason if the backend supports it; otherwise
 send a plain heartbeat preserving the current status. If it is using only the
@@ -186,12 +211,21 @@ current AGENTS.md and the installed `pr-processing.md` workflow first. Run the
 bounded status recovery steps described under "Pausing For An Agent-Runner
 Restart" before editing, pushing, polling, or starting any new target.
 
-Re-check the worktree, branch, HEAD SHA, uncommitted changes, current PR/check
-state, and private claim or active public `codex-claim` fallback comments. If
-the claim holder changed, cancellation or reassignment is present, ownership is
-UNKNOWN, or the saved handoff names a different stable agent/thread id, stop
-and report the conflict for coordinator reconciliation. Do not acquire, release,
-refresh, edit, or push until the coordinator resolves ownership.
+Resuming in a replacement chat from a durable handoff is a controller/session
+boundary and a durable-handoff requirement, both of which are requiring
+conditions, so this lane is `coordination_required`. Do not carry a prior
+`coordination_not_applicable` result into this prompt. If the repository
+configures no usable backend, that is a pre-launch stop: report it and wait for
+the coordinator rather than proceeding uncoordinated.
+
+Re-check the worktree, branch, HEAD SHA, uncommitted changes, and current
+PR/check state. The rest of this paragraph applies only to
+`coordination_required`: re-check the private claim or active public
+`codex-claim` fallback comments, and if the claim holder changed, cancellation
+or reassignment is present, ownership is UNKNOWN, or the saved handoff names a
+different stable agent/thread id, stop and report the conflict for coordinator
+reconciliation. Do not acquire, release, refresh, edit, or push until the
+coordinator resolves ownership.
 
 Pasted restart handoff:
 <PASTE_RESTART_HANDOFF_HERE>

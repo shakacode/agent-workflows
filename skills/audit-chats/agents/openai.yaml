@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Chats"
+  short_description: "Classify chats by action, state, and archive readiness"
+  default_prompt: "Use $audit-chats to audit my Codex and visible ChatGPT chats, reconcile stale blockers, and produce an action-first archive report."

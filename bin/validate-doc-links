@@ -10,7 +10,13 @@ module ValidateDocLinks
   # document first: only ATX (`#`) headings and inline `[text](target)` links
   # are parsed. Setext headings and reference-style links would be skipped
   # silently, and the checked documents use neither today.
-  CHECKED_DOCUMENTS = ["docs/operator-handbook.md"].freeze
+  CHECKED_DOCUMENTS = %w[
+    docs/operator-handbook.md
+    skills/address-review/SKILL.md
+    skills/plan-pr-batch/SKILL.md
+    skills/pr-batch/SKILL.md
+    skills/post-merge-audit/SKILL.md
+  ].freeze
   FENCE_PATTERN = /\A\s{0,3}(`{3,}|~{3,})/
   HEADING_PATTERN = /\A\s{0,3}(\#{1,6})\s+(.*?)\s*\z/
   # Inline links only. A leading "!" marks an image, which carries no anchor.

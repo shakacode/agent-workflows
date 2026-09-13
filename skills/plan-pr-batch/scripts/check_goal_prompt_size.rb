@@ -2,6 +2,8 @@
 # frozen_string_literal: true
 
 require "stringio"
+require "json"
+require_relative "../../pr-batch/lib/skill_stage_source"
 
 CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
 CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
@@ -13,36 +15,9 @@ PLANNING_PASS_ROUTE_ROW =
   /^\|\s*`(?<classification>[a-z-]+)`\s*\|\s*`(?<neutral>[^`]+)`\s*\|\s*`(?<codex>[^`]+)`\s*\|\s*`(?<claude>[^`]+)`\s*\|\s*$/
 PLANNING_PASS_DISPOSITION_ROW =
   /^\|\s*`(?<case_id>[A-Za-z-]+)`\s*\|\s*`(?<disposition>[a-z-]+)`\s*\|\s*`(?<max_reviews>[01])`\s*\|\s*`(?<compare>yes|no)`\s*\|\s*`(?<restart>yes|no)`\s*\|\s*$/
-PLANNING_PASS_ACCEPTANCE_CASES = [
-  {
-    id: "simple",
-    classification: "affirmatively-simple",
-    neutral: "balanced/medium",
-    codex: "Terra/medium",
-    claude: "Sonnet 5/medium"
-  },
-  {
-    id: "routine multi-lane",
-    classification: "routine-multi-lane",
-    neutral: "balanced/high",
-    codex: "Terra/high",
-    claude: "Sonnet 5/high"
-  },
-  {
-    id: "uncertain single target",
-    classification: "default-or-uncertain-single-target",
-    neutral: "strongest/high",
-    codex: "Sol/high",
-    claude: "Opus 5/high"
-  },
-  {
-    id: "pinned high risk",
-    classification: "pinned-high-risk-or-escalation",
-    neutral: "strongest/xhigh",
-    codex: "Sol/xhigh",
-    claude: "Opus 5/xhigh"
-  }
-].freeze
+PLANNING_PASS_ACCEPTANCE_CASES = JSON.parse(
+  File.read(File.expand_path("../references/model-routing-profiles.json", __dir__))
+).fetch("legacy_planning_cases").map { |entry| entry.transform_keys(&:to_sym) }.freeze
 PLANNING_PASS_DISPOSITION_CASES = [
   {
     id: "stronger current",
@@ -82,14 +57,22 @@ LEGACY_PLANNING_PASS_PROFILE_PHRASES = [
 ].freeze
 GOAL_LINE = "/goal"
 INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
-BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>."
+BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
 CONTINUATION_INVOCATION_LINE =
   "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch."
 BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
 OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference."
-MERGE_AUTHORITY_PROMPT_LINE = "merge_authority:<none|ask|auto_merge_when_gates_pass>"
+REPO_PROMPT_LINE = "Repo: OWNER/REPO"
+OBJECTIVE_PROMPT_LINE = "Objective: ..."
+MERGE_AUTHORITY_PROMPT_LINE = "merge_authority: <none|ask|auto>"
+EDITABLE_CONTROL_BLOCK = [
+  BATCH_TITLE_LINE,
+  REPO_PROMPT_LINE,
+  OBJECTIVE_PROMPT_LINE,
+  MERGE_AUTHORITY_PROMPT_LINE
+].join("\n").freeze
 PLANNING_PASS_ASSESSMENT_FIELD = "Planning-pass model/effort assessment:"
 PLANNING_PASS_COMPACT_PROMPT_FORBIDDEN_PHRASES = [
   PLANNING_PASS_ASSESSMENT_FIELD,
@@ -98,7 +81,6 @@ PLANNING_PASS_COMPACT_PROMPT_FORBIDDEN_PHRASES = [
   *PLANNING_PASS_DISPOSITION_CASES.map { |entry| entry.fetch(:case_id) },
   *PLANNING_PASS_DISPOSITION_CASES.map { |entry| entry.fetch(:disposition) }
 ].freeze
-OBJECTIVE_PROMPT_LINE = "Objective:..."
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_preference=<model>/<effort>;" \
                                   "lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;" \
@@ -122,7 +104,8 @@ MODEL_EFFORT_DISPATCH_LINE = "- Routes advisory; observed host/model/effort host
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
 DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle"
 COORDINATION_DEPENDENCY_PROMPT_LINE =
-  "- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; " \
+  "- coordination_not_applicable=>no calls;coordination_required+n/a=>stop;" \
+  "claims/deps: stable ids+heartbeats; " \
   "register before launch when supported; claim refusal=>stop; push holder/generation check; " \
   "known deps=>gate permissions; missing/UNKNOWN deps=>stop."
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
@@ -135,9 +118,9 @@ TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
                                      "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
                                      "live=<replay/ref>; " \
                                      "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN."
-GOAL_MODE_COMPACT_CONTRACT = "GMCC-v5:CI@head/configured-reviewers " \
-                             "pending|missing|untriaged|failed|threads open|UNKNOWN=>" \
-                             "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
+GOAL_MODE_COMPACT_CONTRACT = "GMCC-v6:CI@head/configured-reviewers " \
+                             "pending|missing|untriaged|failed|actionable threads open|UNKNOWN=>" \
+                             "waiting-on-checks-or-review/NOT COMPLETE;walk exempt;poll/fix;" \
                              "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
                              "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
                              "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;" \
@@ -147,7 +130,8 @@ GOAL_MODE_COMPACT_CONTRACT = "GMCC-v5:CI@head/configured-reviewers " \
                              "autonomous-merge-evidence-unknown;merge+close PR/target/issue."
 GOAL_MODE_CANONICAL_EXPANSION = "Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an " \
                                 "overall Goal-mode terminal state; pending, missing, or untriaged current-head " \
-                                "CI or configured review agents, unresolved current-head review threads, failures, " \
+                                "CI or configured review agents, unresolved actionable current-head review threads " \
+                                "after applying the verified current exact-diff walkthrough exception, failures, " \
                                 "or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE " \
                                 "with resume instructions. For an autonomously clearable blocker, prefer one deduplicated " \
                                 "deterministic state-change watcher with a stable persisted identity: an unchanged fingerprint " \
@@ -172,7 +156,8 @@ GOAL_MODE_CANONICAL_EXPANSION = "Goal Mode Completion Contract: `waiting-on-chec
                                 "the PR, target, and issue."
 GOAL_MODE_REQUIRED_SEMANTICS = [
   "CI@head/configured-reviewers pending|missing|untriaged",
-  "threads open",
+  "actionable threads open",
+  "walk exempt",
   "UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE",
   "poll/fix",
   "auto-clear=>watch(same:0wake,delta:gates)",
@@ -273,20 +258,19 @@ TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
   "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
   "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
 GOAL_PROMPT_FALLBACK_LINE =
-  "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
-  "persist output before resume/launch; preflight issue/PR only."
-ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
-                              "chg=>redo/stop;gate fail=>stop;ask iff same clean"
+  "- $pr-batch:resolve/autoload/self-contained;load state pre-preflight;" \
+  "persist output pre-resume/launch;preflight issue/PR only."
+ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;" \
+                              "chg=>redo/stop;fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
 READY_ITEM_DONE_WHEN_LINE =
   "Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale."
 CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
-CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
+CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>"
 CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
-  merge_authority:<none|ask|auto_merge_when_gates_pass>
   Batch size target: <codex|claude|generic>;wave: <cap/items>
   #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
   #{OBSERVED_HOST_PROMPT_LINE}
@@ -309,11 +293,9 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   CONTINUATION_BATCH_TITLE_LINE,
   CONTINUATION_INVOCATION_LINE,
   CONTINUATION_THREAD_HANDLE_LINE,
-  "After fail-closed target extraction and source verification, apply the same",
-  "title rule: include `<ID?>` only for exactly one verified source issue, even",
-  "alongside PR or ad-hoc execution targets; omit it for zero or multiple verified",
-  "source issues. Evidence, blocker, dependency, next-action, comment, and example",
-  "refs are not targets and cannot supply title identifiers.",
+  "After fail-closed target extraction and source verification, apply canonical",
+  "[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)",
+  "unchanged; this continuation entrypoint does not redefine title eligibility.",
   "Otherwise, after exact target and lane resolution, derive one",
   "top-level `Thread handle:` using the normal `<batch-short>-<lane>-<word>` rule:",
   "use the resumed lane id or owner slug for exactly one resumed lane; use literal",
@@ -330,18 +312,18 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "Do not let blocked/deferred targets stop progress on independent actionable targets, and report true user-input blockers separately with exact PR/thread URLs.",
   "Apply the [PR-Batch Security Floor](pr-batch-security-floor.md) to every target.",
   "Pass only its verified target identity and sanitized handoff to workers; do not copy target content or security policy into this continuation prompt.",
-  "merge_authority: ask (use auto_merge_when_gates_pass only when the visible request explicitly grants it)",
+  "merge_authority: ask (use auto only when the visible request explicitly grants it; normalize auto to auto_merge_when_gates_pass before workers or durable evidence)",
   "Mode: continue from live GitHub state; previous handoffs are stale hints only.",
   "Re-fetch every target's current head SHA, branch, draft status, merge state, conflicts/behind state, review decision, unresolved current-head review threads, configured review-agent state, and current-head checks.",
   "Split current-head state into a complete configured/requested review cohort and validation CI.",
-  "Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.",
+  "Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved actionable current-head review threads after applying the verified current exact-diff walkthrough exception, fixable failures, or `UNKNOWN`.",
   "If CI/reviews are pending, finish runnable in-scope closeout work before each bounded poll.",
   "Triage only after the complete review cohort settles; do not wait for unrelated validation CI before that consolidated triage.",
   "report `blocked-user-input` without consuming external-blocker retries or starting monitoring",
-  "For an owned target, start the exact-diff walkthrough before asking the final merge question.",
+  "For an owned target, publish the complete exact-diff walkthrough under the `ask` route below before asking the final merge question.",
   "For an external dependency-only reference, instruct the user either to merge it and reply only after it is merged, or to explicitly authorize adding it as a target",
   "a reply or merge decision alone does not clear the prerequisite or authorize its merge.",
-  "GMCC-v5 compatibility fallback:",
+  "GMCC-v6 compatibility fallback:",
   "reuse or create one bounded current-thread monitor before handoff and do not create a duplicate",
   "Use at most four 15-minute fast-window polls followed by exponential backoff capped at four hours",
   "On each wake, refresh live blocker evidence and resume if a blocker clears.",
@@ -350,9 +332,14 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions.",
   "Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.",
   "With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.",
-  "With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval.",
-  "After it completes or is skipped, refresh the diff identity and ordinary readiness.",
-  "If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop.",
+  "With `ask`, after ordinary gates are clean, automatically publish the complete exact-diff PR walkthrough before approval.",
+  "Prepare every conceptual section up front",
+  "mandatory inline-thread and no-anchor-stop rules",
+  "without waiting for repeated chat turns",
+  "The owning task consumes PR replies asynchronously",
+  "use a live interactive walkthrough only when the maintainer explicitly requests one.",
+  "After publication or an explicit skip, refresh the diff identity and ordinary readiness.",
+  "If the diff identity changed, invalidate the walkthrough and readiness evidence, then rebuild and republish the walkthrough or stop.",
   "If an ordinary gate newly fails, stop.",
   "Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity.",
   "Walkthrough participation is not merge approval.",
@@ -368,12 +355,10 @@ PRESSURE_SCENARIOS = [
   "A normal resume prompt routes to bounded status recovery, not cancellation/relaunch."
 ].freeze
 PARENT_RELEASE_OR_ARCHIVE_RECONCILIATION_SOURCE_PIN = "After terminal batch handoffs, parent reconciliation is a post-batch/pre-release-or-archive gate, not a per-PR/pre-merge gate. Before a coordinated release action or parent archive, the parent determines applicability for every exact target/surface and performs a bounded read-only refresh and comparison with durable terminal handoffs/manifests only for applicable GitHub, coordination-backend/claim, head/merge, issue, QA, and release-note surfaces. Explicit durable `n/a`, `no-PR`, or `no-code/not-required` evidence with rationale satisfies an inapplicable surface. `UNKNOWN` applicability or missing applicable evidence blocks both release action and parent archive."
-PARENT_AUDIT_HANDOFF_SOURCE_PIN = "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. The durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive. Its marker has separate well-formed, archive-ready, and blocker-union outputs; only `complete`/`clean`/`none` with fully evidenced terminal records is archive-ready, and every OUTSTANDING ref or non-ready record remains in the normalized blocker union. The parent only reconciles this handoff; it never reruns or owns the audit."
 PARENT_AUDIT_MARKER_GRAMMAR_SOURCE_PIN = "The completed-batch marker has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records."
-PARENT_RELEASE_OR_ARCHIVE_PRESSURE_SCENARIO = "Parent-orchestrated multi-batch: the parent stays open and read-only while workers execute; each batch coordinator owns checklist+replay closeout; parent cross-batch reconciliation is checklist+replay over durable terminal handoffs/manifests. The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. Preserve the durable completed-batch handoff, reconcile only applicable surfaces, and use the canonical [Completed-Batch Audit Receipt And Archive Replay](pr-batch-integration-closeout.md#completed-batch-audit-receipt-and-archive-replay) marker grammar; `UNKNOWN` applicability or missing applicable evidence blocks release action and parent archive. For each exact batch/target scope the durable record captures evidence, owner, status, and follow-up for exact scope coverage, dependency outcomes, issue closed or no-PR evidence, released claims, exact-final-head QA replay, changelog/release-note ownership, and shared-path interactions; clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then final status: use exactly `Conversation status: Ready for archiving.` Otherwise final status: use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`"
 PARENT_RELEASE_OR_ARCHIVE_PRESSURE_SCENARIOS = [
   "Prompt-only single-batch: after all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat, it archives without waiting for workers; closeout owner: the batch coordinator; an unhanded-off question or planner-owned `UNKNOWN` blocks archive, while a durably handed-off coordinator-owned worker state, including worker `UNKNOWN`, does not; final status: use exactly `Conversation status: Ready for archiving.` when prompt-only is clean; otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.",
-  PARENT_RELEASE_OR_ARCHIVE_PRESSURE_SCENARIO
+  "Parent-orchestrated multi-batch:"
 ].freeze
 
 ALLOWED_PRESSURE_SCENARIO_REFS = %w[
@@ -397,14 +382,14 @@ def read_repo_file(path)
   full_path = File.join(REPO_ROOT, path)
   abort_with_failure("#{path} not found at #{full_path}") unless File.exist?(full_path)
 
-  File.read(full_path, encoding: "UTF-8")
+  SkillStageSource.read(full_path, encoding: "UTF-8")
 end
 
 def read_optional_repo_file(path)
   full_path = File.join(REPO_ROOT, path)
   return nil unless File.file?(full_path)
 
-  File.read(full_path, encoding: "UTF-8")
+  SkillStageSource.read(full_path, encoding: "UTF-8")
 end
 
 def extract_section(text, start_marker, end_heading)
@@ -672,7 +657,7 @@ end
 skill_path = File.expand_path("../SKILL.md", __dir__)
 abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(skill_path)
 
-skill_text = File.read(skill_path, encoding: "UTF-8")
+skill_text = SkillStageSource.read(skill_path, encoding: "UTF-8")
 assert_goal_prompt_heading_is_line_anchored
 workflow_source_text = read_repo_file("workflows/pr-processing.md")
 integration_closeout_text = read_repo_file("workflows/pr-batch-integration-closeout.md")
@@ -682,9 +667,9 @@ pr_batch_skill_text = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill_text = read_repo_file("skills/triage/SKILL.md")
 batch_plan_preflight_text = read_repo_file("skills/plan-pr-batch/bin/batch-plan-preflight")
 triage_prompt_contract_text = triage_skill_text.gsub(/^ {3}/, "")
-prompt_template = extract_goal_prompt_template(skill_text, "## Goal Prompt for pr-batch",
+prompt_template = extract_goal_prompt_template(SkillStageSource.stage(skill_path, "prompt-template"), "## Goal Prompt for pr-batch",
                                                label: "plan-pr-batch goal prompt template")
-pr_batch_prompt_template = extract_goal_prompt_template(pr_batch_skill_text, "## Goal Prompt Template",
+pr_batch_prompt_template = extract_goal_prompt_template(SkillStageSource.stage(File.join(REPO_ROOT, "skills/pr-batch/SKILL.md"), "prompt-template"), "## Goal Prompt Template",
                                                         label: "pr-batch goal prompt template")
 workflow_goal_section = extract_section(
   workflow_text,
@@ -744,13 +729,8 @@ required_skill_rule_phrases = [
   "After the target-specific invocation line",
   "Batch title:",
   "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>",
-  "metadata only; it does not create an executable Linear lane",
-  "optional `repo_prefix`",
-  "`origin` remote after stripping",
-  "repository root basename",
-  "invalid configured `repo_prefix`",
-  "do not silently fall back",
-  "date +'%m-%d %H:%M'",
+  "pr-batch-intake.md#verified-batch-title-selection",
+  "verified title facts unchanged",
   "Goal prompt character count: N characters (target: codex|claude|generic)",
   "Batch size target:",
   "Model/effort routing",
@@ -787,13 +767,29 @@ required_skill_rule_phrases = [
   "AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb"
 ]
 
+required_prompt_intake_title_phrases = [
+  "## Verified Batch Title Selection",
+  "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>",
+  "metadata only; it does not create an executable Linear lane",
+  "optional `repo_prefix`",
+  "remote after stripping `.git`",
+  "repository root basename",
+  "configured `repo_prefix` is a blocker; do not silently fall back",
+  "date +'%m-%d %H:%M'",
+  "exactly one issue",
+  "zero or multiple verified source issues",
+  "Primary pasteable prompts put `Batch title:` directly after the target-specific",
+  "Render exactly one empty line after `merge_authority:`",
+  "Specialized continuation prompts keep their own title"
+]
+
 required_codex_prompt_phrases = [
   CODEX_PROMPT_START
 ]
 
 required_all_prompt_phrases = [
-  "Batch title:",
-  "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>",
+  BATCH_TITLE_LINE,
+  REPO_PROMPT_LINE,
   OBJECTIVE_PROMPT_LINE,
   "Thread handle: <batch-short>-<lane>-<word>",
   "Lane Card:",
@@ -802,7 +798,7 @@ required_all_prompt_phrases = [
   GOAL_PROMPT_PREFLIGHT_LINE,
   GOAL_MODE_COMPACT_CONTRACT,
   HUMAN_STATUS_VERSION_KEY,
-  "merge_authority:",
+  MERGE_AUTHORITY_PROMPT_LINE,
   BATCH_SIZE_TARGET_PROMPT_PHRASE,
   COORDINATOR_MODEL_EFFORT_PROMPT_LINE,
   OBSERVED_HOST_PROMPT_LINE,
@@ -834,24 +830,12 @@ host_aware_batch_sizing_phrase_checks = {
     ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1],
     ["less than 300 characters of headroom", 1],
-    ["Default single-target future coordinator: Sol/high", 1],
-    ["Affirmatively simple single-target future coordinator: Terra/high", 1],
-    ["Default single-target future coordinator: Opus 5/high", 1],
-    ["Affirmatively simple single-target future coordinator: Sonnet 5/high", 1],
-    ["Opus 5/xhigh exception:", 1],
-    ["`claude-profile v1`", 1],
     ["subagents alone do", 1]
   ],
   "skills/plan-pr-batch/SKILL.md" => [
     ["`codex`: up to 10 independent items, or 8", 1],
     ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1],
-    ["Default single-target future coordinator: Sol/high", 1],
-    ["Affirmatively simple single-target future coordinator: Terra/high", 1],
-    ["Default single-target future coordinator: Opus 5/high", 1],
-    ["Affirmatively simple single-target future coordinator: Sonnet 5/high", 1],
-    ["Opus 5/xhigh exception:", 1],
-    ["`claude-profile v1`", 1],
     ["If any field needed for comparison is `UNKNOWN`, make no", 1]
   ],
   "skills/pr-batch/SKILL.md" => [
@@ -944,12 +928,6 @@ if enforce_restart_docs_drift
   host_aware_batch_sizing_phrase_checks["docs/pr-batch-skills.md"] = [
     ["Codex-targeted waves may use up to 10", 1],
     ["Claude and generic waves use up to 5", 1],
-    ["Default single-target future coordinator: Sol/high", 1],
-    ["Affirmatively simple single-target future coordinator: Terra/high", 1],
-    ["Default single-target future coordinator: Opus 5/high", 1],
-    ["Affirmatively simple single-target future coordinator: Sonnet 5/high", 1],
-    ["Opus 5/xhigh exception:", 1],
-    ["`claude-profile v1`", 1],
     ["at most one bounded independent", 1]
   ]
   host_aware_batch_sizing_text_by_path["docs/pr-batch-skills.md"] = pr_batch_docs_text
@@ -972,6 +950,32 @@ end
 
 # These phrases live in the broader skill rules, not necessarily inside the prompt fence.
 require_phrases(skill_text, required_skill_rule_phrases, "SKILL.md prompt-sizing rules")
+require_phrases(
+  prompt_intake_text,
+  required_prompt_intake_title_phrases,
+  "workflows/pr-batch-intake.md verified batch-title rules"
+)
+
+require_phrases(
+  triage_skill_text,
+  [
+    "For `coordination_required`, if profiles or inboxes are unavailable",
+    "For `coordination_required`, split the wave into",
+    "up to `N` non-empty capacity-derived groups.",
+    "For `coordination_not_applicable`, keep the one controlled serial group."
+  ],
+  "triage coordination applicability scoping"
+)
+require_phrases(
+  skill_text,
+  [
+    "For `coordination_required` dependency-ordered work, define explicit",
+    "Only for `coordination_required`, coordinators must create or update",
+    "For `coordination_not_applicable`, preserve dependency order only in the",
+    "typed stage plan/live gate below; do not create or update a private-backend batch."
+  ],
+  "plan-pr-batch dependency coordination applicability scoping"
+)
 
 require_occurrence_count(
   skill_text,
@@ -1199,10 +1203,13 @@ require_phrases(workflow_text, PRESSURE_SCENARIOS, "canonical workflow pressure 
 if enforce_restart_docs_drift
   require_phrases(
     workflow_text,
-    [PARENT_RELEASE_OR_ARCHIVE_RECONCILIATION_SOURCE_PIN, PARENT_AUDIT_HANDOFF_SOURCE_PIN,
-     PARENT_AUDIT_MARKER_GRAMMAR_SOURCE_PIN],
+    [PARENT_RELEASE_OR_ARCHIVE_RECONCILIATION_SOURCE_PIN, PARENT_AUDIT_MARKER_GRAMMAR_SOURCE_PIN],
     "source checkout parent release-or-archive reconciliation pin"
   )
+end
+
+if enforce_restart_docs_drift && !planning_chat_lifecycle_text.match?(/\]\(pr-batch-integration-closeout\.md#audit-applicability\)/)
+  abort_with_failure("parent reconciliation must route audit applicability to canonical closeout")
 end
 
 require_phrases(
@@ -1279,18 +1286,24 @@ unless generic_prompt_template.start_with?(SHARED_PROMPT_START)
   abort_with_failure("Generic goal prompt template must omit /goal and start with the $pr-batch invocation")
 end
 
-title_block = "#{INVOCATION_LINE}\n\n#{BATCH_TITLE_LINE}\n\nThread handle:"
+editable_prompt_start = "#{INVOCATION_LINE}\n#{EDITABLE_CONTROL_BLOCK}\n\nThread handle: <batch-short>-<lane>-<word>\n"
 {
   "plan-pr-batch" => prompt_template,
   "pr-batch" => pr_batch_prompt_template,
   "workflow" => workflow_prompt_template
 }.each do |label, template|
-  unless template.start_with?(title_block)
-    abort_with_failure("#{label} goal prompt must put exactly one blank line around the batch title")
+  unless template.start_with?(editable_prompt_start)
+    abort_with_failure("#{label} goal prompt must put the editable control block first with exactly one blank separator")
   end
 
   title_count = template.lines.count { |line| line.start_with?("Batch title:") }
   abort_with_failure("#{label} goal prompt must contain exactly one batch title line") unless title_count == 1
+  require_occurrence_count(template, "Items:\n", 1, "#{label} canonical Items section")
+  require_occurrence_count(template, "Targets:", 0, "#{label} duplicate Targets field")
+end
+
+unless [prompt_template, pr_batch_prompt_template, workflow_prompt_template].map(&:rstrip).uniq.one?
+  abort_with_failure("primary goal prompt templates must stay byte-for-byte synchronized")
 end
 
 if claude_prompt_template.include?(GOAL_LINE) || generic_prompt_template.include?(GOAL_LINE)

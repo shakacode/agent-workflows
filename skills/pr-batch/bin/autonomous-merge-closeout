@@ -310,7 +310,9 @@ module AutonomousMergeCloseout
     next_action = "The active-task user or a repository maintainer may act only after their human identity and merge " \
                   "authority are verified. They must review every listed gate and the rollback or forward-recovery plan, " \
                   "then post a complete autonomous-merge-risk-decision:v1 comment on this PR for head #{head_sha}, " \
-                  "the exact sorted gate set, and an explicit approve decision."
+                  "the exact sorted gate set, and an explicit approve decision. The comment must show the decision, " \
+                  "commit, risks, and recovery plan first, then put the complete YAML receipt in a closed `Approval " \
+                  "receipt` disclosure."
     durable_definition = "Durable means the complete decision is recorded in a PR comment that remains available for review. " \
                          "Current-head means the decision applies only to the exact commit named above."
     invalidation = "Any new head invalidates this decision. Re-run ordinary readiness and the autonomous evaluator, then " \

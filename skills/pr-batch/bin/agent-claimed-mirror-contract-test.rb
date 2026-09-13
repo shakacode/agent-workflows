@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -20,7 +22,8 @@ DAEMON_EXPIRY = "Let the coordination daemon remove it for claims that expire wi
                 "reconcile the label to the live claim otherwise."
 HINT_NOT_LOCK = "it is a visible hint for people browsing GitHub, not the durable lock — the backend claim and " \
                 "its heartbeat TTL remain the source of truth"
-BACKEND_NA_SKIP = "Skip label mirroring entirely when `coordination_backend: n/a`"
+BACKEND_NA_SKIP = "Skip label mirroring entirely for `coordination_not_applicable`, which is an applicability " \
+                  "outcome, not an inference from `coordination_backend: n/a`."
 OWNED_SYMMETRY = "Owned means skip is symmetric for humans and agents: a human assignee (see the assignee-aware " \
                  "batch selection and the stale-assignment sweep) or an `agent-claimed` label both mean skip, and " \
                  "both decay"
@@ -72,7 +75,7 @@ class AgentClaimedMirrorContractTest < Minitest::Test
   private
 
   def read(path)
-    File.read(File.join(ROOT, path), encoding: "UTF-8")
+    SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
   end
 
   def assert_rule(text, rule, message = nil)

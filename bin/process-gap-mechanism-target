@@ -1,0 +1,96 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+
+# Parse only the Mechanism target section emitted by the process-gap issue
+# form. The surrounding headings identify the form; their contents are not
+# validated here.
+module ProcessGapMechanismTarget
+  CONTRACT = "process-gap-mechanism-target"
+  VERSION = 1
+  FORM_HEADINGS = [
+    "Gap",
+    "Mechanism target",
+    "Motivating miss",
+    "Replay evidence or park reason",
+    "Non-goal"
+  ].freeze
+  FORM_SIGNATURE_THRESHOLD = 3
+  TARGET_HEADING = "Mechanism target"
+  UNANSWERED = "-- not answered (choose one of the four options) --"
+  VALID_TARGETS = %w[script schema checklist+replay park].freeze
+
+  module_function
+
+  def check(body)
+    return result("not_process_gap") unless body.is_a?(String)
+    return result("malformed") unless body.valid_encoding?
+
+    sections = parse_sections(body)
+    form_heading_count = sections.map { |section| section.fetch(:heading) }.uniq.count do |heading|
+      FORM_HEADINGS.include?(heading)
+    end
+    return result("not_process_gap") if form_heading_count < FORM_SIGNATURE_THRESHOLD
+
+    targets = sections.select { |section| section.fetch(:heading) == TARGET_HEADING }
+    return result("malformed") unless targets.length == 1
+
+    lines = targets.first.fetch(:body).lines.map(&:strip).reject(&:empty?)
+    return result("malformed") unless lines.length == 1
+
+    value = lines.first
+    return result("unanswered") if value == UNANSWERED
+    return result("valid") if VALID_TARGETS.include?(value)
+
+    result("invalid")
+  end
+
+  def parse_sections(body)
+    sections = []
+    current = nil
+
+    body.gsub(/\r\n?/, "\n").each_line do |line|
+      heading = line.match(/\A###[ \t]+(.+?)[ \t]*\n?\z/)&.captures&.first
+      if heading
+        current = { heading:, body: +"" }
+        sections << current
+      elsif current
+        current.fetch(:body) << line
+      end
+    end
+
+    sections
+  end
+
+  def result(status)
+    { "contract" => CONTRACT, "version" => VERSION, "status" => status }
+  end
+
+  class Runner
+    def initialize(out: $stdout, err: $stderr)
+      @out = out
+      @err = err
+    end
+
+    def run(argv)
+      unless argv.length == 1
+        @err.puts "Usage: ruby bin/process-gap-mechanism-target GITHUB_EVENT_JSON"
+        return 2
+      end
+
+      event = JSON.parse(File.binread(argv.fetch(0)))
+      body = event.is_a?(Hash) ? event.dig("issue", "body") : nil
+      @out.puts JSON.generate(ProcessGapMechanismTarget.check(body))
+      0
+    rescue JSON::ParserError
+      @err.puts "GitHub event file is not valid JSON"
+      2
+    rescue SystemCallError => e
+      @err.puts "Cannot read GitHub event file (#{e.class})"
+      2
+    end
+  end
+end
+
+exit(ProcessGapMechanismTarget::Runner.new.run(ARGV)) if $PROGRAM_NAME == __FILE__

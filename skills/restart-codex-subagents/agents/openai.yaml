@@ -1,0 +1,4 @@
+interface:
+  display_name: "Restart Codex Tasks"
+  short_description: "Bounded preparation and interruption recovery"
+  default_prompt: "Use $restart-codex-subagents to prepare or recover tasks around a restart."

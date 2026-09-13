@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+load File.join(__dir__, "pr-validation-scope")
+load File.join(__dir__, "validate-doc-links")
+
+module ValidateOrdinaryDocs
+  module_function
+
+  def validate(root)
+    failures = ValidateDocLinks.validate(root)
+    PrValidationScope::DOCUMENTS.each do |relative|
+      path = File.join(root, relative)
+      unless File.file?(path)
+        failures << "#{relative}: allowlisted document not found"
+        next
+      end
+
+      # Ordinary documents may have no relative links. Reuse the routing
+      # validator's inline-link and ATX-anchor rules for those that do.
+      cache = {}
+      ValidateDocLinks.links(File.read(path, encoding: "UTF-8")).each do |target, line|
+        next if target.match?(ValidateDocLinks::ABSOLUTE_TARGET)
+
+        failures.concat(ValidateDocLinks.check_link(root, relative, target, line, cache))
+      end
+    end
+    failures
+  end
+
+  def run(root)
+    Dir.chdir(root) do
+      puts "== Markdown lint =="
+      return 1 unless system("markdownlint-cli2", *PrValidationScope::DOCUMENTS)
+
+      puts "== routing doc links and ordinary documentation links =="
+      failures = validate(root)
+      unless failures.empty?
+        warn failures.join("\n")
+        return 1
+      end
+      return 1 unless system("ruby", "bin/validate-doc-links-test.rb")
+      return 1 unless system("ruby", "skills/pr-batch/bin/skill-stage-source-test.rb")
+
+      puts "== native plugin manifests =="
+      return 1 unless system("ruby", "bin/codex-plugin-manifest-check")
+
+      puts "== secure GitHub Actions README contract =="
+      return 1 unless system("ruby", "skills/secure-github-actions/bin/secure-github-actions-contract-test.rb")
+
+      puts "== user-facing coordination README contract =="
+      return 1 unless system("ruby", "skills/pr-batch/bin/user-facing-coordination-contract-test.rb")
+
+      puts "== contributor intake README contract =="
+      return 1 unless system("ruby", "skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-contract-test.rb")
+
+      puts "== public documentation entrypoint contract =="
+      return 1 unless system("ruby", "skills/pr-batch/bin/single_target_entrypoint_test.rb")
+
+      puts "PASS selected ordinary-documentation validation (not full pack coverage)"
+      0
+    end
+  end
+end
+
+exit ValidateOrdinaryDocs.run(File.expand_path("..", __dir__)) if $PROGRAM_NAME == __FILE__

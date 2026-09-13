@@ -3,13 +3,14 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion]
+Usage: install-agent-workflows [--host codex|claude|cursor|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion]
 
 Installs this shared workflow pack into an agent home.
 
 Default targets:
   --host codex   ${CODEX_HOME:-$HOME/.codex}
   --host claude  ${CLAUDE_HOME:-$HOME/.claude}
+  --host cursor  ${CURSOR_HOME:-$HOME/.cursor}
   --host auto    infer from an explicit target's host markers; an unmarked explicit target defaults to Codex
 
 Installed paths:
@@ -20,6 +21,7 @@ Installed paths:
   <target>/docs/coordination-backend.md
   <target>/docs/execution-provenance-schema.md
   <target>/docs/review-finding-schema.md
+  <target>/docs/schemas/task-review-loop-v1.schema.json
   <target>/docs/agent-workflows-model-routing.md
   <target>/docs/user-facing-coordination.md
   <target>/docs/writing-style.md
@@ -28,8 +30,10 @@ Installed paths:
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflow-writing-style
   <target>/bin/validate-execution-provenance
+  <target>/bin/validate-review-findings
   <target>/bin/agent-workflows-doctor
   <target>/bin/agent_doctor/*
+  <target>/bin/agent-workflows-refresh
   <target>/bin/agent-workflows-status
   <target>/bin/upgrade-agent-workflows
   <target>/lib/agent-workflows/secure_github_actions_scanner.rb (plugin-companion mode only)
@@ -51,16 +55,19 @@ bin_helpers=(
   agent-workflow-writing-style
   agent-workflows-delivery-state
   agent-workflows-doctor
+  agent-workflows-refresh
   agent-workflows-status
   agent-workflows-trust-audit
   install-agent-workflows
   upgrade-agent-workflows
   validate-execution-provenance
+  validate-review-findings
 )
 pack_docs=(
   coordination-backend.md
   execution-provenance-schema.md
   review-finding-schema.md
+  schemas/task-review-loop-v1.schema.json
   agent-workflows-model-routing.md
   user-facing-coordination.md
   writing-style.md
@@ -79,10 +86,29 @@ default_target_for_host() {
     claude)
       printf '%s\n' "${CLAUDE_HOME:-$HOME/.claude}"
       ;;
+    cursor)
+      printf '%s\n' "${CURSOR_HOME:-$HOME/.cursor}"
+      ;;
     *)
       return 1
       ;;
   esac
+}
+
+refuse_cursor_builtins_target() {
+  local candidate="$1"
+  local base
+  base="$(basename "$candidate")"
+  if [[ "$base" == "skills-cursor" ]]; then
+    echo "Refusing to install into Cursor builtins directory skills-cursor. Use --host cursor to install into \${CURSOR_HOME:-\$HOME/.cursor}." >&2
+    return 1
+  fi
+}
+
+cursor_target_marker() {
+  local candidate="$1"
+  local cursor_home="$2"
+  [[ ( -n "$cursor_home" && "$candidate" = "$cursor_home" ) || -f "$candidate/cli-config.json" || -d "$candidate/skills-cursor" ]]
 }
 
 canonicalize_target_path() {
@@ -103,6 +129,7 @@ canonicalize_target_path() {
 resolve_auto_target() {
   local codex_home="${CODEX_HOME:-$HOME/.codex}"
   local claude_home="${CLAUDE_HOME:-$HOME/.claude}"
+  local cursor_home="${CURSOR_HOME:-$HOME/.cursor}"
   local -a candidates=()
 
   if [[ -n "${CODEX_HOME:-}" || -d "$codex_home" ]]; then
@@ -110,6 +137,9 @@ resolve_auto_target() {
   fi
   if [[ -n "${CLAUDE_HOME:-}" || -d "$claude_home" ]]; then
     candidates+=("claude:$claude_home")
+  fi
+  if [[ -n "${CURSOR_HOME:-}" || -d "$cursor_home" ]]; then
+    candidates+=("cursor:$cursor_home")
   fi
 
   case "${#candidates[@]}" in
@@ -120,7 +150,7 @@ resolve_auto_target() {
       printf '%s\n' "${candidates[0]}"
       ;;
     *)
-      echo "Auto host detection found both Codex and Claude homes; pass --host codex or --host claude." >&2
+      echo "Auto host detection found multiple agent homes; pass --host codex, --host claude, or --host cursor." >&2
       return 64
       ;;
   esac
@@ -135,19 +165,23 @@ resolve_host_and_target() {
     fi
     target="$canonical_target"
     if [[ "$host" = "auto" ]]; then
-      local codex_home claude_home
+      local codex_home claude_home cursor_home
+      local -a matched=()
       codex_home="$(canonicalize_target_path "${CODEX_HOME:-$HOME/.codex}")" || codex_home=""
       claude_home="$(canonicalize_target_path "${CLAUDE_HOME:-$HOME/.claude}")" || claude_home=""
-      local codex_marker=false claude_marker=false
+      cursor_home="$(canonicalize_target_path "${CURSOR_HOME:-$HOME/.cursor}")" || cursor_home=""
+      local codex_marker=false claude_marker=false cursor_marker=false
       [[ ( -n "$codex_home" && "$target" = "$codex_home" ) || -f "$target/config.toml" ]] && codex_marker=true
       [[ ( -n "$claude_home" && "$target" = "$claude_home" ) || -f "$target/settings.json" || -f "$target/plugins/installed_plugins.json" ]] && claude_marker=true
-      if [[ "$codex_marker" = true && "$claude_marker" = true ]]; then
-        echo "Explicit target has both Codex and Claude markers; pass --host codex or --host claude." >&2
+      cursor_target_marker "$target" "$cursor_home" && cursor_marker=true
+      [[ "$codex_marker" = true ]] && matched+=("codex")
+      [[ "$claude_marker" = true ]] && matched+=("claude")
+      [[ "$cursor_marker" = true ]] && matched+=("cursor")
+      if [[ "${#matched[@]}" -gt 1 ]]; then
+        echo "Explicit target has markers for more than one host; pass --host codex, --host claude, or --host cursor." >&2
         return 64
-      elif [[ "$claude_marker" = true ]]; then
-        printf 'claude:%s\n' "$target"
-      elif [[ "$codex_marker" = true ]]; then
-        printf 'codex:%s\n' "$target"
+      elif [[ "${#matched[@]}" -eq 1 ]]; then
+        printf '%s:%s\n' "${matched[0]}" "$target"
       else
         printf 'codex:%s\n' "$target"
       fi
@@ -254,11 +288,12 @@ read_installed_metadata_value() {
       invalid_required_value = %w[host mode source source_revision installed_at].any? do |field|
         metadata.key?(field) && metadata[field].is_a?(String) && metadata[field].empty?
       end
-      invalid_enum = (metadata.key?("host") && !%w[codex claude].include?(metadata["host"])) ||
+      invalid_enum = (metadata.key?("host") && !%w[codex claude cursor].include?(metadata["host"])) ||
                      (metadata.key?("mode") && !%w[copy symlink].include?(metadata["mode"]))
       invalid_fingerprints = %w[
         managed_skill_copy_fingerprints
         managed_pack_doc_copy_fingerprints
+        managed_pack_helper_copy_fingerprints
         managed_pack_root_copy_fingerprints
       ].any? do |field|
         next false unless metadata.key?(field)
@@ -1873,7 +1908,9 @@ prepare_metadata() {
         end
       end
     end
-    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at, *pack_docs = ARGV
+    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at, doc_count, *assets = ARGV
+    pack_docs = assets.shift(Integer(doc_count))
+    bin_helpers = assets
     directory_fingerprint = lambda do |root|
       entries = []
       Find.find(root) do |entry|
@@ -1923,6 +1960,18 @@ prepare_metadata() {
                         else
                           {}
                         end
+    helper_fingerprints = if mode == "copy"
+                            bin_helpers.to_h do |name|
+                              helper = File.join(source, "bin", name)
+                              unless File.file?(helper) && !File.symlink?(helper)
+                                abort "missing pack helper while preparing install metadata: #{helper}"
+                              end
+
+                              [name, Digest::SHA256.file(helper).hexdigest]
+                            end
+                          else
+                            {}
+                          end
     metadata = {
       "host" => host,
       "mode" => mode,
@@ -1935,6 +1984,7 @@ prepare_metadata() {
       "installed_at" => installed_at,
       "managed_skill_copy_fingerprints" => skill_fingerprints,
       "managed_pack_doc_copy_fingerprints" => doc_fingerprints,
+      "managed_pack_helper_copy_fingerprints" => helper_fingerprints,
       "managed_pack_root_copy_fingerprints" => root_fingerprints
     }
     serialized_metadata = JSON.pretty_generate(metadata) + "\n"
@@ -1983,7 +2033,7 @@ prepare_metadata() {
         end
       end
     end
-  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}" 2>/dev/null)" || prepare_status=$?
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${#pack_docs[@]}" "${pack_docs[@]}" "${bin_helpers[@]}" 2>/dev/null)" || prepare_status=$?
   if [[ "$prepare_status" -ne 0 ]]; then
     echo "METADATA_PREPARE_BLOCKED: could not safely create $metadata_tmp; preserved any path that exists there." >&2
     echo "Verify and move that exact path aside while retaining evidence, then retry; the installer will not delete or overwrite an unverified path." >&2
@@ -3240,15 +3290,33 @@ validate_scanner_companion_ancestors() {
 copy_children_preserving_unrelated() {
   local source_dir="$1"
   local target_dir="$2"
-  local source_path destination
+  local source_path destination staging copy_status
+  local sources=()
   ensure_real_directory "$target_dir"
 
   for source_path in "$source_dir"/*; do
     [[ -e "$source_path" ]] || continue
-    destination="$target_dir/$(basename "$source_path")"
-    rm -rf "$destination"
-    rsync -a "$source_path" "$target_dir/"
+    sources+=("$source_path")
   done
+  # Finish the batch before replacing any installed child. Stage on the target
+  # filesystem so each completed child can move into place without recopying.
+  if (( ${#sources[@]} )); then
+    staging="$(mktemp -d "$target_dir/.agent-workflows-copy.XXXXXX")" || return 1
+    if rsync -a "${sources[@]}" "$staging/"; then
+      for source_path in "${sources[@]}"; do
+        destination="$target_dir/$(basename "$source_path")"
+        if ! rm -rf "$destination" || ! mv "$staging/$(basename "$source_path")" "$destination"; then
+          rm -rf "$staging"
+          return 1
+        fi
+      done
+    else
+      copy_status=$?
+      rm -rf "$staging"
+      return "$copy_status"
+    fi
+    rmdir "$staging"
+  fi
 }
 
 workflow_doctor_copy_matches_source() {
@@ -3438,6 +3506,21 @@ pack_doc_destination_owned() {
   fi
 }
 
+pack_helper_destination_owned() {
+  local helper_name="$1"
+  local destination="$2"
+  local source_path="$repo_root/bin/$helper_name"
+
+  if [[ "$mode" = "copy" ]]; then
+    recorded_pack_helper_copy_fingerprint_matches "$helper_name" "$destination" ||
+      recorded_revision_managed_file_matches "bin/$helper_name" "$destination" ||
+      { [[ -f "$destination" && ! -L "$destination" ]] && cmp -s "$destination" "$source_path"; } ||
+      managed_file_symlink_matches_recorded_source "bin/$helper_name" "$destination"
+  else
+    managed_file_symlink_matches_recorded_source "bin/$helper_name" "$destination"
+  fi
+}
+
 recorded_copy_fingerprint_matches() {
   local field="$1"
   local entry_name="$2"
@@ -3475,6 +3558,10 @@ recorded_pack_doc_copy_fingerprint_matches() {
   recorded_copy_fingerprint_matches "managed_pack_doc_copy_fingerprints" "$1" "$2"
 }
 
+recorded_pack_helper_copy_fingerprint_matches() {
+  recorded_copy_fingerprint_matches "managed_pack_helper_copy_fingerprints" "$1" "$2"
+}
+
 recorded_pack_root_copy_fingerprint_matches() {
   recorded_copy_fingerprint_matches "managed_pack_root_copy_fingerprints" "$1" "$2"
 }
@@ -3484,7 +3571,7 @@ verify_pack_doc_destinations() {
   [[ ! -L "$target/docs" ]] || return 0
 
   for doc_name in "${pack_docs[@]}"; do
-    # Both delivery modes replace a solutions-directory symlink without following it.
+    # Both delivery modes replace the managed solutions symlink without following it.
     [[ "$doc_name" == solutions/* && -L "$target/docs/solutions" ]] && continue
     destination="$target/docs/$doc_name"
     source_path="$repo_root/docs/$doc_name"
@@ -3523,8 +3610,14 @@ verify_third_party_notices_destination() {
 verify_install_destinations() {
   local destination helper skill source_path
 
+  if [[ -L "$target/docs/schemas" ]]; then
+    echo "Refusing to replace unowned schema directory symlink: $target/docs/schemas" >&2
+    exit 1
+  fi
+
   if [[ "$mode" = "copy" ]]; then
-    for destination in "$target/bin" "$target/workflows" "$target/docs" "$target/docs/solutions"; do
+    for destination in "$target/bin" "$target/workflows" "$target/docs" "$target/docs/solutions" \
+      "$target/docs/schemas"; do
       if [[ -e "$destination" && ! -d "$destination" && ! -L "$destination" ]]; then
         echo "Refusing to replace non-directory path: $destination" >&2
         exit 1
@@ -3543,10 +3636,22 @@ verify_install_destinations() {
         exit 1
       fi
     done
+    if [[ "$host" = "cursor" ]]; then
+      destination="$target/rules/agent-workflows.mdc"
+      if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-file path: $destination" >&2
+        exit 1
+      fi
+    fi
     for helper in "${bin_helpers[@]}"; do
       destination="$target/bin/$helper"
       if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
         echo "Refusing to replace non-file path: $destination" >&2
+        exit 1
+      fi
+      if [[ "$helper" = "validate-review-findings" && ( -e "$destination" || -L "$destination" ) ]] &&
+         ! pack_helper_destination_owned "$helper" "$destination"; then
+        echo "Refusing to replace unowned pack helper: $destination" >&2
         exit 1
       fi
     done
@@ -3557,7 +3662,7 @@ verify_install_destinations() {
         exit 1
       fi
     done
-    for destination in "$target/docs" "$target/docs/solutions"; do
+    for destination in "$target/docs" "$target/docs/solutions" "$target/docs/schemas"; do
       if [[ -e "$destination" && ! -d "$destination" && ! -L "$destination" ]]; then
         echo "Refusing to replace non-directory path: $destination" >&2
         exit 1
@@ -3595,6 +3700,11 @@ verify_install_destinations() {
         echo "Refusing to replace non-symlink path: $destination" >&2
         exit 1
       fi
+      if [[ "$helper" = "validate-review-findings" && -L "$destination" ]] &&
+         ! pack_helper_destination_owned "$helper" "$destination"; then
+        echo "Refusing to replace unowned pack helper: $destination" >&2
+        exit 1
+      fi
     done
   fi
 }
@@ -3604,6 +3714,7 @@ copy_pack_docs() {
   local doc_name destination
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
+  ensure_real_directory "$docs_target/schemas"
   remove_legacy_managed_model_routing_path "$docs_target"
 
   for doc_name in "${pack_docs[@]}"; do
@@ -3619,11 +3730,47 @@ copy_pack_docs() {
   done
 }
 
+copy_cursor_routing_rule() {
+  [[ "$host" = "cursor" ]] || return 0
+  local source_rule="$repo_root/.cursor/rules/agent-workflows.mdc"
+  local destination="$target/rules/agent-workflows.mdc"
+  [[ -f "$source_rule" ]] || {
+    echo "Missing Cursor routing rule: $source_rule" >&2
+    exit 1
+  }
+  ensure_real_directory "$target/rules"
+  if [[ -L "$destination" ]]; then
+    rm -f "$destination"
+  fi
+  if [[ -e "$destination" && ! -f "$destination" ]]; then
+    echo "Refusing to replace non-file path: $destination" >&2
+    exit 1
+  fi
+  install -m 0644 "$source_rule" "$destination"
+}
+
+link_cursor_routing_rule() {
+  [[ "$host" = "cursor" ]] || return 0
+  local source_rule="$repo_root/.cursor/rules/agent-workflows.mdc"
+  local destination="$target/rules/agent-workflows.mdc"
+  [[ -f "$source_rule" ]] || {
+    echo "Missing Cursor routing rule: $source_rule" >&2
+    exit 1
+  }
+  ensure_real_directory "$target/rules"
+  if [[ -e "$destination" && ! -L "$destination" ]]; then
+    echo "Refusing to replace non-symlink path: $destination" >&2
+    exit 1
+  fi
+  ln -sfn "$source_rule" "$destination"
+}
+
 link_pack_docs() {
   local docs_target="$1"
   local destination doc_name
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
+  ensure_real_directory "$docs_target/schemas"
   remove_legacy_managed_model_routing_path "$docs_target"
 
   for doc_name in "${pack_docs[@]}"; do
@@ -3730,7 +3877,7 @@ report_delivery_state_conflict() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
-      host="${2:?--host requires codex, claude, or auto}"
+      host="${2:?--host requires codex, claude, cursor, or auto}"
       shift 2
       ;;
     --target)
@@ -3758,9 +3905,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$host" in
-  codex|claude|auto) ;;
+  codex|claude|cursor|auto) ;;
   *)
-    echo "--host must be codex, claude, or auto, got: $host" >&2
+    echo "--host must be codex, claude, cursor, or auto, got: $host" >&2
     exit 64
     ;;
 esac
@@ -3786,6 +3933,7 @@ if [[ -e "$target" || -L "$target" ]]; then
   fi
   target="$canonical_target"
 fi
+refuse_cursor_builtins_target "$target" || exit 1
 delivery_mode_was_explicit=false
 [[ -z "$delivery_mode" ]] || delivery_mode_was_explicit=true
 resolve_delivery_mode
@@ -4086,6 +4234,7 @@ if [[ "$mode" = "copy" ]]; then
   ensure_real_directory "$target/docs"
   copy_children_preserving_unrelated "$repo_root/workflows" "$target/workflows"
   copy_pack_docs "$target/docs"
+  copy_cursor_routing_rule
   rsync -a --delete --exclude="/$doctor_managed_marker" --exclude='/.agent-stack-managed' \
     "$repo_root/bin/agent_doctor/" "$target/bin/agent_doctor/"
   ruby -e 'File.chmod(File.stat(ARGV.fetch(0)).mode & 0o7777, ARGV.fetch(1))' "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
@@ -4134,6 +4283,7 @@ else
   rm -f "$target/workflows"
   ln -sfn "$repo_root/workflows" "$target/workflows"
   link_pack_docs "$target/docs"
+  link_cursor_routing_rule
   ln -sfn "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
   for helper in "${bin_helpers[@]}"; do
     destination="$target/bin/$helper"

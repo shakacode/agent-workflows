@@ -6,9 +6,12 @@ require "pathname"
 ROOT = Pathname.new(ARGV[0] || File.expand_path("..", __dir__)).expand_path
 CODEX_ONLY_START = "<!-- host-branch: codex-only start -->"
 CODEX_ONLY_END = "<!-- host-branch: codex-only end -->"
+CURSOR_ONLY_START = "<!-- host-branch: cursor-only start -->"
+CURSOR_ONLY_END = "<!-- host-branch: cursor-only end -->"
 AVAILABLE_TOOL_START = "<!-- host-branch: available-tool start -->"
 AVAILABLE_TOOL_END = "<!-- host-branch: available-tool end -->"
 ALLOW_CODEX = "<!-- host-allow: codex-only -->"
+ALLOW_CURSOR = "<!-- host-allow: cursor-only -->"
 
 PAIR_RULES = [
   {
@@ -22,11 +25,19 @@ CODEX_ONLY_TOKENS = [
   "/goal"
 ].freeze
 
+CURSOR_ONLY_TOKENS = [
+  "SwitchMode",
+  "skills-cursor",
+  "Custom Mode"
+].freeze
+
 AVAILABLE_TOOL_PATTERNS = [
   { pattern: /(?:`|^|\s)codex review(?=`|\s+--|[\s,.)]|$)/, label: "codex review" },
   { pattern: %r{(?:`|^|\s)/address-review(?=[\s,.)`]|$)}, label: "/address-review" },
   { pattern: %r{(?:`|^|\s)/code-review(?=[\s,.)`]|$)}, label: "/code-review" },
-  { pattern: %r{(?:`|^|\s)/simplify(?=[\s,.)`]|$)}, label: "/simplify" }
+  { pattern: %r{(?:`|^|\s)/simplify(?=[\s,.)`]|$)}, label: "/simplify" },
+  { pattern: %r{(?:`|^|\s)/review-bugbot(?=[\s,.)`]|$)}, label: "/review-bugbot" },
+  { pattern: %r{(?:`|^|\s)/review-security(?=[\s,.)`]|$)}, label: "/review-security" }
 ].freeze
 
 AVAILABILITY_WORDS = [
@@ -47,17 +58,25 @@ def target_files
     ROOT.glob("workflows/*.md").sort
 end
 
-def codex_only_lines(lines)
+def host_only_lines(lines, start_marker, end_marker, allow_marker)
   inside = false
   allowed = []
 
   lines.each_with_index do |line, index|
-    inside = true if line.include?(CODEX_ONLY_START)
-    allowed << index if inside || line.include?(ALLOW_CODEX)
-    inside = false if line.include?(CODEX_ONLY_END)
+    inside = true if line.include?(start_marker)
+    allowed << index if inside || line.include?(allow_marker)
+    inside = false if line.include?(end_marker)
   end
 
   allowed
+end
+
+def codex_only_lines(lines)
+  host_only_lines(lines, CODEX_ONLY_START, CODEX_ONLY_END, ALLOW_CODEX)
+end
+
+def cursor_only_lines(lines)
+  host_only_lines(lines, CURSOR_ONLY_START, CURSOR_ONLY_END, ALLOW_CURSOR)
 end
 
 def available_tool_lines(lines)
@@ -76,6 +95,7 @@ end
 def validate_marker_pairs(path, text)
   marker_pairs = [
     [CODEX_ONLY_START, CODEX_ONLY_END, "codex-only"],
+    [CURSOR_ONLY_START, CURSOR_ONLY_END, "cursor-only"],
     [AVAILABLE_TOOL_START, AVAILABLE_TOOL_END, "available-tool"]
   ]
   failures = []
@@ -105,21 +125,27 @@ def validate_marker_pairs(path, text)
   failures
 end
 
-def validate_codex_tokens(path, text)
-  lines = text.lines
-  allowed = codex_only_lines(lines)
+def validate_host_tokens(path, text, tokens, allowed_lines, label)
   failures = []
 
-  lines.each_with_index do |line, index|
-    CODEX_ONLY_TOKENS.each do |token|
+  text.lines.each_with_index do |line, index|
+    tokens.each do |token|
       next unless line.include?(token)
-      next if allowed.include?(index)
+      next if allowed_lines.include?(index)
 
-      failures << "#{path}:#{index + 1}: #{token} must be inside a codex-only host branch"
+      failures << "#{path}:#{index + 1}: #{token} must be inside a #{label} host branch"
     end
   end
 
   failures
+end
+
+def validate_codex_tokens(path, text)
+  validate_host_tokens(path, text, CODEX_ONLY_TOKENS, codex_only_lines(text.lines), "codex-only")
+end
+
+def validate_cursor_tokens(path, text)
+  validate_host_tokens(path, text, CURSOR_ONLY_TOKENS, cursor_only_lines(text.lines), "cursor-only")
 end
 
 def validate_pairs(path, text)
@@ -159,6 +185,7 @@ target_files.each do |path|
   failures.concat(validate_marker_pairs(relative, text))
   failures.concat(validate_pairs(relative, text))
   failures.concat(validate_codex_tokens(relative, text))
+  failures.concat(validate_cursor_tokens(relative, text))
   failures.concat(validate_available_tools(relative, text))
 end
 

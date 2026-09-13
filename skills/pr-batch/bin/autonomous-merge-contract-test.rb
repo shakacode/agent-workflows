@@ -1,8 +1,11 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 require_relative "../../../bin/agent_doctor/autonomous_merge_policy"
+require_relative "../lib/autonomous_merge_decision"
 require_relative "../lib/autonomous_merge_runtime_trust"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -59,7 +62,7 @@ class AutonomousMergeContractTest < Minitest::Test
 
   def test_all_entry_points_preserve_eligibility_and_distinct_terminal_states
     PARITY_PATHS.each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ")
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ")
 
       assert_includes text, NECESSARY_NOT_SUFFICIENT, path
       assert_includes text, UNKNOWN_IS_NOT_APPROVAL, path
@@ -68,7 +71,7 @@ class AutonomousMergeContractTest < Minitest::Test
     end
 
     ROUTE_PATHS.each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
       assert_includes text, "pr-batch-integration-closeout.md#autonomous-merge-eligibility-gate", path
     end
   end
@@ -90,6 +93,26 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_match(/`merge_authority`\s+remains separate from\s+eligibility/, workflow)
   end
 
+  def test_human_risk_decision_contract_leads_with_review_context_and_collapses_the_receipt
+    adr = File.read(
+      File.join(ROOT, "docs/adr/0003-smarter-autonomous-merge-gates.md"),
+      encoding: "UTF-8"
+    )
+    section = adr.split(/^## Human Risk Decision\s*$/, 2).fetch(1)
+    templates = section.scan(/````markdown\n(.*?)\n````/m).flatten
+    template = templates.first
+
+    assert_equal 1, templates.length
+    refute_nil template
+    assert template.start_with?(AutonomousMergeDecision::MARKER)
+    assert_includes template, "<details>\n<summary>Approval receipt</summary>"
+    assert_operator template.index("- Commit:"), :<, template.index("<details>")
+    assert_operator template.index("- Risk requiring approval:"), :<, template.index("<details>")
+    assert_operator template.index("- Rollback:"), :<, template.index("<details>")
+    assert_includes template, "```yaml\n---\nhead_sha:"
+    assert template.end_with?("</details>")
+  end
+
   def test_goal_generation_surfaces_carry_both_autonomous_stop_states
     %w[
       workflows/pr-processing.md
@@ -97,9 +120,9 @@ class AutonomousMergeContractTest < Minitest::Test
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
     ].each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
 
-      assert_includes text, "GMCC-v5:"
+      assert_includes text, "GMCC-v6:"
       assert_includes text, "ready-human-review-required"
       assert_includes text, "autonomous-merge-evidence-unknown"
       assert_includes text, GMCC_HUMAN_DECISION_BINDING
@@ -308,12 +331,12 @@ class AutonomousMergeContractTest < Minitest::Test
   private
 
   def normalized_policy_prose(path)
-    File.read(File.join(ROOT, path), encoding: "UTF-8")
-        .lines
-        .map { |line| line.sub(/\A# ?/, "") }
-        .join
-        .delete("`")
-        .gsub(/\s+/, " ")
+    SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
+                    .lines
+                    .map { |line| line.sub(/\A# ?/, "") }
+                    .join
+                    .delete("`")
+                    .gsub(/\s+/, " ")
   end
 
   def match_any?(patterns, path)

@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "json"
 require "minitest/autorun"
 require "open3"
@@ -36,7 +38,8 @@ BACKEND_TYPED_GATE_CONTRACT = "Known backend `depends_on`/`blocked_on` facts ref
                               "Run `stage-dependency-gate` and obey its returned permissions for the requested " \
                               "action. Set a blocked heartbeat or move away only when that permission is false. " \
                               "Missing or `UNKNOWN` backend dependency state remains a blanket hard stop."
-COMPACT_BACKEND_TYPED_GATE_CONTRACT = "- For coordination, respect coordination claims and dependencies: " \
+COMPACT_BACKEND_TYPED_GATE_CONTRACT = "- coordination_not_applicable=>no calls;coordination_required+n/a=>stop;" \
+                                      "claims/deps: " \
                                       "stable ids+heartbeats; register before launch when supported; claim " \
                                       "refusal=>stop; push holder/generation check; known deps=>gate permissions; " \
                                       "missing/UNKNOWN deps=>stop."
@@ -57,7 +60,7 @@ class StageDependencyGateTest < Minitest::Test
     ]
 
     surfaces.each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ").strip
       HELPER_RESOLUTION_RULES.each do |rule|
         assert_includes normalized_text, rule, "#{path} is missing helper resolution rule: #{rule}"
@@ -69,14 +72,14 @@ class StageDependencyGateTest < Minitest::Test
 
   def test_direct_single_target_entry_synthesizes_a_verified_manifest_without_a_handoff
     %w[skills/pr-batch/SKILL.md workflows/pr-processing.md].each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ").strip
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ").strip
       assert_includes text, SINGLE_TARGET_MANIFEST_CONTRACT, "#{path} is missing direct single-target synthesis"
     end
   end
 
   def test_triage_handoffs_deliver_the_complete_manifest_or_a_durable_reference
     %w[skills/triage/SKILL.md workflows/pr-processing.md].each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ").strip
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ").strip
       assert_includes text, TRIAGE_MANIFEST_HANDOFF_CONTRACT, "#{path} is missing the triage manifest handoff"
     end
   end
@@ -116,7 +119,7 @@ class StageDependencyGateTest < Minitest::Test
     workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8").gsub(/\s+/, " ").strip
     assert_includes workflow, BACKEND_TYPED_GATE_CONTRACT
     %w[workflows/pr-processing.md skills/pr-batch/SKILL.md].each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ").strip
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ").strip
       assert_includes text, REQUIRED_DEPENDENCY_CLOSEOUT_CONTRACT,
                       "#{path} must keep readiness/closeout behind terminal dependency satisfaction"
     end
@@ -127,7 +130,7 @@ class StageDependencyGateTest < Minitest::Test
       skills/plan-pr-batch/SKILL.md
     ]
     compact_surfaces.each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
       assert_includes text, COMPACT_BACKEND_TYPED_GATE_CONTRACT, "#{path} must defer known facts to the typed gate"
       refute_includes text, LEGACY_COMPACT_BACKEND_STOP, "#{path} must not blanket-stop known pending edges"
     end
@@ -157,7 +160,7 @@ class StageDependencyGateTest < Minitest::Test
     ]
 
     manifest_surfaces.each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ").strip
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ").strip
       assert_match(/immutable pre-launch trusted plan.*`id`.*`from`.*`to`.*`type`/i, text,
                    "#{path} must pin the immutable edge tuple in a separate trusted plan")
       preparation_fields.each do |field|
@@ -166,7 +169,7 @@ class StageDependencyGateTest < Minitest::Test
     end
 
     %w[workflows/pr-processing.md skills/pr-batch/SKILL.md].each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ").strip
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ").strip
       assert_includes text,
                       "Missing, empty, or `UNKNOWN` maker/checker identity permits read-only discovery only " \
                       "and blocks hosted CI and every mutation.",
@@ -191,7 +194,7 @@ class StageDependencyGateTest < Minitest::Test
     ]
 
     surfaces.each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ").strip
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ").strip
       assert_includes text, "`stage-dependency-plan`", "#{path} must name the separate trusted plan contract"
       assert_includes text, TRUSTED_PLAN_CALL, "#{path} must pass the persisted plan separately"
       assert_includes text, TRUSTED_PLAN_ID_CALL, "#{path} must pin the coordinator-approved plan identity"
