@@ -148,16 +148,23 @@ against the fresh data before mutating GitHub or the branch.
   comment using this marker shape only when a
   GitHub-mutating action is selected:
 
-  ```markdown
-  <!-- codex-claim v1
+  ````markdown
+  🤖 Codex claim is active. Do not start competing work.
+
+  <details>
+  <summary>Claim details</summary>
+
+  ```text
+  codex-claim v1
   batch: <BATCH_ID>
   machine: <MACHINE_ID>
   thread: <codex-thread-id>
   branch: <BRANCH_NAME>
   status: in_progress
   expires_at: <ISO8601_UTC>
-  -->
   ```
+  </details>
+  ````
 
   Use any stable session, thread, or machine identifier available; if none is
   available, use `thread: unavailable`. Set a short bounded advisory lease,

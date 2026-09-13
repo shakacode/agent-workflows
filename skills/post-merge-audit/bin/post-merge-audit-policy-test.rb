@@ -86,7 +86,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_INDEPENDENT_REPORT_HANDOFF_PROHIBITION = "Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line."
   REQUIRED_ADVISORY_VERDICT_PROHIBITION = "Advisory auditors must not issue the qualifying clean/ready verdict."
   COMPLETED_BATCH_AUDIT_MARKER_HEADER = "completed-batch-audit v1"
-  REQUIRED_DURABLE_RECEIPT_HEADER = "🤖 Completed-batch audit is clean. No reader action is needed."
+  REQUIRED_DURABLE_RECEIPT_HEADER = "🤖 Codex completed-batch audit is clean. No reader action is needed."
   REQUIRED_PR_DESCRIPTION_SUMMARY_RULE = "For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it inside `### Audit receipts` in the canonical `Agent details` disclosure through a separate freshly-read update, preserves all surrounding text, never duplicates the receipt section, and never reruns `publish` to retry description sync:"
   REQUIRED_PR_DESCRIPTION_SUMMARY_START = "<summary>Audit receipt</summary>"
   REQUIRED_PR_DESCRIPTION_SUMMARY_END = "</details>"

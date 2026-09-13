@@ -30,8 +30,14 @@ class FetchPrReviewDataTest < Minitest::Test
         "body" => <<~MARKDOWN.chomp,
           🤖 Codex review follow-up is complete. The next routine scan can start after this comment.
 
+          ## Review follow-up complete
+
+          Every review item in the selected scan has a recorded outcome.
+
           <details>
           <summary>Address-review checkpoint</summary>
+
+          **Runtime:** Codex · Astra
 
           ```text
           address-review-checkpoint:v1

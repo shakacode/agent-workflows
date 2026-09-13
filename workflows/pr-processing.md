@@ -1921,16 +1921,23 @@ and public claim-comment operation in this section.
   claim exists for the same lane, stop and report the conflicting comment URL
   instead of starting competing work:
 
-```markdown
-<!-- codex-claim v1
+````markdown
+🤖 Codex claim is active. Do not start competing work.
+
+<details>
+<summary>Claim details</summary>
+
+```text
+codex-claim v1
 batch: <BATCH_ID>
 machine: <MACHINE_ID>
 thread: <codex-thread-id>
 branch: <BRANCH_NAME>
 status: in_progress
 expires_at: <ISO8601_UTC>
--->
 ```
+</details>
+````
 
 Use any stable session, thread, or machine identifier that lets a restarted
 coordinator recognize its own work; if none exists, use `thread: unavailable`

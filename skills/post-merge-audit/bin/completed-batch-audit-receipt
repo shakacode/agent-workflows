@@ -732,11 +732,11 @@ module CompletedBatchAuditReceipt
     return unless state
 
     outcome = if state_ready?(state)
-                "🤖 Completed-batch audit is clean. No reader action is needed."
+                "🤖 Codex completed-batch audit is clean. No reader action is needed."
               elsif state.fields["verdict"] == "UNKNOWN"
-                "🤖 Completed-batch audit outcome is unknown. Review the receipt before acting."
+                "🤖 Codex completed-batch audit outcome is unknown. Review the receipt before acting."
               else
-                "🤖 Completed-batch audit has follow-ups. Review the receipt before acting."
+                "🤖 Codex completed-batch audit has follow-ups. Review the receipt before acting."
               end
     payload = marker_payload(marker)
     return unless payload
@@ -757,7 +757,7 @@ module CompletedBatchAuditReceipt
 
   def visible_comment_marker(body)
     match = body.to_s.match(
-      %r{\A🤖 Completed-batch audit [^\r\n]+\r?\n\r?\n<details>\r?\n<summary>#{Regexp.escape(VISIBLE_DETAILS_SUMMARY)}</summary>\r?\n\r?\n```text\r?\ncompleted-batch-audit v1\r?\n(?<payload>.*?)^```\r?\n</details>\r?\n?\z}m
+      %r{\A🤖 Codex completed-batch audit [^\r\n]+\r?\n\r?\n<details>\r?\n<summary>#{Regexp.escape(VISIBLE_DETAILS_SUMMARY)}</summary>\r?\n\r?\n```text\r?\ncompleted-batch-audit v1\r?\n(?<payload>.*?)^```\r?\n</details>\r?\n?\z}m
     )
     return unless match
 

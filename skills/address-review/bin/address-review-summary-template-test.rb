@@ -39,11 +39,12 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
 
     assert_in_order(
       primary,
-      "printf '🤖 **%s · %s**\\n\\n'",
+      "printf '🤖 Codex review follow-up is complete.",
       "printf '## Review follow-up complete\\n\\n'",
       "printf '## Review follow-up needs another pass\\n\\n'",
       "printf '<details>\\n'",
       "printf '<summary>Address-review checkpoint</summary>\\n\\n'",
+      "printf '**Runtime:** %s · %s\\n\\n'",
       "printf '```text\\naddress-review-checkpoint:v1\\n'",
       "printf 'kind: summary\\n'",
       "printf 'kind: status\\n'",
@@ -67,7 +68,7 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     assert_includes template, 'POSTING_MODEL_FAMILY="${POSTING_MODEL_FAMILY:-UNKNOWN}"'
     refute_includes template, "\${POSTING_CLIENT:?"
     refute_includes template, "\${POSTING_MODEL_FAMILY:?"
-    assert_equal 2, template.scan("printf '🤖 **%s · %s**\\n\\n'").length
+    assert_equal 2, template.scan("printf '**Runtime:** %s · %s\\n\\n'").length
   end
 
   def test_source_checkpoint_keeps_auditable_details_and_source_state
@@ -78,11 +79,12 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
 
     assert_in_order(
       source,
-      "printf '🤖 **%s · %s**\\n\\n'",
+      "printf '🤖 Codex original review follow-up is complete.",
       "printf '## Original review follow-up complete\\n\\n'",
       "printf '## Original review follow-up needs another pass\\n\\n'",
       "printf '<details>\\n'",
       "printf '<summary>Address-review checkpoint</summary>\\n\\n'",
+      "printf '**Runtime:** %s · %s\\n\\n'",
       "printf '```text\\naddress-review-checkpoint:v1\\n'",
       "printf 'kind: summary\\n'",
       "printf 'kind: status\\n'",

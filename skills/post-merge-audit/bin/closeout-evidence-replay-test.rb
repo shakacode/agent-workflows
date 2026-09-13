@@ -168,6 +168,43 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     refute_includes body, "<!--"
   end
 
+  def test_visible_details_inside_examples_or_html_comments_do_not_authorize_evidence
+    body = <<~MARKDOWN
+      Evidence follows.
+
+      <!--
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{"1" * 40}
+      ```
+      </details>
+      -->
+
+      ````markdown
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{"1" * 40}
+      ```
+      </details>
+      ````
+    MARKDOWN
+
+    evidence = run_replay(body).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
   def test_hosted_v1_replays_as_distinct_exact_head_deployment_evidence
     head_sha = "1111111111111111111111111111111111111111"
 

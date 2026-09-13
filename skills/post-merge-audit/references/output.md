@@ -149,9 +149,9 @@ Use exactly `Conversation status: Ready for archiving.` only when archive-ready 
 
 In final chat, this compact receipt line opens the closing lines: it is followed by the [Unblock Block](../../../workflows/pr-processing.md#unblock-block) whenever the status is not clean, and then by the exact `Conversation status` final line; never include the full wrapper:
 
-```text
+````text
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
-```
+````
 
 Give this local receipt to the helper. It publishes a visible outcome with its
 reader action, then exactly one closed `Completed-batch audit receipt`
@@ -161,7 +161,7 @@ every operator-authored field explicitly and use `none` rather than omitting a
 field:
 
 ```text
-🤖 Completed-batch audit is clean. No reader action is needed.
+🤖 Codex completed-batch audit is clean. No reader action is needed.
 
 <details>
 <summary>Completed-batch audit receipt</summary>

@@ -83,6 +83,11 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
         def valid_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip" or . == "pending" or . == "ask-user";
         def terminal_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip";
         def terminal_row: split("\t") | .[6] | terminal_outcome;
+        def checkpoint_kind:
+          if startswith("<!-- address-review-summary -->") then "summary"
+          elif startswith("<!-- address-review-status -->") then "status"
+          elif test("(?ms)\\A🤖 Codex [^\\r\\n]+.*?<summary>Address-review checkpoint</summary>.*?address-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n")
+          then capture("(?ms)^.*?address-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n").kind else null end;
         def valid_row:
           split("\t") as $fields |
           ($fields | length) == 7 and
@@ -94,15 +99,15 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
           ($fields[6] | valid_outcome);
         def valid_body:
           . as $body |
-          (($body | startswith("<!-- address-review-summary -->")) or
-           ($body | startswith("<!-- address-review-status -->"))) and
-          ([ $body | scan("(?m)^<!-- address-review-source-state:v1$") ] | length) == 1 and
-          (($body | capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?) as $state |
+          ($body | checkpoint_kind) as $kind |
+          $kind != null and
+          (($body | if startswith("<!-- address-review-")
+            then capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?
+            else capture("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```")? end) as $state |
             $state != null and
             (($state.rows | split("\n") | map(select(length > 0))) as $rows |
               all($rows[]; valid_row) and
-              (($body | startswith("<!-- address-review-status -->")) or
-               (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
+              (($kind == "status") or (($kind == "summary") and all($rows[]; terminal_row))) and
               (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
         [.[][] |
           select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase)) |

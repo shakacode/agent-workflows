@@ -508,7 +508,7 @@ replayable, but no new comment or PR body emits one. In a handoff, issue
 comment, or saved evidence file, keep the disclosure adjacent to the QA
 Evidence block.
 
-```markdown
+````markdown
 <details>
 <summary>QA evidence</summary>
 
@@ -537,7 +537,7 @@ release_blocking: <clear | blocked | waived | not_applicable>
 process_gap_disposition: <script | schema | checklist+replay | park | not applicable>
 ```
 </details>
-```
+````
 
 For `required: no`, record `status: not_applicable` and
 `release_blocking: not_applicable`. Replay treats any other terminal pair as an
@@ -566,7 +566,7 @@ separate review-finding schema. State the disposition and any reader action
 above it. Reference the source finding URL or id; shared review-finding schema
 work remains the source of truth when the repo adopts one:
 
-```markdown
+````markdown
 <details>
 <summary>Priority finding dispositions</summary>
 
@@ -576,12 +576,12 @@ head_sha: <full 40-character current PR head SHA>
 finding: url=<review/thread/check URL> | severity=<P0|P1|P2|P3|Must-Fix|BLOCKING> | disposition=<fixed|waived|false_positive|not_applicable|deferred_with_issue> | evidence=<PR comment, commit, test, or thread URL> | waiver=<maintainer waiver URL when waived>
 ```
 </details>
-```
+````
 
 For an explicit no-findings outcome, use the `not_applicable` variant and keep
 the current head SHA:
 
-```markdown
+````markdown
 <details>
 <summary>Priority finding dispositions</summary>
 
@@ -591,7 +591,7 @@ status: not_applicable
 head_sha: <full 40-character current PR head SHA>
 ```
 </details>
-```
+````
 
 Resolve `POST_MERGE_AUDIT_SKILL_DIR` with the env-var / loaded-skill /
 repo-local chain, then run

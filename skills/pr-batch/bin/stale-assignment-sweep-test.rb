@@ -31,7 +31,8 @@ class StaleAssignmentSweepTest < Minitest::Test
   NOW = Time.utc(2026, 7, 22)
   NOW_ISO = NOW.iso8601
   IDENTITY = "sweeper-bot"
-  NUDGE_MARKER = "<!-- stale-assignment-sweep:nudge -->"
+  LEGACY_NUDGE_MARKER = "<!-- stale-assignment-sweep:nudge -->"
+  VISIBLE_NUDGE_MARKER = "stale-assignment-sweep:nudge:v1"
 
   # --- dry-run -----------------------------------------------------------
 
@@ -80,7 +81,9 @@ class StaleAssignmentSweepTest < Minitest::Test
 
     assert_includes log, "repos/owner/repo/issues/1/comments"
     assert_includes log, "Heads up @alice"
-    assert_includes log, NUDGE_MARKER
+    assert_includes log, "🤖 Codex assignment follow-up:"
+    assert_includes log, VISIBLE_NUDGE_MARKER
+    refute_includes log, LEGACY_NUDGE_MARKER
     # A stale-but-unnudged item is nudged, never released.
     refute_includes log, "issues/1/assignees"
   end
@@ -963,7 +966,7 @@ class StaleAssignmentSweepTest < Minitest::Test
       "created_at" => days_ago(days),
       "actor" => { "login" => author },
       "user" => { "login" => author },
-      "body" => "Heads up — no activity.\n\n#{NUDGE_MARKER}"
+      "body" => "Heads up — no activity.\n\n#{LEGACY_NUDGE_MARKER}"
     }
   end
 end

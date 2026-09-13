@@ -489,14 +489,19 @@ Execution flow when terminal access is available:
        PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
        SOURCE_DIFF_IDENTITY="$("${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref "${SOURCE_BASE_REF}" --diff-base-sha "${SOURCE_DIFF_BASE_SHA}" --head-sha "${SOURCE_HEAD_SHA}")"
        jq -cr --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
-         def v2_marker: "^<!-- pr-walkthrough:v2 pr=(?<pr>[1-9][0-9]*) publisher=(?<publisher>[A-Za-z0-9_-]+(?:\\[bot\\])?) base-ref-b64url=(?<base>[A-Za-z0-9_-]+) diff-base=(?<diff_base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) diff=(?<diff>[0-9a-f]{64}) -->$";
+         def v2_record: "pr-walkthrough:v2 pr=(?<pr>[1-9][0-9]*) publisher=(?<publisher>[A-Za-z0-9_-]+(?:\\[bot\\])?) base-ref-b64url=(?<base>[A-Za-z0-9_-]+) diff-base=(?<diff_base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) diff=(?<diff>[0-9a-f]{64})";
+         def visible_v2_marker: "(?ms)\\A🤖 Codex [^\\r\\n]+\\r?\\n\\r?\\n.*?<details>\\r?\\n<summary>Walkthrough details</summary>.*?^```text\\r?\\n" + v2_record + "\\r?\\n```\\r?\\n</details>\\r?\\n?\\z";
+         def legacy_v2_marker: "^<!-- " + v2_record + " -->$";
          def legacy_v1_marker: "^<!-- pr-walkthrough:v1 pr=(?<pr>[1-9][0-9]*) diff=(?<diff>[0-9a-f]{64}) head=(?<head>[0-9a-f]{40}) -->$";
          .review_summaries[]? |
           select((.id | type) == "number") |
           select(.state == "COMMENTED") |
-          ((.body // "") | split("\n")[0]) as $line |
-          (if ($line | test(v2_marker)) then
-             ($line | capture(v2_marker) + {version: "v2"})
+          (.body // "") as $body |
+          ($body | split("\n")[0]) as $line |
+          (if ($body | test(visible_v2_marker)) then
+             ($body | capture(visible_v2_marker) + {version: "v2"})
+           elif ($line | test(legacy_v2_marker)) then
+             ($line | capture(legacy_v2_marker) + {version: "v2"})
            elif ($line | test(legacy_v1_marker)) then
              ($line | capture(legacy_v1_marker) + {version: "v1", publisher: $actor})
            else null end) as $marker |
@@ -1011,10 +1016,11 @@ before mutating GitHub or the branch.
      `THREAD_ID`. Never use `ITEM_SOURCE_PR` for code, commit, or push work.
      Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
      issue comment or review summary must start with the authenticated
-     `<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked
+     visible `🤖 Codex source reply:` disclosure with an `address-review-source-reply:v1`
+     record. Exclude only a same-actor marked
      reply from source triage and snapshot completeness; another actor cannot use
      the marker to suppress a source candidate.
-     - Issue comments: set `RESPONSE_BODY="<response>"`; when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, set `RESPONSE_BODY="$(printf '<!-- address-review-source-reply -->\n%s' "${RESPONSE_BODY}")"`; then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
+     - Issue comments: when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, prefix the response with `🤖 Codex source reply: <outcome>` and put `address-review-source-reply:v1` in a closed `Source reply details` disclosure; otherwise set `RESPONSE_BODY="<response>"`. Then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
      - Review comment replies: for every item assign `REVIEW_COMMENT_ID="<current-item-id>"` and `CURRENT_ITEM_IN_REPLY_TO_ID="<current-item-in_reply_to_id-or-null>"`; reset `REVIEW_COMMENT_IN_REPLY_TO_ID=""`, then overwrite it from `CURRENT_ITEM_IN_REPLY_TO_ID` only when that value is not `null`. Run `REVIEW_REPLY_TARGET_ID="${REVIEW_COMMENT_IN_REPLY_TO_ID:-${REVIEW_COMMENT_ID}}"` followed by `gh api repos/${REPO}/pulls/${ITEM_SOURCE_PR}/comments/${REVIEW_REPLY_TARGET_ID}/replies -X POST -f body="<response>"`. Never inherit item variables from a prior persistent-shell iteration or pass a literal `null`. This posts a promoted `root_excluded` reply through its top-level parent without changing the item's tracked identity; never substitute the parsed input `COMMENT_ID`.
      - Review summary body replies: apply the same source-only `RESPONSE_BODY` marker rule as issue comments, then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
    - Resolve threads only when the issue is actually handled, explicitly declined with my approval, autonomously declined under a trusted `COORDINATED_AUTOFIX=1` evidence-backed recommendation with the rationale recorded, or autonomously deferred/declined as a low-risk behavior-preserving `OPTIONAL` item under the Maintainer Attention Contract with rationale recorded. Generic handled/declined thread resolution must exclude coordinated `defer`; it follows the ordered durable-evidence path above. Autonomous deferred/declined optional replies must use the `AGENTS.md` tag format: include `[auto-deferred]` on its own line plus a one-line rationale before the thread is resolved. An auto-resolved optional thread that lacks that tag is a spec violation; do not resolve the thread if you cannot post the tag and rationale first:
@@ -1044,8 +1050,7 @@ before mutating GitHub or the branch.
 10. Post a PR summary comment:
    - After any chosen action or completed action chain except `a` and inspect-only bare `o` (`f`, `f+i`, `f+o`, `d`, selected `o`, `r`, `m`, or direct item selection), post either a marked cutoff-safe summary comment or, when the cutoff guard below is not satisfied, a non-cutoff status comment. Make it the next default review cutoff only when every older review item is addressed, resolved, deferred/tracked, declined with rationale, or explicitly left pending by user choice on the original thread.
    - For `a`, do not post a GitHub PR summary comment automatically; return the local summary to the user with the staged-file list and detailed `DISCUSS` recommendations.
-   - Include the exact marker `<!-- address-review-summary -->` as the first line only for cutoff-safe summaries. If older optional items remain pending/unselected without a thread-level outcome, use `<!-- address-review-status -->` as the first line, call the comment a non-cutoff status, and tell the next run to use `check all reviews`.
-   - Keep the marker first for automation, then start the visible comment with `🤖 **<client> · <model family>**`, using the posting runtime's real identity (for example, `Codex · Astra` or `Claude · Opus 5`) rather than guessing. Use `UNKNOWN` for a runtime field the host does not expose; unavailable identity metadata alone must not block workflow progress. State the useful result in simple, concise language. Put scan metadata, itemized outcomes, tracking receipts, and rescan instructions in one closed `<details>` block with the exact summary `Agent details` (never `<details open>`). Hidden workflow markers may remain outside the disclosure where parsers require them. Keep source-state data structurally complete for its parser.
+   - New summaries and statuses begin exactly `🤖 Codex` with the useful outcome and reader action. Put runtime identity, scan metadata, itemized outcomes, tracking receipts, and rescan instructions in one closed `Address-review checkpoint` disclosure (never `<details open>`), with `address-review-checkpoint:v1` inside a `text` fence. Historical HTML markers remain read-compatible only. Keep source-state data structurally complete for its parser in the same disclosure.
    - Use a `Findings that mattered` section for `MUST-FIX` and `DISCUSS` items, including whether each item was addressed, deferred, or left pending by user choice.
    - Use an `Optional suggestions` section when any `OPTIONAL` item has a recorded outcome or is intentionally left pending/unselected by the chosen action. Include whether each acted-on item was addressed inline, deferred to a follow-up issue, deferred/declined under the attention contract, declined, or still pending after a selected optional action. Use a count-only line such as `- N optional items remain pending/unselected from triage; no action taken this run.` only in a non-cutoff status comment, or after each pending/unselected optional thread has an explicit reply/resolve/defer/decline outcome that makes it safe to skip on later default scans. Do not apply this rule to inspect-only bare `o`, which posts no checkpoint.
    - Use a `Skipped items` section for `SKIPPED` items with short reasons.

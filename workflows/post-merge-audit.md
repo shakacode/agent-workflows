@@ -115,7 +115,7 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   - Give the local receipt below to the helper. It publishes a visible outcome and reader action, then one closed `Completed-batch audit receipt` disclosure after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; historical HTML wrappers remain read-compatible only. Fill every operator-authored field explicitly and use `none` rather than omitting a field:
 
     ```text
-    🤖 Completed-batch audit is clean. No reader action is needed.
+    🤖 Codex completed-batch audit is clean. No reader action is needed.
 
     <details>
     <summary>Completed-batch audit receipt</summary>
@@ -237,7 +237,7 @@ affected_prs: <PR>
 
 Paste this into completed batch chats. This is for memory extraction only, not ground truth.
 
-```text
+````text
 Please produce a post-batch audit handoff. Do not make code changes or GitHub writes.
 
 List every issue/PR you worked on in this batch, with:
@@ -259,7 +259,7 @@ List any QA lane or intentionally omitted QA lane, with:
 - release-blocking status and any findings
 
 If you do not know or cannot verify an item from GitHub/local git, say UNKNOWN rather than guessing.
-```
+````
 
 ## Independent Audit Prompt
 

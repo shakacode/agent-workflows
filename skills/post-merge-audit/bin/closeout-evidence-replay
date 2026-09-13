@@ -301,9 +301,38 @@ module CloseoutEvidenceReplay
       "priority-finding-dispositions v1" => "Priority finding dispositions"
     }.fetch(name)
 
-    text.scan(
+    visible_markdown(text).scan(
       %r{<details>[ \t]*\r?\n<summary>#{Regexp.escape(summary)}</summary>[ \t]*\r?\n\r?\n```text[ \t]*\r?\n#{Regexp.escape(name)}[ \t]*\r?\n(.*?)^```[ \t]*\r?\n</details>[ \t]*(?:\r?\n|\z)}m
     ).map(&:first)
+  end
+
+  # Evidence-like text inside a quoted Markdown example or HTML comment is not
+  # a published receipt. Strip those containers before recognizing the visible
+  # disclosure, while leaving legacy HTML parsing above read-compatible.
+  def visible_markdown(text)
+    text = text.to_s.gsub(/<!--.*?-->/m, "")
+    fence = nil
+    details_depth = 0
+    text.each_line.filter_map do |line|
+      opener = line.match(/\A[ \t]{0,3}(`{3,}|~{3,})/)
+      if fence
+        if opener && opener[1][0] == fence[0] && opener[1].length >= fence.length
+          fence = nil
+        end
+        next
+      end
+      if opener
+        # The record itself is fenced inside a visible disclosure. Only a
+        # fence opened outside one can be an outer Markdown example.
+        if details_depth.zero?
+          fence = opener[1]
+          next
+        end
+      end
+      details_depth += 1 if line.match?(%r{<details(?:\s|>)})
+      details_depth -= 1 if line.match?(%r{</details>}) && details_depth.positive?
+      line
+    end.join
   end
 
   def replay_qa_markers(markers, expected_head_sha: nil, version: 1, github_host: nil)

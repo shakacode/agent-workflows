@@ -194,20 +194,16 @@ tell the next run to use `check all reviews`; do not advance the cutoff.
 Rules for the summary comment:
 
 - Always post it as a general PR issue comment, never as a review-thread reply.
-- Include the exact marker `<!-- address-review-summary -->` as the first line
-  only for cutoff-safe summaries. If older optional items remain
-  pending/unselected without a thread-level outcome, use
-  `<!-- address-review-status -->` as the first line, call the comment a
-  non-cutoff status, and tell the next run to use `check all reviews`.
-- Make the first visible line `🤖 **<client> · <model family>**`, using the
-  posting runtime's real client and model family (for example, `Codex · Astra`
-  or `Claude · Opus 5`). Use `UNKNOWN` for any runtime field the host does not
-  expose; never guess either value or block the workflow only because it is
-  unavailable.
+- New comments begin exactly `🤖 Codex` with their outcome and reader action.
+  Put `address-review-checkpoint:v1` with `kind: summary` or `kind: status` in
+  the visible closed checkpoint disclosure. Historical HTML markers are
+  read-compatible only.
+- Put the posting runtime's real client and model family inside that disclosure;
+  use `UNKNOWN` for an unavailable field and never guess or block on it.
 - Keep the visible checkpoint human-ready: state the useful result in simple,
   concise language and say plainly when another pass is needed. Put scan
   metadata, itemized outcomes, tracking receipts, and rescan instructions in
-  one closed GitHub `<details>` block whose summary is exactly `Agent details`;
+  one closed GitHub `<details>` block whose summary is exactly `Address-review checkpoint`;
   do not add the `open` attribute. Hidden workflow markers may remain outside
   the disclosure where their parsers require it.
 - Summarize `MUST-FIX` and `DISCUSS` items under `Findings that mattered`, including whether each item was addressed, deferred, or left pending by user choice.
@@ -264,16 +260,18 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
 # "- N optional items remain pending/unselected from triage; no action taken this run."
 # Leave empty only when there were no optional items in scope.
 {
-  printf '🤖 **%s · %s**\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
   if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
+    printf '🤖 Codex review follow-up is complete. The next routine scan can start after this comment.\n\n'
     printf '## Review follow-up complete\n\n'
     printf 'Every review item in the selected scan has a recorded outcome, so the next routine check can start after this comment.\n\n'
   else
+    printf '🤖 Codex review follow-up needs another pass. Use `check all reviews` before acting.\n\n'
     printf '## Review follow-up needs another pass\n\n'
     printf 'Some feedback in the selected scan still needs an explicit outcome, so this comment does not set a new review checkpoint.\n\n'
   fi
   printf '<details>\n'
   printf '<summary>Address-review checkpoint</summary>\n\n'
+  printf '**Runtime:** %s · %s\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
   printf '```text\naddress-review-checkpoint:v1\n'
   if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
     printf 'kind: summary\n'
@@ -361,16 +359,18 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
     SOURCE_CUTOFF_SAFE=0
   fi
   {
-    printf '🤖 **%s · %s**\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
     if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
+      printf '🤖 Codex original review follow-up is complete. The next routine scan can start after this comment.\n\n'
       printf '## Original review follow-up complete\n\n'
       printf 'Every carried-over review item has a recorded outcome. Future checks of the original PR can start after this comment.\n\n'
     else
+      printf '🤖 Codex original review follow-up needs another pass. Use `check all reviews` before acting.\n\n'
       printf '## Original review follow-up needs another pass\n\n'
       printf 'Some carried-over review items still need an explicit outcome, so this comment does not set a new checkpoint.\n\n'
     fi
     printf '<details>\n'
     printf '<summary>Address-review checkpoint</summary>\n\n'
+    printf '**Runtime:** %s · %s\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
     printf '```text\naddress-review-checkpoint:v1\n'
     if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
       printf 'kind: summary\n'

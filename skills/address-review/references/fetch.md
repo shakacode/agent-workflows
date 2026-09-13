@@ -52,15 +52,18 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
   SOURCE_DIFF_IDENTITY="$("${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref "${SOURCE_BASE_REF}" --diff-base-sha "${SOURCE_DIFF_BASE_SHA}" --head-sha "${SOURCE_HEAD_SHA}")"
   jq -cr --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
     def v2_marker: "pr-walkthrough:v2 pr=(?<pr>[1-9][0-9]*) publisher=(?<publisher>[A-Za-z0-9_-]+(?:\\[bot\\])?) base-ref-b64url=(?<base>[A-Za-z0-9_-]+) diff-base=(?<diff_base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) diff=(?<diff>[0-9a-f]{64})";
-    def visible_v2_marker: "(?ms)\\A🤖 [^\\r\\n]+\\r?\\n\\r?\\n<details>\\r?\\n<summary>Walkthrough details</summary>\\r?\\n\\r?\\n```text\\r?\\n" + v2_marker + "\\r?\\n```\\r?\\n</details>\\r?\\n?\\z";
+    def visible_v2_marker: "(?ms)\\A🤖 Codex [^\\r\\n]+\\r?\\n\\r?\\n.*?<details>\\r?\\n<summary>Walkthrough details</summary>\\r?\\n.*?^```text\\r?\\n" + v2_marker + "\\r?\\n```\\r?\\n</details>\\r?\\n?\\z";
+    def legacy_v2_marker: "^<!-- " + v2_marker + " -->$";
     def legacy_v1_marker: "^<!-- pr-walkthrough:v1 pr=(?<pr>[1-9][0-9]*) diff=(?<diff>[0-9a-f]{64}) head=(?<head>[0-9a-f]{40}) -->$";
     .review_summaries[]? |
      select((.id | type) == "number") |
      select(.state == "COMMENTED") |
      (.body // "") as $body |
      ($body | split("\n")[0]) as $line |
-     (if ($body | test(visible_v2_marker)) then
+      (if ($body | test(visible_v2_marker)) then
         ($body | capture(visible_v2_marker) + {version: "v2"})
+      elif ($line | test(legacy_v2_marker)) then
+        ($line | capture(legacy_v2_marker) + {version: "v2"})
       elif ($line | test(legacy_v1_marker)) then
         ($line | capture(legacy_v1_marker) + {version: "v1", publisher: $actor})
       else null end) as $marker |
@@ -107,12 +110,20 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         ($fields[5] | test("^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\\.[0-9]+)?(Z|[+-][0-9][0-9]:[0-9][0-9])$")) and
         ($fields[6] | valid_outcome);
       . as $inventory |
+      def visible_checkpoint_kind:
+        if test("(?ms)\\A🤖 Codex [^\\r\\n]+\\r?\\n\\r?\\n.*?<details>\\r?\\n<summary>Address-review checkpoint</summary>.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (summary|status)\\r?\\n```")
+        then capture("(?ms)^.*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```").kind else null end;
+      def checkpoint_kind:
+        if startswith("<!-- address-review-summary -->") then "summary"
+        elif startswith("<!-- address-review-status -->") then "status"
+        else visible_checkpoint_kind end;
+      def visible_claim:
+        test("(?ms)\\A🤖 Codex claim .*?<details>\\r?\\n<summary>Claim details</summary>.*?^```text\\r?\\ncodex-claim v1\\r?\\n");
       def marker_body:
-        startswith("<!-- address-review-summary -->") or
-        startswith("<!-- address-review-status -->") or
-        startswith("<!-- codex-claim v1");
+        checkpoint_kind != null or startswith("<!-- codex-claim v1") or visible_claim;
       def generated_source_reply($comment):
-        (($comment.body // "") | startswith("<!-- address-review-source-reply -->")) and
+        ((($comment.body // "") | startswith("<!-- address-review-source-reply -->")) or
+         (($comment.body // "") | test("(?ms)\\A🤖 Codex source reply: .*?<details>\\r?\\n<summary>Address-review reply details</summary>.*?^```text\\r?\\naddress-review-source-reply:v1\\r?\\n"))) and
         ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
       def item_key($kind; $id; $thread_id):
         [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
@@ -176,15 +187,15 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         ]) | unique_by(.key);
       def valid_body($checkpoint_created_at):
         . as $body |
-        (($body | startswith("<!-- address-review-summary -->")) or
-         ($body | startswith("<!-- address-review-status -->"))) and
-        ([ $body | scan("(?m)^<!-- address-review-source-state:v1$") ] | length) == 1 and
-        (($body | capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?) as $state |
+        ($body | checkpoint_kind) as $kind |
+        $kind != null and
+        (($body | if startswith("<!-- address-review-")
+          then capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?
+          else capture("(?m)^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```")? end) as $state |
           $state != null and
           (($state.rows | split("\n") | map(select(length > 0))) as $rows |
             all($rows[]; valid_row) and
-            (($body | startswith("<!-- address-review-status -->")) or
-             (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
+            (($kind == "status") or (($kind == "summary") and all($rows[]; terminal_row))) and
             (($rows | map(identity_key) | unique | length) == ($rows | length)) and
             (source_candidate_states($checkpoint_created_at) as $candidates |
              ($rows | map(row_state)) as $row_states |
@@ -197,7 +208,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
       sort_by(.created_at) | reverse
     ' source-review-data.json)"; then
       SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"
-      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
+      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->") or test("(?ms)\\A🤖 Codex .*?address-review-checkpoint:v1\\r?\\nkind: summary\\r?\\n"))][0].created_at // ""')"
     else
       echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
     fi
