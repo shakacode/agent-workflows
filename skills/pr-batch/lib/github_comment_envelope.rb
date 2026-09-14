@@ -106,8 +106,17 @@ module GitHubCommentEnvelope
     payload_line_ending = "\r\n" if payload_line_ending == "\n" && envelope_line_ending == "\r\n"
     remaining_payload = body[match.end(0)..].to_s
     preserved_first_line = "#{payload_first_line}#{payload_line_ending}"
-    return unless visible == visible_line(RUNNER_DISPLAY.fetch(runner.downcase), payload_first_line, remaining_payload) ||
-                  visible == visible_line(RUNNER_DISPLAY.fetch(runner.downcase), payload_first_line, remaining_payload.delete_prefix(preserved_first_line))
+    display_runner = RUNNER_DISPLAY.fetch(runner.downcase)
+    if match[:first_line_preserved] == "true"
+      return unless preserved_payload_first_line?(payload_first_line, remaining_payload, preserved_first_line)
+
+      return unless visible == visible_line(display_runner, payload_first_line, remaining_payload.delete_prefix(preserved_first_line))
+    elsif match[:first_line_preserved] == "false"
+      return unless visible == visible_line(display_runner, payload_first_line, remaining_payload)
+    else
+      return unless visible == visible_line(display_runner, payload_first_line, remaining_payload) ||
+                    visible == visible_line(display_runner, payload_first_line, remaining_payload.delete_prefix(preserved_first_line))
+    end
 
     payload_first_line.force_encoding(body.encoding)
 
@@ -172,6 +181,11 @@ module GitHubCommentEnvelope
 
     outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "")
     outcome.match?(MARKDOWN_BLOCK_SYNTAX) || remaining_payload.match?(/\A(?: {0,3}=+[ \t]*| {0,3}-+[ \t]*)(?:\r\n|\n|\r|\z)/)
+  end
+
+  def preserved_payload_first_line?(payload_first_line, remaining_payload, preserved_first_line)
+    remaining_payload.start_with?(preserved_first_line) &&
+      preserve_payload_first_line?(payload_first_line, remaining_payload.delete_prefix(preserved_first_line))
   end
 
   def normalized_value(value, name, pattern: VALUE_PATTERN)

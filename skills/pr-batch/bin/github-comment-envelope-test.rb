@@ -191,6 +191,21 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_equal payload, GitHubCommentEnvelope.payload(legacy)
   end
 
+  def test_payload_refuses_tampered_first_line_preservation_metadata
+    ordinary = GitHubCommentEnvelope.render(
+      body: "No current checkpoint.\n<!-- address-review-summary -->", runner: "codex", host: "M5", task_or_run: "task-7"
+    )
+    setext = GitHubCommentEnvelope.render(
+      body: "Title\n---\nEvidence follows.\n", runner: "codex", host: "M5", task_or_run: "task-7"
+    )
+
+    [ordinary.sub("payload_first_line_preserved: false", "payload_first_line_preserved: true"),
+     setext.sub("payload_first_line_preserved: true", "payload_first_line_preserved: false")].each do |tampered|
+      assert_nil GitHubCommentEnvelope.parse(tampered)
+      assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
+    end
+  end
+
   def test_payload_refuses_a_tampered_first_line_that_could_inject_a_legacy_checkpoint
     rendered = GitHubCommentEnvelope.render(
       body: "Review complete.\nFollow-up evidence is recorded.", runner: "codex", host: "M5", task_or_run: "task-7"
