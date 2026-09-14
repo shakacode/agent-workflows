@@ -352,11 +352,16 @@ omit the queue summary and note that queue state is unavailable.
    after each control-field colon and exactly one blank line after
    `merge_authority:` before `Thread handle:`. Do not add `Targets:`; retain the
    single canonical `Items:` target section. Render the
-   `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` value through
+   `Batch title: <PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>` value through
    canonical [Verified Batch Title Selection](../workflows/pr-batch-intake.md#verified-batch-title-selection).
-   Prompt intake owns prefix, issue-identifier, trust, time, and spacing selection.
-   Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
-   `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
+   Optional slots omit their brackets: `AW i840 pr856 -- Typed task titles`.
+   Prompt intake owns prefix, issue/PR identifiers, trust, and spacing selection,
+   plus the [Verified In-Place Rename Lifecycle](../workflows/pr-batch-intake.md#verified-in-place-rename-lifecycle).
+   Managed tasks gain or replace the PR token after ownership verification and
+   repair stale titles on resume. Explicit user titles are preserved; rename
+   limitations keep the task and are reported without blocking the work.
+   Add `Thread handle:` by deriving `<batch-short>` once from the lowercased resolved
+   `<PREFIX>`, then adding the lane id
    and a coordinator-chosen session word. Add the compact `Lane Card:` line so
    workers emit the canonical card after claim, PR-open, blocked/cancelled, and
    final handoff states. Dashboard-generated and skill-generated prompts must

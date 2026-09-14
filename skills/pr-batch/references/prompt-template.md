@@ -8,10 +8,12 @@ workflow rules instead of duplicating them.
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
 Use this template when creating Codex goal text:
+Apply [Verified In-Place Rename Lifecycle](../../../workflows/pr-batch-intake.md#verified-in-place-rename-lifecycle)
+through the required `$pr-batch` intake and execution path.
 
 ```text
 Use $pr-batch to complete this batch with subagents.
-Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
+Batch title: <PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>
 Repo: OWNER/REPO
 Objective: ...
 merge_authority: <none|ask|auto>

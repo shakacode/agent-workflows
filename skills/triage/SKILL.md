@@ -395,16 +395,17 @@ with that one serial group.
    Claude/generic prompts, measure the actual prompt,
    keep it under 8 000 characters, and split or compact it when too large rather
    than applying the Codex split threshold. Put the exact
-   `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block after the
+   `Batch title: <PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>` block after the
    target-specific invocation line(s), resolving it through canonical
    [Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection).
    This entrypoint consumes the verified title facts unchanged and does not
    mirror the selection or trust contract.
+   Apply its [Verified In-Place Rename Lifecycle](../../workflows/pr-batch-intake.md#verified-in-place-rename-lifecycle)
+   when creating or adopting the managed task.
    Use `Thread handle:` as the first worker-specific line:
-   `Thread handle: <batch-short>-<lane>-<word>`, deriving `<batch-short>` from
-   the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
-   suffix, `<lane>` from the lane id or owner slug, and `<word>` as a short
-   coordinator-chosen session word. Then add the compact
+   `Thread handle: <batch-short>-<lane>-<word>`, deriving `<batch-short>` once from
+   the lowercased resolved `<PREFIX>`, `<lane>` from the lane id or owner slug,
+   and `<word>` as a short coordinator-chosen session word. Then add the compact
    `Lane Card: claim/PR-open/block/cancel/final; preferred model/effort; observed host/model/effort/UNKNOWN; holder/branch/PR/phase/URLs/UNKNOWN`
    line so workers emit the canonical Lane Card after a successful claim, on
    blocked/cancelled state, and in final handoff. The actor that opens or

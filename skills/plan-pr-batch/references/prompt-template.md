@@ -5,6 +5,8 @@ is the shared prompt body. For the `codex` target, prepend only the `/goal` line
 before this body. For the `claude` or `generic` target, use the body as-is so the
 prompt starts with `Use $pr-batch to complete this batch with subagents.`
 Keep bulky evidence and long validation notes outside the prompt.
+Apply [Verified In-Place Rename Lifecycle](../../../workflows/pr-batch-intake.md#verified-in-place-rename-lifecycle)
+through the required `$pr-batch` intake and execution path.
 `GMCC-v6` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
@@ -19,7 +21,7 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 
 ```text
 Use $pr-batch to complete this batch with subagents.
-Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
+Batch title: <PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>
 Repo: OWNER/REPO
 Objective: ...
 merge_authority: <none|ask|auto>

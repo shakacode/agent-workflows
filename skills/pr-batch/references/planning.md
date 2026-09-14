@@ -84,11 +84,13 @@ puts the editable controls first in this exact order: `Batch title:`, `Repo:`,
 `Objective:`, and `merge_authority:`. Use one space after every control-field
 colon and exactly one blank line after `merge_authority:`. Do not add
 `Targets:`; `Items:` remains the single canonical target section. Resolve the
-`Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` value through
+`Batch title: <PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>` value through
 [Verified Batch Title Selection](../../../workflows/pr-batch-intake.md#verified-batch-title-selection)
 without reinterpreting its verified intake facts.
+Creation/adoption and later PR/resume updates consume its
+[Verified In-Place Rename Lifecycle](../../../workflows/pr-batch-intake.md#verified-in-place-rename-lifecycle).
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
-from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
+once from the lowercased resolved `<PREFIX>`, `<lane>` from the
 lane id or owner slug in the file-touch map, and `<word>` from a short
 coordinator-chosen session word. Record the handle before dispatch so workers
 copy it unchanged.
