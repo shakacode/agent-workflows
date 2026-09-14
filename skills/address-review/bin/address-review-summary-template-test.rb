@@ -14,9 +14,14 @@ load File.expand_path("fetch-pr-review-data", __dir__)
 
 class AddressReviewSummaryTemplateTest < Minitest::Test
   TEMPLATE_PATH = File.expand_path("../references/templates.md", __dir__)
+  CLAIM_PATH = File.expand_path("../references/claim.md", __dir__)
 
   def template
     @template ||= File.read(TEMPLATE_PATH, encoding: Encoding::UTF_8)
+  end
+
+  def claim
+    @claim ||= File.read(CLAIM_PATH, encoding: Encoding::UTF_8)
   end
 
   def section_after(start_marker, end_marker)
@@ -166,6 +171,21 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     refute_includes template, "\${POSTING_CLIENT:?"
     refute_includes template, "\${POSTING_MODEL_FAMILY:?"
     assert_equal 2, template.scan("printf '**Runtime:** %s · %s\\n\\n'").length
+  end
+
+  def test_fallback_claim_uses_the_envelope_runner_without_a_payload_runner_prefix
+    payload = claim[/````markdown\n(.*?)\n  ````/m, 1]&.lines&.map { |line| line.delete_prefix("  ") }&.join
+
+    refute_nil payload
+    refute_match(/\A🤖/, payload)
+    assert_match(/\AClaim is active\./, payload)
+    assert_includes claim, '--runner "${AGENT_COMMENT_RUNNER:?}"'
+    { "claude" => "Claude", "cursor" => "Cursor" }.each do |runner, display|
+      rendered = GitHubCommentEnvelope.render(body: payload, runner:, host: "test-host", task_or_run: "claim")
+
+      assert rendered.start_with?("🤖 #{display} Claim is active."), runner
+      assert_equal payload, GitHubCommentEnvelope.payload(rendered), runner
+    end
   end
 
   def test_source_checkpoint_keeps_auditable_details_and_source_state

@@ -374,10 +374,11 @@ or verifier arguments.
 
 A satisfied receipt uses exactly one marker and exactly one passed row with
 nonempty evidence for each configured criterion, with no missing, duplicate,
-or extra IDs:
+or extra IDs. Post either receipt through `github-comment-envelope` with the
+actual `AGENT_COMMENT_RUNNER`; it supplies the visible runner prefix.
 
 ````markdown
-🤖 Codex hosted QA is satisfied. No reader action is needed.
+Hosted QA is satisfied. No reader action is needed.
 
 <details>
 <summary>Hosted QA evidence</summary>
@@ -412,7 +413,7 @@ separately by `closeout-evidence-replay`.
 A waiver receipt is a separate closed marker variant:
 
 ````markdown
-🤖 Codex hosted QA is waived. Review the maintainer waiver before acting.
+Hosted QA is waived. Review the maintainer waiver before acting.
 
 <details>
 <summary>Hosted QA evidence</summary>

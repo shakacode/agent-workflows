@@ -156,7 +156,7 @@ against the fresh data before mutating GitHub or the branch.
   GitHub-mutating action is selected:
 
   ````markdown
-  🤖 Codex claim is active. Do not start competing work.
+  Claim is active. Do not start competing work.
 
   <details>
   <summary>Claim details</summary>
