@@ -5,12 +5,23 @@
 # Run with: ruby .agents/skills/address-review/bin/address-review-summary-template-test.rb
 
 require "minitest/autorun"
+require "open3"
+require "shellwords"
+require "tmpdir"
+require_relative "../../pr-batch/lib/github_comment_envelope"
+
+load File.expand_path("fetch-pr-review-data", __dir__)
 
 class AddressReviewSummaryTemplateTest < Minitest::Test
   TEMPLATE_PATH = File.expand_path("../references/templates.md", __dir__)
+  CLAIM_PATH = File.expand_path("../references/claim.md", __dir__)
 
   def template
     @template ||= File.read(TEMPLATE_PATH, encoding: Encoding::UTF_8)
+  end
+
+  def claim
+    @claim ||= File.read(CLAIM_PATH, encoding: Encoding::UTF_8)
   end
 
   def section_after(start_marker, end_marker)
@@ -31,24 +42,23 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     end
   end
 
-  def test_primary_checkpoint_keeps_marker_first_and_visible_content_human_ready
+  def test_primary_checkpoint_keeps_outcome_visible_and_metadata_in_closed_details
     primary = section_after(
-      '  if [ "${CUTOFF_SAFE:-0}" = "1" ]; then',
+      'POSTING_CLIENT="${POSTING_CLIENT:-UNKNOWN}"',
       '} > "${summary_body_file}"'
     )
 
-    assert_match(
-      /\A\s*if \[ "\$\{CUTOFF_SAFE:-0\}" = "1" \]; then\n    printf '<!-- address-review-summary -->\\n'/,
-      primary
-    )
-    assert_match(/else\n    printf '<!-- address-review-status -->\\n'\n  fi\n  if /, primary)
     assert_in_order(
       primary,
+      "printf 'Address-review follow-up is complete.",
       "printf '## Review follow-up complete\\n\\n'",
       "printf '## Review follow-up needs another pass\\n\\n'",
       "printf '<details>\\n'",
-      "printf '<summary>Agent details</summary>\\n\\n'",
-      "printf '**Posting runtime:** %s · %s\\n\\n' \"${POSTING_CLIENT}\" \"${POSTING_MODEL_FAMILY}\"",
+      "printf '<summary>Address-review checkpoint</summary>\\n\\n'",
+      "printf '**Runtime:** %s · %s\\n\\n'",
+      "printf '```text\\naddress-review-checkpoint:v1\\n'",
+      "printf 'kind: summary\\n'",
+      "printf 'kind: status\\n'",
       "printf '**Scan scope:** %s\\n\\n' \"${SCAN_SCOPE}\"",
       "printf '### Findings that mattered\\n'",
       "printf '### Optional suggestions\\n'",
@@ -59,8 +69,100 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     assert_includes primary, "**Next scan:** Start after this comment. Say `check all reviews` to rescan the full PR."
     assert_includes primary, "**Next scan:** Use `check all reviews`; this comment is not a cutoff."
     assert_equal 1, primary.scan("\${SCAN_SCOPE}").length
-    assert_operator primary.index("\${SCAN_SCOPE}"), :>, primary.index("printf '<summary>Agent details</summary>")
+    assert_operator primary.index("\${SCAN_SCOPE}"), :>, primary.index("printf '<summary>Address-review checkpoint</summary>")
     refute_includes primary, "<details open>"
+    refute_includes primary, "<!--"
+    assert_includes template, '"${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue'
+  end
+
+  def test_primary_writer_envelope_and_cutoff_round_trip
+    primary = section_after(
+      'POSTING_CLIENT="${POSTING_CLIENT:-UNKNOWN}"',
+      '} > "${summary_body_file}"'
+    )
+
+    Dir.mktmpdir do |dir|
+      output = File.join(dir, "summary.md")
+      environment = {
+        "CUTOFF_SAFE" => "1",
+        "SCAN_SCOPE" => "template test",
+        "POSTING_CLIENT" => "Codex",
+        "POSTING_MODEL_FAMILY" => "Astra",
+        "TRACKING_OUTCOME" => "",
+        "OPTIONAL_OUTCOMES" => "- Historical marker is literal inline code: `<!-- address-review-summary -->`."
+      }
+      _stdout, stderr, status = Open3.capture3(
+        environment, "sh", "-c", "summary_body_file=#{Shellwords.escape(output)}\n#{primary}"
+      )
+      assert status.success?, stderr
+
+      payload = File.read(output)
+      body = GitHubCommentEnvelope.render(body: payload, runner: "codex", host: "test-host", task_or_run: "template")
+      normalized_payload = GitHubCommentEnvelope.payload(body)
+
+      assert_equal payload, normalized_payload
+      assert_includes payload, "`<!-- address-review-summary -->`"
+      assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(normalized_payload)
+      { "codex" => "Codex", "claude" => "Claude", "cursor" => "Cursor" }.each do |runner, display|
+        rendered = GitHubCommentEnvelope.render(body: payload, runner:, host: "test-host", task_or_run: "template")
+
+        assert rendered.start_with?("🤖 #{display} Address-review follow-up is complete."), runner
+        assert_equal payload, GitHubCommentEnvelope.payload(rendered), runner
+      end
+      assert_equal "2026-09-13T00:00:00Z", FetchPrReviewData.compute_cutoff([
+                                                                              { "body" => body, "payload_body" => normalized_payload, "created_at" => "2026-09-13T00:00:00Z" }
+                                                                            ])
+
+      {
+        "before the disclosure" => payload.sub("\n<details>", "\n<pre>\n<details>"),
+        "after the summary" => payload.sub("</summary>\n\n", "</summary>\n\n<pre>\n")
+      }.each do |placement, malformed_payload|
+        malformed_body = GitHubCommentEnvelope.render(
+          body: malformed_payload, runner: "codex", host: "test-host", task_or_run: "template"
+        )
+        assert_nil FetchPrReviewData.visible_checkpoint_kind(malformed_body), placement
+        assert_equal "", FetchPrReviewData.compute_cutoff([
+                                                            { "body" => malformed_body, "payload_body" => malformed_payload, "created_at" => "2026-09-13T00:00:00Z" }
+                                                          ]), placement
+      end
+    end
+  end
+
+  def test_source_writer_envelope_and_cutoff_round_trip
+    source = section_after(
+      "  SOURCE_STATE_HAS_PENDING=0",
+      '} > "${source_summary_body_file}"'
+    )
+
+    Dir.mktmpdir do |dir|
+      output = File.join(dir, "source-summary.md")
+      environment = {
+        "SOURCE_CUTOFF_SAFE" => "1",
+        "SOURCE_STATE_ROWS" => "item\t160\tissue-comment\t1\t-\t2026-09-13T00:00:00Z\thandled",
+        "REPLACEMENT_PR_URL" => "https://github.com/shakacode/agent-workflows/pull/817",
+        "SOURCE_OUTCOMES" => "- Source feedback handled.",
+        "POSTING_CLIENT" => "Codex",
+        "POSTING_MODEL_FAMILY" => "Astra"
+      }
+      _stdout, stderr, status = Open3.capture3(
+        environment, "sh", "-c", "source_summary_body_file=#{Shellwords.escape(output)}\n#{source}"
+      )
+      assert status.success?, stderr
+
+      payload = File.read(output)
+      { "codex" => "Codex", "claude" => "Claude", "cursor" => "Cursor" }.each do |runner, display|
+        body = GitHubCommentEnvelope.render(body: payload, runner:, host: "test-host", task_or_run: "template")
+        normalized_payload = GitHubCommentEnvelope.payload(body)
+
+        assert body.start_with?("🤖 #{display} Original review follow-up is complete."), runner
+        assert_equal payload, normalized_payload, runner
+        assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(normalized_payload), runner
+        cutoff = FetchPrReviewData.compute_cutoff(
+          [{ "body" => body, "payload_body" => normalized_payload, "created_at" => "2026-09-13T00:00:00Z" }]
+        )
+        assert_equal "2026-09-13T00:00:00Z", cutoff, runner
+      end
+    end
   end
 
   def test_posting_identity_uses_unknown_when_runtime_metadata_is_unavailable
@@ -68,8 +170,22 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
     assert_includes template, 'POSTING_MODEL_FAMILY="${POSTING_MODEL_FAMILY:-UNKNOWN}"'
     refute_includes template, "\${POSTING_CLIENT:?"
     refute_includes template, "\${POSTING_MODEL_FAMILY:?"
-    assert_equal 2, template.scan("printf '**Posting runtime:** %s · %s\\n\\n'").length
-    refute_includes template, "printf '🤖 **%s · %s**\\n\\n'"
+    assert_equal 2, template.scan("printf '**Runtime:** %s · %s\\n\\n'").length
+  end
+
+  def test_fallback_claim_uses_the_envelope_runner_without_a_payload_runner_prefix
+    payload = claim[/````markdown\n(.*?)\n  ````/m, 1]&.lines&.map { |line| line.delete_prefix("  ") }&.join
+
+    refute_nil payload
+    refute_match(/\A🤖/, payload)
+    assert_match(/\AClaim is active\./, payload)
+    assert_includes claim, '--runner "${AGENT_COMMENT_RUNNER:?}"'
+    { "claude" => "Claude", "cursor" => "Cursor" }.each do |runner, display|
+      rendered = GitHubCommentEnvelope.render(body: payload, runner:, host: "test-host", task_or_run: "claim")
+
+      assert rendered.start_with?("🤖 #{display} Claim is active."), runner
+      assert_equal payload, GitHubCommentEnvelope.payload(rendered), runner
+    end
   end
 
   def test_source_checkpoint_keeps_auditable_details_and_source_state
@@ -78,28 +194,27 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
       '} > "${source_summary_body_file}"'
     )
 
-    assert_match(
-      /if \[ "\$\{SOURCE_CUTOFF_SAFE\}" = "1" \]; then\n      printf '<!-- address-review-summary -->\\n'\n    else\n      printf '<!-- address-review-status -->\\n'\n    fi\n    if /,
-      source
-    )
     assert_in_order(
       source,
-      "printf '<!-- address-review-summary -->\\n'",
+      "printf 'Original review follow-up is complete.",
       "printf '## Original review follow-up complete\\n\\n'",
       "printf '## Original review follow-up needs another pass\\n\\n'",
       "printf '<details>\\n'",
-      "printf '<summary>Agent details</summary>\\n\\n'",
-      "printf '**Posting runtime:** %s · %s\\n\\n' \"${POSTING_CLIENT}\" \"${POSTING_MODEL_FAMILY}\"",
+      "printf '<summary>Address-review checkpoint</summary>\\n\\n'",
+      "printf '**Runtime:** %s · %s\\n\\n'",
+      "printf '```text\\naddress-review-checkpoint:v1\\n'",
+      "printf 'kind: summary\\n'",
+      "printf 'kind: status\\n'",
       "printf '**Replacement PR:** %s\\n\\n' \"${REPLACEMENT_PR_URL}\"",
       "printf '### Carried-over review outcomes\\n'",
       "printf '%s\\n\\n' \"${SOURCE_OUTCOMES}\"",
-      "printf '</details>\\n\\n'",
-      "printf '<!-- address-review-source-state:v1\\n'",
-      "printf '%s\\n' '-->'"
+      "printf '```text\\naddress-review-source-state:v1\\n'",
+      "printf '```\\n\\n</details>\\n'"
     )
     assert_includes source, "Every carried-over review item has a recorded outcome."
     assert_includes source, "Some carried-over review items still need an explicit outcome"
     refute_includes source, "<details open>"
+    refute_includes source, "<!--"
   end
 
   def test_template_never_requests_open_details

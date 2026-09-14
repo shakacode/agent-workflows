@@ -25,7 +25,7 @@ If the assistant has terminal access with `gh`, it should execute the workflow d
 
 ## Prompt
 
-````text
+``````text
 Act as a pull request review triage assistant.
 
 I want the equivalent of Claude Code's `/address-review` command, using this prompt as the fallback when that command is unavailable, for this input: `{{PR_REFERENCE}}`.
@@ -36,11 +36,13 @@ instruction before making code changes unless I initiated the run with
 below.
 
 Behavior rules:
-- Before any GitHub post, require the trusted caller to export
+- Before any public GitHub post, require the trusted caller to export
   `AGENT_COMMENT_RUNNER` as exactly `codex`, `claude`, or `cursor`,
   `AGENT_COMMENT_HOST` as the actual runner host, and
-  `AGENT_COMMENT_TASK_OR_RUN` as the stable task/run identifier. Missing or
-  invalid context blocks posting; never invent a generic runner identity.
+  `AGENT_COMMENT_TASK_OR_RUN` as the stable task/run identifier. Resolve
+  `PR_BATCH_SKILL_DIR` from the loaded `ADDRESS_REVIEW_SKILL_DIR` sibling or
+  `.agents/skills/pr-batch`; if neither is available, stop rather than
+  bypassing `github-comment-envelope`.
 - Apply `workflows/pr-processing.md` → **Initial-Pass Optional-Nit Cutoff**
   before triage, menus, worklists, and every Step 8 action below. Its phase and
   authority rules take precedence over optional action defaults, including
@@ -63,7 +65,7 @@ Behavior rules:
   Unavailable or `UNKNOWN` source review data blocks readiness; require source review-inventory closeout plus replacement current-head review/readiness, with durable carryover summaries on both PRs as appropriate.
   In replacement carryover, post a summary/status checkpoint on the primary replacement PR and a separate carryover checkpoint on `SOURCE_PR_NUMBER`; each checkpoint is cutoff-safe only when its own inventory guard passes, otherwise post a non-cutoff status.
   A source checkpoint is cutoff-safe only when every source item has a terminal handled, deferred, declined, or other explicitly safe-to-skip outcome; any pending, `ask user`, or user-pending source item requires a non-cutoff status and remains eligible for the next source scan.
-  Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` under `<!-- address-review-source-state:v1`; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`.
+  Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` in the visible fenced `address-review-source-state:v1` record inside the closed `Address-review checkpoint` disclosure; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`. Historical HTML records are read-compatible only.
   Validate the source PR and item ID as positive decimals, the thread ID as a GitHub node ID or `-`, the activity timestamp as RFC3339, the enum fields, stable-identity uniqueness, and snapshot completeness before consuming or posting state.
   On rerun, suppress a source item only when its exact source PR, kind, immutable item ID, and preserved thread ID match a terminal state row and its current latest activity is not newer than the recorded activity timestamp; `pending` and `ask-user` rows always remain eligible.
   Missing, duplicate, malformed, identity-mismatched, or incomplete source state suppresses no item and makes source readiness `UNKNOWN` until corrected; a status checkpoint never acts as a global cutoff.
@@ -126,12 +128,14 @@ Behavior rules:
   - Promote optional items that need judgment, change behavior, or expand scope
     to `DISCUSS`; record behavior-preserving nits that would only create review
     churn as deferred/declined instead.
-- For full-PR scans, default to feedback after the latest PR summary comment whose body starts with `<!-- address-review-summary -->` on its very first line.
+- For full-PR scans, default to feedback after the latest valid visible summary
+  checkpoint; historical first-line `<!-- address-review-summary -->` comments
+  remain read-compatible only.
 - If I say `check all reviews`, ignore that cutoff and rescan the full PR history.
 - If I give a specific review URL or specific issue-comment URL, fetch that exact target even if it predates the latest summary comment.
 - Except for action `a` (including `autopilot` initiation), after selected items are addressed, reply to the original GitHub comments and resolve threads when appropriate. Under `COORDINATED_AUTOFIX=1`, pure status, acknowledgment, or boilerplate skipped items without an actionable thread are the exception; record their explicit no-action outcomes in the cutoff-safe summary instead.
 - Never post an unsolicited address-review disposition or acknowledgment reply to an explanatory root in the current exact-diff walkthrough, and do not resolve that walkthrough during ordinary closeout. When a trusted focused reply was promoted for triage, answer it in the original thread under the normal action rules while keeping the walkthrough visible. Resolve stale walkthrough threads without adding disposition replies after a verified current replacement exists, or after verifying that the active route neither requires nor authorizes a replacement. First answer or carry forward every focused reply; an unanswered focused reply keeps its stale thread open and actionable. Apply the normal reply and resolution rules to every other selected review thread.
-- Except for action `a` and inspect-only bare `o`, after each completed action or action chain, post a new PR summary comment with the `<!-- address-review-summary -->` marker that says what mattered and what was skipped, but only when every older review item is addressed, resolved, deferred/tracked, declined with rationale, or explicitly left pending by user choice on the original thread. If older optional items remain pending/unselected without that thread-level outcome, post a non-cutoff status comment with the `<!-- address-review-status -->` marker and tell the next run to use `check all reviews`; do not advance the cutoff.
+- Except for action `a` and inspect-only bare `o`, after each completed action or action chain, post a new PR summary comment through the attribution envelope. It begins `🤖 <configured runner>` with what mattered and the reader action, then puts `address-review-checkpoint:v1` in a closed disclosure. Use `kind: summary` only when every older review item is addressed, resolved, deferred/tracked, declined with rationale, or explicitly left pending by user choice on the original thread. Otherwise post `kind: status` and tell the next run to use `check all reviews`; do not advance the cutoff. Historical HTML markers are read-only.
 
 Execution flow when terminal access is available:
 
@@ -206,11 +210,11 @@ Execution flow when terminal access is available:
 
 3. Determine scan window and summary cutoff:
    - For full-PR scans (plain PR number or PR URL with no specific review/comment anchor), default to reviewing only feedback posted after the latest PR summary comment created by this workflow.
-   - The summary marker is a PR issue comment whose body starts with `<!-- address-review-summary -->` on its very first line. Requiring `startswith` (not `contains`) means a human comment that quotes or embeds the marker in prose is not mistaken for a checkpoint and cannot silently advance the cutoff.
-   - Legacy summary comments where the marker appears after a blank line, heading, or byte-order mark are ignored by this rule. If the cutoff appears to miss an older checkpoint, use `check all reviews`; new summary checkpoints created by this workflow always place the marker on the first line.
+   - The fetcher recognizes a top-level visible `Address-review checkpoint` summary record from each comment's normalized `payload_body // body // ""`; a quoted record never advances the cutoff. Historical first-line `<!-- address-review-summary -->` markers remain read-compatible only.
+   - Legacy summary comments where the marker appears after a blank line, heading, or byte-order mark are ignored. If the cutoff appears to miss an older checkpoint, use `check all reviews`; new summary checkpoints use the visible closed disclosure.
    - If `CHECK_ALL_REVIEWS` is true, ignore the cutoff and scan the full PR history.
    - If the input is a specific review URL or specific issue-comment URL, fetch that exact target even if it predates the latest summary comment.
-   - The full-PR fetch in step 4 returns `review_cutoff_at` (the latest `<!-- address-review-summary -->` comment timestamp, or empty). Read the cutoff from that field instead of a separate query:
+   - The full-PR fetch in step 4 returns `review_cutoff_at` (the latest recognized summary checkpoint timestamp, or empty). Read the cutoff from that field instead of a separate query:
      ```bash
      # After running the step 4 fetcher into review-data.json:
      REVIEW_CUTOFF_AT=$(jq -r '.review_cutoff_at' review-data.json)
@@ -235,8 +239,8 @@ Execution flow when terminal access is available:
        exit 1
      fi
      if [ "${SPECIFIC_TARGET}" != "1" ]; then
-       # The normalized helper unwraps authenticated agent envelopes into
-       # `payload_body`; raw issue-comment JSON cannot identify checkpoints.
+       # The narrow normalized helper unwraps authenticated agent envelopes into
+       # `payload_body` without making unrelated review or GraphQL requests.
        ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"
        SOURCE_HAS_CHECKPOINT=0
        if [ -n "${SOURCE_PR_NUMBER}" ]; then
@@ -251,6 +255,25 @@ Execution flow when terminal access is available:
              def valid_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip" or . == "pending" or . == "ask-user";
              def terminal_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip";
              def terminal_row: split("\t") | .[6] | terminal_outcome;
+             def visible_checkpoint_body:
+               split("\n") |
+               map(if test("^(?: {0,3}[\\t]| {4}|[ \\t]{0,3}`{3,}[^`\\r\\n]*(?:\\r?\\n)?$)") then . else gsub("(?<prefix>^|[^\\\\`])(?<esc>(?:\\\\\\\\)*)(?<ticks>`+)(?!`)[^\\r\\n]*?(?<!`)\\3(?!`)"; "\(.prefix)\(.esc)inline-code") end) |
+               join("\n") |
+               gsub("(?<prefix>^|[^\\\\])(?<esc>(?:\\\\\\\\)*)\\\\<"; "\(.prefix)\(.esc)escaped-angle");
+             def checkpoint_kind:
+               if startswith("<!-- address-review-summary -->") then "summary"
+               elif startswith("<!-- address-review-status -->") then "status"
+               else visible_checkpoint_body as $body |
+                 if ($body | test("<!--")) then null
+                 else ($body | [try capture("(?ms)\\A(?:🤖 (?:Codex|Claude|Cursor) )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```(?:(?!<)[\\s\\S])*?</details>\\r?\\n?\\z").kind catch null] | first) end
+               end;
+             def visible_source_state:
+               visible_checkpoint_body |
+               capture("(?ms)\\A(?:🤖 (?:Codex|Claude|Cursor) )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?:summary|status)\\r?\\n```\\r?\\n(?:(?!^(?:[ \\t]{0,3}(?:`{3,}|~{3,}))|<)[\\s\\S])*?^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```\\r?\\n(?:\\r?\\n)?</details>\\r?\\n?\\z")?;
+             def source_state_count:
+               if startswith("<!-- address-review-")
+               then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)
+               else ([visible_source_state] | length) end;
              def valid_row:
                split("\t") as $fields |
                ($fields | length) == 7 and
@@ -262,15 +285,16 @@ Execution flow when terminal access is available:
                ($fields[6] | valid_outcome);
              def valid_body:
                . as $body |
-               (($body | startswith("<!-- address-review-summary -->")) or
-                ($body | startswith("<!-- address-review-status -->"))) and
-               ([ $body | scan("(?m)^<!-- address-review-source-state:v1$") ] | length) == 1 and
-               (($body | capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?) as $state |
+               ($body | checkpoint_kind) as $kind |
+               $kind != null and
+               ($body | source_state_count) == 1 and
+               (($body | if startswith("<!-- address-review-")
+                 then capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?
+                 else visible_source_state end) as $state |
                  $state != null and
                  (($state.rows | split("\n") | map(select(length > 0))) as $rows |
                    all($rows[]; valid_row) and
-                   (($body | startswith("<!-- address-review-status -->")) or
-                    (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
+                   (($kind == "status") or (($kind == "summary") and all($rows[]; terminal_row))) and
                    (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
              [.issue_comments[] |
                select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
@@ -501,14 +525,19 @@ Execution flow when terminal access is available:
        PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
        SOURCE_DIFF_IDENTITY="$("${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref "${SOURCE_BASE_REF}" --diff-base-sha "${SOURCE_DIFF_BASE_SHA}" --head-sha "${SOURCE_HEAD_SHA}")"
        jq -cr --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
-         def v2_marker: "^<!-- pr-walkthrough:v2 pr=(?<pr>[1-9][0-9]*) publisher=(?<publisher>[A-Za-z0-9_-]+(?:\\[bot\\])?) base-ref-b64url=(?<base>[A-Za-z0-9_-]+) diff-base=(?<diff_base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) diff=(?<diff>[0-9a-f]{64}) -->$";
+         def v2_marker: "pr-walkthrough:v2 pr=(?<pr>[1-9][0-9]*) publisher=(?<publisher>[A-Za-z0-9_-]+(?:\\[bot\\])?) base-ref-b64url=(?<base>[A-Za-z0-9_-]+) diff-base=(?<diff_base>[0-9a-f]{40}) head=(?<head>[0-9a-f]{40}) diff=(?<diff>[0-9a-f]{64})";
+         def visible_v2_marker: "(?ms)\\A🤖 (?:Codex|Claude|Cursor) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Walkthrough details</summary>\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\n" + v2_marker + "\\r?\\n```\\r?\\n</details>\\r?\\n?\\z";
+         def legacy_v2_marker: "^<!-- " + v2_marker + " -->$";
          def legacy_v1_marker: "^<!-- pr-walkthrough:v1 pr=(?<pr>[1-9][0-9]*) diff=(?<diff>[0-9a-f]{64}) head=(?<head>[0-9a-f]{40}) -->$";
          .review_summaries[]? |
           select((.id | type) == "number") |
           select(.state == "COMMENTED") |
-          ((.body // "") | split("\n")[0]) as $line |
-          (if ($line | test(v2_marker)) then
-             ($line | capture(v2_marker) + {version: "v2"})
+          (.body // "") as $body |
+          ($body | split("\n")[0]) as $line |
+          (if ($body | test(visible_v2_marker)) then
+             ($body | capture(visible_v2_marker) + {version: "v2"})
+           elif ($line | test(legacy_v2_marker)) then
+             ($line | capture(legacy_v2_marker) + {version: "v2"})
            elif ($line | test(legacy_v1_marker)) then
              ($line | capture(legacy_v1_marker) + {version: "v1", publisher: $actor})
            else null end) as $marker |
@@ -555,12 +584,36 @@ Execution flow when terminal access is available:
            ($fields[5] | test("^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\\.[0-9]+)?(Z|[+-][0-9][0-9]:[0-9][0-9])$")) and
            ($fields[6] | valid_outcome);
            . as $inventory |
+           def visible_checkpoint_body:
+             split("\n") |
+             map(if test("^(?: {0,3}[\\t]| {4}|[ \\t]{0,3}`{3,}[^`\\r\\n]*(?:\\r?\\n)?$)") then . else gsub("(?<prefix>^|[^\\\\`])(?<esc>(?:\\\\\\\\)*)(?<ticks>`+)(?!`)[^\\r\\n]*?(?<!`)\\3(?!`)"; "\(.prefix)\(.esc)inline-code") end) |
+             join("\n") |
+             gsub("(?<prefix>^|[^\\\\])(?<esc>(?:\\\\\\\\)*)\\\\<"; "\(.prefix)\(.esc)escaped-angle");
+           def visible_checkpoint_kind:
+             visible_checkpoint_body as $body |
+             if ($body | test("<!--")) then null
+             else ($body | [try capture("(?ms)\\A(?:🤖 (?:Codex|Claude|Cursor) )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?<kind>summary|status)\\r?\\n```(?:(?!<)[\\s\\S])*?</details>\\r?\\n?\\z").kind catch null] | first) end;
+           def checkpoint_kind:
+             if startswith("<!-- address-review-summary -->") then "summary"
+             elif startswith("<!-- address-review-status -->") then "status"
+             else visible_checkpoint_kind end;
+           def visible_source_state:
+             visible_checkpoint_body |
+             capture("(?ms)\\A(?:🤖 (?:Codex|Claude|Cursor) )?(?:[Aa]ddress-review|[Oo]riginal review) [^\\r\\n]+\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,}))[^\\r\\n<]*(?:\\r?\\n|\\z))*?<details>\\r?\\n<summary>Address-review checkpoint</summary>\\r?\\n\\r?\\n(?:(?![ \\t]{0,3}(?:`{3,}|~{3,})|<)[\\s\\S])*?^```text\\r?\\naddress-review-checkpoint:v1\\r?\\nkind: (?:summary|status)\\r?\\n```\\r?\\n(?:(?!^(?:[ \\t]{0,3}(?:`{3,}|~{3,}))|<)[\\s\\S])*?^```text\\r?\\naddress-review-source-state:v1\\r?\\n(?<rows>(?:item\\t[^\\r\\n]*\\r?\\n)*)^```\\r?\\n(?:\\r?\\n)?</details>\\r?\\n?\\z")?;
+           def source_state_count:
+             if startswith("<!-- address-review-")
+             then ([scan("(?m)^<!-- address-review-source-state:v1$")] | length)
+             else ([visible_source_state] | length) end;
+           def visible_claim:
+             test("(?ms)\\A(?:🤖 Codex )?[Cc]laim is active\\. Do not start competing work\\.\\r?\\n\\r?\\n<details>\\r?\\n<summary>Claim details</summary>\\r?\\n\\r?\\n```text\\r?\\ncodex-claim v1\\r?\\nbatch: [^\\r\\n<]+\\r?\\nmachine: [^\\r\\n<]+\\r?\\nthread: [^\\r\\n<]+\\r?\\nbranch: [^\\r\\n<]+\\r?\\nstatus: [^\\r\\n<]+\\r?\\nexpires_at: [^\\r\\n<]+\\r?\\n```\\r?\\n</details>\\r?\\n?\\z");
            def marker_body:
-             startswith("<!-- address-review-summary -->") or
-             startswith("<!-- address-review-status -->") or
-             startswith("<!-- codex-claim v1");
+             checkpoint_kind != null or startswith("<!-- codex-claim v1") or visible_claim;
+           def comment_body($comment): $comment.payload_body // $comment.body // "";
+           def visible_source_reply:
+             test("(?ms)\\ASource reply recorded for the replacement\\.\\r?\\n\\r?\\n<details>\\r?\\n<summary>Address-review reply details</summary>\\r?\\n\\r?\\n```text\\r?\\naddress-review-source-reply:v1\\r?\\n```\\r?\\n</details>(?:\\r?\\n[\\s\\S]*)?\\z");
            def generated_source_reply($comment):
-             (($comment.payload_body // $comment.body // "") | startswith("<!-- address-review-source-reply -->")) and
+             ((comment_body($comment) | startswith("<!-- address-review-source-reply -->")) or
+              (comment_body($comment) | visible_source_reply)) and
              ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
            def item_key($kind; $id; $thread_id):
              [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
@@ -600,7 +653,7 @@ Execution flow when terminal access is available:
                $inventory.issue_comments[]? |
                . as $comment |
                select((.created_at // "") <= $checkpoint_created_at) |
-               select((((.payload_body // .body // "") | marker_body) or generated_source_reply($comment)) | not) |
+               select(((comment_body($comment) | marker_body) or generated_source_reply($comment)) | not) |
                candidate_state("issue-comment"; .id; "-"; (.created_at // ""))
              ] + [
                $inventory.review_summaries[]? |
@@ -624,15 +677,16 @@ Execution flow when terminal access is available:
              ]) | unique_by(.key);
            def valid_body($checkpoint_created_at):
              . as $body |
-             (($body | startswith("<!-- address-review-summary -->")) or
-              ($body | startswith("<!-- address-review-status -->"))) and
-             ([ $body | scan("(?m)^<!-- address-review-source-state:v1$") ] | length) == 1 and
-             (($body | capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?) as $state |
+             ($body | checkpoint_kind) as $kind |
+             $kind != null and
+             ($body | source_state_count) == 1 and
+             (($body | if startswith("<!-- address-review-")
+               then capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?
+               else visible_source_state end) as $state |
                $state != null and
                (($state.rows | split("\n") | map(select(length > 0))) as $rows |
                  all($rows[]; valid_row) and
-                 (($body | startswith("<!-- address-review-status -->")) or
-                  (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
+                 (($kind == "status") or (($kind == "summary") and all($rows[]; terminal_row))) and
                 (($rows | map(identity_key) | unique | length) == ($rows | length)) and
                  (source_candidate_states($checkpoint_created_at) as $candidates |
                   ($rows | map(row_state)) as $row_states |
@@ -641,11 +695,12 @@ Execution flow when terminal access is available:
            [.issue_comments[] |
              select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
              . as $checkpoint |
-             select(($checkpoint.payload_body // $checkpoint.body // "") | valid_body($checkpoint.created_at // ""))] |
+             select((comment_body($checkpoint)) | valid_body($checkpoint.created_at // "")) |
+             . + {address_review_checkpoint_kind: (comment_body($checkpoint) | checkpoint_kind)}] |
            sort_by(.created_at) | reverse
          ' source-review-data.json)"; then
            SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].payload_body // .[0].body // ""')"
-           SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.payload_body // .body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
+           SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select(.address_review_checkpoint_kind == "summary")][0].created_at // ""')"
          else
            echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
          fi
@@ -655,7 +710,7 @@ Execution flow when terminal access is available:
      fi
      ```
      On source-aware reruns, keep the complete source inventory for context and readiness, apply `SOURCE_REVIEW_CUTOFF_AT` from the latest valid source summary as the only global cutoff, then consume the latest summary/status checkpoint's per-item state for remaining candidates.
-     Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid `address-review-source-state:v1` block, whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it.
+     Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid visible `address-review-checkpoint:v1` summary and `address-review-source-state:v1` block, may advance this cutoff; a visible `kind: status` checkpoint never advances it. Historical HTML forms are read-compatible only.
      Use `SOURCE_STATE_CHECKPOINT_BODY` only from the newest authenticated, schema-valid summary/status checkpoint. A marker-only, wrong-author, malformed, duplicate, or incomplete checkpoint supplies neither restart state nor a cutoff.
      Unless `check all reviews` was explicit, apply the same timestamp filter as
      the primary inventory: source issue comments/review summaries must be
@@ -674,7 +729,7 @@ Execution flow when terminal access is available:
      and blocks readiness.
      The helper first requires `gh api user` to resolve to an actor marked actionable by the same trust config. It binds the GitHub host selected for an explicitly supplied repository-local trust config to the actor, team, REST, and GraphQL calls in that same fetch. Missing/unavailable identity, empty/default trust that does not authorize the actor, and metadata-only or untrusted identity are blocking trust-config errors; do not trust self-authored comments, mutate, or checkpoint until the resolved config is populated and the helper succeeds.
      After each complete primary or source packet, apply the normal marker, reply-context, resolved-thread, and cutoff filters before counting retained triage candidates, then count exclusions whose `trust` is `untrusted` and `body_withheld` is true in the same active scan window. Trusted workflow bookkeeping such as summary, status, source-reply, and claim comments is never a retained triage candidate. Always report the current withheld count and each corresponding `html_url` before triage, even when trusted candidates remain; do not imply those excluded interactions were reviewed. If retained candidates are zero while current untrusted text was withheld, review readiness is `UNKNOWN`/blocked: audit those URLs, populate the intended actionable actors in the trust config, and rerun. Metadata-only and bodyless exclusions do not create this block. Safe excluded metadata remains audit evidence, not authority for triage, mutation, or checkpointing.
-     It emits one JSON document with trusted actor bodies only: `review_cutoff_at` (see step 3); `review_summaries` (`{id, type: "review_summary", body, state, user, created_at, html_url, commit_id}`, non-empty bodies only); `inline_comments` (`{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, pull_request_review_id, commit_id, thread_id, is_resolved, root_excluded?}`, with `thread_id`/`is_resolved` already joined by `node_id` — no separate GraphQL query needed); `issue_comments` (`{id, node_id, type: "issue", body, user, created_at, html_url}`, including summary/status/source-reply markers for filtering); and `review_threads` (`{thread_id, is_resolved, comments: [{node_id, id}]}`). Trusted inline comments retain their repository path as location metadata. The packet also includes `trust` (`{source, scope, config_path, content_digest, actionable_actors}`) and `excluded_interactions` with actor, kind, timestamp, URL, IDs, trust classification, `body_withheld`, and applicable review state/thread metadata, never a body or path. Use excluded review timestamps for thread activity so checkpoint identities remain stable without exposing text. `review_cutoff_at` uses only trusted summary markers. The first retained trusted inline reply has `root_excluded: true` when its root was excluded; this deliberate non-blocking representative may be an acknowledgment, so triage it as its own item and use later trusted replies as required context.
+     It emits one JSON document with trusted actor bodies only: `review_cutoff_at` (see step 3); `review_summaries` (`{id, type: "review_summary", body, payload_body, state, user, created_at, html_url, commit_id}`, non-empty bodies only); `inline_comments` (`{id, node_id, type: "review", path, body, payload_body, line, start_line, user, in_reply_to_id, created_at, html_url, pull_request_review_id, commit_id, thread_id, is_resolved, root_excluded?}`, with `thread_id`/`is_resolved` already joined by `node_id` — no separate GraphQL query needed); `issue_comments` (`{id, node_id, type: "issue", body, payload_body, user, created_at, html_url}`, including summary/status/source-reply markers for filtering); and `review_threads` (`{thread_id, is_resolved, comments: [{node_id, id}]}`). Each `payload_body` is the authenticated envelope's unwrapped payload, or `body` when no envelope is present. Trusted inline comments retain their repository path as location metadata. The packet also includes `trust` (`{source, scope, config_path, content_digest, actionable_actors}`) and `excluded_interactions` with actor, kind, timestamp, URL, IDs, trust classification, `body_withheld`, and applicable review state/thread metadata, never a body or path. Use excluded review timestamps for thread activity so checkpoint identities remain stable without exposing text. `review_cutoff_at` uses only trusted summary markers. The first retained trusted inline reply has `root_excluded: true` when its root was excluded; this deliberate non-blocking representative may be an acknowledgment, so triage it as its own item and use later trusted replies as required context.
    - Treat actionable review summary bodies as additional general comments. Like specific review bodies, they cannot use the `/replies` endpoint and must be answered as general PR comments (see step 8).
    - When `REVIEW_CUTOFF_AT` is set for a full-PR scan:
      - The fetcher returns the full datasets so you keep older context for unresolved threads.
@@ -710,23 +765,6 @@ rollback, heartbeat, and fail-closed behavior below.
 Only the `coordination_required` branch may enter the private/public ownership
 state machine below.
 
-Resolve the shared `pr-batch` skill directory before selecting either
-applicability branch because standalone review replies and checkpoint comments
-also use its comment-envelope helper:
-
-```bash
-if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
-  if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
-    PR_BATCH_SKILL_DIR="$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch"
-  elif [ -d ".agents/skills/pr-batch" ]; then
-    PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
-  else
-    echo "Refusing to continue: set PR_BATCH_SKILL_DIR or install/pin the pr-batch skill." >&2
-    exit 1
-  fi
-fi
-```
-
 Do not create todos, present an unattended `autopilot` action, commit, push,
 post replies, resolve threads, or post a summary checkpoint until the required
 ownership gate passes: the private claim gate for `coordination_required`, or
@@ -751,6 +789,16 @@ before mutating GitHub or the branch.
   thread/session when possible; set `AGENT_ID` explicitly when running multiple
   concurrent sessions against the same PR:
   ```bash
+  if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
+    if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
+      PR_BATCH_SKILL_DIR="$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch"
+    elif [ -d ".agents/skills/pr-batch" ]; then
+      PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
+    else
+      echo "Refusing to continue: set PR_BATCH_SKILL_DIR or install/pin the pr-batch skill." >&2
+      exit 1
+    fi
+  fi
   machine_id="${MACHINE_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf machine)}"
   AGENT_ID="${AGENT_ID:-address-review-${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${USER:-agent}-${machine_id}-pr-${PR_NUMBER}}}}"
   coord_read_degraded=0
@@ -836,18 +884,30 @@ before mutating GitHub or the branch.
   update on either PR blocks mutations on both. Otherwise post a PR issue
   comment using this marker shape only when a
   GitHub-mutating action is selected:
-  ```markdown
-  <!-- codex-claim v1
+  `````markdown
+  Claim is active. Do not start competing work.
+
+  <details>
+  <summary>Claim details</summary>
+
+  ```text
+  codex-claim v1
   batch: <BATCH_ID>
   machine: <MACHINE_ID>
   thread: <codex-thread-id>
   branch: <BRANCH_NAME>
   status: in_progress
   expires_at: <ISO8601_UTC>
-  -->
   ```
+  </details>
+  `````
+
   Post a new fallback claim through `github-comment-envelope post-issue` and
-  extract the returned issue-comment ID from its JSON response:
+  retain its returned comment ID. Route every refresh and terminal update through
+  `github-comment-envelope edit-issue`, piping the complete visible claim body
+  with `--repo`, `--comment-id`, `--runner`, `--host`, and `--task-or-run`.
+  The runner/host/task values come from authenticated runtime context.
+
   ```bash
   CLAIM_COMMENT_ID="$(printf '%s' "${CLAIM_BODY}" |
     "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
@@ -855,17 +915,13 @@ before mutating GitHub or the branch.
       --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
       --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" |
     jq -er '.id')"
-  ```
-  Retain that ID. Route every refresh and terminal
-  fallback-claim update through `github-comment-envelope edit-issue`; pipe the
-  complete replacement claim body on stdin and pass the retained ID:
-  ```bash
   printf '%s' "${CLAIM_BODY}" |
     "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" edit-issue \
       --repo "${REPO}" --comment-id "${CLAIM_COMMENT_ID}" \
       --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
       --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}"
   ```
+
   Use any stable session, thread, or machine identifier available; if none is
   available, use `thread: unavailable`. Set a short bounded advisory lease,
   usually 2-4 hours for an active review run, and refresh the same comment if
@@ -879,9 +935,9 @@ before mutating GitHub or the branch.
   not be the only cleanup step.
 
 5. Filter comments:
-   - Exclude the current exact-diff walkthrough review body and its original explanatory inline comments from triage. Retain trusted replies to those sections, promote the first retained reply in each thread as the triage item, and use later replies as context. Identify the walkthrough as the newest trusted review whose fetched `state` is `COMMENTED`, whose first line is a valid `<!-- pr-walkthrough:v2 ... -->` marker, and whose bound PR number, publisher, `commit_id`, full head SHA, reviewed diff base, and canonical diff identity match the live target. During migration, recognize a legacy short v1 marker only when it is authored by the authenticated actor and its PR, review commit, full head, and canonical diff identity match. Join sections by `pull_request_review_id`; never infer membership from explanatory comment text alone. Immediately after fetching the source packet and before source-checkpoint validation, derive `SOURCE_WALKTHROUGH_REVIEW_IDS_JSON` deterministically from authenticated, internally consistent marker forms and available bindings; this source-checkpoint set includes marker-valid historical walkthroughs so their explanatory roots do not re-enter triage. Apply live target bindings separately for exact-current classification; a stale marker remains historical but receives no current-walkthrough exemption. The query emits `[]` when none pass. Keep the current walkthrough threads unresolved and omit only marked walkthrough summaries and explanatory roots from cutoff or source-checkpoint completeness; retained replies remain normal candidates. Older walkthrough reviews remain informational rather than triage items; after a verified current replacement exists, resolve their threads without posting address-review disposition replies.
-   - Never triage prior workflow summary/status/claim comments. For normalized issue comments, inspect `.payload_body // .body // ""` so an attribution envelope cannot hide the workflow marker. Skip any issue comment whose unwrapped payload starts with `<!-- address-review-summary -->`, `<!-- address-review-status -->`, or `<!-- codex-claim v1` on its very first line; only the summary marker is a cutoff checkpoint.
-   - On a source PR, also skip `<!-- address-review-source-reply -->` comments only when their author matches `SOURCE_REVIEW_ACTOR`; a different author using that marker remains a source candidate.
+   - Exclude the current exact-diff walkthrough review body and its original explanatory inline comments from triage. Retain trusted replies to those sections, promote the first retained reply in each thread as the triage item, and use later replies as context. On both full-PR and specific-review paths, identify the walkthrough as the newest trusted review whose fetched `state` is `COMMENTED`, whose first visible line is a runner-labelled outcome, and whose closed `Walkthrough details` disclosure contains the canonical fenced `pr-walkthrough:v2` record. Its bound PR number, publisher, `commit_id`, full head SHA, reviewed diff base, and canonical diff identity must match the live target. New walkthroughs use that visible form only. Historical HTML v2 and short v1 markers are read-compatible only: v2 keeps the declared-publisher and exact-binding checks, while v1 is accepted only from the authenticated actor under the exact-binding rules. Join sections by `pull_request_review_id`; never infer membership from explanatory comment text alone. Immediately after fetching the source packet and before source-checkpoint validation, derive `SOURCE_WALKTHROUGH_REVIEW_IDS_JSON` deterministically from authenticated, internally consistent marker forms and available bindings; this source-checkpoint set includes marker-valid historical walkthroughs so their explanatory roots do not re-enter triage. Apply live target bindings separately for exact-current classification; a stale marker remains historical but receives no current-walkthrough exemption. The query emits `[]` when none pass. Keep the current walkthrough threads unresolved and omit only marked walkthrough summaries and explanatory roots from cutoff or source-checkpoint completeness; retained replies remain normal candidates. Older walkthrough reviews remain informational rather than triage items; after a verified current replacement exists, resolve their threads without posting address-review disposition replies.
+   - Never triage prior workflow summary/status/claim comments. Use normalized `payload_body // body // ""` and skip recognized visible `Address-review checkpoint` or `Claim details` records as well as historical first-line `<!-- address-review-summary -->`, `<!-- address-review-status -->`, or `<!-- codex-claim v1` forms. Only a recognized summary checkpoint is a cutoff checkpoint; historical HTML forms are read-compatible only.
+   - On a source PR, also skip a visible `address-review-source-reply:v1` record only when its author matches `SOURCE_REVIEW_ACTOR`; a different author using that record remains a source candidate. Historical HTML-marked replies remain readable only.
    - Skip resolved threads.
    - Triage the first retained trusted reply as its own item when `root_excluded: true` marks a trust-boundary exclusion or its explanatory root belongs to the verified current walkthrough. This non-blocking representative may be an acknowledgment, so later trusted replies are required classification context. Otherwise, use comments with `in_reply_to_id` only as the latest thread context when they update or narrow the unresolved concern.
    - When `REVIEW_CUTOFF_AT` is set, evaluate unresolved review threads by their latest activity timestamp, not only by the top-level comment timestamp.
@@ -931,7 +987,8 @@ before mutating GitHub or the branch.
    - When `COORDINATED_AUTOFIX=1`, present triage for transparency but do not display the quick-action menu; immediately execute coordinated action `f` after the verification checkpoint.
    - For normal interactive runs, present the quick-action menu after the triage list.
    - The normal interactive quick-action menu is:
-     ```
+
+     ```text
      Quick actions:
       f     — Fix must-fix items, autonomously handle low-risk optional nits, then prompt for skipped rationale replies and discuss decisions
       f+i   — Fix must-fix, autonomously handle low-risk optional nits, then prepare one deferred-work bundle for discuss/remaining optional items (and non-trivial skipped items)
@@ -944,6 +1001,7 @@ before mutating GitHub or the branch.
 
      Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
      ```
+
    - Support range syntax: `N-M` expands to individual items (e.g., `3-5` → `3,4,5`). Ranges work everywhere: item selection, `d`, `o`, and `r`.
    - If a range is malformed, reversed, or out of bounds, show a validation message and ask the user to retry (do not silently coerce it).
    - Dynamic menu: generate `f`, `f+i`, `f+o`, and `a` descriptions using actual item numbers and deferred targets from the current triage set. Only show `f+o` and `o` when there is at least one `OPTIONAL` item. Show `a` when there is at least one `MUST-FIX`, `OPTIONAL`, or `DISCUSS` item. When there are no `DISCUSS`, `OPTIONAL`, or `SKIPPED` items, only show `f`, `a`, and direct item selection.
@@ -1049,13 +1107,15 @@ before mutating GitHub or the branch.
      replacement carryover), and keep its own `REVIEW_COMMENT_ID` and
      `THREAD_ID`. Never use `ITEM_SOURCE_PR` for code, commit, or push work.
      Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
-     issue comment or review summary must start with the authenticated
-     `<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked
+     issue comment or review summary must use `github-comment-envelope`, whose
+     public comment begins with the `🤖 <configured runner>` prefix from `AGENT_COMMENT_RUNNER`;
+     its payload begins with a fixed source-reply
+     receipt and contains an `address-review-source-reply:v1` record before the original response. Exclude only a same-actor marked
      reply from source triage and snapshot completeness; another actor cannot use
      the marker to suppress a source candidate.
-     - Issue comments: set `RESPONSE_BODY="<response>"`; when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, set `RESPONSE_BODY="$(printf '<!-- address-review-source-reply -->\n%s' "${RESPONSE_BODY}")"`; then pipe it to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue` with `--repo`, `--number`, `--runner`, `--host`, and `--task-or-run`.
-     - Review comment replies: for every item assign `REVIEW_COMMENT_ID="<current-item-id>"` and `CURRENT_ITEM_IN_REPLY_TO_ID="<current-item-in_reply_to_id-or-null>"`; reset `REVIEW_COMMENT_IN_REPLY_TO_ID=""`, then overwrite it from `CURRENT_ITEM_IN_REPLY_TO_ID` only when that value is not `null`. Set `REVIEW_REPLY_TARGET_ID="${REVIEW_COMMENT_IN_REPLY_TO_ID:-${REVIEW_COMMENT_ID}}"`, then pipe the response to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-reply` with `--repo`, `--number`, all three attribution fields, and `--comment-id "${REVIEW_REPLY_TARGET_ID}"`. Never inherit item variables from a prior persistent-shell iteration or pass a literal `null`. This posts a promoted `root_excluded` reply through its top-level parent without changing the item's tracked identity; never substitute the parsed input `COMMENT_ID`.
-     - Review summary body replies: apply the same source-only `RESPONSE_BODY` marker rule as issue comments, then pipe it to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue`.
+     - Issue comments: when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, prepend the fixed source-reply receipt and closed `Address-review reply details` disclosure containing `address-review-source-reply:v1`, then append the original `RESPONSE_BODY`; otherwise set `RESPONSE_BODY="<response>"`. Pipe it to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue` with the target repo/number and required runner/host/task context.
+     - Review comment replies: for every item assign `REVIEW_COMMENT_ID="<current-item-id>"` and `CURRENT_ITEM_IN_REPLY_TO_ID="<current-item-in_reply_to_id-or-null>"`; reset `REVIEW_COMMENT_IN_REPLY_TO_ID=""`, then overwrite it from `CURRENT_ITEM_IN_REPLY_TO_ID` only when that value is not `null`. Run `REVIEW_REPLY_TARGET_ID="${REVIEW_COMMENT_IN_REPLY_TO_ID:-${REVIEW_COMMENT_ID}}"` followed by piping the response to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-reply` with the target repo/number, reply target, and required runner/host/task context. Never inherit item variables from a prior persistent-shell iteration or pass a literal `null`. This posts a promoted `root_excluded` reply through its top-level parent without changing the item's tracked identity; never substitute the parsed input `COMMENT_ID`.
+     - Review summary body replies: apply the same source-only `RESPONSE_BODY` record rule as issue comments, then pipe it to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue`.
    - Resolve threads only when the issue is actually handled, explicitly declined with my approval, autonomously declined under a trusted `COORDINATED_AUTOFIX=1` evidence-backed recommendation with the rationale recorded, or autonomously deferred/declined as a low-risk behavior-preserving `OPTIONAL` item under the Maintainer Attention Contract with rationale recorded. Generic handled/declined thread resolution must exclude coordinated `defer`; it follows the ordered durable-evidence path above. Autonomous deferred/declined optional replies must use the `AGENTS.md` tag format: include `[auto-deferred]` on its own line plus a one-line rationale before the thread is resolved. An auto-resolved optional thread that lacks that tag is a spec violation; do not resolve the thread if you cannot post the tag and rationale first:
      `gh api graphql -f query='mutation($threadId:ID!) { resolveReviewThread(input:{threadId:$threadId}) { thread { id isResolved } } }' -f threadId="<THREAD_ID>"`
    - Do not resolve anything still in progress or uncertain.
@@ -1081,38 +1141,38 @@ before mutating GitHub or the branch.
    - Return the selected tracking outcome and issue URL if one was created
 
 10. Post a PR summary comment:
-   - After any chosen action or completed action chain except `a` and inspect-only bare `o` (`f`, `f+i`, `f+o`, `d`, selected `o`, `r`, `m`, or direct item selection), post either a marked cutoff-safe summary comment or, when the cutoff guard below is not satisfied, a non-cutoff status comment. Make it the next default review cutoff only when every older review item is addressed, resolved, deferred/tracked, declined with rationale, or explicitly left pending by user choice on the original thread.
-   - For `a`, do not post a GitHub PR summary comment automatically; return the local summary to the user with the staged-file list and detailed `DISCUSS` recommendations.
-   - Include the exact marker `<!-- address-review-summary -->` as the first line only for cutoff-safe summaries. If older optional items remain pending/unselected without a thread-level outcome, use `<!-- address-review-status -->` as the first line, call the comment a non-cutoff status, and tell the next run to use `check all reviews`.
-   - Keep the marker first in the payload for automation and let `github-comment-envelope` provide the sole visible agent header. Record the posting runtime's real client and model family (for example, `Codex · Astra` or `Claude · Opus 5`) inside `Agent details`; do not guess. Use `UNKNOWN` for a runtime field the host does not expose; unavailable identity metadata alone must not block workflow progress. State the useful result in simple, concise language. Put scan metadata, itemized outcomes, tracking receipts, and rescan instructions in one closed `<details>` block with the exact summary `Agent details` (never `<details open>`). Hidden workflow markers may remain outside the disclosure where parsers require them. Keep source-state data structurally complete for its parser.
-   - Use a `Findings that mattered` section for `MUST-FIX` and `DISCUSS` items, including whether each item was addressed, deferred, or left pending by user choice.
-   - Use an `Optional suggestions` section when any `OPTIONAL` item has a recorded outcome or is intentionally left pending/unselected by the chosen action. Include whether each acted-on item was addressed inline, deferred to a follow-up issue, deferred/declined under the attention contract, declined, or still pending after a selected optional action. Use a count-only line such as `- N optional items remain pending/unselected from triage; no action taken this run.` only in a non-cutoff status comment, or after each pending/unselected optional thread has an explicit reply/resolve/defer/decline outcome that makes it safe to skip on later default scans. Do not apply this rule to inspect-only bare `o`, which posts no checkpoint.
-   - Use a `Skipped items` section for `SKIPPED` items with short reasons.
-   - Mention any deferred-work tracking outcome and follow-up issue URL that was created.
-   - Mention whether the run used the default cutoff or the explicit `check all reviews` override.
-   - For marked summaries, end with a note that future full-PR scans should start after this comment unless I say `check all reviews`. For non-cutoff status comments, end with a note that the next run must use `check all reviews`.
-   - Use exact timestamps in the summary when referring to the scan window.
-   - When replacement carryover is inactive, post it directly with:
-     `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue --repo "${REPO}" --number "${PR_NUMBER}" --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" < "${summary_body_file}"`
-     When replacement carryover is active, do not run that direct post; delegate
-     both checkpoint posts to the Step 10 template below.
-   - In replacement carryover, build `source_summary_body_file` through
-     `references/templates.md` with the replacement link and every original-item
-     outcome. Use its separate `SOURCE_CUTOFF_SAFE` guard.
-     The Step 10 template constructs and posts the primary checkpoint and, when source carryover is active, the source checkpoint exactly once before its cleanup trap runs.
-     Do not post either checkpoint again outside that template.
+    - After any chosen action or completed action chain except `a` and inspect-only bare `o` (`f`, `f+i`, `f+o`, `d`, selected `o`, `r`, `m`, or direct item selection), post either a marked cutoff-safe summary comment or, when the cutoff guard below is not satisfied, a non-cutoff status comment. Make it the next default review cutoff only when every older review item is addressed, resolved, deferred/tracked, declined with rationale, or explicitly left pending by user choice on the original thread.
+    - For `a`, do not post a GitHub PR summary comment automatically; return the local summary to the user with the staged-file list and detailed `DISCUSS` recommendations.
+    - The attribution envelope derives the visible prefix from `AGENT_COMMENT_RUNNER`: `🤖 <configured runner>` plus the useful outcome and reader action. Put runtime identity, scan metadata, itemized outcomes, tracking receipts, and rescan instructions in one closed `Address-review checkpoint` disclosure (never `<details open>`), with `address-review-checkpoint:v1` inside a `text` fence. Historical HTML markers remain read-compatible only. Keep source-state data structurally complete for its parser in the same disclosure.
+    - Use a `Findings that mattered` section for `MUST-FIX` and `DISCUSS` items, including whether each item was addressed, deferred, or left pending by user choice.
+    - Use an `Optional suggestions` section when any `OPTIONAL` item has a recorded outcome or is intentionally left pending/unselected by the chosen action. Include whether each acted-on item was addressed inline, deferred to a follow-up issue, deferred/declined under the attention contract, declined, or still pending after a selected optional action. Use a count-only line such as `- N optional items remain pending/unselected from triage; no action taken this run.` only in a non-cutoff status comment, or after each pending/unselected optional thread has an explicit reply/resolve/defer/decline outcome that makes it safe to skip on later default scans. Do not apply this rule to inspect-only bare `o`, which posts no checkpoint.
+    - Use a `Skipped items` section for `SKIPPED` items with short reasons.
+    - Mention any deferred-work tracking outcome and follow-up issue URL that was created.
+    - Mention whether the run used the default cutoff or the explicit `check all reviews` override.
+    - For marked summaries, end with a note that future full-PR scans should start after this comment unless I say `check all reviews`. For non-cutoff status comments, end with a note that the next run must use `check all reviews`.
+    - Use exact timestamps in the summary when referring to the scan window.
+    - When replacement carryover is inactive, pipe it through
+      `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue` with the
+      target repo/number and required runner/host/task context.
+      When replacement carryover is active, do not post it outside the template; delegate
+      both checkpoint posts to the Step 10 template below.
+    - In replacement carryover, build `source_summary_body_file` through
+      `references/templates.md` with the replacement link and every original-item
+      outcome. Use its separate `SOURCE_CUTOFF_SAFE` guard.
+      The Step 10 template constructs and posts the primary checkpoint and, when source carryover is active, the source checkpoint exactly once before its cleanup trap runs.
+      Do not post either checkpoint again outside that template.
 
 11. Merge-ready signal:
-   - After `f`, tell me the PR is merge-ready after `DISCUSS` items are resolved or explicitly deferred. `OPTIONAL` items do not block merge-readiness.
-   - After `f+i`, tell me the PR is merge-ready only after the deferred bundle has an explicit tracking/drop decision, any dropped `DISCUSS` items are explicitly declined/resolved, and any optional items excluded from the bundle are handled inline, deferred with rationale/tracking outcome, or declined/resolved; if there were zero deferred items, skip tracking and use the `f` merge-ready rule after `f`'s remaining prompts are complete
-   - After `f+o`, tell me the PR is merge-ready once all selected work is pushed and `DISCUSS` items are resolved or explicitly deferred
-   - After `a`, do not signal merge-ready automatically. Report that files are staged for review and list the remaining GitHub actions needed, such as commit, push, replies/resolutions, and decisions on `DISCUSS` recommendations.
-   - After `m`, only tell me the PR is merge-ready when no must-fix items were deferred, the deferred bundle has an explicit tracking/drop decision, and any dropped `DISCUSS` items are explicitly declined/resolved; if there were zero deferred items, skip tracking and use the no-must-fix merge-ready rule; otherwise explicitly say it is not merge-ready
-   - After direct selection, do not signal merge-ready automatically; first evaluate remaining `MUST-FIX`/`DISCUSS` items and ask whether to continue with `f`, `f+i`, `f+o`, `d`, `o`, `r`, or `m`. Unresolved `OPTIONAL` items do not block the merge-ready signal.
-   - After `d`, `o`, or `r`, if unresolved `MUST-FIX`/`DISCUSS` items remain, do not signal merge-ready automatically; re-offer `f`, `f+i`, `f+o`, `d`, `o`, `r`, or `m`. Unresolved `OPTIONAL` items do not block the merge-ready signal.
-   - After inspect-only bare `o`, stop after presenting optional items; do not post a summary checkpoint or make a merge-readiness claim.
-   - Show the deferred-work tracking outcome if one was chosen
-   - Do not auto-merge
+    - After `f`, tell me the PR is merge-ready after `DISCUSS` items are resolved or explicitly deferred. `OPTIONAL` items do not block merge-readiness.
+    - After `f+i`, tell me the PR is merge-ready only after the deferred bundle has an explicit tracking/drop decision, any dropped `DISCUSS` items are explicitly declined/resolved, and any optional items excluded from the bundle are handled inline, deferred with rationale/tracking outcome, or declined/resolved; if there were zero deferred items, skip tracking and use the `f` merge-ready rule after `f`'s remaining prompts are complete
+    - After `f+o`, tell me the PR is merge-ready once all selected work is pushed and `DISCUSS` items are resolved or explicitly deferred
+    - After `a`, do not signal merge-ready automatically. Report that files are staged for review and list the remaining GitHub actions needed, such as commit, push, replies/resolutions, and decisions on `DISCUSS` recommendations.
+    - After `m`, only tell me the PR is merge-ready when no must-fix items were deferred, the deferred bundle has an explicit tracking/drop decision, and any dropped `DISCUSS` items are explicitly declined/resolved; if there were zero deferred items, skip tracking and use the no-must-fix merge-ready rule; otherwise explicitly say it is not merge-ready
+    - After direct selection, do not signal merge-ready automatically; first evaluate remaining `MUST-FIX`/`DISCUSS` items and ask whether to continue with `f`, `f+i`, `f+o`, `d`, `o`, `r`, or `m`. Unresolved `OPTIONAL` items do not block the merge-ready signal.
+    - After `d`, `o`, or `r`, if unresolved `MUST-FIX`/`DISCUSS` items remain, do not signal merge-ready automatically; re-offer `f`, `f+i`, `f+o`, `d`, `o`, `r`, or `m`. Unresolved `OPTIONAL` items do not block the merge-ready signal.
+    - After inspect-only bare `o`, stop after presenting optional items; do not post a summary checkpoint or make a merge-readiness claim.
+    - Show the deferred-work tracking outcome if one was chosen
+    - Do not auto-merge
 
 Output format for the triage:
 
@@ -1141,4 +1201,5 @@ Quick actions:
   m     — No code changes, prepare one deferred-work bundle for must-fix/discuss/optional/non-trivial skipped items
 
 Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
-````
+
+``````
