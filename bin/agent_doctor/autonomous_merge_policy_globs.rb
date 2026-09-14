@@ -3,6 +3,22 @@
 module AutonomousMergePolicy
   module_function
 
+  # Portable generated-path defaults are additive lockfile globs. Consumers
+  # can add repository-specific generated paths, but they cannot remove these
+  # portable entries from the trusted-base policy surface.
+  PORTABLE_GENERATED_PATHS = %w[
+    **/yarn.lock
+    **/package-lock.json
+    **/npm-shrinkwrap.json
+    **/pnpm-lock.yaml
+    **/Gemfile.lock
+    **/Cargo.lock
+    **/composer.lock
+    **/go.sum
+    **/poetry.lock
+    **/uv.lock
+  ].freeze
+
   def parse_glob_list(value, prefix)
     return [[], []] if value.nil?
     return [[], ["#{prefix} must be a list"]] unless value.is_a?(Array)
@@ -14,6 +30,10 @@ module AutonomousMergePolicy
       pattern if pattern_errors.empty?
     end
     [patterns, errors]
+  end
+
+  def portable_generated_paths
+    PORTABLE_GENERATED_PATHS.dup
   end
 
   # Consumer safe path groups are merged additively onto the portable defaults:

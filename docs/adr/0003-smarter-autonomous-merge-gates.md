@@ -230,9 +230,11 @@ boundaries:
 - 4 distinct head SHAs referenced by submitted reviews, subject to the
   shadow-mode rule below.
 
-All changed files and lines count by default, including lockfiles and generated
-artifacts. Generated-file classification is useful reporting context, not an
-automatic size discount.
+All raw changed files and lines count by default, including lockfiles and
+generated artifacts, for the raw-total backstop. Reviewable size gates discount
+trusted-base generated paths. If a path matches both `generated_paths` and
+`human_review_paths`, the human-review trigger wins and the lines stay
+counted. The raw fail-closed backstop is `max_total_changed_lines`.
 
 All submitted reviews count toward distinct reviewed heads, including reviews
 from configured automation reviewers. This signal measures repeated
@@ -345,6 +347,7 @@ autonomous_merge:
     # Inclusive maxima: the next value triggers human review.
     max_changed_files: 29
     max_changed_lines: 999
+    max_total_changed_lines: 20000
     max_commits: 9
     max_reviewed_heads: 3
 
@@ -371,11 +374,14 @@ autonomous_merge:
         - "<repo-owned runtime-fixture or configuration glob>"
 
   generated_paths:
-    - "<repo-owned reporting-only glob>"
+    - "<repo-owned generated glob>"
 ```
 
 The shared workflow owns the schema and semantic rules. Consumers own only
 their repository-specific values.
+Portable generated_paths defaults ship for lockfiles. Consumer generated_paths
+are added to the portable defaults; a consumer can never remove a portable
+generated default.
 
 When any `max_*` value is more permissive than its portable default, the same
 trusted-base `autonomous_merge` mapping must also contain:
@@ -400,7 +406,7 @@ The mapping is a closed, versioned schema:
   `human_review_paths`, `policy_paths`, `safe_path_groups`, and
   `generated_paths`;
 - `threshold_relaxation` accepts only the `rationale` key;
-- `thresholds` accepts only the four documented `max_*` keys; each value must
+- `thresholds` accepts only the five documented `max_*` keys; each value must
   be a YAML integer greater than or equal to zero, with booleans and numeric
   strings rejected;
 - an omitted threshold key inherits its portable default, while a supplied
@@ -433,7 +439,9 @@ are invalid.
 There is no precedence ambiguity: common hard triggers always apply; the
 effective per-metric threshold is the supplied trusted-base value or its
 portable default; `human_review_paths` and `policy_paths` only add triggers;
-and safe or generated classification never subtracts one.
+safe classifications never subtract hard or policy gates; and generated
+classifications only subtract the reviewable size gates when they do not
+overlap a human-review path.
 
 Portable built-in policy sources are the trusted-base seam, repository agent
 instructions governing merge, the canonical PR-processing workflow, its
@@ -458,7 +466,9 @@ source.
 - Safe path groups are additive: a configured `include` or `exclude` is added to
   the portable set for that group, and no configuration removes a portable
   exclude. A group declaring only `exclude` is valid and tightens that group.
-- `generated_paths` affect reporting only.
+- `generated_paths` discount reviewable size gates while the raw total
+  backstop remains fail-closed; human-review and policy triggers still win
+  overlaps.
 - The current PR is evaluated using trusted-base policy. A PR cannot weaken its
   own gate by modifying the seam, workflow files, agent instructions, or
   supporting helper.
