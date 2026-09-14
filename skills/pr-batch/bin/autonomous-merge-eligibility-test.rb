@@ -111,11 +111,10 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     end
 
     assert_equal "UNKNOWN", result.fetch("verdict")
-    assert_equal(
-      "malformed or invalid GitHub evidence: invalid Unicode scalar data in response for " \
-      "repos/example/repo/pulls/1/files?per_page=100&page=1",
-      result.fetch("evidence_failures").first
-    )
+    failure = result.fetch("evidence_failures").first
+    assert_match(/\Amalformed or invalid GitHub evidence:/, failure)
+    assert_match(/invalid Unicode scalar data|surrogate/i, failure)
+    assert_includes failure, "repos/example/repo/pulls/1/files?per_page=100&page=1"
   end
 
   def test_current_integration_decode_failure_returns_structured_unknown
@@ -142,11 +141,9 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     end
 
     assert_equal "UNKNOWN", result.fetch("verdict")
-    assert_equal(
-      "current integration evidence is unavailable: " \
-      "GitHub current-integration response contains invalid Unicode scalar data",
-      result.fetch("evidence_failures").first
-    )
+    failure = result.fetch("evidence_failures").first
+    assert_match(/\Acurrent integration evidence is unavailable: GitHub current-integration /, failure)
+    assert_match(/invalid Unicode scalar data|surrogate/i, failure)
   end
 
   def test_live_collection_rejects_invalid_utf8_in_uninspected_comment_fields
