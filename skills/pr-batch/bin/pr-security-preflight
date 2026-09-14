@@ -1181,7 +1181,8 @@ end
 def load_trust_config(path:, global:, contents:)
   GithubActorTrust.load(path:, global:, contents:)
 rescue GithubActorTrust::Error => e
-  abort e.message
+  prefix = "Invalid trust config #{path}:"
+  abort(e.message.start_with?(prefix) ? e.message : "#{prefix} #{e.message}")
 end
 
 def bot_login_in_set?(login, trusted_set)
