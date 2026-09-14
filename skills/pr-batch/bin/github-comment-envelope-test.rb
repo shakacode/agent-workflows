@@ -176,7 +176,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
         body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
       )
 
-      assert_includes rendered, "payload_first_line_preserved: false"
+      assert_includes rendered, "payload_first_line_preserved: true"
       assert_equal payload, GitHubCommentEnvelope.payload(rendered)
     end
   end
@@ -201,6 +201,23 @@ class GitHubCommentEnvelopeTest < Minitest::Test
 
     [ordinary.sub("payload_first_line_preserved: false", "payload_first_line_preserved: true"),
      setext.sub("payload_first_line_preserved: true", "payload_first_line_preserved: false")].each do |tampered|
+      assert_nil GitHubCommentEnvelope.parse(tampered)
+      assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
+    end
+  end
+
+  def test_payload_refuses_false_metadata_for_preserved_markdown_blocks
+    [
+      "# Heading\nEvidence follows.\n",
+      "```ruby\nputs :ok\n```\n",
+      "> Quoted context\nEvidence follows.\n",
+      "<details>\n<summary>Evidence</summary>\n\nVisible details.\n</details>\n"
+    ].each do |payload|
+      rendered = GitHubCommentEnvelope.render(
+        body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
+      )
+      tampered = rendered.sub("payload_first_line_preserved: true", "payload_first_line_preserved: false")
+
       assert_nil GitHubCommentEnvelope.parse(tampered)
       assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
     end

@@ -33,9 +33,20 @@ module GitHubCommentEnvelope
     end
     payload = body.sub(/\A[\r\n]+/, "")
     first_line, line_ending, remaining_payload = split_payload(payload)
-    first_line_preserved = preserve_payload_first_line?(first_line, remaining_payload)
-    visible = visible_line(display_runner, first_line, remaining_payload)
+    preserved_first_line = "#{first_line}#{line_ending}"
+    preserved_by_structure = preserve_payload_first_line?(first_line, remaining_payload)
+    first_line_preserved = preserved_by_structure ||
+                           preserved_payload_first_line?(first_line, remaining_payload, preserved_first_line)
     remaining_payload = "#{first_line}#{line_ending}#{remaining_payload}" if first_line_preserved
+    visible = if first_line_preserved && !preserved_by_structure
+                "🤖 #{display_runner}"
+              else
+                visible_line(
+                  display_runner,
+                  first_line,
+                  first_line_preserved ? remaining_payload.delete_prefix(preserved_first_line) : remaining_payload
+                )
+              end
     marker = [
       MARKER,
       "runner: #{runner}",
@@ -110,8 +121,10 @@ module GitHubCommentEnvelope
     if match[:first_line_preserved] == "true"
       return unless preserved_payload_first_line?(payload_first_line, remaining_payload, preserved_first_line)
 
-      return unless visible == visible_line(display_runner, payload_first_line, remaining_payload.delete_prefix(preserved_first_line))
+      return unless visible == "🤖 #{display_runner}"
     elsif match[:first_line_preserved] == "false"
+      return if preserved_payload_first_line?(payload_first_line, remaining_payload, preserved_first_line)
+
       return unless visible == visible_line(display_runner, payload_first_line, remaining_payload)
     else
       return unless visible == visible_line(display_runner, payload_first_line, remaining_payload) ||
@@ -184,8 +197,12 @@ module GitHubCommentEnvelope
   end
 
   def preserved_payload_first_line?(payload_first_line, remaining_payload, preserved_first_line)
-    remaining_payload.start_with?(preserved_first_line) &&
-      preserve_payload_first_line?(payload_first_line, remaining_payload.delete_prefix(preserved_first_line))
+    return false unless remaining_payload.start_with?(preserved_first_line)
+
+    remainder = remaining_payload.delete_prefix(preserved_first_line)
+    preserve_payload_first_line?(payload_first_line, remainder) ||
+      (remainder.start_with?(preserved_first_line) &&
+        preserve_payload_first_line?(payload_first_line, remainder.delete_prefix(preserved_first_line)))
   end
 
   def normalized_value(value, name, pattern: VALUE_PATTERN)
