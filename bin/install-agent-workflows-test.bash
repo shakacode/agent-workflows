@@ -7728,6 +7728,62 @@ test_upgrade_without_consumer_roots_succeeds() {
   assert_not_contains "$output" "unbound variable"
 }
 
+test_upgrade_removes_temporary_snapshot_after_success_and_failure() {
+  local tmp source target consumer backup_root wrap output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  backup_root="$tmp/backups"
+  wrap="$tmp/wrap"
+  mkdir -p "$source" "$consumer" "$backup_root" "$wrap"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  cat > "$wrap/bash-env" <<'BASH_ENV'
+mktemp() {
+  if [[ "$#" -eq 1 && "$1" = "-d" ]]; then
+    command mktemp -d "$BACKUP_TEST_ROOT/snapshot.XXXXXX"
+  else
+    command mktemp "$@"
+  fi
+}
+BASH_ENV
+
+  output="$(BACKUP_TEST_ROOT="$backup_root" BASH_ENV="$wrap/bash-env" \
+    "$source/bin/upgrade-agent-workflows" --target "$target" \
+    --source "$source" --no-fetch 2>&1)"
+  assert_contains "$output" "UPGRADE_COMPLETE"
+  [[ -z "$(find "$backup_root" -mindepth 1 -maxdepth 1 -print -quit)" ]] || \
+    fail "successful upgrade retained a temporary rollback snapshot"
+
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+  set +e
+  output="$(BACKUP_TEST_ROOT="$backup_root" BASH_ENV="$wrap/bash-env" \
+    "$source/bin/upgrade-agent-workflows" --target "$target" \
+    --source "$source" --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected seam validation failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -z "$(find "$backup_root" -mindepth 1 -maxdepth 1 -print -quit)" ]] || \
+    fail "failed upgrade retained a temporary rollback snapshot"
+
+  printf '%s\n' "$target/.agent-workflows-flat-migration-missing" > \
+    "$target/.agent-workflows-migration-staging"
+  set +e
+  output="$(BACKUP_TEST_ROOT="$backup_root" BASH_ENV="$wrap/bash-env" \
+    "$source/bin/upgrade-agent-workflows" --target "$target" \
+    --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 3 ]] || fail "invalid migration receipt exited $status: $output"
+  assert_contains "$output" "CHECK_FAILED invalid migration recovery receipt"
+  [[ -z "$(find "$backup_root" -mindepth 1 -maxdepth 1 -print -quit)" ]] || \
+    fail "receipt validation failure retained a temporary rollback snapshot"
+}
+
 test_upgrade_reports_missing_source_as_check_failed() {
   local tmp target output status
   tmp="$(mktemp -d)"
@@ -7743,13 +7799,18 @@ test_upgrade_reports_missing_source_as_check_failed() {
 }
 
 test_upgrade_rolls_back_when_consumer_seam_fails() {
-  local tmp source target consumer before after output status
+  local tmp source target consumer before after output status wrap real_rsync log
   tmp="$(mktemp -d)"
   source="$tmp/source"
   target="$tmp/codex-home"
   consumer="$tmp/consumer"
-  mkdir -p "$source"
+  wrap="$tmp/wrap"
+  log="$tmp/rsync.log"
+  mkdir -p "$source" "$target/worktrees/large" "$target/tmp/large" "$target/sessions" "$wrap"
   new_source_repo "$source"
+  printf 'user worktree\n' > "$target/worktrees/large/file"
+  printf 'user tmp\n' > "$target/tmp/large/file"
+  printf 'user session\n' > "$target/sessions/file"
 
   "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install-agent-workflows-test.out"
   before="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' "$target/.agent-workflows-install.json")"
@@ -7758,9 +7819,20 @@ test_upgrade_rolls_back_when_consumer_seam_fails() {
   git -C "$source" commit --quiet -m "bump version"
   mkdir -p "$consumer"
   printf '# AGENTS.md\n\n## Commands\n' > "$consumer/AGENTS.md"
+  real_rsync="$(command -v rsync)"
+  cat > "$wrap/bash-env" <<WRAP
+rsync() {
+{
+  printf 'BEGIN\\n'
+  printf '%s\\n' "\$@"
+  printf 'END\\n'
+} >> $(printf '%q' "$log")
+command $(printf '%q' "$real_rsync") "\$@"
+}
+WRAP
 
   set +e
-  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" --consumer-root "$consumer" --no-fetch 2>&1)"
+  output="$(BASH_ENV="$wrap/bash-env" "$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" --consumer-root "$consumer" --no-fetch 2>&1)"
   status=$?
   set -e
 
@@ -7768,6 +7840,342 @@ test_upgrade_rolls_back_when_consumer_seam_fails() {
   assert_contains "$output" "ROLLBACK_COMPLETE"
   after="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' "$target/.agent-workflows-install.json")"
   [[ "$before" == "$after" ]] || fail "expected rollback to $before, got $after"
+  [[ "$(cat "$target/worktrees/large/file")" == "user worktree" ]] || fail "rollback touched user worktree"
+  [[ "$(cat "$target/tmp/large/file")" == "user tmp" ]] || fail "rollback touched user tmp"
+  [[ "$(cat "$target/sessions/file")" == "user session" ]] || fail "rollback touched user session"
+  ruby - "$log" "$target" <<'RUBY' || fail "upgrade rsync copied the whole agent home without a manifest"
+    log, target = ARGV
+    current = []
+    File.foreach(log) do |line|
+      line = line.chomp
+      if line == "BEGIN"
+        current = []
+      elsif line == "END"
+        operands = current.reject { |arg| arg.start_with?("-") }
+        full_home_source = operands[0...-1].any? { |source| [target, "#{target}/"].include?(source) }
+        abort "unbounded full-home rsync: #{current.inspect}" if full_home_source &&
+          !current.any? { |arg| arg.start_with?("--files-from=") }
+      else
+        current << line
+      end
+    end
+RUBY
+}
+
+test_failed_upgrade_removes_new_migration_recovery_artifacts() {
+  local tmp source target real_target consumer wrap output status receipt staging
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/claude-home-link"
+  real_target="$tmp/claude-home"
+  consumer="$tmp/consumer"
+  wrap="$tmp/wrap"
+  mkdir -p "$source" "$real_target" "$consumer" "$wrap"
+  ln -s "$real_target" "$target"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host claude --target "$target" --mode copy >"$tmp/install.out"
+  write_native_scw_state claude "$target"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+  cat > "$wrap/bash-env" <<'BASH_ENV'
+rm() {
+  if [[ "${1:-}" = "-rf" && "${2:-}" == */.agent-workflows-flat-migration-* ]]; then
+    return 1
+  fi
+  command rm "$@"
+}
+BASH_ENV
+
+  set +e
+  output="$(BASH_ENV="$wrap/bash-env" "$source/bin/upgrade-agent-workflows" --host claude \
+    --target "$target" --source "$source" --delivery-mode plugin-companion \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "CLEANUP_PENDING"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  receipt="$target/.agent-workflows-migration-staging"
+  [[ ! -e "$receipt" && ! -L "$receipt" ]] || fail "rollback left a new migration receipt"
+  for staging in "$target"/.agent-workflows-flat-migration-*; do
+    [[ ! -e "$staging" && ! -L "$staging" ]] || fail "rollback left new migration staging: $staging"
+  done
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat" && metadata["mode"] == "copy"
+  ' "$target/.agent-workflows-install.json"
+}
+
+test_failed_upgrade_restores_preexisting_migration_recovery_artifacts() {
+  local tmp source target consumer output status receipt staging
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  receipt="$target/.agent-workflows-migration-staging"
+  staging="$target/.agent-workflows-flat-migration-before-upgrade"
+  mkdir "$staging"
+  mv "$target/skills/pr-batch" "$staging/pr-batch"
+  printf '%s\n' "$staging" > "$receipt"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  assert_file "$receipt"
+  [[ "$(cat "$receipt")" = "$staging" ]] || fail "rollback changed the migration receipt"
+  [[ -d "$staging/pr-batch" ]] || fail "rollback did not restore staged recovery content"
+  [[ ! -e "$target/skills/pr-batch" ]] || fail "rollback did not restore the pending migration layout"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/retry.out"
+  [[ -d "$target/skills/pr-batch" ]] || fail "restored migration state could not recover on retry"
+  [[ ! -e "$receipt" && ! -L "$receipt" ]] || fail "retry did not consume the restored migration receipt"
+  [[ ! -e "$staging" && ! -L "$staging" ]] || fail "retry did not consume the restored migration staging"
+}
+
+test_upgrade_rejects_stale_migration_receipt_without_traceback() {
+  local tmp source target missing_staging output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  missing_staging="$target/.agent-workflows-flat-migration-missing"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  printf '%s\n' "$missing_staging" > "$target/.agent-workflows-migration-staging"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 3 ]] || fail "expected stale migration receipt to exit 3, got $status"
+  assert_contains "$output" "CHECK_FAILED invalid migration recovery receipt"
+  assert_not_contains "$output" "Errno::ENOENT"
+  [[ -f "$target/.agent-workflows-install.json" ]] || fail "stale receipt check mutated the existing install"
+}
+
+test_upgrade_rejects_non_object_metadata_without_traceback() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  printf '[]\n' > "$target/.agent-workflows-install.json"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "expected non-object metadata to exit 65, got $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "TypeError"
+  [[ "$(cat "$target/.agent-workflows-install.json")" = "[]" ]] || fail "corrupt metadata check changed the existing metadata"
+}
+
+test_failed_upgrade_preserves_unverified_new_install_lock() {
+  local tmp source target injection output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/fail-install-lock-cleanup.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  cat > "$injection" <<'RUBY'
+module BoundDirCleanupHook
+  def self.call(path)
+    raise Errno::EIO if path.end_with?(".agent-workflows-install.lock")
+  end
+end
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$source/bin/upgrade-agent-workflows" --host codex \
+    --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING"
+  assert_contains "$output" "ROLLBACK_INSTALL_LOCK_CHANGED"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -d "$target/.agent-workflows-install.lock" ]] || fail "rollback removed an unverified install lock"
+}
+
+test_failed_upgrade_refuses_rollback_through_replaced_target_root() {
+  local tmp source target moved_target outside marker output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  moved_target="$tmp/original-codex-home"
+  outside="$tmp/outside"
+  marker="$outside/marker"
+  mkdir -p "$source" "$outside"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  printf 'outside content\n' > "$marker"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+mv $(printf '%q' "$target") $(printf '%q' "$moved_target")
+ln -s $(printf '%q' "$outside") $(printf '%q' "$target")
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "replaced target root changed original exit 7 to $status: $output"
+  assert_contains "$output" "ROLLBACK_TARGET_CHANGED"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$marker")" = "outside content" ]] || fail "rollback changed content through replaced target root"
+  [[ -z "$(find "$outside" -mindepth 1 ! -path "$marker" -print -quit)" ]] || \
+    fail "rollback wrote managed content through replaced target root"
+  [[ -f "$moved_target/.agent-workflows-install.json" ]] || fail "rollback removed the original target snapshot"
+}
+
+test_upgrade_refuses_preexisting_install_lock_before_snapshot() {
+  local tmp source target lock output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  lock="$target/.agent-workflows-install.lock"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  mkdir "$lock"
+  printf 'live transaction\n' > "$lock/marker"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 3 ]] || fail "expected existing install lock to exit 3, got $status"
+  assert_contains "$output" "CHECK_FAILED existing install lock"
+  [[ "$(cat "$lock/marker")" = "live transaction" ]] || fail "upgrade changed a pre-existing install lock"
+}
+
+test_failed_upgrade_preserves_install_lock_acquired_after_snapshot() {
+  local tmp source target lock wrap real_rsync output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  lock="$target/.agent-workflows-install.lock"
+  wrap="$tmp/bash-env"
+  real_rsync="$(command -v rsync)"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  cat > "$wrap" <<'BASH_ENV'
+rsync() {
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == --files-from=* && ! -e "$QA_TARGET/.agent-workflows-install.lock" ]]; then
+      mkdir "$QA_TARGET/.agent-workflows-install.lock"
+      printf 'other installer active\n' > "$QA_TARGET/.agent-workflows-install.lock/owner"
+    fi
+  done
+  command "$QA_REAL_RSYNC" "$@"
+}
+BASH_ENV
+
+  set +e
+  output="$(QA_TARGET="$target" QA_REAL_RSYNC="$real_rsync" BASH_ENV="$wrap" \
+    "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "concurrent install lock unexpectedly allowed upgrade"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$lock/owner")" = "other installer active" ]] || fail "rollback removed or changed another installer's lock"
+}
+
+test_failed_upgrade_replaces_unexpected_container_symlink_without_following_it() {
+  local tmp source target external marker output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external="$tmp/external-bin"
+  marker="$external/marker"
+  mkdir -p "$source" "$external"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  printf 'external content\n' > "$marker"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+rm -rf $(printf '%q' "$target/bin")
+ln -s $(printf '%q' "$external") $(printf '%q' "$target/bin")
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "expected upgrade failure 7, got $status"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -d "$target/bin" && ! -L "$target/bin" ]] || fail "rollback retained a replaced bin symlink"
+  [[ "$(cat "$marker")" = "external content" ]] || fail "rollback followed a replaced bin symlink"
+}
+
+test_failed_upgrade_replaces_managed_directory_symlink_without_following_it() {
+  local tmp source target external marker output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external="$tmp/external-skill"
+  marker="$external/marker"
+  mkdir -p "$source" "$external"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  printf 'external content\n' > "$marker"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+rm -rf $(printf '%q' "$target/skills/pr-batch")
+ln -s $(printf '%q' "$external") $(printf '%q' "$target/skills/pr-batch")
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "managed directory symlink changed original exit 7 to $status: $output"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -d "$target/skills/pr-batch" && ! -L "$target/skills/pr-batch" ]] || \
+    fail "rollback retained a replacement managed directory symlink"
+  [[ "$(cat "$marker")" = "external content" ]] || fail "rollback followed a replacement managed directory symlink"
 }
 
 test_failed_upgrade_restores_companion_delivery_mode_and_layout() {
@@ -7799,6 +8207,1198 @@ test_failed_upgrade_restores_companion_delivery_mode_and_layout() {
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
     abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
   ' "$target/.agent-workflows-install.json"
+}
+
+test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills() {
+  local tmp source target consumer output exit_code
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion >"$tmp/install.out"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode flat --consumer-root "$consumer" --no-fetch 2>&1)"
+  exit_code=$?
+  set -e
+
+  [[ "$exit_code" -ne 0 ]] || fail "expected flat upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ ! -e "$target/skills/pr-batch" ]] || fail "rollback left a new flat skill beside companion metadata"
+}
+
+test_companion_to_flat_upgrade_preserves_unowned_same_named_skill() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion >"$tmp/install.out"
+  printf '[plugins."scw@agent-workflows"]\nenabled = false\n' > "$target/config.toml"
+  mkdir -p "$target/skills/pr-batch"
+  printf 'user-owned replacement\n' > "$target/skills/pr-batch/SKILL.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode flat --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "companion-to-flat upgrade replaced an unowned same-named skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  grep -q 'user-owned replacement' "$target/skills/pr-batch/SKILL.md" || \
+    fail "companion-to-flat rollback did not preserve the unowned same-named skill"
+}
+
+test_failed_upgrade_restores_nested_skill_files() {
+  local tmp source target nested_file before output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  nested_file="$target/skills/address-review/references/intake.md"
+  before="$(cat "$nested_file")"
+  printf '\nchanged upstream\n' >> "$source/skills/address-review/references/intake.md"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION skills/address-review/references/intake.md
+  git -C "$source" commit --quiet -m "change nested skill file"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+"$(dirname "$0")/install-agent-workflows-real" "$@"
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -f "$nested_file" ]] || fail "rollback removed a nested skill file"
+  [[ "$(cat "$nested_file")" = "$before" ]] || fail "rollback did not restore a nested skill file"
+}
+
+test_failed_companion_upgrade_preserves_consumer_owned_lib_sibling() {
+  local tmp source target sibling output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion >"$tmp/install.out"
+  sibling="$target/lib/agent-workflows/consumer_owned.rb"
+  printf 'before upgrade\n' > "$sibling"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+printf 'changed during upgrade\\n' > $(printf '%q' "$sibling")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode plugin-companion --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected companion upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$sibling")" = "changed during upgrade" ]] || \
+    fail "rollback reverted a consumer-owned companion library file"
+}
+
+test_failed_flat_upgrade_preserves_consumer_owned_lib_symlink() {
+  local tmp source target external_lib scanner output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external_lib="$tmp/external-lib"
+  scanner="$external_lib/agent-workflows/secure_github_actions_scanner.rb"
+  mkdir -p "$source" "$target" "$(dirname "$scanner")"
+  new_source_repo "$source"
+  ln -s "$external_lib" "$target/lib"
+  printf 'consumer scanner before upgrade\n' > "$scanner"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+printf 'consumer scanner changed during upgrade\n' > $(printf '%q' "$scanner")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode flat --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected flat upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/lib" && "$(readlink "$target/lib")" = "$external_lib" ]] || \
+    fail "rollback changed the consumer-owned lib symlink"
+  [[ "$(cat "$scanner")" = "consumer scanner changed during upgrade" ]] || \
+    fail "rollback reverted a consumer-owned scanner during a flat upgrade"
+}
+
+test_failed_companion_upgrade_preserves_replaced_consumer_lib_symlink() {
+  local tmp source target first_lib second_lib first_scanner output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  first_lib="$tmp/first-lib"
+  second_lib="$tmp/second-lib"
+  first_scanner="$first_lib/agent-workflows/secure_github_actions_scanner.rb"
+  mkdir -p "$source" "$(dirname "$first_scanner")" "$second_lib"
+  printf 'consumer scanner\n' > "$first_scanner"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion >"$tmp/install.out"
+  rm -rf "${target:?}/lib"
+  ln -s "$first_lib" "$target/lib"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+rm -f $(printf '%q' "$target/lib")
+ln -s $(printf '%q' "$second_lib") $(printf '%q' "$target/lib")
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode plugin-companion --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected companion upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/lib" && "$(readlink "$target/lib")" = "$second_lib" ]] || \
+    fail "rollback restored a rejected consumer-owned lib symlink"
+  [[ "$(cat "$first_scanner")" = "consumer scanner" ]] || \
+    fail "rollback changed a scanner through the consumer-owned lib symlink"
+}
+
+test_failed_upgrade_ignores_recorded_hidden_workflows() {
+  local tmp source target hidden output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  printf 'tracked but never installed\n' > "$source/workflows/.prior-hidden"
+  git -C "$source" add workflows/.prior-hidden
+  git -C "$source" commit --quiet -m "add hidden workflow"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  hidden="$target/workflows/.prior-hidden"
+  printf 'consumer before upgrade\n' > "$hidden"
+  git -C "$source" rm --quiet workflows/.prior-hidden
+  git -C "$source" commit --quiet -m "remove hidden workflow"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'consumer changed during upgrade\n' > $(printf '%q' "$hidden")
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$hidden")" = "consumer changed during upgrade" ]] || \
+    fail "rollback restored a hidden workflow the installer never managed"
+}
+
+test_failed_flat_upgrade_removes_new_symlinked_skill() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  ln -s address-review "$source/skills/alias-skill"
+  git -C "$source" add skills/alias-skill
+  git -C "$source" commit --quiet -m "add symlinked skill"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+"$(dirname "$0")/install-agent-workflows-real" "$@"
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ ! -e "$target/skills/alias-skill" && ! -L "$target/skills/alias-skill" ]] || \
+    fail "rollback retained a newly installed symlinked skill"
+}
+
+test_failed_symlink_upgrade_ignores_non_directory_skill() {
+  local tmp source target consumer_file output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  printf 'source scratch file\n' > "$source/skills/local-note"
+  git -C "$source" add skills/local-note
+  git -C "$source" commit --quiet -m "add non-directory skill entry"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+  consumer_file="$target/skills/local-note"
+  printf 'consumer before upgrade\n' > "$consumer_file"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+printf 'consumer changed during upgrade\n' > $(printf '%q' "$consumer_file")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --mode symlink --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$consumer_file")" = "consumer changed during upgrade" ]] || \
+    fail "rollback treated a non-directory symlink-mode skill as managed"
+}
+
+test_failed_symlink_upgrade_restores_recorded_symlinked_skill() {
+  local tmp source target expected output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  ln -s address-review "$source/skills/alias-target"
+  ln -s alias-target "$source/skills/alias-skill"
+  git -C "$source" add skills/alias-skill skills/alias-target
+  git -C "$source" commit --quiet -m "add chained symlinked skill"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+  expected="$(readlink "$target/skills/alias-skill")"
+  git -C "$source" rm --quiet skills/alias-skill
+  git -C "$source" commit --quiet -m "remove symlinked skill"
+  [[ ! -e "$source/skills/alias-skill" && ! -L "$source/skills/alias-skill" ]] || \
+    fail "test setup retained the recorded-only symlinked skill"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+rm -f $(printf '%q' "$target/skills/alias-skill")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --mode symlink --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/skills/alias-skill" && "$(readlink "$target/skills/alias-skill")" = "$expected" ]] || \
+    fail "rollback did not restore a recorded chained symlink-to-directory skill"
+}
+
+test_failed_companion_upgrade_restores_recorded_absolute_symlinked_skill() {
+  local tmp source target external expected output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external="$tmp/external-skill"
+  mkdir -p "$source" "$external"
+  printf '%s\n' '---' 'name: external-skill' 'description: fixture' '---' > "$external/SKILL.md"
+  new_source_repo "$source"
+  ln -s "$external" "$source/skills/absolute-alias"
+  git -C "$source" add skills/absolute-alias
+  git -C "$source" commit --quiet -m "add absolute symlinked skill"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    --delivery-mode flat >"$tmp/install.out"
+  expected="$(readlink "$target/skills/absolute-alias")"
+  write_native_scw_state codex "$target"
+  git -C "$source" rm --quiet skills/absolute-alias
+  git -C "$source" commit --quiet -m "remove absolute symlinked skill"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+"$(dirname "$0")/install-agent-workflows-real" "$@"
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --mode symlink --delivery-mode plugin-companion --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "expected companion upgrade failure 7, got $status"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/skills/absolute-alias" && "$(readlink "$target/skills/absolute-alias")" = "$expected" ]] || \
+    fail "rollback did not restore a recorded absolute-target symlinked skill"
+}
+
+test_failed_upgrade_ignores_directory_fingerprint_keys() {
+  local tmp source target consumer_file output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  consumer_file="$target/docs/solutions/consumer.md"
+  printf 'consumer before upgrade\n' > "$consumer_file"
+  ruby -rjson -e '
+    path = ARGV.fetch(0)
+    metadata = JSON.parse(File.binread(path))
+    metadata.fetch("managed_pack_doc_copy_fingerprints")["solutions"] = "syntactically-valid"
+    File.write(path, JSON.pretty_generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'consumer changed during upgrade\n' > $(printf '%q' "$consumer_file")
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$consumer_file")" = "consumer changed during upgrade" ]] || \
+    fail "rollback treated a directory fingerprint as an installer-owned file"
+}
+
+test_failed_upgrade_ignores_hidden_skill_fingerprint_keys() {
+  local tmp source target consumer_file output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/.consumer"
+  printf 'source-only hidden skill\n' > "$source/skills/.consumer/SKILL.md"
+  bash -O dotglob "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    >"$tmp/install.out"
+  [[ ! -e "$target/skills/.consumer" ]] || fail "installer copied a hidden source skill with inherited dotglob"
+  ruby -rjson -e '
+    path = ARGV.fetch(0)
+    metadata = JSON.parse(File.binread(path))
+    fingerprints = metadata.fetch("managed_skill_copy_fingerprints")
+    abort metadata.inspect if fingerprints.key?(".consumer")
+    fingerprints[".consumer"] = fingerprints.values.fetch(0)
+    File.write(path, JSON.pretty_generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json"
+  consumer_file="$target/skills/.consumer/SKILL.md"
+  mkdir -p "$(dirname "$consumer_file")"
+  printf 'consumer before upgrade\n' > "$consumer_file"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'consumer changed during upgrade\n' > $(printf '%q' "$consumer_file")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$consumer_file")" = "consumer changed during upgrade" ]] || \
+    fail "rollback treated a hidden skill fingerprint as installer-owned"
+}
+
+test_failed_upgrade_preserves_new_stack_doctor_marker() {
+  local tmp source target consumer marker output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  marker="$target/bin/agent_doctor/.agent-stack-managed"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+printf 'agent-stack-module-v1:agent_doctor\n' > $(printf '%q' "$marker")
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$marker")" = "agent-stack-module-v1:agent_doctor" ]] || \
+    fail "rollback removed the stack-owned doctor marker"
+}
+
+test_failed_upgrade_removes_new_empty_container_directories() {
+  local tmp source target consumer output status path
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/cursor-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$target/sessions" "$consumer"
+  new_source_repo "$source"
+  printf 'consumer session\n' > "$target/sessions/state"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host cursor --target "$target" --source "$source" \
+    --mode copy --delivery-mode flat --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  for path in bin docs docs/schemas docs/solutions rules skills workflows; do
+    [[ ! -e "$target/$path" && ! -L "$target/$path" ]] || fail "rollback left new container directory: $path"
+  done
+  [[ "$(cat "$target/sessions/state")" = "consumer session" ]] || fail "rollback touched unrelated target content"
+}
+
+test_upgrade_snapshot_managed_lists_match_installer() {
+  ruby -e '
+    installer, upgrade = ARGV.map { |path| File.read(path) }
+    {
+      "bin_helpers" => [/^bin_helpers=\(\n(?<body>.*?)^\)\n/m, /^      bin_helpers = %w\[\n(?<body>.*?)^      \]\n/m],
+      "pack_docs" => [/^pack_docs=\(\n(?<body>.*?)^\)\n/m, /^      pack_docs = %w\[\n(?<body>.*?)^      \]\n/m]
+    }.each do |name, patterns|
+      lists = [installer, upgrade].zip(patterns).map do |text, pattern|
+        match = text.match(pattern) or abort "missing #{name} inventory"
+        match[:body].lines.map(&:strip).reject(&:empty?)
+      end
+      abort "#{name} inventories differ" unless lists[0] == lists[1]
+    end
+  ' "$ROOT/bin/install-agent-workflows" "$ROOT/bin/upgrade-agent-workflows"
+}
+
+test_failed_upgrade_preserves_consumer_owned_workflow() {
+  local tmp source target workflow output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  workflow="$target/workflows/consumer-owned.md"
+  printf 'before upgrade\n' > "$workflow"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+printf 'changed during upgrade\\n' > $(printf '%q' "$workflow")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$workflow")" = "changed during upgrade" ]] || \
+    fail "rollback reverted a consumer-owned workflow"
+}
+
+test_failed_upgrade_preserves_consumer_owned_legacy_guide() {
+  local tmp source target guide output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  guide="$target/docs/model-routing.md"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  printf 'consumer-owned before upgrade\n' > "$guide"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+printf 'consumer-owned edit during upgrade\n' > $(printf '%q' "$guide")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$guide")" = "consumer-owned edit during upgrade" ]] || \
+    fail "rollback reverted a consumer-owned legacy guide"
+}
+
+test_failed_upgrade_restores_installer_owned_legacy_guide() {
+  local tmp source target guide legacy_revision output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  guide="$target/docs/model-routing.md"
+  mkdir -p "$source"
+  legacy_revision="$(new_source_repo_with_legacy_model_routing_history "$source")"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  git -C "$source" show "$legacy_revision:docs/model-routing.md" > "$guide"
+  ruby -rjson -e '
+    path, revision = ARGV
+    metadata = JSON.parse(File.binread(path))
+    metadata["source_revision"] = revision
+    File.write(path, JSON.generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json" "$legacy_revision"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+"$(dirname "$0")/install-agent-workflows-real" "$@"
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  cmp -s "$guide" <(git -C "$source" show "$legacy_revision:docs/model-routing.md") || \
+    fail "rollback did not restore an installer-owned legacy guide"
+}
+
+test_upgrade_snapshot_ignores_unmanaged_metadata_root() {
+  local tmp source target consumer wrap real_rsync marker output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  wrap="$tmp/wrap"
+  marker="$tmp/unmanaged-root-snapshotted"
+  mkdir -p "$source" "$consumer" "$wrap"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  mkdir -p "$target/sessions"
+  printf 'consumer session\n' > "$target/sessions/state"
+  ruby -rjson -e '
+    path = ARGV.fetch(0)
+    metadata = JSON.parse(File.read(path))
+    metadata.fetch("managed_pack_root_copy_fingerprints")["sessions"] = "a" * 64
+    File.write(path, JSON.pretty_generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+  real_rsync="$(command -v rsync)"
+  cat > "$wrap/bash-env" <<WRAP
+rsync() {
+  for arg in "\$@"; do
+    case "\$arg" in
+      --files-from=*)
+        if tr '\\0' '\\n' < "\${arg#--files-from=}" | grep -Fx 'sessions/' >/dev/null; then
+          touch $(printf '%q' "$marker")
+        fi
+        ;;
+    esac
+  done
+  command $(printf '%q' "$real_rsync") "\$@"
+}
+WRAP
+
+  set +e
+  output="$(BASH_ENV="$wrap/bash-env" "$source/bin/upgrade-agent-workflows" --host codex --target "$target" \
+    --source "$source" --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ ! -e "$marker" ]] || fail "snapshot trusted an unmanaged metadata root"
+  [[ "$(cat "$target/sessions/state")" = "consumer session" ]] || fail "rollback touched an unmanaged session"
+}
+
+test_failed_symlink_upgrade_removes_new_workflows_root_before_children() {
+  local tmp source target consumer source_workflow output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$target" "$consumer"
+  new_source_repo "$source"
+  source_workflow="$source/workflows/pr-batch-intake.md"
+  [[ -f "$source_workflow" ]] || fail "missing source workflow fixture"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --mode symlink --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected symlink upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -f "$source_workflow" ]] || fail "rollback deleted a source workflow through the new root symlink"
+  [[ ! -e "$target/workflows" && ! -L "$target/workflows" ]] || fail "rollback left a newly created workflows root"
+}
+
+test_failed_repeat_symlink_upgrade_does_not_replace_source_workflows() {
+  local tmp source target consumer source_workflow inode_before inode_after output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+  source_workflow="$source/workflows/pr-batch-intake.md"
+  inode_before="$(ruby -e 'print File.stat(ARGV.fetch(0)).ino' "$source_workflow")"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected repeat symlink upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  inode_after="$(ruby -e 'print File.stat(ARGV.fetch(0)).ino' "$source_workflow")"
+  [[ "$inode_after" = "$inode_before" ]] || fail "rollback replaced a workflow in the source checkout"
+}
+
+test_failed_flat_upgrade_restores_skill_removed_from_new_source() {
+  local tmp source target consumer output exit_code
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+  [[ -L "$target/skills/pr-batch" ]] || fail "expected initial flat skill link"
+  rm -rf "$source/skills/pr-batch"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add -A
+  git -C "$source" commit --quiet -m "remove pr-batch"
+  write_native_scw_state codex "$target"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode plugin-companion --consumer-root "$consumer" --no-fetch 2>&1)"
+  exit_code=$?
+  set -e
+
+  [[ "$exit_code" -ne 0 ]] || fail "expected companion upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/skills/pr-batch" ]] || fail "rollback did not restore the removed flat skill"
+}
+
+test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion() {
+  local tmp source target consumer output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    >"$tmp/install.out"
+  [[ -L "$target/skills/pr-batch" ]] || fail "expected initial flat skill symlink"
+  write_native_scw_state codex "$target"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode plugin-companion --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected companion upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/skills/pr-batch" ]] || fail "rollback did not restore flat skill links"
+  [[ "$(readlink "$target/skills/pr-batch")" = "$source/skills/pr-batch" ]] || \
+    fail "rollback restored flat skill link to the wrong source"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat" && metadata["mode"] == "symlink"
+  ' "$target/.agent-workflows-install.json"
+}
+
+test_failed_companion_upgrade_restores_legacy_flat_skills_without_delivery_mode() {
+  local tmp source target consumer output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  ruby -rjson -e '
+    path = ARGV.fetch(0)
+    metadata = JSON.parse(File.read(path))
+    metadata.delete("delivery_mode")
+    metadata.delete("managed_skill_copy_fingerprints")
+    File.write(path, JSON.pretty_generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json"
+  write_native_scw_state codex "$target"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode plugin-companion --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected legacy flat-to-companion upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -f "$target/skills/pr-batch/SKILL.md" ]] || fail "rollback did not restore a legacy flat skill"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect if metadata.key?("delivery_mode")
+  ' "$target/.agent-workflows-install.json"
+}
+
+test_flat_skill_snapshot_manifest_excludes_dot_entries() {
+  local tmp source target consumer wrap real_rsync manifest_log output exit_code
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  wrap="$tmp/wrap"
+  manifest_log="$tmp/managed-paths.log"
+  mkdir -p "$source" "$consumer" "$wrap"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  mkdir -p "$source/skills/.scratch" "$source/workflows/.scratch" \
+    "$target/skills/.scratch" "$target/workflows/.scratch" "$target/docs/solutions"
+  printf 'source-only hidden skill\n' > "$source/skills/.scratch/SKILL.md"
+  printf 'source-only hidden workflow\n' > "$source/workflows/.scratch/state"
+  printf 'source-only hidden solution\n' > "$source/docs/solutions/.scratch.md"
+  printf 'consumer hidden skill\n' > "$target/skills/.scratch/SKILL.md"
+  printf 'consumer hidden workflow\n' > "$target/workflows/.scratch/state"
+  printf 'consumer hidden solution\n' > "$target/docs/solutions/.scratch.md"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+  real_rsync="$(command -v rsync)"
+  cat > "$wrap/bash-env" <<WRAP
+rsync() {
+  for arg in "\$@"; do
+    case "\$arg" in
+      --files-from=*)
+        tr '\\0' '\\n' < "\${arg#--files-from=}" >> $(printf '%q' "$manifest_log")
+        ;;
+    esac
+  done
+  command $(printf '%q' "$real_rsync") "\$@"
+}
+WRAP
+
+  set +e
+  output="$(BASH_ENV="$wrap/bash-env" "$source/bin/upgrade-agent-workflows" --host codex --target "$target" \
+    --source "$source" --consumer-root "$consumer" --no-fetch 2>&1)"
+  exit_code=$?
+  set -e
+
+  [[ "$exit_code" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  assert_not_contains "$(cat "$manifest_log")" "skills/."
+  assert_not_contains "$(cat "$manifest_log")" "skills/.."
+  assert_not_contains "$(cat "$manifest_log")" "workflows/.scratch"
+  assert_not_contains "$(cat "$manifest_log")" "docs/solutions/.scratch.md"
+}
+
+test_failed_upgrade_reports_incomplete_rollback_and_preserves_original_status() {
+  local tmp source target wrap output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  wrap="$tmp/wrap"
+  mkdir -p "$source" "$wrap"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+"$(dirname "$0")/install-agent-workflows-real" "$@"
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+  cat > "$wrap/bash-env" <<'BASH_ENV'
+cp() {
+  if [[ "${1:-}" = "-a" && "${2:-}" == */target/LICENSE ]]; then
+    return 1
+  fi
+  command cp "$@"
+}
+BASH_ENV
+
+  set +e
+  output="$(BASH_ENV="$wrap/bash-env" "$source/bin/upgrade-agent-workflows" --host codex \
+    --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "rollback replaced original exit 7 with $status: $output"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+}
+
+test_failed_upgrade_rejects_source_inventory_change_after_snapshot() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+printf '\n# changed after rollback snapshot\n' >> "$root/bin/install-agent-workflows"
+"$root/bin/install-agent-workflows-real" "$@"
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" \
+    --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "source race replaced original exit 7 with $status: $output"
+  assert_contains "$output" "ROLLBACK_SOURCE_CHANGED"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+}
+
+test_failed_upgrade_rejects_managed_source_content_change_after_snapshot() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+"$root/bin/install-agent-workflows-real" "$@"
+printf '\n# changed after rollback snapshot\n' >> "$root/bin/agent-workflows-status"
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" \
+    --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "source content race replaced original exit 7 with $status: $output"
+  assert_contains "$output" "ROLLBACK_SOURCE_CHANGED"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+}
+
+test_failed_upgrade_rejects_new_recovery_artifacts() {
+  local tmp source target output status residue
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  residue="$target/.agent-workflows-install.json.recovery-review-fixture"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+mkdir $(printf '%q' "$residue")
+printf 'preserved recovery evidence\n' > $(printf '%q' "$residue/metadata")
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" \
+    --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "recovery residue replaced original exit 7 with $status: $output"
+  assert_contains "$output" "ROLLBACK_RECOVERY_ARTIFACTS_CHANGED"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+  assert_file "$residue/metadata"
+}
+
+test_failed_upgrade_restores_preexisting_recovery_artifacts() {
+  local tmp source target quarantine receipt outside output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  quarantine="$target/.agent-workflows-install.json.recovery-review-fixture"
+  receipt="$target/.agent-workflows-install.json.cleanup-complete-review-fixture"
+  outside="$tmp/outside"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  mkdir "$quarantine"
+  printf 'original recovery evidence\n' > "$quarantine/metadata"
+  printf 'original cleanup receipt\n' > "$receipt"
+  mkdir "$outside"
+  printf 'outside sentinel\n' > "$outside/sentinel"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+rm -rf $(printf '%q' "$quarantine")
+ln -s $(printf '%q' "$outside") $(printf '%q' "$quarantine")
+printf 'changed cleanup receipt\n' > $(printf '%q' "$receipt")
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" \
+    --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "recovery artifact restore replaced original exit 7 with $status: $output"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$quarantine/metadata")" = "original recovery evidence" ]] || \
+    fail "rollback did not restore pre-existing recovery evidence"
+  [[ "$(cat "$receipt")" = "original cleanup receipt" ]] || \
+    fail "rollback did not restore pre-existing cleanup receipt"
+  [[ ! -L "$quarantine" ]] || fail "rollback retained a replacement recovery symlink"
+  [[ "$(cat "$outside/sentinel")" = "outside sentinel" ]] || \
+    fail "rollback modified content through a replacement recovery symlink"
+}
+
+test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants() {
+  local tmp source next_source target consumer external_bin output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  next_source="$tmp/next-source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  external_bin="$tmp/external-bin"
+  mkdir -p "$source" "$consumer" "$external_bin"
+  mkdir -p "$target"
+  ln -s "$external_bin" "$target/bin"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    >"$tmp/install.out"
+  [[ -L "$target/bin" ]] || fail "expected initial bin root symlink"
+  git clone --quiet "$source" "$next_source"
+  printf '0.1.1\n' > "$next_source/VERSION"
+  git -C "$next_source" add VERSION
+  git -C "$next_source" -c user.name="Test" -c user.email="test@example.com" \
+    commit --quiet -m "bump version"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$next_source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$next_source" \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/bin" ]] || fail "rollback did not restore the bin root symlink"
+  [[ "$(readlink "$target/bin")" = "$external_bin" ]] || fail "rollback changed the bin root target"
+  [[ -L "$external_bin/agent-workflows-status" ]] || fail "rollback lost a bin helper"
+  [[ "$(readlink "$external_bin/agent-workflows-status")" = "$source/bin/agent-workflows-status" ]] || \
+    fail "rollback did not restore the helper link behind the bin root"
+}
+
+test_failed_copy_upgrade_does_not_restore_through_symlinked_bin_root() {
+  local tmp source target external_bin helper output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external_bin="$tmp/external-bin"
+  helper="$external_bin/agent-workflows-status"
+  mkdir -p "$source" "$target" "$external_bin"
+  ln -s "$external_bin" "$target/bin"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+  [[ -L "$helper" ]] || fail "expected initial helper link behind bin root"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+rm -f $(printf '%q' "$helper")
+printf 'external edit during upgrade\n' > $(printf '%q' "$helper")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --mode copy --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected copy-mode upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/bin" && "$(readlink "$target/bin")" = "$external_bin" ]] || \
+    fail "rollback did not restore the bin root symlink"
+  [[ ! -L "$helper" && "$(cat "$helper")" = "external edit during upgrade" ]] || \
+    fail "rollback changed external bin content that copy mode did not touch"
+}
+
+test_failed_copy_upgrade_does_not_restore_through_symlinked_skills_root() {
+  local tmp source target external_skills skill output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external_skills="$tmp/external-skills"
+  skill="$external_skills/pr-batch"
+  mkdir -p "$source" "$target" "$external_skills"
+  ln -s "$external_skills" "$target/skills"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+  [[ -L "$skill" ]] || fail "expected initial skill link behind skills root"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+rm -f $(printf '%q' "$skill")
+mkdir $(printf '%q' "$skill")
+printf 'external edit during upgrade\n' > $(printf '%q' "$skill/SKILL.md")
+exit 1
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --mode copy --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected copy-mode upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/skills" && "$(readlink "$target/skills")" = "$external_skills" ]] || \
+    fail "rollback did not restore the skills root symlink"
+  [[ ! -L "$skill" && "$(cat "$skill/SKILL.md")" = "external edit during upgrade" ]] || \
+    fail "rollback changed external skills content that copy mode did not touch"
+}
+
+test_failed_upgrade_restores_flat_skill_symlinks_after_copy_mode_switch() {
+  local tmp source target consumer output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    >"$tmp/install.out"
+  [[ -L "$target/skills/pr-batch" ]] || fail "expected initial flat skill symlink"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --mode copy --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected copy-mode upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -L "$target/skills/pr-batch" ]] || fail "rollback did not restore the flat skill symlink"
+  [[ "$(readlink "$target/skills/pr-batch")" = "$source/skills/pr-batch" ]] || \
+    fail "rollback restored flat skill link to the wrong source"
 }
 
 test_upgrade_validates_consumer_root_after_install() {
@@ -8858,9 +10458,55 @@ main() {
     test_upgrade_can_select_and_then_replay_companion_delivery_mode
     test_upgrade_dry_run_checks_requested_delivery_mode
     test_upgrade_without_consumer_roots_succeeds
+    test_upgrade_removes_temporary_snapshot_after_success_and_failure
     test_upgrade_reports_missing_source_as_check_failed
     test_upgrade_rolls_back_when_consumer_seam_fails
+    test_failed_upgrade_removes_new_migration_recovery_artifacts
+    test_failed_upgrade_restores_preexisting_migration_recovery_artifacts
+    test_upgrade_rejects_stale_migration_receipt_without_traceback
+    test_upgrade_rejects_non_object_metadata_without_traceback
+    test_failed_upgrade_preserves_unverified_new_install_lock
+    test_failed_upgrade_refuses_rollback_through_replaced_target_root
+    test_upgrade_refuses_preexisting_install_lock_before_snapshot
+    test_failed_upgrade_preserves_install_lock_acquired_after_snapshot
+    test_failed_upgrade_replaces_unexpected_container_symlink_without_following_it
+    test_failed_upgrade_replaces_managed_directory_symlink_without_following_it
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
+    test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills
+    test_companion_to_flat_upgrade_preserves_unowned_same_named_skill
+    test_failed_upgrade_restores_nested_skill_files
+    test_failed_companion_upgrade_preserves_consumer_owned_lib_sibling
+    test_failed_flat_upgrade_preserves_consumer_owned_lib_symlink
+    test_failed_companion_upgrade_preserves_replaced_consumer_lib_symlink
+    test_failed_upgrade_ignores_recorded_hidden_workflows
+    test_failed_flat_upgrade_removes_new_symlinked_skill
+    test_failed_symlink_upgrade_ignores_non_directory_skill
+    test_failed_symlink_upgrade_restores_recorded_symlinked_skill
+    test_failed_companion_upgrade_restores_recorded_absolute_symlinked_skill
+    test_failed_upgrade_ignores_directory_fingerprint_keys
+    test_failed_upgrade_ignores_hidden_skill_fingerprint_keys
+    test_failed_upgrade_preserves_new_stack_doctor_marker
+    test_failed_upgrade_removes_new_empty_container_directories
+    test_upgrade_snapshot_managed_lists_match_installer
+    test_failed_upgrade_preserves_consumer_owned_workflow
+    test_failed_upgrade_preserves_consumer_owned_legacy_guide
+    test_failed_upgrade_restores_installer_owned_legacy_guide
+    test_upgrade_snapshot_ignores_unmanaged_metadata_root
+    test_failed_symlink_upgrade_removes_new_workflows_root_before_children
+    test_failed_repeat_symlink_upgrade_does_not_replace_source_workflows
+    test_failed_flat_upgrade_restores_skill_removed_from_new_source
+    test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion
+    test_failed_companion_upgrade_restores_legacy_flat_skills_without_delivery_mode
+    test_flat_skill_snapshot_manifest_excludes_dot_entries
+    test_failed_upgrade_reports_incomplete_rollback_and_preserves_original_status
+    test_failed_upgrade_rejects_source_inventory_change_after_snapshot
+    test_failed_upgrade_rejects_managed_source_content_change_after_snapshot
+    test_failed_upgrade_rejects_new_recovery_artifacts
+    test_failed_upgrade_restores_preexisting_recovery_artifacts
+    test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants
+    test_failed_copy_upgrade_does_not_restore_through_symlinked_bin_root
+    test_failed_copy_upgrade_does_not_restore_through_symlinked_skills_root
+    test_failed_upgrade_restores_flat_skill_symlinks_after_copy_mode_switch
     test_upgrade_validates_consumer_root_after_install
   )
 
