@@ -82,6 +82,7 @@ module MergeAssurance
     decision-library
     comment-envelope-library
     evidence-library
+    github-json-string-validation-library
     integration-evidence-library
     policy-library
     policy-glob-library
