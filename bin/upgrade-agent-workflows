@@ -424,6 +424,7 @@ backup_target() {
       rescue StandardError
         {}
       end
+      metadata = {} unless metadata.is_a?(Hash)
       lib_root = File.join(target, "lib")
       companion_root = File.join(lib_root, "agent-workflows")
       companion_root_active = [lib_root, companion_root].all? do |root|
@@ -517,7 +518,7 @@ backup_target() {
           managed << "skills/#{File.basename(path) }" if mode == "copy" || File.directory?(path)
         end
       end
-      if metadata["delivery_mode"] == "flat"
+      if metadata.fetch("delivery_mode", "flat") == "flat"
         git_root = roots.find do |root|
           File.directory?(root) && revision.to_s.match?(/\A[0-9a-f]{40}\z/i) &&
             system("git", "-C", root, "cat-file", "-e", "#{revision}:skills", out: File::NULL, err: File::NULL)
@@ -719,6 +720,7 @@ restore_target() {
       cp -a "$backup_target_dir/$path" "$target/$path"
     done < "$backup_symlink_manifest"
     while IFS= read -r -d '' path; do
+      path="${path%/}"
       path_is_within_snapshot_symlink_root "$path" && continue
       if ! restore_path_parent_is_safe "$path"; then
         rollback_complete=false

@@ -7908,6 +7908,27 @@ test_upgrade_rejects_stale_migration_receipt_without_traceback() {
   [[ -f "$target/.agent-workflows-install.json" ]] || fail "stale receipt check mutated the existing install"
 }
 
+test_upgrade_rejects_non_object_metadata_without_traceback() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  printf '[]\n' > "$target/.agent-workflows-install.json"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "expected non-object metadata to exit 65, got $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "TypeError"
+  [[ "$(cat "$target/.agent-workflows-install.json")" = "[]" ]] || fail "corrupt metadata check changed the existing metadata"
+}
+
 test_failed_upgrade_preserves_unverified_new_install_lock() {
   local tmp source target injection output status
   tmp="$(mktemp -d)"
@@ -8065,6 +8086,40 @@ PATCH
   assert_contains "$output" "ROLLBACK_COMPLETE"
   [[ -d "$target/bin" && ! -L "$target/bin" ]] || fail "rollback retained a replaced bin symlink"
   [[ "$(cat "$marker")" = "external content" ]] || fail "rollback followed a replaced bin symlink"
+}
+
+test_failed_upgrade_replaces_managed_directory_symlink_without_following_it() {
+  local tmp source target external marker output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external="$tmp/external-skill"
+  marker="$external/marker"
+  mkdir -p "$source" "$external"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  printf 'external content\n' > "$marker"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+"\$(dirname "\$0")/install-agent-workflows-real" "\$@"
+rm -rf $(printf '%q' "$target/skills/pr-batch")
+ln -s $(printf '%q' "$external") $(printf '%q' "$target/skills/pr-batch")
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "managed directory symlink changed original exit 7 to $status: $output"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -d "$target/skills/pr-batch" && ! -L "$target/skills/pr-batch" ]] || \
+    fail "rollback retained a replacement managed directory symlink"
+  [[ "$(cat "$marker")" = "external content" ]] || fail "rollback followed a replacement managed directory symlink"
 }
 
 test_failed_upgrade_restores_companion_delivery_mode_and_layout() {
@@ -8885,6 +8940,40 @@ test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion() {
   ruby -rjson -e '
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
     abort metadata.inspect unless metadata["delivery_mode"] == "flat" && metadata["mode"] == "symlink"
+  ' "$target/.agent-workflows-install.json"
+}
+
+test_failed_companion_upgrade_restores_legacy_flat_skills_without_delivery_mode() {
+  local tmp source target consumer output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  ruby -rjson -e '
+    path = ARGV.fetch(0)
+    metadata = JSON.parse(File.read(path))
+    metadata.delete("delivery_mode")
+    metadata.delete("managed_skill_copy_fingerprints")
+    File.write(path, JSON.pretty_generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json"
+  write_native_scw_state codex "$target"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode plugin-companion --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected legacy flat-to-companion upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -f "$target/skills/pr-batch/SKILL.md" ]] || fail "rollback did not restore a legacy flat skill"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect if metadata.key?("delivery_mode")
   ' "$target/.agent-workflows-install.json"
 }
 
@@ -10287,11 +10376,13 @@ main() {
     test_failed_upgrade_removes_new_migration_recovery_artifacts
     test_failed_upgrade_restores_preexisting_migration_recovery_artifacts
     test_upgrade_rejects_stale_migration_receipt_without_traceback
+    test_upgrade_rejects_non_object_metadata_without_traceback
     test_failed_upgrade_preserves_unverified_new_install_lock
     test_failed_upgrade_refuses_rollback_through_replaced_target_root
     test_upgrade_refuses_preexisting_install_lock_before_snapshot
     test_failed_upgrade_preserves_install_lock_acquired_after_snapshot
     test_failed_upgrade_replaces_unexpected_container_symlink_without_following_it
+    test_failed_upgrade_replaces_managed_directory_symlink_without_following_it
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills
     test_companion_to_flat_upgrade_preserves_unowned_same_named_skill
@@ -10317,6 +10408,7 @@ main() {
     test_failed_repeat_symlink_upgrade_does_not_replace_source_workflows
     test_failed_flat_upgrade_restores_skill_removed_from_new_source
     test_failed_upgrade_restores_flat_symlink_skills_when_switching_to_companion
+    test_failed_companion_upgrade_restores_legacy_flat_skills_without_delivery_mode
     test_flat_skill_snapshot_manifest_excludes_dot_entries
     test_failed_upgrade_reports_incomplete_rollback_and_preserves_original_status
     test_failed_upgrade_rejects_source_inventory_change_after_snapshot
