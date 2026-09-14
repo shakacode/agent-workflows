@@ -33,8 +33,9 @@ module GitHubCommentEnvelope
     end
     payload = body.sub(/\A[\r\n]+/, "")
     first_line, line_ending, remaining_payload = split_payload(payload)
+    first_line_preserved = preserve_payload_first_line?(first_line, remaining_payload)
     visible = visible_line(display_runner, first_line, remaining_payload)
-    remaining_payload = "#{first_line}#{line_ending}#{remaining_payload}" if preserve_payload_first_line?(first_line, remaining_payload)
+    remaining_payload = "#{first_line}#{line_ending}#{remaining_payload}" if first_line_preserved
     marker = [
       MARKER,
       "runner: #{runner}",
@@ -44,7 +45,8 @@ module GitHubCommentEnvelope
     unless first_line.empty?
       marker.concat([
                       "payload_first_line_b64url: #{Base64.urlsafe_encode64(first_line, padding: false)}",
-                      "payload_line_ending: #{PAYLOAD_LINE_ENDINGS.fetch(line_ending)}"
+                      "payload_line_ending: #{PAYLOAD_LINE_ENDINGS.fetch(line_ending)}",
+                      "payload_first_line_preserved: #{first_line_preserved}"
                     ])
     end
     marker = marker.join("\n")
@@ -64,6 +66,9 @@ module GitHubCommentEnvelope
     return remaining_payload unless parsed.key?("payload_first_line")
 
     preserved_first_line = "#{parsed.fetch('payload_first_line')}#{parsed.fetch('payload_line_ending')}"
+    return remaining_payload if parsed["payload_first_line_preserved"] == true
+    return "#{preserved_first_line}#{remaining_payload}" if parsed.key?("payload_first_line_preserved")
+
     if remaining_payload.start_with?(preserved_first_line) &&
        preserve_payload_first_line?(parsed.fetch("payload_first_line"), remaining_payload.delete_prefix(preserved_first_line))
       return remaining_payload
@@ -75,7 +80,7 @@ module GitHubCommentEnvelope
   def parse(body)
     return unless body.is_a?(String)
 
-    match = body.match(%r{\A(?<visible>🤖 [^\r\n]+)\r?\n\r?\n<details>\r?\n<summary>Agent attribution</summary>\r?\n\r?\n```text\r?\n#{MARKER}\r?\nrunner: (?<runner>[^\r\n]+)\r?\nhost: (?<host>[^\r\n]+)\r?\ntask_or_run: (?<task>[^\r\n]+)\r?\n(?:payload_first_line_b64url: (?<payload_first_line>[A-Za-z0-9_-]*)\r?\npayload_line_ending: (?<payload_line_ending>crlf|lf|cr|none)\r?\n)?```\r?\n</details>\r?\n\r?\n}m)
+    match = body.match(%r{\A(?<visible>🤖 [^\r\n]+)\r?\n\r?\n<details>\r?\n<summary>Agent attribution</summary>\r?\n\r?\n```text\r?\n#{MARKER}\r?\nrunner: (?<runner>[^\r\n]+)\r?\nhost: (?<host>[^\r\n]+)\r?\ntask_or_run: (?<task>[^\r\n]+)\r?\n(?:payload_first_line_b64url: (?<payload_first_line>[A-Za-z0-9_-]*)\r?\npayload_line_ending: (?<payload_line_ending>crlf|lf|cr|none)\r?\n(?:payload_first_line_preserved: (?<first_line_preserved>true|false)\r?\n)?)?```\r?\n</details>\r?\n\r?\n}m)
     return parse_legacy(body) unless match
 
     visible = match[:visible]
@@ -106,10 +111,15 @@ module GitHubCommentEnvelope
 
     payload_first_line.force_encoding(body.encoding)
 
-    parsed.merge(
+    payload_metadata = {
       "payload_first_line" => payload_first_line,
       "payload_line_ending" => payload_line_ending
-    )
+    }
+    unless match[:first_line_preserved].nil?
+      payload_metadata["payload_first_line_preserved"] = match[:first_line_preserved] == "true"
+    end
+
+    parsed.merge(payload_metadata)
   rescue ArgumentError
     nil
   end
