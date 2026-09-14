@@ -278,7 +278,9 @@ module CloseoutEvidenceReplay
     }
   end
 
-  def marker_bodies(text, name, visible_text)
+  def marker_bodies(text, name, visible_text = nil)
+    visible_text ||= visible_markdown(text)
+
     legacy_marker_bodies(text, name) + visible_details_marker_bodies(visible_text, name)
   end
 
