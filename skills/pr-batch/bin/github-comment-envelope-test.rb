@@ -134,6 +134,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     payloads = [
       "```ruby\nputs :ok\n```\n",
       "# Heading\nEvidence follows.\n",
+      "[docs]: https://example.com\nSee [docs] for details.\n",
       "Setext heading\n---\nEvidence follows.\n",
       "> Quoted context\nEvidence follows.\n",
       "<details>\n<summary>Evidence</summary>\n\nVisible details.\n</details>\n"

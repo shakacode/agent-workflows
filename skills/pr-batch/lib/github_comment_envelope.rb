@@ -16,7 +16,7 @@ module GitHubCommentEnvelope
   LEGACY_AGENT_HEADER = /\A🤖 \*\*(?:Codex|Claude|Cursor)(?: · [^*\r\n]+)?\*\*(?:\r?\n|\z)/
   VISIBLE_AGENT_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:\r?\n|\z)/
   PAYLOAD_RUNNER_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:[ \t]+|(?=\z))/
-  MARKDOWN_BLOCK_SYNTAX = %r{\A[ \t]{0,3}(?:`{3,}|~{3,}|\#{1,6}(?:[ \t]|\z)|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+|(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|<[A-Za-z!/])|\A(?: {4}|[ \t]*\t)}
+  MARKDOWN_BLOCK_SYNTAX = %r{\A[ \t]{0,3}(?:`{3,}|~{3,}|\#{1,6}(?:[ \t]|\z)|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+|\[[^\]\r\n]+\]:[ \t]*\S|(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|<[A-Za-z!/])|\A(?: {4}|[ \t]*\t)}
   PAYLOAD_LINE_ENDINGS = { "\r\n" => "crlf", "\n" => "lf", "\r" => "cr", "" => "none" }.freeze
   PAYLOAD_LINE_ENDING_VALUES = PAYLOAD_LINE_ENDINGS.invert.freeze
 
