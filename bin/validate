@@ -120,6 +120,7 @@ ruby bin/process-gap-mechanism-target-test.rb
 ruby skills/autoreview/bin/autoreview-target-state-test.rb
 ruby skills/continue/bin/authorized-completion-test.rb
 ruby skills/verify/bin/verification-evidence-reuse-test.rb
+ruby skills/replicate-ci/bin/run-history-recipe-contract-test.rb
 ruby skills/address-review/bin/fetch-pr-review-data-test.rb
 ruby skills/address-review/bin/fetch-pr-review-data-trust-test.rb
 ruby skills/address-review/bin/address-review-summary-template-test.rb
@@ -149,6 +150,9 @@ ruby skills/pr-batch/bin/security-floor-contract-test.rb
 ruby skills/pr-batch/bin/writing-style-contract-test.rb
 ruby skills/pr-batch/bin/user-facing-coordination-contract-test.rb
 ruby skills/pr-batch/bin/production-release-contract-test.rb
+ruby skills/pr-batch/bin/github-comment-envelope-test.rb
+ruby skills/pr-batch/bin/human-attention-test.rb
+ruby skills/pr-batch/bin/human-attention-contract-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/file-expansion-contract-test.rb
 ruby skills/pr-batch/bin/worker-execution-contract-test.rb

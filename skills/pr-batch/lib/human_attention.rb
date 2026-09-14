@@ -1,0 +1,428 @@
+# frozen_string_literal: true
+
+require "json"
+require "open3"
+require "time"
+require "timeout"
+require "yaml"
+
+module HumanAttention
+  STATES = %w[walkthrough merge].freeze
+  PR_LIST_LIMIT = 1000
+  PR_FETCH_LIMIT = PR_LIST_LIMIT + 1
+  REPOSITORY_QUERY_TIMEOUT_SECONDS = 30
+  REPOSITORY_PATTERN = %r{\A[^/\s]+/[^/\s]+\z}
+
+  class Error < StandardError; end
+
+  module_function
+
+  def load_config(repo_root)
+    path = File.join(File.expand_path(repo_root), ".agents", "agent-workflow.yml")
+    parsed = YAML.safe_load_file(path, aliases: false) || {}
+    raise Error, "agent workflow policy must be a mapping" unless parsed.is_a?(Hash)
+
+    human_attention = parsed.fetch("human_attention", {})
+    raise Error, "human_attention must be a mapping" unless human_attention.is_a?(Hash)
+
+    human_attention
+  rescue Errno::ENOENT, Psych::Exception => e
+    raise Error, "cannot load agent workflow policy: #{e.message}"
+  end
+
+  def global_labels(config)
+    labels = validate_labels(config.fetch("labels", {}))
+    missing = STATES - labels.keys
+    unless missing.empty?
+      raise Error, "human_attention labels must define walkthrough and merge"
+    end
+    if labels.values.map(&:downcase).uniq.length != labels.length
+      raise Error, "human-attention labels must be distinct"
+    end
+
+    labels.dup
+  end
+
+  def labels_for(config, repo, base_labels: global_labels(config))
+    raise Error, "repository must use OWNER/REPO form" unless repo.match?(REPOSITORY_PATTERN)
+
+    labels = base_labels.dup
+    repositories = config.fetch("repositories", {})
+    unless repositories.is_a?(Hash) || repositories.is_a?(Array)
+      raise Error, "human_attention.repositories must be a mapping or list"
+    end
+
+    if repositories.is_a?(Hash)
+      matching_repositories = repositories.keys.select do |configured_repo|
+        configured_repo.is_a?(String) && configured_repo.casecmp?(repo)
+      end
+      if matching_repositories.length > 1
+        raise Error, "repository configuration for #{repo} is ambiguous"
+      end
+
+      repository_key = matching_repositories.first
+    end
+    self.repositories(config)
+    if repository_key
+      entry = repositories.fetch(repository_key) || {}
+      raise Error, "repository configuration for #{repo} must be a mapping" unless entry.is_a?(Hash)
+
+      labels.merge!(validate_labels(entry.fetch("labels", {})))
+    end
+    if labels.values.map(&:downcase).uniq.length != labels.length
+      raise Error, "human-attention labels must be distinct"
+    end
+
+    labels
+  end
+
+  def repositories(config)
+    configured = config.fetch("repositories", {})
+    values = case configured
+             when Hash then configured.keys
+             when Array then configured
+             else raise Error, "human_attention.repositories must be a mapping or list"
+             end
+    unless values.all? { |repo| repo.is_a?(String) && repo.match?(REPOSITORY_PATTERN) }
+      raise Error, "every human-attention repository must use OWNER/REPO form"
+    end
+    unless values.map(&:downcase).uniq.length == values.length
+      raise Error, "human-attention repositories must be unique ignoring case"
+    end
+
+    values.uniq.sort
+  end
+
+  def classify(labels:, configured_labels:)
+    matches = STATES.select { |state| label_present?(labels, configured_labels.fetch(state)) }
+    raise Error, "a PR must not carry both human-attention labels" if matches.length > 1
+
+    matches.first || "none"
+  end
+
+  def label_present?(labels, configured_label)
+    labels.any? { |label| label.is_a?(String) && label.casecmp?(configured_label) }
+  end
+
+  def capture3_bounded(*command, timeout_seconds:)
+    stdin, stdout, stderr, wait_thread = Open3.popen3(*command, pgroup: true)
+    stdin.close
+    stdout_reader = Thread.new { read_stream(stdout) }
+    stderr_reader = Thread.new { read_stream(stderr) }
+    Timeout.timeout(timeout_seconds) do
+      status = wait_thread.value
+      [stdout_reader.value, stderr_reader.value, status]
+    end
+  rescue Timeout::Error
+    [stdout, stderr].each { |stream| stream.close unless stream.closed? }
+    terminate_process_group(wait_thread)
+    [stdout_reader, stderr_reader].each { |reader| reader.join(0.5) }
+    raise
+  ensure
+    [stdin, stdout, stderr].compact.each { |stream| stream.close unless stream.closed? }
+  end
+
+  def read_stream(stream)
+    stream.read
+  rescue IOError
+    ""
+  end
+
+  def terminate_process_group(wait_thread)
+    signal_process_group("TERM", wait_thread.pid) if process_group_alive?(wait_thread.pid)
+    wait_thread.join(0.5)
+    signal_process_group("KILL", wait_thread.pid) if process_group_alive?(wait_thread.pid)
+    wait_thread.join(0.5)
+  end
+
+  def process_group_alive?(pid)
+    Process.kill(0, -pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def signal_process_group(signal, pid)
+    Process.kill(signal, -pid)
+  rescue Errno::ESRCH
+    nil
+  end
+
+  def desk(config:, github_cli: ENV.fetch("HUMAN_ATTENTION_GH", "gh"), refreshed_at: Time.now.utc.iso8601,
+           query_timeout_seconds: REPOSITORY_QUERY_TIMEOUT_SECONDS)
+    entries = []
+    degraded = []
+    configured_repositories = repositories(config)
+    base_labels = global_labels(config)
+    configured_repositories.each do |repo|
+      labels = labels_for(config, repo, base_labels:)
+      stdout, _stderr, status = capture3_bounded(
+        github_cli, "pr", "list", "--repo", repo, "--state", "open",
+        "--limit", PR_FETCH_LIMIT.to_s, "--json", "number,title,url,updatedAt,headRefOid,labels",
+        timeout_seconds: query_timeout_seconds
+      )
+      unless status.success?
+        degraded << repo
+        next
+      end
+
+      rows = JSON.parse(stdout)
+      raise Error, "query result is not a list" unless rows.is_a?(Array)
+
+      degraded << repo if rows.length > PR_LIST_LIMIT
+
+      repo_entries = rows.filter_map do |row|
+        row_labels = Array(row["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
+        state = classify(labels: row_labels, configured_labels: labels)
+        next if state == "none"
+
+        normalize_entry(row, repo:, state:, refreshed_at:)
+      rescue Error, KeyError
+        degraded << repo
+        nil
+      end
+      entries.concat(repo_entries)
+    rescue JSON::ParserError, Error, KeyError, Timeout::Error
+      degraded << repo
+    end
+
+    [entries.sort_by { |entry| [entry.fetch("repo"), entry.fetch("number"), entry.fetch("state")] }, degraded.uniq.sort]
+  end
+
+  def render_desk(entries, degraded)
+    noun = entries.length == 1 ? "decision" : "decisions"
+    lines = ["# Human Attention", "", "#{entries.length} human #{noun}.",
+             "This queue does not represent remaining agent-owned work.", ""]
+    entries.each_with_index do |entry, index|
+      action = entry.fetch("state").upcase
+      reason = if action == "WALKTHROUGH"
+                 "Confirm the walkthrough matches the current head before review."
+               else
+                 "Revalidate ordinary gates for the current head before deciding whether to merge."
+               end
+      lines.concat([
+                     "## #{index + 1} of #{entries.length} — #{action} — #{entry.fetch('repo')} — #{entry.fetch('title')}",
+                     "", "- PR: #{entry.fetch('url')}", "- Reason: #{reason}",
+                     "- Current head: `#{entry.fetch('head_sha')}`",
+                     "- Readiness: Exact-head readiness is unverified from the label alone.",
+                     "- Refreshed: #{entry.fetch('refreshed_at')}", ""
+                   ])
+    end
+    lines << "Degraded repositories: #{degraded.join(', ')}" unless degraded.empty?
+    "#{lines.join("\n").rstrip}\n"
+  end
+
+  def transition(config:, repo:, pr_number:, state:, expected_head:,
+                 github_cli: ENV.fetch("HUMAN_ATTENTION_GH", "gh"),
+                 query_timeout_seconds: REPOSITORY_QUERY_TIMEOUT_SECONDS)
+    raise Error, "state must be walkthrough, merge, or none" unless (STATES + ["none"]).include?(state)
+    raise Error, "PR number must be positive" unless pr_number.is_a?(Integer) && pr_number.positive?
+    raise Error, "expected head must be a full lowercase SHA" unless expected_head.match?(/\A[0-9a-f]{40}\z/)
+
+    labels = labels_for(config, repo)
+    stdout, stderr, status = capture3_bounded(
+      github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels",
+      timeout_seconds: query_timeout_seconds
+    )
+    raise Error, "cannot read PR state: #{stderr.lines.first.to_s.strip}" unless status.success?
+
+    detail = JSON.parse(stdout)
+    allowed_pr_states = state == "none" ? %w[OPEN CLOSED MERGED] : ["OPEN"]
+    raise Error, "PR is not open" unless allowed_pr_states.include?(detail["state"])
+    raise Error, "PR head changed" unless detail["headRefOid"] == expected_head
+
+    current = Array(detail["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
+    if state != "none"
+      begin
+        classify(labels: current, configured_labels: labels)
+      rescue Error
+        clear_attention_state!(
+          github_cli:, repo:, pr_number:, labels:, current_labels: current,
+          error_prefix: "pre-existing human-attention state is invalid", query_timeout_seconds:
+        )
+        raise Error, "pre-existing human-attention state is invalid; attention state cleared"
+      end
+    end
+    arguments = [github_cli, "pr", "edit", pr_number.to_s, "--repo", repo]
+    labels.each do |semantic, label|
+      desired = semantic == state
+      arguments.concat(["--remove-label", label]) if !desired && label_present?(current, label)
+      arguments.concat(["--add-label", label]) if desired && !label_present?(current, label)
+    end
+    edit_attempted = arguments.length > 6
+    if edit_attempted
+      _edit_stdout, edit_stderr, edit_status = capture3_bounded(*arguments, timeout_seconds: query_timeout_seconds)
+      unless edit_status.success?
+        reconcile_stdout, reconcile_stderr, reconcile_status = capture3_bounded(
+          github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels",
+          timeout_seconds: query_timeout_seconds
+        )
+        unless reconcile_status.success?
+          clear_attention_state!(
+            github_cli:, repo:, pr_number:, labels:, current_labels: labels.values,
+            error_prefix: "cannot reconcile failed human-attention update", query_timeout_seconds:
+          )
+          raise Error, "cannot reconcile failed human-attention update; attention state cleared: " \
+                       "#{reconcile_stderr.lines.first.to_s.strip}"
+        end
+
+        reconciled = begin
+          JSON.parse(reconcile_stdout)
+        rescue JSON::ParserError
+          clear_attention_state!(
+            github_cli:, repo:, pr_number:, labels:, current_labels: labels.values,
+            error_prefix: "cannot parse failed-update reconciliation", query_timeout_seconds:
+          )
+          raise Error, "cannot parse failed-update reconciliation; attention state cleared"
+        end
+        reconciled_labels = Array(reconciled["labels"]).filter_map do |label|
+          label["name"] if label.is_a?(Hash)
+        end
+        clear_attention_state!(
+          github_cli:, repo:, pr_number:, labels:, current_labels: reconciled_labels,
+          error_prefix: "human-attention label update failed", query_timeout_seconds:
+        )
+        raise Error,
+              "human-attention label update failed; attention state cleared: #{edit_stderr.lines.first.to_s.strip}"
+      end
+    end
+
+    verify_stdout, verify_stderr, verify_status = capture3_bounded(
+      github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels",
+      timeout_seconds: query_timeout_seconds
+    )
+    unless verify_status.success?
+      if edit_attempted
+        clear_attention_state!(
+          github_cli:, repo:, pr_number:, labels:, current_labels: labels.values,
+          error_prefix: "cannot verify human-attention labels", query_timeout_seconds:
+        )
+        raise Error, "cannot verify human-attention labels; attention state cleared: " \
+                     "#{verify_stderr.lines.first.to_s.strip}"
+      end
+
+      raise Error, "cannot verify unchanged human-attention labels: #{verify_stderr.lines.first.to_s.strip}"
+    end
+
+    verified = begin
+      JSON.parse(verify_stdout)
+    rescue JSON::ParserError
+      if edit_attempted
+        clear_attention_state!(
+          github_cli:, repo:, pr_number:, labels:, current_labels: labels.values,
+          error_prefix: "cannot parse human-attention verification", query_timeout_seconds:
+        )
+        raise Error, "cannot parse human-attention verification; attention state cleared"
+      end
+
+      raise Error, "cannot parse unchanged human-attention verification"
+    end
+    unchanged = verified["state"] == detail["state"] && verified["headRefOid"] == expected_head
+    verified_labels = Array(verified["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
+    unless unchanged
+      clear_attention_state!(
+        github_cli:, repo:, pr_number:, labels:, current_labels: verified_labels,
+        error_prefix: "PR changed while updating human-attention labels", query_timeout_seconds:
+      )
+      raise Error, "PR changed while updating human-attention labels; attention state cleared"
+    end
+
+    verification_error = begin
+      verified_state = classify(labels: verified_labels, configured_labels: labels)
+      "label update did not reach the requested state" unless verified_state == state
+    rescue Error => e
+      e.message
+    end
+    if verification_error
+      clear_attention_state!(
+        github_cli:, repo:, pr_number:, labels:, current_labels: verified_labels,
+        error_prefix: "human-attention label verification mismatch", query_timeout_seconds:
+      )
+      raise Error, "human-attention label verification mismatch; attention state cleared: #{verification_error}"
+    end
+
+    { "repo" => repo, "pr" => pr_number, "head_sha" => expected_head, "state" => state, "labels" => labels }
+  rescue Timeout::Error
+    if defined?(edit_attempted) && edit_attempted
+      clear_attention_state!(
+        github_cli:, repo:, pr_number:, labels:, current_labels: labels.values,
+        error_prefix: "human-attention transition timed out", query_timeout_seconds:
+      )
+      raise Error, "human-attention transition timed out; attention state cleared"
+    end
+
+    raise Error, "human-attention transition timed out"
+  rescue JSON::ParserError
+    raise Error, "PR state response is malformed"
+  end
+
+  def clear_attention_state!(github_cli:, repo:, pr_number:, labels:, current_labels:, error_prefix:,
+                             query_timeout_seconds: REPOSITORY_QUERY_TIMEOUT_SECONDS)
+    cleanup = [github_cli, "pr", "edit", pr_number.to_s, "--repo", repo]
+    labels.each_value do |label|
+      cleanup.concat(["--remove-label", label]) if label_present?(current_labels, label)
+    end
+    if cleanup.length > 6
+      _cleanup_stdout, cleanup_stderr, cleanup_status = capture3_bounded(
+        *cleanup, timeout_seconds: query_timeout_seconds
+      )
+      unless cleanup_status.success?
+        raise Error, "#{error_prefix}; cleanup failed: #{cleanup_stderr.lines.first.to_s.strip}"
+      end
+    end
+
+    cleanup_stdout, cleanup_stderr, cleanup_status = capture3_bounded(
+      github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels",
+      timeout_seconds: query_timeout_seconds
+    )
+    unless cleanup_status.success?
+      raise Error, "#{error_prefix}; cleanup verification failed: #{cleanup_stderr.lines.first.to_s.strip}"
+    end
+
+    cleaned = JSON.parse(cleanup_stdout)
+    cleaned_labels = Array(cleaned["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
+    return if classify(labels: cleaned_labels, configured_labels: labels) == "none"
+
+    raise Error, "#{error_prefix}; cleanup did not clear the attention state"
+  rescue Timeout::Error
+    raise Error, "#{error_prefix}; cleanup timed out"
+  rescue JSON::ParserError
+    raise Error, "#{error_prefix}; cleanup verification response is malformed"
+  end
+
+  def validate_labels(value)
+    raise Error, "human_attention labels must be a mapping" unless value.is_a?(Hash)
+
+    unknown = value.keys - STATES
+    raise Error, "unknown human-attention label keys: #{unknown.join(', ')}" unless unknown.empty?
+    unless value.values.all? { |label| label.is_a?(String) && !label.strip.empty? && !label.include?("\n") }
+      raise Error, "human-attention label names must be nonempty single-line strings"
+    end
+    unless value.values.all? { |label| label == label.strip }
+      raise Error, "human-attention label names must not have leading or trailing whitespace"
+    end
+    if value.values.any? { |label| label.include?(",") }
+      raise Error, "human-attention label names must not contain commas"
+    end
+
+    value
+  end
+
+  def normalize_entry(row, repo:, state:, refreshed_at:)
+    raise Error, "PR row must be a mapping" unless row.is_a?(Hash)
+
+    number = row.fetch("number")
+    title = row.fetch("title")
+    url = row.fetch("url")
+    head_sha = row.fetch("headRefOid")
+    unless number.is_a?(Integer) && number.positive? && title.is_a?(String) && !title.empty? &&
+           url.is_a?(String) && !url.empty? && head_sha.is_a?(String) && head_sha.match?(/\A[0-9a-f]{40}\z/)
+      raise Error, "PR row is malformed"
+    end
+
+    { "repo" => repo, "number" => number, "title" => title, "url" => url, "state" => state,
+      "head_sha" => head_sha, "refreshed_at" => refreshed_at }
+  end
+end

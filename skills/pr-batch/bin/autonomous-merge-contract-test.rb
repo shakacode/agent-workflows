@@ -318,6 +318,15 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_includes AutonomousMergePolicy::PORTABLE_POLICY_EXCLUDES, "**/current_integration_*.rb"
   end
 
+  def test_github_json_string_validator_is_portably_self_protecting
+    source_path = "skills/pr-batch/lib/github_json_string_validation.rb"
+
+    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_path}"
+    assert_includes AutonomousMergePolicy::PORTABLE_POLICY_EXCLUDES, "**/github_json_string_validation.rb"
+  end
+
   def test_portable_safe_path_group_constants_are_frozen_and_not_mutated_by_callers
     groups = AutonomousMergePolicy.portable_safe_path_groups
     groups.fetch("documentation").fetch("include") << "mutated/**"

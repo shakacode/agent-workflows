@@ -3,6 +3,7 @@
 require "json"
 require "open3"
 require "time"
+require_relative "github_json_string_validation"
 
 module AutonomousMergeEvidence
   class CollectionError < StandardError; end
@@ -133,7 +134,7 @@ module AutonomousMergeEvidence
     end
 
     parsed = JSON.parse(payload)
-    unless decoded_json_strings_valid?(parsed)
+    unless GitHubJsonStringValidation.decoded_json_strings_valid?(parsed)
       raise CollectionError,
             "malformed or invalid GitHub evidence: invalid Unicode scalar data in response for #{path}"
     end
@@ -141,21 +142,8 @@ module AutonomousMergeEvidence
     parsed
   rescue Errno::ENOENT
     raise CollectionError, "GitHub CLI is unavailable"
-  end
-
-  def decoded_json_strings_valid?(value)
-    case value
-    when String
-      value.valid_encoding?
-    when Array
-      value.all? { |item| decoded_json_strings_valid?(item) }
-    when Hash
-      value.all? do |key, item|
-        decoded_json_strings_valid?(key) && decoded_json_strings_valid?(item)
-      end
-    else
-      true
-    end
+  rescue JSON::ParserError => e
+    raise CollectionError, "malformed or invalid GitHub evidence: malformed JSON response for #{path}: #{e.message}"
   end
 
   def normalize_file(file)

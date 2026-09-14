@@ -50,11 +50,9 @@ class AutonomousMergeEvidenceTest < Minitest::Test
           AutonomousMergeEvidence.gh_api("repos/example/repo/pulls/7")
         end
 
-        assert_equal(
-          "malformed or invalid GitHub evidence: invalid Unicode scalar data in response for " \
-          "repos/example/repo/pulls/7",
-          error.message
-        )
+        assert_match(/\Amalformed or invalid GitHub evidence:/, error.message)
+        assert_match(/invalid Unicode scalar data|surrogate/i, error.message)
+        assert_includes error.message, "repos/example/repo/pulls/7"
       end
     end
   end

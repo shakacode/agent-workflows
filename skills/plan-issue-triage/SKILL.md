@@ -74,6 +74,7 @@ Definition of review-only for this task:
 - Do not edit labels, milestones, assignees, titles, issue bodies, or close issues unless explicitly approved later.
 - You may post GitHub issue comments when useful, but avoid spam: only comment when the disposition or evidence would help maintainers or future agents.
 - If a comment is useful, make it specific, evidence-backed, and non-duplicative. Do not post generic "triaged" comments.
+- Route every posted comment through the installed or repo-local `github-comment-envelope post-issue` helper with the current runner, host, and task/run identity. If that boundary is unavailable, return the comment as a draft instead of posting it.
 
 Repository and skill context:
 - Repository: [OWNER/REPO]

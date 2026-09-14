@@ -966,17 +966,12 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
     CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &capture)
 
-    [
-      "public claim-comment fallback",
-      " Public　claim-comment \n fallback. "
-    ].each do |backend|
-      result = CompletedBatchPublicationPreflight.authenticated_coordination_status(
-        backend:,
-        batch_id: "batch-public"
-      )
+    result = CompletedBatchPublicationPreflight.authenticated_coordination_status(
+      backend: "public claim-comment fallback",
+      batch_id: "batch-public"
+    )
 
-      assert_nil result, backend.inspect
-    end
+    assert_nil result
     assert_empty calls
 
     input = fixture("completed-batch-publication-hichee-terminal.json")
@@ -988,6 +983,96 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute assessment.fetch("eligible")
     assert_includes assessment.fetch("blockers"), "coordination status is not authenticated or fresh"
     assert_empty calls
+  ensure
+    if original_capture
+      CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture)
+    end
+  end
+
+  def test_legacy_dotted_public_claim_comment_spelling_is_not_a_fallback
+    calls = []
+    capture = lambda do |command, input:, timeout:|
+      calls << { "command" => command, "input" => input, "timeout" => timeout }
+      payload = {
+        "scope" => { "kind" => "batch", "batch_id" => "batch-public" },
+        "batches" => []
+      }
+      [JSON.generate(payload), "", Struct.new(:success?).new(true)]
+    end
+    original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &capture)
+
+    result = CompletedBatchPublicationPreflight.authenticated_coordination_status(
+      backend: "public claim-comment fallback.",
+      batch_id: "batch-public"
+    )
+
+    assert_equal({ "scope" => { "kind" => "batch", "batch_id" => "batch-public" }, "batches" => [] }, result)
+    assert_equal 1, calls.length
+  ensure
+    if original_capture
+      CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture)
+    end
+  end
+
+  def test_noncanonical_public_claim_comment_fallback_variants_invoke_private_coordination
+    # A case or spacing variant must not bypass the selected private backend.
+    variants = [
+      "Public claim-comment fallback",
+      "public  claim-comment fallback",
+      " public claim-comment fallback "
+    ]
+    calls = []
+    payload = {
+      "scope" => { "kind" => "batch", "batch_id" => "batch-public" },
+      "batches" => []
+    }
+    capture = lambda do |command, input:, timeout:|
+      calls << { "command" => command, "input" => input, "timeout" => timeout }
+      [JSON.generate(payload), "", Struct.new(:success?).new(true)]
+    end
+    original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &capture)
+
+    variants.each do |backend|
+      assert_equal payload, CompletedBatchPublicationPreflight.authenticated_coordination_status(
+        backend:,
+        batch_id: "batch-public"
+      )
+    end
+
+    assert_equal variants.length, calls.length
+  ensure
+    if original_capture
+      CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture)
+    end
+  end
+
+  def test_assessment_noncanonical_public_fallback_whitespace_invokes_private_coordination
+    # Normalizing configured whitespace before transport can silently bypass private coordination.
+    variants = [
+      "public  claim-comment fallback",
+      " public claim-comment fallback "
+    ]
+    calls = []
+    payload = fixture("completed-batch-publication-hichee-terminal.json").fetch("coordination_status")
+    capture = lambda do |command, input:, timeout:|
+      calls << { "command" => command, "input" => input, "timeout" => timeout }
+      [JSON.generate(payload), "", Struct.new(:success?).new(true)]
+    end
+    original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &capture)
+
+    variants.each do |backend|
+      assessment = assess_input(
+        fixture("completed-batch-publication-hichee-terminal.json"),
+        backend:,
+        coordination_verifier: CompletedBatchPublicationPreflight.method(:authenticated_coordination_status)
+      )
+      assert assessment.fetch("eligible"), assessment.fetch("blockers").join("\n")
+    end
+
+    assert_equal variants.length, calls.length
   ensure
     if original_capture
       CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture)
@@ -2593,6 +2678,32 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  # Production break: a valid agent-attribution envelope posted through a
+  # human account could be mistaken for human supporting-artifact authority.
+  def test_verification_artifact_rejects_an_agent_attributed_comment
+    input = verification_artifact_input
+    comment = valid_supporting_artifact_comment(input)
+    comment["body"] = GitHubCommentEnvelope.render(
+      body: comment.fetch("body"),
+      runner: "codex",
+      host: "test-host",
+      task_or_run: "supporting-artifact-test"
+    )
+    verifier = lambda do |host:, repo:, comment_id:| # rubocop:disable Lint/UnusedBlockArgument
+      comment
+    end
+
+    result = assess_input(
+      input,
+      waiver_verifier: verifier,
+      artifact_verifier: valid_artifact_verifier(input)
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/agent-coordination#issue:296 supporting artifact is not authenticated or fresh"
+  end
+
   def test_verification_artifact_rejects_open_merged_missing_or_stale_pr_authentication
     cases = {
       "open" => { "state" => "open" },
@@ -2912,6 +3023,24 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                       "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable",
                       index
     end
+  end
+
+  def test_agent_attributed_comment_cannot_grant_a_maintainer_qa_waiver
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    row = input.fetch("qa_evidence").find { |candidate| candidate.key?("maintainer_waiver") }
+    comment = valid_waiver_comment(row, input)
+    comment["body"] = GitHubCommentEnvelope.render(
+      body: comment.fetch("body"),
+      runner: "codex",
+      host: "M5",
+      task_or_run: "waiver-review"
+    )
+
+    result = assess_input(input, waiver_verifier: ->(**_keywords) { comment })
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable"
   end
 
   def test_eligible_waiver_receipt_requires_an_authenticated_comment_refresh

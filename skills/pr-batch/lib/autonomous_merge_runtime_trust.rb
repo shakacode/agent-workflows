@@ -28,11 +28,25 @@ module AutonomousMergeRuntimeTrust
         .agents/skills/pr-batch/lib/autonomous_merge_decision.rb
       ]
     },
+    "comment-envelope-library" => {
+      path: File.expand_path("github_comment_envelope.rb", __dir__),
+      tree_paths: %w[
+        skills/pr-batch/lib/github_comment_envelope.rb
+        .agents/skills/pr-batch/lib/github_comment_envelope.rb
+      ]
+    },
     "evidence-library" => {
       path: File.expand_path("autonomous_merge_evidence.rb", __dir__),
       tree_paths: %w[
         skills/pr-batch/lib/autonomous_merge_evidence.rb
         .agents/skills/pr-batch/lib/autonomous_merge_evidence.rb
+      ]
+    },
+    "github-json-string-validation-library" => {
+      path: File.expand_path("github_json_string_validation.rb", __dir__),
+      tree_paths: %w[
+        skills/pr-batch/lib/github_json_string_validation.rb
+        .agents/skills/pr-batch/lib/github_json_string_validation.rb
       ]
     },
     "integration-evidence-library" => {

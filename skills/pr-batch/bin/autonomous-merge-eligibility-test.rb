@@ -111,11 +111,10 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     end
 
     assert_equal "UNKNOWN", result.fetch("verdict")
-    assert_equal(
-      "malformed or invalid GitHub evidence: invalid Unicode scalar data in response for " \
-      "repos/example/repo/pulls/1/files?per_page=100&page=1",
-      result.fetch("evidence_failures").first
-    )
+    failure = result.fetch("evidence_failures").first
+    assert_match(/\Amalformed or invalid GitHub evidence:/, failure)
+    assert_match(/invalid Unicode scalar data|surrogate/i, failure)
+    assert_includes failure, "repos/example/repo/pulls/1/files?per_page=100&page=1"
   end
 
   def test_current_integration_decode_failure_returns_structured_unknown
@@ -142,11 +141,9 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     end
 
     assert_equal "UNKNOWN", result.fetch("verdict")
-    assert_equal(
-      "current integration evidence is unavailable: " \
-      "GitHub current-integration response contains invalid Unicode scalar data",
-      result.fetch("evidence_failures").first
-    )
+    failure = result.fetch("evidence_failures").first
+    assert_match(/\Acurrent integration evidence is unavailable: GitHub current-integration /, failure)
+    assert_match(/invalid Unicode scalar data|surrogate/i, failure)
   end
 
   def test_live_collection_rejects_invalid_utf8_in_uninspected_comment_fields
@@ -991,6 +988,55 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_equal "UNKNOWN", unproven.fetch("verdict")
     assert_equal "uncertain", unproven.dig("human_decision_evidence", "status")
     assert_includes unproven.fetch("evidence_failures"), "exact current-head human decision provenance is uncertain"
+  end
+
+  def test_agent_prefixed_decision_cannot_establish_human_authority
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    prefixed = decision_comment(
+      id: "1",
+      url:,
+      body: "🤖 Codex\n#{decision_body(head_sha: HEAD_SHA, gates: ['changed-files-limit'], evidence: url)}"
+    )
+    result = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(30),
+        decision_comments: [prefixed],
+        semantic: semantic_assessment.merge(
+          "decision_provenance" => [decision_provenance("1")]
+        )
+      )
+    end
+
+    assert_equal "human-approval-required", result.fetch("verdict")
+    assert_equal "none", result.dig("human_decision_evidence", "status")
+  end
+
+  def test_valid_agent_envelope_cannot_establish_human_authority
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    enveloped = decision_comment(
+      id: "1",
+      url:,
+      body: GitHubCommentEnvelope.render(
+        body: decision_body(head_sha: HEAD_SHA, gates: ["changed-files-limit"], evidence: url),
+        runner: "codex",
+        host: "M5",
+        task_or_run: "test-authority"
+      )
+    )
+    result = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(30),
+        decision_comments: [enveloped],
+        semantic: semantic_assessment.merge(
+          "decision_provenance" => [decision_provenance("1")]
+        )
+      )
+    end
+
+    assert_equal "human-approval-required", result.fetch("verdict")
+    assert_equal "none", result.dig("human_decision_evidence", "status")
   end
 
   def test_uppercase_objective_head_is_canonicalized_before_decision_matching_and_closeout
