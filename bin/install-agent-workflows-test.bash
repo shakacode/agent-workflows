@@ -7908,7 +7908,7 @@ test_upgrade_rejects_stale_migration_receipt_without_traceback() {
   [[ -f "$target/.agent-workflows-install.json" ]] || fail "stale receipt check mutated the existing install"
 }
 
-test_failed_upgrade_removes_new_install_lock() {
+test_failed_upgrade_preserves_unverified_new_install_lock() {
   local tmp source target injection output status
   tmp="$(mktemp -d)"
   source="$tmp/source"
@@ -7933,9 +7933,47 @@ RUBY
 
   [[ "$status" -ne 0 ]] || fail "expected upgrade failure"
   assert_contains "$output" "METADATA_CLEANUP_PENDING"
-  assert_contains "$output" "ROLLBACK_COMPLETE"
-  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "rollback left a new install lock"
-  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/retry.out"
+  assert_contains "$output" "ROLLBACK_INSTALL_LOCK_CHANGED"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -d "$target/.agent-workflows-install.lock" ]] || fail "rollback removed an unverified install lock"
+}
+
+test_failed_upgrade_refuses_rollback_through_replaced_target_root() {
+  local tmp source target moved_target outside marker output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  moved_target="$tmp/original-codex-home"
+  outside="$tmp/outside"
+  marker="$outside/marker"
+  mkdir -p "$source" "$outside"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  printf 'outside content\n' > "$marker"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<PATCH
+#!/usr/bin/env bash
+set -euo pipefail
+mv $(printf '%q' "$target") $(printf '%q' "$moved_target")
+ln -s $(printf '%q' "$outside") $(printf '%q' "$target")
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "replaced target root changed original exit 7 to $status: $output"
+  assert_contains "$output" "ROLLBACK_TARGET_CHANGED"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$marker")" = "outside content" ]] || fail "rollback changed content through replaced target root"
+  [[ -z "$(find "$outside" -mindepth 1 ! -path "$marker" -print -quit)" ]] || \
+    fail "rollback wrote managed content through replaced target root"
+  [[ -f "$moved_target/.agent-workflows-install.json" ]] || fail "rollback removed the original target snapshot"
 }
 
 test_upgrade_refuses_preexisting_install_lock_before_snapshot() {
@@ -7958,6 +7996,43 @@ test_upgrade_refuses_preexisting_install_lock_before_snapshot() {
   [[ "$status" -eq 3 ]] || fail "expected existing install lock to exit 3, got $status"
   assert_contains "$output" "CHECK_FAILED existing install lock"
   [[ "$(cat "$lock/marker")" = "live transaction" ]] || fail "upgrade changed a pre-existing install lock"
+}
+
+test_failed_upgrade_preserves_install_lock_acquired_after_snapshot() {
+  local tmp source target lock wrap real_rsync output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  lock="$target/.agent-workflows-install.lock"
+  wrap="$tmp/bash-env"
+  real_rsync="$(command -v rsync)"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy >"$tmp/install.out"
+  cat > "$wrap" <<'BASH_ENV'
+rsync() {
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == --files-from=* && ! -e "$QA_TARGET/.agent-workflows-install.lock" ]]; then
+      mkdir "$QA_TARGET/.agent-workflows-install.lock"
+      printf 'other installer active\n' > "$QA_TARGET/.agent-workflows-install.lock/owner"
+    fi
+  done
+  command "$QA_REAL_RSYNC" "$@"
+}
+BASH_ENV
+
+  set +e
+  output="$(QA_TARGET="$target" QA_REAL_RSYNC="$real_rsync" BASH_ENV="$wrap" \
+    "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "concurrent install lock unexpectedly allowed upgrade"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+  [[ "$(cat "$lock/owner")" = "other installer active" ]] || fail "rollback removed or changed another installer's lock"
 }
 
 test_failed_upgrade_replaces_unexpected_container_symlink_without_following_it() {
@@ -10212,8 +10287,10 @@ main() {
     test_failed_upgrade_removes_new_migration_recovery_artifacts
     test_failed_upgrade_restores_preexisting_migration_recovery_artifacts
     test_upgrade_rejects_stale_migration_receipt_without_traceback
-    test_failed_upgrade_removes_new_install_lock
+    test_failed_upgrade_preserves_unverified_new_install_lock
+    test_failed_upgrade_refuses_rollback_through_replaced_target_root
     test_upgrade_refuses_preexisting_install_lock_before_snapshot
+    test_failed_upgrade_preserves_install_lock_acquired_after_snapshot
     test_failed_upgrade_replaces_unexpected_container_symlink_without_following_it
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_failed_upgrade_from_companion_to_flat_removes_new_flat_skills

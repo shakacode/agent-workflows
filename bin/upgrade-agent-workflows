@@ -201,6 +201,35 @@ restore_path_parent_is_safe() {
   done
 }
 
+rollback_target_matches_snapshot() {
+  ruby -e '
+    requested, canonical, expected_identity = ARGV
+    resolved = File.realpath(requested)
+    abort unless resolved == canonical
+    canonical_stat = File.lstat(canonical)
+    abort unless canonical_stat.directory? && !canonical_stat.symlink?
+    abort unless "#{canonical_stat.dev}:#{canonical_stat.ino}" == expected_identity
+    requested_stat = File.stat(requested)
+    abort unless requested_stat.dev == canonical_stat.dev && requested_stat.ino == canonical_stat.ino
+  ' "$target" "$backup_canonical_target" "$backup_target_identity" 2>/dev/null
+}
+
+rollback_directory_identity() {
+  ruby -e '
+    stat = File.lstat(ARGV.fetch(0))
+    abort unless stat.directory? && !stat.symlink?
+    print "#{stat.dev}:#{stat.ino}"
+  ' "$1" 2>/dev/null
+}
+
+release_rollback_install_lock() {
+  [[ "${rollback_lock_owned:-false}" = "true" ]] || return 0
+  local current_identity
+  current_identity="$(rollback_directory_identity "$rollback_install_lock")" || return 1
+  [[ "$current_identity" = "$rollback_install_lock_identity" ]] || return 1
+  rmdir "$rollback_install_lock"
+}
+
 snapshot_root_is_active() {
   case "$1" in
     lib)
@@ -290,6 +319,11 @@ backup_target() {
   if [[ -d "$target" ]]; then
     target_existed=true
     backup_canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+    backup_target_identity="$(ruby -e '
+      stat = File.lstat(ARGV.fetch(0))
+      abort unless stat.directory? && !stat.symlink?
+      print "#{stat.dev}:#{stat.ino}"
+    ' "$backup_canonical_target")"
     installed_delivery_mode="$(metadata_value "$metadata_path" delivery_mode 2>/dev/null || printf 'flat\n')"
     backup_includes_flat_skills=false
     if [[ "$delivery_mode" = "flat" || "$installed_delivery_mode" = "flat" ]]; then
@@ -370,7 +404,6 @@ backup_target() {
       managed = [
         ".agent-workflows-install.json",
         ".agent-workflows-install.json.tmp",
-        ".agent-workflows-install.lock/",
         "LICENSE",
         "THIRD_PARTY-NOTICES.md",
         "bin/agent_doctor/"
@@ -632,13 +665,42 @@ cleanup_new_migration_staging() {
 
 restore_target() {
   local path index current_source_inventory_fingerprint
+  local rollback_install_lock rollback_install_lock_identity
   local -a absent_containers=()
   local rollback_complete=true
+  local rollback_lock_owned=false
   # Rollback is best-effort across every managed path. Record individual I/O
   # failures and continue so the operator gets a reliable incomplete receipt.
   set +e
   trap 'rollback_complete=false' ERR
   if [[ "${target_existed:-false}" = "true" ]]; then
+    if ! rollback_target_matches_snapshot; then
+      echo "ROLLBACK_TARGET_CHANGED: target no longer resolves to the snapshotted directory; refusing rollback writes." >&2
+      trap - ERR
+      echo "ROLLBACK_INCOMPLETE: managed state under $target could not be fully restored or verified." >&2
+      return 1
+    fi
+    rollback_install_lock="$target/.agent-workflows-install.lock"
+    if ! mkdir "$rollback_install_lock" 2>/dev/null; then
+      echo "ROLLBACK_INSTALL_LOCK_CHANGED: an install lock appeared after the snapshot; refusing rollback writes." >&2
+      trap - ERR
+      echo "ROLLBACK_INCOMPLETE: managed state under $target could not be fully restored or verified." >&2
+      return 1
+    fi
+    rollback_lock_owned=true
+    rollback_install_lock_identity="$(rollback_directory_identity "$rollback_install_lock")" || {
+      echo "ROLLBACK_INSTALL_LOCK_CHANGED: could not attest the rollback install lock; refusing rollback writes." >&2
+      trap - ERR
+      echo "ROLLBACK_INCOMPLETE: managed state under $target could not be fully restored or verified." >&2
+      return 1
+    }
+    if ! rollback_target_matches_snapshot; then
+      echo "ROLLBACK_TARGET_CHANGED: target changed while acquiring the rollback lock; refusing rollback writes." >&2
+      release_rollback_install_lock || true
+      trap - ERR
+      echo "ROLLBACK_INCOMPLETE: managed state under $target could not be fully restored or verified." >&2
+      return 1
+    fi
     cleanup_new_migration_staging || rollback_complete=false
     mkdir -p "$target"
     while IFS= read -r -d '' path; do
@@ -725,6 +787,7 @@ restore_target() {
       echo "ROLLBACK_RECOVERY_ARTIFACTS_CHANGED: installer recovery artifacts changed after the rollback snapshot." >&2
       rollback_complete=false
     fi
+    release_rollback_install_lock || rollback_complete=false
   else
     rm -rf "$target"
   fi
