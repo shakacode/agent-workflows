@@ -93,7 +93,8 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
         def visible_checkpoint_body:
           split("\n") |
           map(if test("^(?: {0,3}[\\t]| {4}|[ \\t]{0,3}`{3,}[^`\\r\\n]*(?:\\r?\\n)?$)") then . else gsub("(?<prefix>^|[^\\\\`])(?<esc>(?:\\\\\\\\)*)(?<ticks>`+)(?!`)[^\\r\\n]*?(?<!`)\\3(?!`)"; "\(.prefix)\(.esc)inline-code") end) |
-          join("\n");
+          join("\n") |
+          gsub("(?<prefix>^|[^\\\\])(?<esc>(?:\\\\)*)\\\\<"; "\(.prefix)\(.esc)escaped-angle");
         def checkpoint_kind:
           if startswith("<!-- address-review-summary -->") then "summary"
           elif startswith("<!-- address-review-status -->") then "status"

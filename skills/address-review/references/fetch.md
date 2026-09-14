@@ -117,7 +117,8 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
       def visible_checkpoint_body:
         split("\n") |
         map(if test("^(?: {0,3}[\\t]| {4}|[ \\t]{0,3}`{3,}[^`\\r\\n]*(?:\\r?\\n)?$)") then . else gsub("(?<prefix>^|[^\\\\`])(?<esc>(?:\\\\\\\\)*)(?<ticks>`+)(?!`)[^\\r\\n]*?(?<!`)\\3(?!`)"; "\(.prefix)\(.esc)inline-code") end) |
-        join("\n");
+        join("\n") |
+        gsub("(?<prefix>^|[^\\\\])(?<esc>(?:\\\\)*)\\\\<"; "\(.prefix)\(.esc)escaped-angle");
       def visible_checkpoint_kind:
         visible_checkpoint_body as $body |
         if ($body | test("<!--")) then null

@@ -421,6 +421,22 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_processing_instruction_and_cdata_blocks_do_not_authorize_visible_evidence
+    {
+      "processing instruction" => ["<?example\n", "?>\n"],
+      "CDATA" => ["<![CDATA[\n", "]]>\n"]
+    }.each do |description, (opener, closer)|
+      head_sha = "1" * 40
+      body = <<~MARKDOWN
+        #{opener}#{visible_qa_details(head_sha:, scope: "#{description} example")}#{closer}
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), description
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", description
+    end
+  end
+
   def test_unclosed_raw_code_container_keeps_later_apparent_evidence_non_authoritative
     body = <<~MARKDOWN
       <pre>

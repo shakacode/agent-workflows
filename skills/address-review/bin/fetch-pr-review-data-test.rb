@@ -211,6 +211,9 @@ class FetchPrReviewDataTest < Minitest::Test
     assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(
       checkpoint.call(" ```<!-- address-review-summary -->```")
     )
+    assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(
+      checkpoint.call("- Fixed \\<details> parsing in a visible finding.")
+    )
   end
 
   REVIEWS_RAW = <<~JSON

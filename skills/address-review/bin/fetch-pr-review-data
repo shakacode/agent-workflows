@@ -32,6 +32,7 @@ module FetchPrReviewData
   SUMMARY_MARKER = "<!-- address-review-summary -->"
   VISIBLE_CHECKPOINT_SUMMARY = "Address-review checkpoint"
   INLINE_CODE_LITERAL = /(^|[^\\`])((?:\\\\)*)(`+)(?!`)[^\r\n]*?(?<!`)\3(?!`)/
+  ESCAPED_ANGLE_BRACKET = /(^|[^\\])((?:\\\\)*)\\</
   INDENTED_OR_FENCED_CODE_LINE = /\A(?: {0,3}\t| {4}|[ \t]{0,3}`{3,}[^`\r\n]*(?:\r?\n)?\z)/
   GH_TIMEOUT_SECONDS = Integer(ENV.fetch("FETCH_PR_REVIEW_DATA_GH_TIMEOUT_SECONDS", "60"))
   TRUST_DIGEST_FORMAT = /\Asha256:[0-9a-f]{64}\z/
@@ -333,6 +334,7 @@ module FetchPrReviewData
         line
       else
         line.gsub(INLINE_CODE_LITERAL, "\\1\\2inline-code")
+            .gsub(ESCAPED_ANGLE_BRACKET, "\\1\\2escaped-angle")
       end
     end.join
   end

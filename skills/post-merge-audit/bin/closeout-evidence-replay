@@ -235,8 +235,9 @@ module CloseoutEvidenceReplay
     text = text.to_s.dup.force_encoding(Encoding::UTF_8)
     return invalid_utf8_replay unless text.valid_encoding?
 
-    qa_v1_markers = marker_bodies(text, "qa-evidence v1")
-    qa_v2_markers = marker_bodies(text, "qa-evidence v2")
+    visible_text = visible_markdown(text)
+    qa_v1_markers = marker_bodies(text, "qa-evidence v1", visible_text)
+    qa_v2_markers = marker_bodies(text, "qa-evidence v2", visible_text)
     applicable_v2_markers = qa_v2_markers.select do |marker|
       fields, = parse_fields(marker)
       head_sha = fields.fetch("head_sha", "").to_s.downcase
@@ -259,11 +260,11 @@ module CloseoutEvidenceReplay
         replay_qa_markers(qa_v1_markers, expected_head_sha: expected_head_sha, version: 1)
       end
     priority = replay_priority_markers(
-      marker_bodies(text, "priority-finding-dispositions v1"),
+      marker_bodies(text, "priority-finding-dispositions v1", visible_text),
       expected_head_sha:,
       required: require_priority_dispositions
     )
-    hosted_markers = marker_bodies(text, "hosted-qa-evidence v1")
+    hosted_markers = marker_bodies(text, "hosted-qa-evidence v1", visible_text)
     hosted_qa = if hosted_markers.empty?
                   hosted_qa_not_applicable("hosted-qa-evidence v1 marker missing")
                 else
@@ -277,8 +278,8 @@ module CloseoutEvidenceReplay
     }
   end
 
-  def marker_bodies(text, name)
-    legacy_marker_bodies(text, name) + visible_details_marker_bodies(text, name)
+  def marker_bodies(text, name, visible_text)
+    legacy_marker_bodies(text, name) + visible_details_marker_bodies(visible_text, name)
   end
 
   def legacy_marker_bodies(text, name)
@@ -295,7 +296,7 @@ module CloseoutEvidenceReplay
   # legacy HTML envelope above for historical receipts only; writers use this
   # exact details/fence shape so the parser cannot mistake ordinary prose for
   # authority-bearing evidence.
-  def visible_details_marker_bodies(text, name)
+  def visible_details_marker_bodies(visible_text, name)
     summary = {
       "qa-evidence v1" => "QA evidence",
       "qa-evidence v2" => "QA evidence",
@@ -303,7 +304,7 @@ module CloseoutEvidenceReplay
       "priority-finding-dispositions v1" => "Priority finding dispositions"
     }.fetch(name)
 
-    visible_markdown(text).scan(
+    visible_text.scan(
       %r{<details>[ \t]*\r?\n<summary>#{Regexp.escape(summary)}</summary>[ \t]*\r?\n\r?\n```text[ \t]*\r?\n#{Regexp.escape(name)}[ \t]*\r?\n(.*?)^`{3,}[ \t]*\r?\n</details>[ \t]*(?:\r?\n|\z)}m
     ).map(&:first)
   end
@@ -757,6 +758,7 @@ module CloseoutEvidenceReplay
     raw_html_containers = []
     raw_text_open_tag = nil
     raw_text_html_comment_open = false
+    raw_html_block_end = nil
     html_comment_open = false
     open_html_tag = nil
     inline_code_delimiter = nil
@@ -784,6 +786,14 @@ module CloseoutEvidenceReplay
         end
         record_fence = false if opener
         rendered << line
+        next
+      end
+      if raw_html_block_end
+        raw_html_block_end = nil if line.include?(raw_html_block_end)
+        next
+      end
+      if raw_html_containers.empty? && (raw_html_block_end = raw_html_block_terminator(line))
+        raw_html_block_end = nil if line.include?(raw_html_block_end)
         next
       end
       opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
@@ -885,6 +895,12 @@ module CloseoutEvidenceReplay
       rendered << line
     end
     rendered.join
+  end
+
+  def raw_html_block_terminator(line)
+    return "?>" if line.match?(/\A[ \t]{0,3}<\?/)
+
+    "]]>" if line.match?(/\A[ \t]{0,3}<!\[CDATA\[/)
   end
 
   def replay_qa_markers(markers, expected_head_sha: nil, version: 1, github_host: nil)

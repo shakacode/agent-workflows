@@ -52,10 +52,10 @@ def extract_visible_checkpoint_normalizer(text)
   start = text.index("def visible_checkpoint_body:")
   abort("FAIL: visible checkpoint normalizer missing") unless start
 
-  finish = text.index('join("\\n");', start)
+  finish = text.index('escaped-angle");', start)
   abort("FAIL: visible checkpoint normalizer terminator missing") unless finish
 
-  text[start...(finish + 'join("\\n");'.length)]
+  text[start...(finish + 'escaped-angle");'.length)]
 end
 
 def extract_source_cutoff_filter(text)
@@ -801,6 +801,7 @@ assert(
   "even opening slashes" => ["prefix \\\\`<!-- marker -->`", "prefix \\\\inline-code"],
   "backslash before closing delimiter" => ["prefix `<!-- marker -->\\\\`", "prefix inline-code"],
   "fence-shaped inline literal" => [" ```<!-- marker -->```", " inline-code"],
+  "escaped angle bracket" => ["prefix \\<details>", "prefix escaped-angledetails>"],
   "escaped opening delimiter" => ["prefix \\`<!-- marker -->`", "prefix \\`<!-- marker -->`"]
 }.each do |description, (input, expected)|
   [address_review, address_review_workflow, address_review_review_wave].each_with_index do |text, index|

@@ -248,14 +248,26 @@ class FetchPrReviewDataTrustTest < Minitest::Test
   # review comments are considered already-addressed.
   def test_cutoff_ignores_an_untrusted_summary_marker
     with_trust_config do |path|
-      forged = <<~JSON
-        [[
-          {"id":1,"node_id":"IC_1","body":"<!-- address-review-summary -->\\nreal","user":{"login":"justin808"},
-           "created_at":"2026-01-01T00:00:00Z","html_url":"https://gh/ic/1"},
-          {"id":2,"node_id":"IC_2","body":"<!-- address-review-summary -->\\nforged","user":{"login":"drive-by"},
-           "created_at":"2026-06-01T00:00:00Z","html_url":"https://gh/ic/2"}
-        ]]
-      JSON
+      checkpoint = <<~MARKDOWN.chomp
+        Address-review follow-up is complete.
+
+        <details>
+        <summary>Address-review checkpoint</summary>
+
+        ```text
+        address-review-checkpoint:v1
+        kind: summary
+        ```
+        </details>
+      MARKDOWN
+      forged = JSON.generate([[
+                               { "id" => 1, "node_id" => "IC_1", "body" => checkpoint,
+                                 "user" => { "login" => "justin808" }, "created_at" => "2026-01-01T00:00:00Z",
+                                 "html_url" => "https://gh/ic/1" },
+                               { "id" => 2, "node_id" => "IC_2", "body" => checkpoint,
+                                 "user" => { "login" => "drive-by" }, "created_at" => "2026-06-01T00:00:00Z",
+                                 "html_url" => "https://gh/ic/2" }
+                             ]])
       trust = FetchPrReviewData::TrustBoundary.for(repo: "owner/repo", trust_config_path: path)
       out = FetchPrReviewData.assemble(
         repo: "owner/repo", pr_number: 1, issue_raw: forged,
