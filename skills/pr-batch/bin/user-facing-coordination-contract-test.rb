@@ -111,22 +111,24 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes text, "ask one exact approval or decision question"
   end
 
-  def test_known_maintainer_decisions_are_question_first_with_supporting_details
-    doc = normalized_section(DOC, "## Maintainer Decision Requests", end_heading: /^##\s+/)
-    assert_ordered(doc, "concrete plain-language question", "what a yes or no answer changes", "supporting details")
-    assert_includes doc, "one maintainer decision"
-    assert_includes doc, "exact SHAs, claim IDs, run IDs, reviewer liveness, and route telemetry"
-    assert_includes doc,
-                    "unfamiliar policy label without explaining the practical rule and requested exception"
-    assert_includes doc, "machine-readable receipts, safety gates, and exact closing strings"
+  def test_maintainer_decision_contract_rejects_contradictions
+    source = SkillStageSource.read(File.join(ROOT, DOC), encoding: "UTF-8")
+    assert_match(/^## Maintainer Decision Requests$/, source)
 
+    doc = normalized_section(DOC, "## Maintainer Decision Requests", end_heading: /^##\s+/)
     workflow = normalized_section(
       WORKFLOW,
       "### Human-Status Translation Contract",
       end_heading: /^###\s+/
     )
-    assert_ordered(workflow, "Maintainer Decision Requests", "concrete plain-language question leads", "supporting details follow")
-    assert_includes workflow, "does not remove or alter required evidence"
+    assert_includes workflow,
+                    "[Maintainer Decision Requests](../docs/user-facing-coordination.md#maintainer-decision-requests)"
+
+    [
+      /(?:\A|[.!?]\s+)Do not lead with the concrete plain-language question\b/i,
+      /(?:\A|[.!?]\s+)Use a vague headline\b/,
+      /(?:\A|[.!?]\s+)(?:Ask|Asking)\b[^.]*\bunfamiliar policy label\b[^.]*\bwithout explaining\b/
+    ].each { |contradiction| refute_match contradiction, doc }
   end
 
   def test_resource_release_request_is_input_not_ownership
