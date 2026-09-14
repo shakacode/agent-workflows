@@ -200,6 +200,30 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     end
   end
 
+  def test_render_preserves_gfm_table_headers_but_not_malformed_delimiters
+    [
+      "Header A | Header B\n--- | ---\nCell A | Cell B\n",
+      "| Header A | Header B |\n| :--- | ---: |\n| Cell A | Cell B |\n"
+    ].each do |payload|
+      rendered = GitHubCommentEnvelope.render(
+        body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
+      )
+
+      assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
+      assert_includes rendered, "payload_first_line_preserved: true"
+      assert_equal payload, GitHubCommentEnvelope.payload(rendered)
+    end
+
+    malformed = "Header A | Header B\n--- | nope\nCell A | Cell B\n"
+    rendered = GitHubCommentEnvelope.render(
+      body: malformed, runner: "codex", host: "M5", task_or_run: "task-7"
+    )
+
+    assert_equal "#{VISIBLE_PREFIX} Header A | Header B\n", rendered.lines.first
+    assert_includes rendered, "payload_first_line_preserved: false"
+    assert_equal malformed, GitHubCommentEnvelope.payload(rendered)
+  end
+
   def test_payload_reads_metadata_free_preserved_first_line_envelopes
     payload = "Setext heading\n---\nEvidence follows.\n"
     rendered = GitHubCommentEnvelope.render(

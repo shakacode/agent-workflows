@@ -201,7 +201,12 @@ module GitHubCommentEnvelope
     return false if payload_first_line.empty?
 
     outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "")
-    outcome.match?(MARKDOWN_BLOCK_SYNTAX) || initial_setext_heading?(remaining_payload)
+    outcome.match?(MARKDOWN_BLOCK_SYNTAX) || initial_setext_heading?(remaining_payload) ||
+      gfm_table_delimiter_row?(remaining_payload)
+  end
+
+  def gfm_table_delimiter_row?(remaining_payload)
+    remaining_payload.match?(/\A[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*(?:\r\n|\n|\r|\z)/)
   end
 
   def legacy_visible_line(display_runner, payload_first_line, remaining_payload = "")
