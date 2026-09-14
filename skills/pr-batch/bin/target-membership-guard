@@ -192,8 +192,15 @@ unless raw_input.valid_encoding?
 end
 
 begin
-  input = JSON.parse(raw_input)
-rescue JSON::ParserError
+  input = JSON.parse(raw_input, allow_duplicate_key: true)
+rescue JSON::ParserError => e
+  if e.message.match?(/surrogate/i)
+    emit_unknown(
+      "input contains invalid Unicode scalar data",
+      next_action: "replace invalid Unicode scalar data and replay the guard"
+    )
+  end
+
   emit_unknown(
     "input is not valid JSON",
     next_action: "provide one target-membership-request v1 object and replay the guard"
