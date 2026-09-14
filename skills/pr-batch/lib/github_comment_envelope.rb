@@ -14,7 +14,7 @@ module GitHubCommentEnvelope
   HOST_PATTERN = /\A(?!.*-->)[^\r\n]+\z/
   LEGACY_WORKFLOW_MARKER = /\A<!-- address-review-(?:summary|status) -->\r?\n/
   LEGACY_AGENT_HEADER = /\A🤖 \*\*(?:Codex|Claude|Cursor)(?: · [^*\r\n]+)?\*\*(?:\r?\n|\z)/
-  VISIBLE_AGENT_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:\r?\n|\z)/
+  VISIBLE_AGENT_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:\r?\n| · Agent comment(?:\r?\n|\z)|\z)/
   PAYLOAD_RUNNER_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:[ \t]+|(?=\z))/
   MARKDOWN_BLOCK_SYNTAX = %r{\A[ \t]{0,3}(?:`{3,}|~{3,}|\#{1,6}(?:[ \t]|\z)|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+|\[[^\]\r\n]+\]:[ \t]*\S|(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|<[A-Za-z!/])|\A(?: {4}|[ \t]*\t)}
   PAYLOAD_LINE_ENDINGS = { "\r\n" => "crlf", "\n" => "lf", "\r" => "cr", "" => "none" }.freeze
@@ -32,36 +32,15 @@ module GitHubCommentEnvelope
       raise ArgumentError, "runner must be codex, claude, or cursor"
     end
     payload = body.sub(/\A[\r\n]+/, "")
-    first_line, line_ending, remaining_payload = split_payload(payload)
-    preserved_first_line = "#{first_line}#{line_ending}"
-    preserved_by_structure = preserve_payload_first_line?(first_line, remaining_payload)
-    first_line_preserved = preserved_by_structure ||
-                           preserved_payload_first_line?(first_line, remaining_payload, preserved_first_line)
-    remaining_payload = "#{first_line}#{line_ending}#{remaining_payload}" if first_line_preserved
-    visible = if first_line_preserved && !preserved_by_structure
-                "🤖 #{display_runner}"
-              else
-                visible_line(
-                  display_runner,
-                  first_line,
-                  first_line_preserved ? remaining_payload.delete_prefix(preserved_first_line) : remaining_payload
-                )
-              end
     marker = [
       MARKER,
       "runner: #{runner}",
       "host: #{host}",
-      "task_or_run: #{task_or_run}"
+      "task_or_run: #{task_or_run}",
+      "payload_layout: after-attribution"
     ]
-    unless first_line.empty?
-      marker.concat([
-                      "payload_first_line_b64url: #{Base64.urlsafe_encode64(first_line, padding: false)}",
-                      "payload_line_ending: #{PAYLOAD_LINE_ENDINGS.fetch(line_ending)}",
-                      "payload_first_line_preserved: #{first_line_preserved}"
-                    ])
-    end
     marker = marker.join("\n")
-    "#{visible}\n\n<details>\n<summary>Agent attribution</summary>\n\n```text\n#{marker}\n```\n</details>\n\n#{remaining_payload}"
+    "🤖 #{display_runner} · Agent comment\n\n<details>\n<summary>Agent attribution</summary>\n\n```text\n#{marker}\n```\n</details>\n\n#{payload}"
   end
 
   def agent_authored?(body)
@@ -74,6 +53,8 @@ module GitHubCommentEnvelope
     return body unless parsed
 
     remaining_payload = body[parsed.fetch("payload_offset")..].to_s
+    return remaining_payload if parsed["payload_layout"] == "after-attribution"
+
     return remaining_payload unless parsed.key?("payload_first_line")
 
     preserved_first_line = "#{parsed.fetch('payload_first_line')}#{parsed.fetch('payload_line_ending')}"
@@ -91,7 +72,7 @@ module GitHubCommentEnvelope
   def parse(body)
     return unless body.is_a?(String)
 
-    match = body.match(%r{\A(?<visible>🤖 [^\r\n]+)\r?\n\r?\n<details>\r?\n<summary>Agent attribution</summary>\r?\n\r?\n```text\r?\n#{MARKER}\r?\nrunner: (?<runner>[^\r\n]+)\r?\nhost: (?<host>[^\r\n]+)\r?\ntask_or_run: (?<task>[^\r\n]+)\r?\n(?:payload_first_line_b64url: (?<payload_first_line>[A-Za-z0-9_-]*)\r?\npayload_line_ending: (?<payload_line_ending>crlf|lf|cr|none)\r?\n(?:payload_first_line_preserved: (?<first_line_preserved>true|false)\r?\n)?)?```\r?\n</details>\r?\n\r?\n}m)
+    match = body.match(%r{\A(?<visible>🤖 [^\r\n]+)\r?\n\r?\n<details>\r?\n<summary>Agent attribution</summary>\r?\n\r?\n```text\r?\n#{MARKER}\r?\nrunner: (?<runner>[^\r\n]+)\r?\nhost: (?<host>[^\r\n]+)\r?\ntask_or_run: (?<task>[^\r\n]+)\r?\n(?:payload_layout: (?<payload_layout>after-attribution)\r?\n|(?:payload_first_line_b64url: (?<payload_first_line>[A-Za-z0-9_-]*)\r?\npayload_line_ending: (?<payload_line_ending>crlf|lf|cr|none)\r?\n(?:payload_first_line_preserved: (?<first_line_preserved>true|false)\r?\n)?)?)```\r?\n</details>\r?\n\r?\n}m)
     return parse_legacy(body) unless match
 
     visible = match[:visible]
@@ -102,6 +83,11 @@ module GitHubCommentEnvelope
     return unless valid_fields?(visible, runner, host, task_or_run)
 
     parsed = { "version" => VERSION, "runner" => runner.downcase, "host" => host, "task_or_run" => task_or_run, "payload_offset" => match.end(0) }
+    if match[:payload_layout]
+      return unless visible == "🤖 #{RUNNER_DISPLAY.fetch(runner.downcase)} · Agent comment"
+
+      return parsed.merge("payload_layout" => match[:payload_layout])
+    end
     unless match[:payload_first_line]
       return unless visible == "🤖 #{RUNNER_DISPLAY.fetch(runner.downcase)}"
 

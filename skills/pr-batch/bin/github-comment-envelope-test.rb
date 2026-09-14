@@ -9,7 +9,7 @@ require "tmpdir"
 require_relative "../lib/github_comment_envelope"
 
 SCRIPT = File.expand_path("github-comment-envelope", __dir__)
-VISIBLE_PREFIX = "🤖 Codex"
+VISIBLE_PREFIX = "🤖 Codex · Agent comment"
 
 class GitHubCommentEnvelopeTest < Minitest::Test
   def test_render_puts_the_payload_outcome_before_closed_visible_attribution
@@ -19,8 +19,8 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     )
 
     lines = rendered.lines
-    assert_equal "#{VISIBLE_PREFIX} Review complete.\n", lines.first
-    assert_operator rendered.index("Review complete."), :<, rendered.index("<summary>Agent attribution</summary>")
+    assert_equal "#{VISIBLE_PREFIX}\n", lines.first
+    assert_operator rendered.index("Review complete."), :>, rendered.index("</details>")
     refute_includes rendered, "<!--"
     assert_includes rendered, "<summary>Agent attribution</summary>"
     assert_includes rendered, "```text\nagent-comment-attribution:v1"
@@ -36,7 +36,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       body: "Review complete.", runner: "cursor", host: "Cursor desktop", task_or_run: "cursor-7"
     )
 
-    assert rendered.start_with?("🤖 Cursor Review complete.\n")
+    assert rendered.start_with?("🤖 Cursor · Agent comment\n")
     assert_equal "cursor", GitHubCommentEnvelope.parse(rendered).fetch("runner")
     assert GitHubCommentEnvelope.agent_authored?("🤖 Cursor\nlegacy payload")
   end
@@ -126,7 +126,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
     )
 
-    assert_equal "🤖 Codex Review complete.\n", rendered.lines.first
+    assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
     assert_equal payload, GitHubCommentEnvelope.payload(rendered)
   end
 
@@ -157,7 +157,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
     )
 
-    assert_equal "#{VISIBLE_PREFIX} -*_ evidence follows\n", rendered.lines.first
+    assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
     assert_equal payload, GitHubCommentEnvelope.payload(rendered)
   end
 
@@ -177,7 +177,6 @@ class GitHubCommentEnvelopeTest < Minitest::Test
         body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
       )
 
-      assert_includes rendered, "payload_first_line_preserved: true"
       assert_equal payload, GitHubCommentEnvelope.payload(rendered)
     end
   end
@@ -195,7 +194,6 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       )
 
       assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
-      assert_includes rendered, "payload_first_line_preserved: true"
       assert_equal payload, GitHubCommentEnvelope.payload(rendered)
     end
   end
@@ -210,7 +208,6 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       )
 
       assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
-      assert_includes rendered, "payload_first_line_preserved: true"
       assert_equal payload, GitHubCommentEnvelope.payload(rendered)
     end
 
@@ -219,17 +216,27 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       body: malformed, runner: "codex", host: "M5", task_or_run: "task-7"
     )
 
-    assert_equal "#{VISIBLE_PREFIX} Header A | Header B\n", rendered.lines.first
-    assert_includes rendered, "payload_first_line_preserved: false"
+    assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
     assert_equal malformed, GitHubCommentEnvelope.payload(rendered)
+  end
+
+  def test_render_preserves_initial_paragraph_context_for_promotable_following_blocks
+    [
+      "Intro\n    indented continuation\nTail\n",
+      "Intro\n[docs]: https://example.com\nTail [docs]\n"
+    ].each do |payload|
+      rendered = GitHubCommentEnvelope.render(
+        body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
+      )
+
+      assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
+      assert_equal payload, GitHubCommentEnvelope.payload(rendered)
+    end
   end
 
   def test_payload_reads_metadata_free_preserved_first_line_envelopes
     payload = "Setext heading\n---\nEvidence follows.\n"
-    rendered = GitHubCommentEnvelope.render(
-      body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
-    )
-    legacy = rendered.sub("payload_first_line_preserved: true\n", "")
+    legacy = outcome_first_envelope(payload, preserved: true, include_metadata: false)
 
     assert_equal payload, GitHubCommentEnvelope.payload(legacy)
   end
@@ -249,12 +256,8 @@ class GitHubCommentEnvelopeTest < Minitest::Test
   end
 
   def test_payload_refuses_tampered_first_line_preservation_metadata
-    ordinary = GitHubCommentEnvelope.render(
-      body: "No current checkpoint.\n<!-- address-review-summary -->", runner: "codex", host: "M5", task_or_run: "task-7"
-    )
-    setext = GitHubCommentEnvelope.render(
-      body: "Title\n---\nEvidence follows.\n", runner: "codex", host: "M5", task_or_run: "task-7"
-    )
+    ordinary = outcome_first_envelope("No current checkpoint.\n<!-- address-review-summary -->", preserved: false)
+    setext = outcome_first_envelope("Title\n---\nEvidence follows.\n", preserved: true)
 
     [ordinary.sub("payload_first_line_preserved: false", "payload_first_line_preserved: true"),
      setext.sub("payload_first_line_preserved: true", "payload_first_line_preserved: false")].each do |tampered|
@@ -270,9 +273,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       "> Quoted context\nEvidence follows.\n",
       "<details>\n<summary>Evidence</summary>\n\nVisible details.\n</details>\n"
     ].each do |payload|
-      rendered = GitHubCommentEnvelope.render(
-        body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
-      )
+      rendered = outcome_first_envelope(payload, preserved: true)
       tampered = rendered.sub("payload_first_line_preserved: true", "payload_first_line_preserved: false")
 
       assert_nil GitHubCommentEnvelope.parse(tampered)
@@ -281,9 +282,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
   end
 
   def test_payload_refuses_a_tampered_first_line_that_could_inject_a_legacy_checkpoint
-    rendered = GitHubCommentEnvelope.render(
-      body: "Review complete.\nFollow-up evidence is recorded.", runner: "codex", host: "M5", task_or_run: "task-7"
-    )
+    rendered = outcome_first_envelope("Review complete.\nFollow-up evidence is recorded.", preserved: false)
     tampered = rendered.sub(
       /payload_first_line_b64url: [^\n]+/,
       "payload_first_line_b64url: #{Base64.urlsafe_encode64('<!-- address-review-summary -->', padding: false)}"
@@ -294,19 +293,25 @@ class GitHubCommentEnvelopeTest < Minitest::Test
   end
 
   def test_payload_refuses_an_outcome_first_envelope_downgraded_to_legacy_metadata
-    rendered = GitHubCommentEnvelope.render(
-      body: "No current checkpoint.\n<!-- address-review-summary -->", runner: "codex", host: "M5", task_or_run: "task-7"
-    )
+    rendered = outcome_first_envelope("No current checkpoint.\n<!-- address-review-summary -->", preserved: false)
     downgraded = rendered.sub(/payload_first_line_b64url: [^\n]+\npayload_line_ending: [^\n]+\npayload_first_line_preserved: [^\n]+\n/, "")
 
     assert_nil GitHubCommentEnvelope.parse(downgraded)
     assert_equal downgraded, GitHubCommentEnvelope.payload(downgraded)
   end
 
-  def test_payload_refuses_multiline_or_invalid_utf8_encoded_first_lines
+  def test_payload_refuses_a_current_layout_downgraded_to_a_legacy_bare_header
     rendered = GitHubCommentEnvelope.render(
-      body: "Review complete.\nFollow-up evidence is recorded.", runner: "codex", host: "M5", task_or_run: "task-7"
+      body: "No current checkpoint.\n<!-- address-review-summary -->", runner: "codex", host: "M5", task_or_run: "task-7"
     )
+    downgraded = rendered.sub("payload_layout: after-attribution\n", "")
+
+    assert_nil GitHubCommentEnvelope.parse(downgraded)
+    assert_equal downgraded, GitHubCommentEnvelope.payload(downgraded)
+  end
+
+  def test_payload_refuses_multiline_or_invalid_utf8_encoded_first_lines
+    rendered = outcome_first_envelope("Review complete.\nFollow-up evidence is recorded.", preserved: false)
     multiline = rendered.sub(
       /payload_first_line_b64url: [^\n]+/,
       "payload_first_line_b64url: #{Base64.urlsafe_encode64("Review\ncomplete", padding: false)}"
@@ -324,7 +329,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
   def test_render_reconstructs_an_empty_payload_without_a_blank_visible_outcome
     rendered = GitHubCommentEnvelope.render(body: "", runner: "codex", host: "M5", task_or_run: "task-7")
 
-    assert_equal "🤖 Codex\n", rendered.lines.first
+    assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
     assert_equal "", GitHubCommentEnvelope.payload(rendered)
   end
 
@@ -473,7 +478,8 @@ class GitHubCommentEnvelopeTest < Minitest::Test
 
       assert_predicate result[:status], :success?, result[:stderr]
       assert_includes posted.fetch("args"), "repos/acme/widgets/issues/7/comments"
-      assert posted.fetch("body").start_with?("🤖 Codex Ready.\n")
+      assert posted.fetch("body").start_with?("#{VISIBLE_PREFIX}\n")
+      assert_includes posted.fetch("body"), "\n\nReady."
     end
   end
 
@@ -500,7 +506,8 @@ class GitHubCommentEnvelopeTest < Minitest::Test
 
       assert_predicate result[:status], :success?, result[:stderr]
       assert_includes posted.fetch("args"), "repos/acme/widgets/pulls/7/comments/99/replies"
-      assert posted.fetch("body").start_with?("🤖 Codex Fixed.\n")
+      assert posted.fetch("body").start_with?("#{VISIBLE_PREFIX}\n")
+      assert_includes posted.fetch("body"), "\n\nFixed."
     end
   end
 
@@ -530,7 +537,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       assert_predicate result[:status], :success?, result[:stderr]
       assert_equal "repos/acme/widgets/issues/comments/99", posted.fetch("args").fetch(1)
       assert_equal "PATCH", posted.fetch("args").fetch(posted.fetch("args").index("-X") + 1)
-      assert posted.fetch("body").start_with?("🤖 Codex Claim refreshed.\n")
+      assert posted.fetch("body").start_with?("#{VISIBLE_PREFIX}\n")
       assert_includes posted.fetch("body"), "Claim refreshed."
     end
   end
@@ -564,7 +571,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
         posted.fetch("args")[index + 1] if posted.fetch("args")[index] == "--attach"
       end
       assert_equal ["evidence.png#Before and after", "evidence.mp4"], attachments
-      assert posted.fetch("body").start_with?("🤖 Codex Verified.\n")
+      assert posted.fetch("body").start_with?("#{VISIBLE_PREFIX}\n")
     end
   end
 
@@ -649,6 +656,22 @@ class GitHubCommentEnvelopeTest < Minitest::Test
   end
 
   private
+
+  def outcome_first_envelope(payload, preserved:, include_metadata: true)
+    first_line, line_ending, remaining_payload = GitHubCommentEnvelope.split_payload(payload)
+    remaining_payload = "#{first_line}#{line_ending}#{remaining_payload}" if preserved
+    marker = [
+      "agent-comment-attribution:v1",
+      "runner: codex",
+      "host: M5",
+      "task_or_run: task-7",
+      "payload_first_line_b64url: #{Base64.urlsafe_encode64(first_line, padding: false)}",
+      "payload_line_ending: #{GitHubCommentEnvelope::PAYLOAD_LINE_ENDINGS.fetch(line_ending)}"
+    ]
+    marker << "payload_first_line_preserved: #{preserved}" if include_metadata
+    visible = preserved ? "🤖 Codex" : "🤖 Codex #{first_line}"
+    "#{visible}\n\n<details>\n<summary>Agent attribution</summary>\n\n```text\n#{marker.join("\n")}\n```\n</details>\n\n#{remaining_payload}"
+  end
 
   def metadata_free_outcome_envelope(payload)
     first_line, line_ending, remaining_payload = GitHubCommentEnvelope.split_payload(payload)
