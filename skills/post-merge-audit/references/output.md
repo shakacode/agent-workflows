@@ -121,6 +121,26 @@ exactly one `qa-maintainer-waiver v1` marker with `target: <exact target URL>`,
 replay independently re-fetch and compare the bound waiver; a self-consistent
 preflight digest is not authentication.
 
+New maintainer waivers are human-authored visible comments in this closed form:
+
+````markdown
+Maintainer exact-head QA waiver is recorded. No reader action is needed.
+
+<details>
+<summary>QA waiver details</summary>
+
+```text
+qa-maintainer-waiver v1
+target: <exact target URL>
+head_sha: <full exact head SHA>
+decision: waived
+```
+</details>
+````
+
+Historical `<!-- qa-maintainer-waiver v1 ... -->` forms are read-compatible
+only.
+
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
 A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Ordinary new complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight; the accepted-deferral path below uses exactly one `accepted_deferral_snapshot` instead. Replay exactly one current closed `Completed-batch audit receipt` disclosure containing a fenced `completed-batch-audit v1` record, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. Historical exact versioned `<!-- completed-batch-audit v1` wrappers through their single final `-->` are read-compatible only. Ordinary new complete receipts also have exactly one helper-managed `publication_snapshot`; accepted-deferral receipts have exactly one `accepted_deferral_snapshot`, and either kind fails closed when its snapshot is unrefreshed or mismatched. A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.

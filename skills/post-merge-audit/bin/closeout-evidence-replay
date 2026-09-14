@@ -901,6 +901,7 @@ module CloseoutEvidenceReplay
 
   def raw_html_block_terminator(line)
     return "?>" if line.match?(/\A[ \t]{0,3}<\?/)
+    return ">" if line.match?(/\A[ \t]{0,3}<![A-Z]/)
 
     "]]>" if line.match?(/\A[ \t]{0,3}<!\[CDATA\[/)
   end

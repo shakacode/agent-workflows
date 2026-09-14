@@ -424,7 +424,9 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_processing_instruction_and_cdata_blocks_do_not_authorize_visible_evidence
     {
       "processing instruction" => ["<?example\n", "?>\n"],
-      "CDATA" => ["<![CDATA[\n", "]]>\n"]
+      "CDATA" => ["<![CDATA[\n", "]]>\n"],
+      "type-4 declaration" => ["<!DOCTYPE\n", ">\n"],
+      "type-4 declaration variant" => ["<!ENTITY\n", ">\n"]
     }.each do |description, (opener, closer)|
       head_sha = "1" * 40
       body = <<~MARKDOWN

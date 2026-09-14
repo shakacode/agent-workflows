@@ -1475,13 +1475,19 @@ module CompletedBatchPublicationPreflight
   end
 
   def visible_waiver_marker_payload(body, marker_name)
-    return unless marker_name == HOSTED_QA_WAIVER_MARKER
+    intro, summary = case marker_name
+                     when QA_WAIVER_MARKER
+                       ["Maintainer exact-head QA waiver is recorded. No reader action is needed.", "QA waiver details"]
+                     when HOSTED_QA_WAIVER_MARKER
+                       ["Hosted QA waiver is recorded. No reader action is needed.", "Hosted QA waiver details"]
+                     end
+    return unless intro
 
     body = body.to_s
     return if body.include?("<!--")
 
     match = body.match(
-      %r{\AHosted QA waiver is recorded\. No reader action is needed\.\r?\n\r?\n<details>\r?\n<summary>Hosted QA waiver details</summary>\r?\n\r?\n```text\r?\n#{Regexp.escape(marker_name)}\r?\n(?<payload>(?:(?!<)[\s\S])*?)^```\r?\n</details>\r?\n?\z}m
+      %r{\A#{Regexp.escape(intro)}\r?\n\r?\n<details>\r?\n<summary>#{Regexp.escape(summary)}</summary>\r?\n\r?\n```text\r?\n#{Regexp.escape(marker_name)}\r?\n(?<payload>(?:(?!<)[\s\S])*?)^```\r?\n</details>\r?\n?\z}m
     )
     match && match[:payload]
   end

@@ -214,6 +214,15 @@ class FetchPrReviewDataTest < Minitest::Test
     assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(
       checkpoint.call("- Fixed \\<details> parsing in a visible finding.")
     )
+    (0..6).each do |backslashes|
+      detail = "- Literal: #{'\\' * backslashes}<details>"
+      kind = FetchPrReviewData.visible_checkpoint_kind(checkpoint.call(detail))
+      if backslashes.odd?
+        assert_equal "summary", kind, backslashes
+      else
+        assert_nil kind, backslashes
+      end
+    end
   end
 
   REVIEWS_RAW = <<~JSON

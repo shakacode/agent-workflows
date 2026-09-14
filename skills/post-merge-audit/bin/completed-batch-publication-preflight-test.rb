@@ -3835,4 +3835,49 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       ), context
     end
   end
+
+  def test_generic_waiver_marker_accepts_visible_and_legacy_forms
+    head_sha = "b" * 40
+    target = { "host" => "github.com", "repo" => "shakacode/agent-workflows", "type" => "pull_request", "number" => 817 }
+    waiver_url = "https://github.com/shakacode/agent-workflows/pull/817#issuecomment-818"
+    payload = <<~PAYLOAD.chomp
+      target: https://github.com/shakacode/agent-workflows/pull/817
+      head_sha: #{head_sha}
+      decision: waived
+    PAYLOAD
+    legacy = "<!-- qa-maintainer-waiver v1\n#{payload}\n-->"
+    visible = <<~MARKDOWN.chomp
+      Maintainer exact-head QA waiver is recorded. No reader action is needed.
+
+      <details>
+      <summary>QA waiver details</summary>
+
+      ```text
+      qa-maintainer-waiver v1
+      #{payload}
+      ```
+      </details>
+    MARKDOWN
+
+    [legacy, visible].each do |body|
+      assert_equal(
+        {
+          "target" => "https://github.com/shakacode/agent-workflows/pull/817",
+          "head_sha" => head_sha,
+          "decision" => "waived"
+        },
+        CompletedBatchPublicationPreflight.waiver_marker_fields(body)
+      )
+
+      comment = {
+        "id" => 818, "html_url" => waiver_url,
+        "issue_url" => "https://api.github.com/repos/shakacode/agent-workflows/issues/817",
+        "created_at" => "2026-09-13T00:00:00Z", "updated_at" => "2026-09-13T00:00:00Z",
+        "user" => { "login" => "maintainer", "type" => "User" }, "author_association" => "MEMBER", "body" => body
+      }
+      refute_nil CompletedBatchPublicationPreflight.canonical_waiver(
+        { "url" => waiver_url }, target, waiver_url, head_sha:, verifier: ->(**_keywords) { comment }
+      )
+    end
+  end
 end

@@ -826,6 +826,23 @@ end
            "visible checkpoint normalizer must preserve #{spaces} spaces plus tab in copy #{index}")
   end
 end
+(0..6).each do |backslashes|
+  input = "prefix #{'\\' * backslashes}<details>"
+  expected = if backslashes.odd?
+               "prefix #{'\\' * (backslashes - 1)}escaped-angledetails>"
+             else
+               input
+             end
+  [address_review, address_review_workflow, address_review_review_wave].each_with_index do |text, index|
+    stdout, stderr, status = Open3.capture3(
+      "jq", "-r", "#{extract_visible_checkpoint_normalizer(text)}\n. | visible_checkpoint_body",
+      stdin_data: JSON.generate(input)
+    )
+    assert(status.success?, "visible checkpoint normalizer must execute for #{backslashes} angle backslashes copy #{index}: #{stderr}")
+    assert(stdout.chomp == expected,
+           "visible checkpoint normalizer must preserve angle-backslash parity #{backslashes} in copy #{index}")
+  end
+end
 skill_cutoff_filter = extract_source_cutoff_filter(address_review)
 workflow_cutoff_filter = extract_source_cutoff_filter(address_review_workflow)
 assert(
