@@ -72,6 +72,7 @@ class PushDownstreamAuditWorkflowTest < Minitest::Test
       "bin/agent-workflow-writing-style",
       "bin/agent-workflow-seam-doctor-test.rb",
       "bin/agent_doctor/**",
+      "skills/pr-batch/lib/github_actor_trust.rb",
       "skills/secure-github-actions/lib/**",
       "downstream.yml",
       "seam-presets.yml"
