@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require_relative "../lib/verified_backport"
+
+def read_utf8_input(source)
+  input = yield
+  raise EncodingError, "#{source} contains invalid UTF-8" unless input.is_a?(String) && input.valid_encoding?
+
+  input
+end
+
+begin
+  input = case ARGV.length
+          when 0
+            begin
+              read_utf8_input("standard input") { $stdin.read }
+            rescue EncodingError, SystemCallError => e
+              warn "verified-backport-classify: unable to read input from standard input: #{e.class}: #{e.message}"
+              exit 66
+            end
+          when 1
+            begin
+              read_utf8_input("input file #{ARGV.fetch(0)}") do
+                File.read(ARGV.fetch(0), encoding: "UTF-8")
+              end
+            rescue EncodingError, SystemCallError => e
+              warn "verified-backport-classify: unable to read input file #{ARGV.fetch(0)}: #{e.class}: #{e.message}"
+              exit 66
+            end
+          else
+            warn "usage: verified-backport-classify [input.json]"
+            exit 64
+          end
+
+  evidence = JSON.parse(input.to_s)
+  puts JSON.generate(VerifiedBackport.classify(evidence))
+rescue JSON::ParserError, EncodingError
+  puts JSON.generate(VerifiedBackport.classify(nil))
+end
