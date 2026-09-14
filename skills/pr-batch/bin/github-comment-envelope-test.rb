@@ -180,6 +180,24 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     end
   end
 
+  def test_parse_rejects_a_visible_outcome_that_does_not_match_the_payload
+    { "codex" => "Codex", "claude" => "Claude", "cursor" => "Cursor" }.each do |runner, display|
+      rendered = GitHubCommentEnvelope.render(
+        body: "Review complete.\nNo action needed.\n", runner:, host: "M5", task_or_run: "task-7"
+      )
+      tampered = rendered.sub("🤖 #{display} Review complete.", "🤖 #{display} Approved for merge.")
+
+      assert_nil GitHubCommentEnvelope.parse(tampered), runner
+      assert_equal tampered, GitHubCommentEnvelope.payload(tampered), runner
+    end
+
+    empty = GitHubCommentEnvelope.render(body: "", runner: "codex", host: "M5", task_or_run: "task-7")
+    tampered_empty = empty.sub("· Agent comment", "Approved for merge.")
+
+    assert_nil GitHubCommentEnvelope.parse(tampered_empty)
+    assert_equal tampered_empty, GitHubCommentEnvelope.payload(tampered_empty)
+  end
+
   def test_temporary_visible_layouts_remain_agent_labelled_without_payload_unwrapping
     body = <<~BODY
       🤖 Codex Review complete.

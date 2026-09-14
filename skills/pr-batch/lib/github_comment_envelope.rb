@@ -71,7 +71,8 @@ module GitHubCommentEnvelope
       "task_or_run" => task_or_run,
       "payload_offset" => match.end(0)
     }
-    return unless visible_header?(visible, RUNNER_DISPLAY.fetch(runner.downcase))
+    display_runner = RUNNER_DISPLAY.fetch(runner.downcase)
+    return unless visible == visible_header(display_runner, body[parsed.fetch("payload_offset")..].to_s)
 
     parsed.merge("payload_layout" => "after-attribution")
   end
@@ -109,10 +110,6 @@ module GitHubCommentEnvelope
     outcome = outcome.delete_prefix("🤖 #{display_runner}").strip
     outcome = "· Agent comment" if outcome.empty?
     "🤖 #{display_runner} #{escape_visible_outcome(outcome)}"
-  end
-
-  def visible_header?(visible, display_runner)
-    visible.start_with?("🤖 #{display_runner} ") && visible.delete_prefix("🤖 #{display_runner} ").match?(/\S/)
   end
 
   def escape_visible_outcome(outcome)
