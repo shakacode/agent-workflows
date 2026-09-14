@@ -828,6 +828,24 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "UNKNOWN", run_replay(comment_terminator, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
   end
 
+  def test_any_raw_text_closer_ends_a_commonmark_raw_text_block
+    %w[pre script style textarea].product(%w[pre script style textarea]).each do |opening_tag, closing_tag|
+      next if opening_tag == closing_tag
+
+      head_sha = "1" * 40
+      body = <<~MARKDOWN
+        <#{opening_tag}>
+        raw text
+        </#{closing_tag}>
+
+        #{visible_qa_details(head_sha:, scope: "#{opening_tag} closed by #{closing_tag}")}
+      MARKDOWN
+
+      assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"),
+                   "#{opening_tag} closed by #{closing_tag}"
+    end
+  end
+
   def test_split_real_raw_opener_stays_real_after_an_indented_completion
     head_sha = "1" * 40
     indent = "    "

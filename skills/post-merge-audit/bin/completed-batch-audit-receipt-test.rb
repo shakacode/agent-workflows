@@ -2733,7 +2733,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert_match(/SHA-256 `[0-9a-f]{64}`/, reference)
       refute_includes reference, "<!-- completed-batch-audit"
       posted_comment = File.read(env.fetch("FAKE_GH_BODY"))
-      assert posted_comment.start_with?("🤖 Codex · Agent comment\n")
+      assert posted_comment.start_with?("🤖 Codex Completed-batch audit is clean. No reader action is needed.\n")
       assert GitHubCommentEnvelope.payload(posted_comment).start_with?("Completed-batch audit is clean. No reader action is needed.\n\n")
       assert_includes posted_comment, "<summary>Completed-batch audit receipt</summary>"
       assert_includes posted_comment, "```text\ncompleted-batch-audit v1\n"
@@ -2783,7 +2783,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         result = JSON.parse(out)
         assert result.fetch("ready")
         posted_body = File.read(env.fetch("FAKE_GH_BODY"))
-        assert posted_body.start_with?("🤖 Codex · Agent comment\n")
+        assert posted_body.start_with?("🤖 Codex Completed-batch audit is clean. No reader action is needed.\n")
         assert GitHubCommentEnvelope.payload(posted_body).start_with?("Completed-batch audit is clean. No reader action is needed.\n\n")
         refute_includes posted_body, "<!--"
         bound_marker = CompletedBatchAuditReceipt.comment_marker(posted_body)
@@ -2835,7 +2835,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
       assert status.success?, err
       posted_body = File.read(env.fetch("FAKE_GH_BODY"))
-      assert posted_body.start_with?("🤖 Codex · Agent comment\n")
+      assert posted_body.start_with?("🤖 Codex Completed-batch audit is clean. No reader action is needed.\n")
       assert GitHubCommentEnvelope.payload(posted_body).start_with?("Completed-batch audit is clean. No reader action is needed.\n\n")
       refute_includes posted_body, "<!--"
       refute_includes posted_body, CompletedBatchAuditReceipt::LEGACY_COMMENT_HEADER

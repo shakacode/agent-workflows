@@ -35,7 +35,7 @@ module GitHubCommentEnvelope
       "payload_layout: after-attribution"
     ]
     marker = marker.join("\n")
-    "🤖 #{display_runner} · Agent comment\n\n<details>\n<summary>Agent attribution</summary>\n\n```text\n#{marker}\n```\n</details>\n\n#{payload}"
+    "#{visible_header(display_runner, payload)}\n\n<details>\n<summary>Agent attribution</summary>\n\n```text\n#{marker}\n```\n</details>\n\n#{payload}"
   end
 
   def agent_authored?(body)
@@ -71,7 +71,7 @@ module GitHubCommentEnvelope
       "task_or_run" => task_or_run,
       "payload_offset" => match.end(0)
     }
-    return unless visible == "🤖 #{RUNNER_DISPLAY.fetch(runner.downcase)} · Agent comment"
+    return unless visible_header?(visible, RUNNER_DISPLAY.fetch(runner.downcase))
 
     parsed.merge("payload_layout" => "after-attribution")
   end
@@ -102,6 +102,21 @@ module GitHubCommentEnvelope
   def valid_fields?(visible, runner, host, task_or_run)
     runner.match?(VALUE_PATTERN) && host.match?(HOST_PATTERN) && task_or_run.match?(VALUE_PATTERN) &&
       RUNNER_DISPLAY[runner.downcase] && visible.match?(/\A🤖 #{Regexp.escape(RUNNER_DISPLAY.fetch(runner.downcase))}(?: |\z)/)
+  end
+
+  def visible_header(display_runner, payload)
+    outcome = payload.split(/\r\n|\n|\r/, 2).first.to_s.strip
+    outcome = outcome.delete_prefix("🤖 #{display_runner}").strip
+    outcome = "· Agent comment" if outcome.empty?
+    "🤖 #{display_runner} #{escape_visible_outcome(outcome)}"
+  end
+
+  def visible_header?(visible, display_runner)
+    visible.start_with?("🤖 #{display_runner} ") && visible.delete_prefix("🤖 #{display_runner} ").match?(/\S/)
+  end
+
+  def escape_visible_outcome(outcome)
+    outcome.gsub(/[&<>`]/, "&" => "&amp;", "<" => "&lt;", ">" => "&gt;", "`" => "&#96;")
   end
 
   def normalized_value(value, name, pattern: VALUE_PATTERN)
