@@ -100,7 +100,9 @@ module GitHubCommentEnvelope
 
     payload_line_ending = PAYLOAD_LINE_ENDING_VALUES.fetch(match[:payload_line_ending])
     envelope_line_ending = body[/\r\n|\n|\r/]
-    payload_line_ending = "\r\n" if payload_line_ending == "\n" && envelope_line_ending == "\r\n"
+    if payload_line_ending == "\n" && envelope_line_ending == "\r\n" && !body.match?(/(?<!\r)\n|\r(?!\n)/)
+      payload_line_ending = "\r\n"
+    end
     remaining_payload = body[match.end(0)..].to_s
     preserved_first_line = "#{payload_first_line}#{payload_line_ending}"
     display_runner = RUNNER_DISPLAY.fetch(runner.downcase)
@@ -141,7 +143,7 @@ module GitHubCommentEnvelope
   end
 
   def parse_legacy(body)
-    lines = body.lines(chomp: true).first(6).map { |line| line.delete_suffix("\r") }
+    lines = body.split(/\r\n|\n|\r/, -1).first(6)
     return if lines.length < 6
 
     visible = lines[0]
@@ -156,9 +158,10 @@ module GitHubCommentEnvelope
     return unless valid_fields?(visible, runner, host, task_or_run)
     return unless visible == "🤖 #{RUNNER_DISPLAY.fetch(runner.downcase)}"
 
-    payload_offset = body.lines.first(6).join.length
-    payload_offset += 2 if body[payload_offset, 2] == "\r\n"
-    payload_offset += 1 if body[payload_offset, 1] == "\n"
+    line_endings = body.scan(/\r\n|\n|\r/)
+    payload_offset = lines.zip(line_endings.first(6)).sum { |line, ending| line.length + ending.to_s.length }
+    separator = line_endings.fetch(6, "")
+    payload_offset += separator.length if body[payload_offset, separator.length] == separator
     { "version" => VERSION, "runner" => runner.downcase, "host" => host, "task_or_run" => task_or_run, "payload_offset" => payload_offset }
   end
 

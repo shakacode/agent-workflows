@@ -341,6 +341,13 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_equal "<!-- address-review-summary -->\r\n", GitHubCommentEnvelope.payload(body)
   end
 
+  def test_payload_retains_recorded_lf_when_an_intermediate_envelope_has_mixed_line_endings
+    envelope = outcome_first_envelope("First line\nSecond line\n", preserved: false)
+    mixed = envelope.sub("\n\n<details>", "\r\n\r\n<details>").sub("<details>\n", "<details>\r\n")
+
+    assert_equal "First line\nSecond line\n", GitHubCommentEnvelope.payload(mixed)
+  end
+
   def test_payload_unwraps_a_legacy_envelope_without_its_separator_line
     body = <<~BODY
       🤖 Codex
@@ -354,6 +361,12 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     BODY
 
     assert_equal "<!-- address-review-summary -->\n", GitHubCommentEnvelope.payload(body)
+  end
+
+  def test_payload_unwraps_a_legacy_envelope_with_a_lone_cr_separator
+    body = "🤖 Codex\r<!-- agent-comment-attribution:v1\rrunner: codex\rhost: M5\rtask_or_run: task-7\r-->\r\rPayload\r"
+
+    assert_equal "Payload\r", GitHubCommentEnvelope.payload(body)
   end
 
   def test_payload_refuses_a_legacy_html_envelope_with_an_outcome_suffix
