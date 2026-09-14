@@ -125,7 +125,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
                     "[Maintainer Decision Requests](../docs/user-facing-coordination.md#maintainer-decision-requests)"
 
     [
-      /(?:\A|[.!?]\s+)Do not lead with the concrete plain-language question\b/i,
+      /\bDo not lead with the concrete plain-language question\b/i,
       /(?:\A|[.!?]\s+)Use a vague headline\b/,
       /(?:\A|[.!?]\s+)(?:Ask|Asking)\b[^.]*\bunfamiliar policy label\b[^.]*\bwithout explaining\b/
     ].each { |contradiction| refute_match contradiction, doc }
