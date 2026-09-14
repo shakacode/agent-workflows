@@ -15,6 +15,8 @@ agent_stack_sync() {
   for repo_name in "${repo_names[@]}"; do agent_stack_link_compat "$repo_name"; done
 
   if [[ "$install_tools" = true ]]; then
+    agent_stack_preflight_dashboard_install
+    agent_stack_install_dashboard
     agent_stack_install_commands
     agent_stack_install_coordination
     agent_stack_install_workflows
