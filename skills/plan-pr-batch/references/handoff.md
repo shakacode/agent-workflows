@@ -157,6 +157,11 @@ the declaration helper. Do not describe coordination as unavailable or degraded.
 - Batch manifest provenance: `pack_sha`, `coordinator_preference` model/effort,
   and each lane's `worker_preference` plus optional `observed_host` fields;
   name the registration evidence or the durable backend-`n/a` handoff.
+- Token budget: `none` for a plan with no budget metadata, or the complete
+  `batch-token-budget v1` aggregate/coordinator/all-lanes object, thresholds,
+  telemetry/delegation policy, durable state path, and separately persisted
+  trusted-plan path/id/digest passed on every helper operation. Any present
+  budget field makes complete valid scope coverage mandatory.
 - Batch size target: `codex`, `claude`, or `generic`; max items per wave and
   split rationale.
 - While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.
