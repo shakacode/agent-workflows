@@ -1419,6 +1419,11 @@ notification wording.
   plain English with exactly these labeled parts: `What changed:`, `Action needed:`
   (use `none` when applicable), and `Next:`. Each part must answer its
   label directly.
+- For every known user-facing maintainer decision, apply
+  [Maintainer Decision Requests](../docs/user-facing-coordination.md#maintainer-decision-requests).
+  The concrete plain-language question leads; supporting details follow. This
+  presentation does not remove or alter required evidence, machine-readable
+  receipts, safety gates, or exact closing strings.
 - For a ready prerequisite whose only remaining gate under
   `merge_authority: ask` is the human review and merge decision, `What changed:`
   identifies the exact PR and says that no code or continuous integration (CI)

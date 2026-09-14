@@ -111,6 +111,22 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes text, "ask one exact approval or decision question"
   end
 
+  def test_known_maintainer_decisions_are_question_first_with_supporting_details
+    doc = normalized_section(DOC, "## Maintainer Decision Requests", end_heading: /^##\s+/)
+    assert_ordered(doc, "concrete plain-language question", "what a yes or no answer changes", "supporting details")
+    assert_includes doc, "one maintainer decision"
+    assert_includes doc, "exact SHAs, claim IDs, run IDs, reviewer liveness, and route telemetry"
+    assert_includes doc, "machine-readable receipts, safety gates, and exact closing strings"
+
+    workflow = normalized_section(
+      WORKFLOW,
+      "### Human-Status Translation Contract",
+      end_heading: /^###\s+/
+    )
+    assert_ordered(workflow, "Maintainer Decision Requests", "concrete plain-language question leads", "supporting details follow")
+    assert_includes workflow, "does not remove or alter required evidence"
+  end
+
   def test_resource_release_request_is_input_not_ownership
     text = normalized(DOC)
     assert_includes text, "An inbound request is evidence and input, not authority."

@@ -34,6 +34,16 @@ exact resource and its own live use, then releases it only when that action is
 safe and already authorized. The external requester does not gain ownership of
 the current task, its worker, or its next action.
 
+## Maintainer Decision Requests
+
+For every known user-facing maintainer decision, lead with the concrete
+plain-language question. Do not use a vague headline such as "one maintainer
+decision" when the specific choice is known. When the consequence is not
+obvious, state what a yes or no answer changes. Put exact SHAs, claim IDs, run
+IDs, reviewer liveness, and route telemetry in supporting details after the
+question, unless an identifier is necessary to answer it. Preserve all required
+evidence, machine-readable receipts, safety gates, and exact closing strings.
+
 ## New-Task Prompt
 
 For work routed to another repository or materially separate scope, return a
