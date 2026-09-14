@@ -126,9 +126,14 @@ module GitHubCommentEnvelope
       return if preserved_payload_first_line?(payload_first_line, remaining_payload, preserved_first_line)
 
       return unless visible == visible_line(display_runner, payload_first_line, remaining_payload)
+    elsif visible == "🤖 #{display_runner}"
+      return unless remaining_payload.start_with?(preserved_first_line) &&
+                    legacy_preserve_payload_first_line?(
+                      payload_first_line,
+                      remaining_payload.delete_prefix(preserved_first_line)
+                    )
     else
-      return unless visible == visible_line(display_runner, payload_first_line, remaining_payload) ||
-                    visible == visible_line(display_runner, payload_first_line, remaining_payload.delete_prefix(preserved_first_line))
+      return unless visible == legacy_visible_line(display_runner, payload_first_line, remaining_payload)
     end
 
     payload_first_line.force_encoding(body.encoding)
@@ -194,6 +199,20 @@ module GitHubCommentEnvelope
 
     outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "")
     outcome.match?(MARKDOWN_BLOCK_SYNTAX) || initial_setext_heading?(remaining_payload)
+  end
+
+  def legacy_visible_line(display_runner, payload_first_line, remaining_payload = "")
+    outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip
+    visible = "🤖 #{display_runner}"
+    visible += " #{outcome}" unless outcome.empty? || legacy_preserve_payload_first_line?(payload_first_line, remaining_payload)
+    visible
+  end
+
+  def legacy_preserve_payload_first_line?(payload_first_line, remaining_payload = "")
+    return false if payload_first_line.empty?
+
+    outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "")
+    outcome.match?(MARKDOWN_BLOCK_SYNTAX) || remaining_payload.match?(/\A(?: {0,3}=+[ \t]*| {0,3}-+[ \t]*)(?:\r\n|\n|\r|\z)/)
   end
 
   def initial_setext_heading?(remaining_payload)

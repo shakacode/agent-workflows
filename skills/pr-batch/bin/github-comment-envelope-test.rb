@@ -210,6 +210,18 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_equal payload, GitHubCommentEnvelope.payload(legacy)
   end
 
+  def test_payload_reads_real_metadata_free_multiline_setext_envelopes
+    [
+      "Title\nSubtitle\n---\nTail\n",
+      "Title\n    Subtitle\n---\nTail\n",
+      "Title\r\n<span>Subtitle</span>\r\n---\r\nTail\r\n"
+    ].each do |payload|
+      legacy = metadata_free_outcome_envelope(payload)
+
+      assert_equal payload, GitHubCommentEnvelope.payload(legacy)
+    end
+  end
+
   def test_payload_refuses_tampered_first_line_preservation_metadata
     ordinary = GitHubCommentEnvelope.render(
       body: "No current checkpoint.\n<!-- address-review-summary -->", runner: "codex", host: "M5", task_or_run: "task-7"
@@ -611,6 +623,29 @@ class GitHubCommentEnvelopeTest < Minitest::Test
   end
 
   private
+
+  def metadata_free_outcome_envelope(payload)
+    first_line, line_ending, remaining_payload = GitHubCommentEnvelope.split_payload(payload)
+    body = <<~BODY
+      🤖 Codex #{first_line}
+
+      <details>
+      <summary>Agent attribution</summary>
+
+      ```text
+      agent-comment-attribution:v1
+      runner: codex
+      host: M5
+      task_or_run: task-7
+      payload_first_line_b64url: #{Base64.urlsafe_encode64(first_line, padding: false)}
+      payload_line_ending: #{GitHubCommentEnvelope::PAYLOAD_LINE_ENDINGS.fetch(line_ending)}
+      ```
+      </details>
+
+      #{remaining_payload}
+    BODY
+    body.delete_suffix("\n")
+  end
 
   def run_cli(*arguments, stdin: "", env: {})
     stdout, stderr, status = Open3.capture3(env, SCRIPT, *arguments, stdin_data: stdin)
