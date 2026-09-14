@@ -255,6 +255,12 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     end
   end
 
+  def test_payload_reads_a_bd3_metadata_free_link_definition_envelope
+    payload = "[docs]: https://example.com\nTail [docs]\n"
+
+    assert_equal payload, GitHubCommentEnvelope.payload(metadata_free_outcome_envelope(payload))
+  end
+
   def test_payload_reads_an_explicit_outcome_first_table_envelope_from_the_prior_writer
     payload = "H1 | H2\n--- | ---\nA | B\n"
     envelope = outcome_first_envelope(payload, preserved: false)
@@ -280,6 +286,34 @@ class GitHubCommentEnvelopeTest < Minitest::Test
 
     [ordinary.sub("payload_first_line_preserved: false", "payload_first_line_preserved: true"),
      setext.sub("payload_first_line_preserved: true", "payload_first_line_preserved: false")].each do |tampered|
+      assert_nil GitHubCommentEnvelope.parse(tampered)
+      assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
+    end
+  end
+
+  def test_payload_refuses_true_metadata_for_runner_only_outcome_first_payloads
+    [
+      ["🤖 Codex\n🤖 Codex\nTail\n", "codex"],
+      ["🤖 Codex   \n🤖 Codex   \nTail\n", "codex"],
+      ["🤖 Claude\r\n🤖 Claude\r\nTail\r\n", "claude"]
+    ].each do |payload, runner|
+      envelope = outcome_first_envelope(payload, preserved: false, runner:)
+      tampered = envelope.sub("payload_first_line_preserved: false", "payload_first_line_preserved: true")
+
+      assert_nil GitHubCommentEnvelope.parse(tampered)
+      assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
+    end
+  end
+
+  def test_payload_refuses_false_metadata_for_preserved_runner_only_outcome_first_payloads
+    [
+      ["🤖 Codex\n---\nTail\n", "codex"],
+      ["🤖 Codex   \n---\nTail\n", "codex"],
+      ["🤖 Claude\r\n===\r\nTail\r\n", "claude"]
+    ].each do |payload, runner|
+      envelope = outcome_first_envelope(payload, preserved: true, runner:)
+      tampered = envelope.sub("payload_first_line_preserved: true", "payload_first_line_preserved: false")
+
       assert_nil GitHubCommentEnvelope.parse(tampered)
       assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
     end
@@ -689,19 +723,20 @@ class GitHubCommentEnvelopeTest < Minitest::Test
 
   private
 
-  def outcome_first_envelope(payload, preserved:, include_metadata: true)
+  def outcome_first_envelope(payload, preserved:, include_metadata: true, runner: "codex")
     first_line, line_ending, remaining_payload = GitHubCommentEnvelope.split_payload(payload)
     remaining_payload = "#{first_line}#{line_ending}#{remaining_payload}" if preserved
+    display_runner = GitHubCommentEnvelope::RUNNER_DISPLAY.fetch(runner)
     marker = [
       "agent-comment-attribution:v1",
-      "runner: codex",
+      "runner: #{runner}",
       "host: M5",
       "task_or_run: task-7",
       "payload_first_line_b64url: #{Base64.urlsafe_encode64(first_line, padding: false)}",
       "payload_line_ending: #{GitHubCommentEnvelope::PAYLOAD_LINE_ENDINGS.fetch(line_ending)}"
     ]
     marker << "payload_first_line_preserved: #{preserved}" if include_metadata
-    visible = preserved ? "🤖 Codex" : "🤖 Codex #{first_line}"
+    visible = preserved ? "🤖 #{display_runner}" : GitHubCommentEnvelope.outcome_visible_line(display_runner, first_line)
     "#{visible}\n\n<details>\n<summary>Agent attribution</summary>\n\n```text\n#{marker.join("\n")}\n```\n</details>\n\n#{remaining_payload}"
   end
 

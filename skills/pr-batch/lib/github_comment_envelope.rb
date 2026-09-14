@@ -17,6 +17,7 @@ module GitHubCommentEnvelope
   VISIBLE_AGENT_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:\r?\n| · Agent comment(?:\r?\n|\z)|\z)/
   PAYLOAD_RUNNER_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:[ \t]+|(?=\z))/
   MARKDOWN_BLOCK_SYNTAX = %r{\A[ \t]{0,3}(?:`{3,}|~{3,}|\#{1,6}(?:[ \t]|\z)|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+|\[[^\]\r\n]+\]:[ \t]*\S|(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|<[A-Za-z!/])|\A(?: {4}|[ \t]*\t)}
+  BD3_MARKDOWN_BLOCK_SYNTAX = %r{\A[ \t]{0,3}(?:`{3,}|~{3,}|\#{1,6}(?:[ \t]|\z)|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+|(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|<[A-Za-z!/])|\A(?: {4}|[ \t]*\t)}
   PAYLOAD_LINE_ENDINGS = { "\r\n" => "crlf", "\n" => "lf", "\r" => "cr", "" => "none" }.freeze
   PAYLOAD_LINE_ENDING_VALUES = PAYLOAD_LINE_ENDINGS.invert.freeze
 
@@ -109,9 +110,16 @@ module GitHubCommentEnvelope
     payload_first_line_preserved = match[:first_line_preserved] == "true"
     if match[:first_line_preserved] == "true"
       return unless remaining_payload.start_with?(preserved_first_line)
+      return if payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip.empty?
 
       return unless visible == "🤖 #{display_runner}"
     elsif match[:first_line_preserved] == "false"
+      normalized_outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip
+      if normalized_outcome.empty? && remaining_payload.start_with?(preserved_first_line) &&
+         legacy_preserve_payload_first_line?(payload_first_line, remaining_payload.delete_prefix(preserved_first_line))
+        return
+      end
+
       return unless visible == outcome_visible_line(display_runner, payload_first_line)
     elsif visible == "🤖 #{display_runner}"
       return unless remaining_payload.start_with?(preserved_first_line) &&
@@ -214,7 +222,8 @@ module GitHubCommentEnvelope
     return false if payload_first_line.empty?
 
     outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "")
-    outcome.match?(MARKDOWN_BLOCK_SYNTAX) || remaining_payload.match?(/\A(?: {0,3}=+[ \t]*| {0,3}-+[ \t]*)(?:\r\n|\n|\r|\z)/)
+    outcome.match?(BD3_MARKDOWN_BLOCK_SYNTAX) ||
+      remaining_payload.match?(/\A(?: {0,3}=+[ \t]*| {0,3}-+[ \t]*)(?:\r\n|\n|\r|\z)/)
   end
 
   def initial_setext_heading?(remaining_payload)
