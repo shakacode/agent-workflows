@@ -214,7 +214,9 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     [
       "Title\nSubtitle\n---\nTail\n",
       "Title\n    Subtitle\n---\nTail\n",
-      "Title\r\n<span>Subtitle</span>\r\n---\r\nTail\r\n"
+      "Title\r\n<span>Subtitle</span>\r\n---\r\nTail\r\n",
+      "Title\nTitle\n---\nTail\n",
+      "Title\r\nTitle\r\nTitle\r\nTitle\r\n===\r\nTail\r\n"
     ].each do |payload|
       legacy = metadata_free_outcome_envelope(payload)
 

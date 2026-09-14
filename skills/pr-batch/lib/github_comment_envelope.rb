@@ -118,6 +118,7 @@ module GitHubCommentEnvelope
     remaining_payload = body[match.end(0)..].to_s
     preserved_first_line = "#{payload_first_line}#{payload_line_ending}"
     display_runner = RUNNER_DISPLAY.fetch(runner.downcase)
+    payload_first_line_preserved = match[:first_line_preserved] == "true"
     if match[:first_line_preserved] == "true"
       return unless preserved_payload_first_line?(payload_first_line, remaining_payload, preserved_first_line)
 
@@ -132,8 +133,12 @@ module GitHubCommentEnvelope
                       payload_first_line,
                       remaining_payload.delete_prefix(preserved_first_line)
                     )
+
+      payload_first_line_preserved = true
     else
       return unless visible == legacy_visible_line(display_runner, payload_first_line, remaining_payload)
+
+      payload_first_line_preserved = false
     end
 
     payload_first_line.force_encoding(body.encoding)
@@ -142,9 +147,7 @@ module GitHubCommentEnvelope
       "payload_first_line" => payload_first_line,
       "payload_line_ending" => payload_line_ending
     }
-    unless match[:first_line_preserved].nil?
-      payload_metadata["payload_first_line_preserved"] = match[:first_line_preserved] == "true"
-    end
+    payload_metadata["payload_first_line_preserved"] = payload_first_line_preserved
 
     parsed.merge(payload_metadata)
   rescue ArgumentError
