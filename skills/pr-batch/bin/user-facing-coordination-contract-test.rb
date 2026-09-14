@@ -116,6 +116,8 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_ordered(doc, "concrete plain-language question", "what a yes or no answer changes", "supporting details")
     assert_includes doc, "one maintainer decision"
     assert_includes doc, "exact SHAs, claim IDs, run IDs, reviewer liveness, and route telemetry"
+    assert_includes doc,
+                    "unfamiliar policy label without explaining the practical rule and requested exception"
     assert_includes doc, "machine-readable receipts, safety gates, and exact closing strings"
 
     workflow = normalized_section(

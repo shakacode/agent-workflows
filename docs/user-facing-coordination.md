@@ -41,8 +41,10 @@ plain-language question. Do not use a vague headline such as "one maintainer
 decision" when the specific choice is known. When the consequence is not
 obvious, state what a yes or no answer changes. Put exact SHAs, claim IDs, run
 IDs, reviewer liveness, and route telemetry in supporting details after the
-question, unless an identifier is necessary to answer it. Preserve all required
-evidence, machine-readable receipts, safety gates, and exact closing strings.
+question, unless an identifier is necessary to answer it. Do not ask a
+maintainer to decide an unfamiliar policy label without explaining the
+practical rule and requested exception. Preserve all required evidence,
+machine-readable receipts, safety gates, and exact closing strings.
 
 ## New-Task Prompt
 
