@@ -108,13 +108,11 @@ module GitHubCommentEnvelope
     display_runner = RUNNER_DISPLAY.fetch(runner.downcase)
     payload_first_line_preserved = match[:first_line_preserved] == "true"
     if match[:first_line_preserved] == "true"
-      return unless preserved_payload_first_line?(payload_first_line, remaining_payload, preserved_first_line)
+      return unless remaining_payload.start_with?(preserved_first_line)
 
       return unless visible == "🤖 #{display_runner}"
     elsif match[:first_line_preserved] == "false"
-      return if preserved_payload_first_line?(payload_first_line, remaining_payload, preserved_first_line)
-
-      return unless visible == visible_line(display_runner, payload_first_line, remaining_payload)
+      return unless visible == outcome_visible_line(display_runner, payload_first_line)
     elsif visible == "🤖 #{display_runner}"
       return unless remaining_payload.start_with?(preserved_first_line) &&
                     legacy_preserve_payload_first_line?(
@@ -183,6 +181,13 @@ module GitHubCommentEnvelope
     outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip
     visible = "🤖 #{display_runner}"
     visible += " #{outcome}" unless outcome.empty? || preserve_payload_first_line?(payload_first_line, remaining_payload)
+    visible
+  end
+
+  def outcome_visible_line(display_runner, payload_first_line)
+    outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip
+    visible = "🤖 #{display_runner}"
+    visible += " #{outcome}" unless outcome.empty?
     visible
   end
 

@@ -255,6 +255,25 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     end
   end
 
+  def test_payload_reads_an_explicit_outcome_first_table_envelope_from_the_prior_writer
+    payload = "H1 | H2\n--- | ---\nA | B\n"
+    envelope = outcome_first_envelope(payload, preserved: false)
+
+    assert_equal payload, GitHubCommentEnvelope.payload(envelope)
+  end
+
+  def test_payload_reads_explicit_outcome_first_envelopes_from_multiple_prior_writer_shapes
+    [
+      ["Title\nSubtitle\n---\nTail\n", false],
+      ["[docs]: https://example.com\nSee [docs] for details.\n", true],
+      ["Title\n---\nEvidence follows.\n", true]
+    ].each do |payload, preserved|
+      envelope = outcome_first_envelope(payload, preserved:)
+
+      assert_equal payload, GitHubCommentEnvelope.payload(envelope)
+    end
+  end
+
   def test_payload_refuses_tampered_first_line_preservation_metadata
     ordinary = outcome_first_envelope("No current checkpoint.\n<!-- address-review-summary -->", preserved: false)
     setext = outcome_first_envelope("Title\n---\nEvidence follows.\n", preserved: true)
