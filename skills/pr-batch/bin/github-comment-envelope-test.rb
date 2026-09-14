@@ -12,7 +12,7 @@ SCRIPT = File.expand_path("github-comment-envelope", __dir__)
 VISIBLE_PREFIX = "🤖 Codex · Agent comment"
 
 class GitHubCommentEnvelopeTest < Minitest::Test
-  def test_render_puts_the_payload_outcome_before_closed_visible_attribution
+  def test_render_keeps_the_payload_after_closed_visible_attribution
     payload = "Review complete.\nFollow-up evidence is recorded."
     rendered = GitHubCommentEnvelope.render(
       body: payload, runner: "codex", host: "M5", task_or_run: "aw-pr731-m5"
@@ -130,253 +130,65 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_equal payload, GitHubCommentEnvelope.payload(rendered)
   end
 
-  def test_render_preserves_markdown_block_syntax_on_the_payload_first_line
-    payloads = [
+  def test_render_preserves_arbitrary_markdown_and_line_endings_exactly
+    [
       "```ruby\nputs :ok\n```\n",
       "# Heading\nEvidence follows.\n",
       "[docs]: https://example.com\nSee [docs] for details.\n",
-      "Setext heading\n---\nEvidence follows.\n",
-      "> Quoted context\nEvidence follows.\n",
-      "<details>\n<summary>Evidence</summary>\n\nVisible details.\n</details>\n"
-    ]
-
-    payloads.each do |payload|
-      rendered = GitHubCommentEnvelope.render(
-        body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
-      )
-
-      assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
-      assert_equal payload, GitHubCommentEnvelope.payload(rendered)
-      assert_includes rendered, "\n\n#{payload}"
-    end
-  end
-
-  def test_render_does_not_treat_mixed_thematic_break_characters_as_a_block
-    payload = "-*_ evidence follows\nTail\n"
-    rendered = GitHubCommentEnvelope.render(
-      body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
-    )
-
-    assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
-    assert_equal payload, GitHubCommentEnvelope.payload(rendered)
-  end
-
-  def test_payload_round_trips_repeated_plain_first_lines
-    ["Repeat\nRepeat\nTail\n", "Repeat\r\nRepeat\r\nTail\r\n"].each do |payload|
-      rendered = GitHubCommentEnvelope.render(
-        body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
-      )
-
-      assert_equal payload, GitHubCommentEnvelope.payload(rendered)
-    end
-  end
-
-  def test_payload_round_trips_ambiguous_setext_headings_with_duplicate_first_lines
-    ["Title\nTitle\n---\nTail\n", "Title\r\nTitle\r\n===\r\nTail\r\n"].each do |payload|
-      rendered = GitHubCommentEnvelope.render(
-        body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
-      )
-
-      assert_equal payload, GitHubCommentEnvelope.payload(rendered)
-    end
-  end
-
-  def test_render_preserves_multiline_and_repeated_setext_headings
-    [
       "Title\nSubtitle\n---\nTail\n",
-      "Title\r\nTitle\r\nTitle\r\nTitle\r\n===\r\nTail\r\n",
-      "Title\n    Subtitle\n---\nTail\n",
-      "Title\n<span>Subtitle</span>\n---\nTail\n",
-      "Title\n[docs]: https://example.com\n---\nTail [docs]\n"
-    ].each do |payload|
-      rendered = GitHubCommentEnvelope.render(
-        body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
-      )
-
-      assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
-      assert_equal payload, GitHubCommentEnvelope.payload(rendered)
-    end
-  end
-
-  def test_render_preserves_gfm_table_headers_but_not_malformed_delimiters
-    [
       "Header A | Header B\n--- | ---\nCell A | Cell B\n",
-      "| Header A | Header B |\n| :--- | ---: |\n| Cell A | Cell B |\n"
-    ].each do |payload|
-      rendered = GitHubCommentEnvelope.render(
-        body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
-      )
-
-      assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
-      assert_equal payload, GitHubCommentEnvelope.payload(rendered)
-    end
-
-    malformed = "Header A | Header B\n--- | nope\nCell A | Cell B\n"
-    rendered = GitHubCommentEnvelope.render(
-      body: malformed, runner: "codex", host: "M5", task_or_run: "task-7"
-    )
-
-    assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
-    assert_equal malformed, GitHubCommentEnvelope.payload(rendered)
-  end
-
-  def test_render_preserves_initial_paragraph_context_for_promotable_following_blocks
-    [
       "Intro\n    indented continuation\nTail\n",
-      "Intro\n[docs]: https://example.com\nTail [docs]\n"
+      "Repeat\nRepeat\nTail\n",
+      "Title\r\nTitle\r\n===\r\nTail\r\n",
+      "lone\rCR\r"
     ].each do |payload|
       rendered = GitHubCommentEnvelope.render(
         body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
       )
 
       assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
+      assert_includes rendered, "\n\n#{payload}"
       assert_equal payload, GitHubCommentEnvelope.payload(rendered)
     end
   end
 
-  def test_payload_reads_metadata_free_preserved_first_line_envelopes
-    payload = "Setext heading\n---\nEvidence follows.\n"
-    legacy = outcome_first_envelope(payload, preserved: true, include_metadata: false)
-
-    assert_equal payload, GitHubCommentEnvelope.payload(legacy)
-  end
-
-  def test_payload_reads_real_metadata_free_multiline_setext_envelopes
-    [
-      "Title\nSubtitle\n---\nTail\n",
-      "Title\n    Subtitle\n---\nTail\n",
-      "Title\r\n<span>Subtitle</span>\r\n---\r\nTail\r\n",
-      "Title\nTitle\n---\nTail\n",
-      "Title\r\nTitle\r\nTitle\r\nTitle\r\n===\r\nTail\r\n"
-    ].each do |payload|
-      legacy = metadata_free_outcome_envelope(payload)
-
-      assert_equal payload, GitHubCommentEnvelope.payload(legacy)
-    end
-  end
-
-  def test_payload_reads_a_bd3_metadata_free_link_definition_envelope
-    payload = "[docs]: https://example.com\nTail [docs]\n"
-
-    assert_equal payload, GitHubCommentEnvelope.payload(metadata_free_outcome_envelope(payload))
-  end
-
-  def test_payload_reads_an_explicit_outcome_first_table_envelope_from_the_prior_writer
-    payload = "H1 | H2\n--- | ---\nA | B\n"
-    envelope = outcome_first_envelope(payload, preserved: false)
-
-    assert_equal payload, GitHubCommentEnvelope.payload(envelope)
-  end
-
-  def test_payload_reads_explicit_outcome_first_envelopes_from_multiple_prior_writer_shapes
-    [
-      ["Title\nSubtitle\n---\nTail\n", false],
-      ["[docs]: https://example.com\nSee [docs] for details.\n", true],
-      ["Title\n---\nEvidence follows.\n", true]
-    ].each do |payload, preserved|
-      envelope = outcome_first_envelope(payload, preserved:)
-
-      assert_equal payload, GitHubCommentEnvelope.payload(envelope)
-    end
-  end
-
-  def test_payload_refuses_tampered_first_line_preservation_metadata
-    ordinary = outcome_first_envelope("No current checkpoint.\n<!-- address-review-summary -->", preserved: false)
-    setext = outcome_first_envelope("Title\n---\nEvidence follows.\n", preserved: true)
-
-    [ordinary.sub("payload_first_line_preserved: false", "payload_first_line_preserved: true"),
-     setext.sub("payload_first_line_preserved: true", "payload_first_line_preserved: false")].each do |tampered|
-      assert_nil GitHubCommentEnvelope.parse(tampered)
-      assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
-    end
-  end
-
-  def test_payload_refuses_true_metadata_for_runner_only_outcome_first_payloads
-    [
-      ["🤖 Codex\n🤖 Codex\nTail\n", "codex"],
-      ["🤖 Codex   \n🤖 Codex   \nTail\n", "codex"],
-      ["🤖 Claude\r\n🤖 Claude\r\nTail\r\n", "claude"]
-    ].each do |payload, runner|
-      envelope = outcome_first_envelope(payload, preserved: false, runner:)
-      tampered = envelope.sub("payload_first_line_preserved: false", "payload_first_line_preserved: true")
-
-      assert_nil GitHubCommentEnvelope.parse(tampered)
-      assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
-    end
-  end
-
-  def test_payload_refuses_false_metadata_for_preserved_runner_only_outcome_first_payloads
-    [
-      ["🤖 Codex\n---\nTail\n", "codex"],
-      ["🤖 Codex   \n---\nTail\n", "codex"],
-      ["🤖 Claude\r\n===\r\nTail\r\n", "claude"]
-    ].each do |payload, runner|
-      envelope = outcome_first_envelope(payload, preserved: true, runner:)
-      tampered = envelope.sub("payload_first_line_preserved: true", "payload_first_line_preserved: false")
-
-      assert_nil GitHubCommentEnvelope.parse(tampered)
-      assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
-    end
-  end
-
-  def test_payload_refuses_false_metadata_for_preserved_markdown_blocks
-    [
-      "# Heading\nEvidence follows.\n",
-      "```ruby\nputs :ok\n```\n",
-      "> Quoted context\nEvidence follows.\n",
-      "<details>\n<summary>Evidence</summary>\n\nVisible details.\n</details>\n"
-    ].each do |payload|
-      rendered = outcome_first_envelope(payload, preserved: true)
-      tampered = rendered.sub("payload_first_line_preserved: true", "payload_first_line_preserved: false")
-
-      assert_nil GitHubCommentEnvelope.parse(tampered)
-      assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
-    end
-  end
-
-  def test_payload_refuses_a_tampered_first_line_that_could_inject_a_legacy_checkpoint
-    rendered = outcome_first_envelope("Review complete.\nFollow-up evidence is recorded.", preserved: false)
-    tampered = rendered.sub(
-      /payload_first_line_b64url: [^\n]+/,
-      "payload_first_line_b64url: #{Base64.urlsafe_encode64('<!-- address-review-summary -->', padding: false)}"
-    )
-
-    assert_nil GitHubCommentEnvelope.parse(tampered)
-    assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
-  end
-
-  def test_payload_refuses_an_outcome_first_envelope_downgraded_to_legacy_metadata
-    rendered = outcome_first_envelope("No current checkpoint.\n<!-- address-review-summary -->", preserved: false)
-    downgraded = rendered.sub(/payload_first_line_b64url: [^\n]+\npayload_line_ending: [^\n]+\npayload_first_line_preserved: [^\n]+\n/, "")
-
-    assert_nil GitHubCommentEnvelope.parse(downgraded)
-    assert_equal downgraded, GitHubCommentEnvelope.payload(downgraded)
-  end
-
-  def test_payload_refuses_a_current_layout_downgraded_to_a_legacy_bare_header
+  def test_parse_rejects_tampered_current_layout_metadata_or_details
     rendered = GitHubCommentEnvelope.render(
       body: "No current checkpoint.\n<!-- address-review-summary -->", runner: "codex", host: "M5", task_or_run: "task-7"
     )
-    downgraded = rendered.sub("payload_layout: after-attribution\n", "")
 
-    assert_nil GitHubCommentEnvelope.parse(downgraded)
-    assert_equal downgraded, GitHubCommentEnvelope.payload(downgraded)
+    [
+      rendered.sub("payload_layout: after-attribution\n", ""),
+      rendered.sub("payload_layout: after-attribution", "payload_layout: before-attribution"),
+      rendered.sub("</details>", "</detail>")
+    ].each do |tampered|
+      assert_nil GitHubCommentEnvelope.parse(tampered)
+      assert_equal tampered, GitHubCommentEnvelope.payload(tampered)
+    end
   end
 
-  def test_payload_refuses_multiline_or_invalid_utf8_encoded_first_lines
-    rendered = outcome_first_envelope("Review complete.\nFollow-up evidence is recorded.", preserved: false)
-    multiline = rendered.sub(
-      /payload_first_line_b64url: [^\n]+/,
-      "payload_first_line_b64url: #{Base64.urlsafe_encode64("Review\ncomplete", padding: false)}"
-    )
-    invalid_bytes = [255].pack("C")
-    invalid_utf8 = rendered.sub(
-      /payload_first_line_b64url: [^\n]+/,
-      "payload_first_line_b64url: #{Base64.urlsafe_encode64(invalid_bytes, padding: false)}"
-    )
+  def test_temporary_visible_layouts_remain_agent_labelled_without_payload_unwrapping
+    body = <<~BODY
+      🤖 Codex Review complete.
 
-    assert_nil GitHubCommentEnvelope.parse(multiline)
-    assert_nil GitHubCommentEnvelope.parse(invalid_utf8)
+      <details>
+      <summary>Agent attribution</summary>
+
+      ```text
+      agent-comment-attribution:v1
+      runner: codex
+      host: M5
+      task_or_run: task-7
+      payload_first_line_b64url: UmV2aWV3IGNvbXBsZXRlLg
+      ```
+      </details>
+
+      Review complete.
+    BODY
+
+    assert GitHubCommentEnvelope.agent_authored?(body)
+    assert_nil GitHubCommentEnvelope.parse(body)
+    assert_equal body, GitHubCommentEnvelope.payload(body)
   end
 
   def test_render_reconstructs_an_empty_payload_without_a_blank_visible_outcome
@@ -392,13 +204,6 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     ).gsub("\n", "\r\n")
 
     assert_equal "<!-- address-review-summary -->\r\n", GitHubCommentEnvelope.payload(body)
-  end
-
-  def test_payload_retains_recorded_lf_when_an_intermediate_envelope_has_mixed_line_endings
-    envelope = outcome_first_envelope("First line\nSecond line\n", preserved: false)
-    mixed = envelope.sub("\n\n<details>", "\r\n\r\n<details>").sub("<details>\n", "<details>\r\n")
-
-    assert_equal "First line\nSecond line\n", GitHubCommentEnvelope.payload(mixed)
   end
 
   def test_payload_unwraps_a_legacy_envelope_without_its_separator_line
@@ -438,7 +243,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_equal body, GitHubCommentEnvelope.payload(body)
   end
 
-  def test_payload_unwraps_the_previous_visible_envelope_shape
+  def test_payload_rejects_a_temporary_visible_envelope_without_the_final_layout_marker
     body = <<~BODY
       🤖 Codex
 
@@ -456,8 +261,9 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       legacy payload
     BODY
 
-    assert_equal "legacy payload\n", GitHubCommentEnvelope.payload(body)
-    assert_equal "codex", GitHubCommentEnvelope.parse(body).fetch("runner")
+    assert GitHubCommentEnvelope.agent_authored?(body)
+    assert_nil GitHubCommentEnvelope.parse(body)
+    assert_equal body, GitHubCommentEnvelope.payload(body)
   end
 
   def test_legacy_parser_requires_all_field_labels
@@ -722,46 +528,6 @@ class GitHubCommentEnvelopeTest < Minitest::Test
   end
 
   private
-
-  def outcome_first_envelope(payload, preserved:, include_metadata: true, runner: "codex")
-    first_line, line_ending, remaining_payload = GitHubCommentEnvelope.split_payload(payload)
-    remaining_payload = "#{first_line}#{line_ending}#{remaining_payload}" if preserved
-    display_runner = GitHubCommentEnvelope::RUNNER_DISPLAY.fetch(runner)
-    marker = [
-      "agent-comment-attribution:v1",
-      "runner: #{runner}",
-      "host: M5",
-      "task_or_run: task-7",
-      "payload_first_line_b64url: #{Base64.urlsafe_encode64(first_line, padding: false)}",
-      "payload_line_ending: #{GitHubCommentEnvelope::PAYLOAD_LINE_ENDINGS.fetch(line_ending)}"
-    ]
-    marker << "payload_first_line_preserved: #{preserved}" if include_metadata
-    visible = preserved ? "🤖 #{display_runner}" : GitHubCommentEnvelope.outcome_visible_line(display_runner, first_line)
-    "#{visible}\n\n<details>\n<summary>Agent attribution</summary>\n\n```text\n#{marker.join("\n")}\n```\n</details>\n\n#{remaining_payload}"
-  end
-
-  def metadata_free_outcome_envelope(payload)
-    first_line, line_ending, remaining_payload = GitHubCommentEnvelope.split_payload(payload)
-    body = <<~BODY
-      🤖 Codex #{first_line}
-
-      <details>
-      <summary>Agent attribution</summary>
-
-      ```text
-      agent-comment-attribution:v1
-      runner: codex
-      host: M5
-      task_or_run: task-7
-      payload_first_line_b64url: #{Base64.urlsafe_encode64(first_line, padding: false)}
-      payload_line_ending: #{GitHubCommentEnvelope::PAYLOAD_LINE_ENDINGS.fetch(line_ending)}
-      ```
-      </details>
-
-      #{remaining_payload}
-    BODY
-    body.delete_suffix("\n")
-  end
 
   def run_cli(*arguments, stdin: "", env: {})
     stdout, stderr, status = Open3.capture3(env, SCRIPT, *arguments, stdin_data: stdin)

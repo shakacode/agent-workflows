@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "base64"
-
 module GitHubCommentEnvelope
   VERSION = 1
   MARKER = "agent-comment-attribution:v#{VERSION}".freeze
@@ -15,11 +13,7 @@ module GitHubCommentEnvelope
   LEGACY_WORKFLOW_MARKER = /\A<!-- address-review-(?:summary|status) -->\r?\n/
   LEGACY_AGENT_HEADER = /\A🤖 \*\*(?:Codex|Claude|Cursor)(?: · [^*\r\n]+)?\*\*(?:\r?\n|\z)/
   VISIBLE_AGENT_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:\r?\n| · Agent comment(?:\r?\n|\z)|\z)/
-  PAYLOAD_RUNNER_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:[ \t]+|(?=\z))/
-  MARKDOWN_BLOCK_SYNTAX = %r{\A[ \t]{0,3}(?:`{3,}|~{3,}|\#{1,6}(?:[ \t]|\z)|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+|\[[^\]\r\n]+\]:[ \t]*\S|(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|<[A-Za-z!/])|\A(?: {4}|[ \t]*\t)}
-  BD3_MARKDOWN_BLOCK_SYNTAX = %r{\A[ \t]{0,3}(?:`{3,}|~{3,}|\#{1,6}(?:[ \t]|\z)|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+|(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|<[A-Za-z!/])|\A(?: {4}|[ \t]*\t)}
-  PAYLOAD_LINE_ENDINGS = { "\r\n" => "crlf", "\n" => "lf", "\r" => "cr", "" => "none" }.freeze
-  PAYLOAD_LINE_ENDING_VALUES = PAYLOAD_LINE_ENDINGS.invert.freeze
+  TEMP_VISIBLE_AGENT_PREFIX = /\A🤖 (?:Codex|Claude|Cursor) [^\r\n]*\r?\n\r?\n<details>/
 
   module_function
 
@@ -46,6 +40,7 @@ module GitHubCommentEnvelope
 
   def agent_authored?(body)
     !parse(body).nil? || body.to_s.match?(VISIBLE_AGENT_PREFIX) ||
+      body.to_s.match?(TEMP_VISIBLE_AGENT_PREFIX) ||
       body.to_s.sub(LEGACY_WORKFLOW_MARKER, "").match?(LEGACY_AGENT_HEADER)
   end
 
@@ -53,27 +48,13 @@ module GitHubCommentEnvelope
     parsed = parse(body)
     return body unless parsed
 
-    remaining_payload = body[parsed.fetch("payload_offset")..].to_s
-    return remaining_payload if parsed["payload_layout"] == "after-attribution"
-
-    return remaining_payload unless parsed.key?("payload_first_line")
-
-    preserved_first_line = "#{parsed.fetch('payload_first_line')}#{parsed.fetch('payload_line_ending')}"
-    return remaining_payload if parsed["payload_first_line_preserved"] == true
-    return "#{preserved_first_line}#{remaining_payload}" if parsed.key?("payload_first_line_preserved")
-
-    if remaining_payload.start_with?(preserved_first_line) &&
-       preserve_payload_first_line?(parsed.fetch("payload_first_line"), remaining_payload.delete_prefix(preserved_first_line))
-      return remaining_payload
-    end
-
-    "#{preserved_first_line}#{remaining_payload}"
+    body[parsed.fetch("payload_offset")..].to_s
   end
 
   def parse(body)
     return unless body.is_a?(String)
 
-    match = body.match(%r{\A(?<visible>🤖 [^\r\n]+)\r?\n\r?\n<details>\r?\n<summary>Agent attribution</summary>\r?\n\r?\n```text\r?\n#{MARKER}\r?\nrunner: (?<runner>[^\r\n]+)\r?\nhost: (?<host>[^\r\n]+)\r?\ntask_or_run: (?<task>[^\r\n]+)\r?\n(?:payload_layout: (?<payload_layout>after-attribution)\r?\n|(?:payload_first_line_b64url: (?<payload_first_line>[A-Za-z0-9_-]*)\r?\npayload_line_ending: (?<payload_line_ending>crlf|lf|cr|none)\r?\n(?:payload_first_line_preserved: (?<first_line_preserved>true|false)\r?\n)?)?)```\r?\n</details>\r?\n\r?\n}m)
+    match = body.match(%r{\A(?<visible>🤖 [^\r\n]+)\r?\n\r?\n<details>\r?\n<summary>Agent attribution</summary>\r?\n\r?\n```text\r?\n#{MARKER}\r?\nrunner: (?<runner>[^\r\n]+)\r?\nhost: (?<host>[^\r\n]+)\r?\ntask_or_run: (?<task>[^\r\n]+)\r?\npayload_layout: after-attribution\r?\n```\r?\n</details>\r?\n\r?\n}m)
     return parse_legacy(body) unless match
 
     visible = match[:visible]
@@ -83,69 +64,16 @@ module GitHubCommentEnvelope
 
     return unless valid_fields?(visible, runner, host, task_or_run)
 
-    parsed = { "version" => VERSION, "runner" => runner.downcase, "host" => host, "task_or_run" => task_or_run, "payload_offset" => match.end(0) }
-    if match[:payload_layout]
-      return unless visible == "🤖 #{RUNNER_DISPLAY.fetch(runner.downcase)} · Agent comment"
-
-      return parsed.merge("payload_layout" => match[:payload_layout])
-    end
-    unless match[:payload_first_line]
-      return unless visible == "🤖 #{RUNNER_DISPLAY.fetch(runner.downcase)}"
-
-      return parsed
-    end
-
-    payload_first_line = Base64.urlsafe_decode64(match[:payload_first_line]).force_encoding(Encoding::UTF_8)
-    return unless Base64.urlsafe_encode64(payload_first_line, padding: false) == match[:payload_first_line]
-    return unless payload_first_line.valid_encoding? && !payload_first_line.empty? && !payload_first_line.match?(/[\r\n]/)
-
-    payload_line_ending = PAYLOAD_LINE_ENDING_VALUES.fetch(match[:payload_line_ending])
-    envelope_line_ending = body[/\r\n|\n|\r/]
-    if payload_line_ending == "\n" && envelope_line_ending == "\r\n" && !body.match?(/(?<!\r)\n|\r(?!\n)/)
-      payload_line_ending = "\r\n"
-    end
-    remaining_payload = body[match.end(0)..].to_s
-    preserved_first_line = "#{payload_first_line}#{payload_line_ending}"
-    display_runner = RUNNER_DISPLAY.fetch(runner.downcase)
-    payload_first_line_preserved = match[:first_line_preserved] == "true"
-    if match[:first_line_preserved] == "true"
-      return unless remaining_payload.start_with?(preserved_first_line)
-      return if payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip.empty?
-
-      return unless visible == "🤖 #{display_runner}"
-    elsif match[:first_line_preserved] == "false"
-      normalized_outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip
-      if normalized_outcome.empty? && remaining_payload.start_with?(preserved_first_line) &&
-         legacy_preserve_payload_first_line?(payload_first_line, remaining_payload.delete_prefix(preserved_first_line))
-        return
-      end
-
-      return unless visible == outcome_visible_line(display_runner, payload_first_line)
-    elsif visible == "🤖 #{display_runner}"
-      return unless remaining_payload.start_with?(preserved_first_line) &&
-                    legacy_preserve_payload_first_line?(
-                      payload_first_line,
-                      remaining_payload.delete_prefix(preserved_first_line)
-                    )
-
-      payload_first_line_preserved = true
-    else
-      return unless visible == legacy_visible_line(display_runner, payload_first_line, remaining_payload)
-
-      payload_first_line_preserved = false
-    end
-
-    payload_first_line.force_encoding(body.encoding)
-
-    payload_metadata = {
-      "payload_first_line" => payload_first_line,
-      "payload_line_ending" => payload_line_ending
+    parsed = {
+      "version" => VERSION,
+      "runner" => runner.downcase,
+      "host" => host,
+      "task_or_run" => task_or_run,
+      "payload_offset" => match.end(0)
     }
-    payload_metadata["payload_first_line_preserved"] = payload_first_line_preserved
+    return unless visible == "🤖 #{RUNNER_DISPLAY.fetch(runner.downcase)} · Agent comment"
 
-    parsed.merge(payload_metadata)
-  rescue ArgumentError
-    nil
+    parsed.merge("payload_layout" => "after-attribution")
   end
 
   def parse_legacy(body)
@@ -174,74 +102,6 @@ module GitHubCommentEnvelope
   def valid_fields?(visible, runner, host, task_or_run)
     runner.match?(VALUE_PATTERN) && host.match?(HOST_PATTERN) && task_or_run.match?(VALUE_PATTERN) &&
       RUNNER_DISPLAY[runner.downcase] && visible.match?(/\A🤖 #{Regexp.escape(RUNNER_DISPLAY.fetch(runner.downcase))}(?: |\z)/)
-  end
-
-  def split_payload(payload)
-    line_ending = payload.match(/\r\n|\n|\r/)
-    return [payload, "", ""] unless line_ending
-
-    index = line_ending.begin(0)
-    ending = line_ending[0]
-    [payload[0...index], ending, payload[(index + ending.length)..].to_s]
-  end
-
-  def visible_line(display_runner, payload_first_line, remaining_payload = "")
-    outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip
-    visible = "🤖 #{display_runner}"
-    visible += " #{outcome}" unless outcome.empty? || preserve_payload_first_line?(payload_first_line, remaining_payload)
-    visible
-  end
-
-  def outcome_visible_line(display_runner, payload_first_line)
-    outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip
-    visible = "🤖 #{display_runner}"
-    visible += " #{outcome}" unless outcome.empty?
-    visible
-  end
-
-  def preserve_payload_first_line?(payload_first_line, remaining_payload = "")
-    return false if payload_first_line.empty?
-
-    outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "")
-    outcome.match?(MARKDOWN_BLOCK_SYNTAX) || initial_setext_heading?(remaining_payload) ||
-      gfm_table_delimiter_row?(remaining_payload)
-  end
-
-  def gfm_table_delimiter_row?(remaining_payload)
-    remaining_payload.match?(/\A[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*(?:\r\n|\n|\r|\z)/)
-  end
-
-  def legacy_visible_line(display_runner, payload_first_line, remaining_payload = "")
-    outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip
-    visible = "🤖 #{display_runner}"
-    visible += " #{outcome}" unless outcome.empty? || legacy_preserve_payload_first_line?(payload_first_line, remaining_payload)
-    visible
-  end
-
-  def legacy_preserve_payload_first_line?(payload_first_line, remaining_payload = "")
-    return false if payload_first_line.empty?
-
-    outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "")
-    outcome.match?(BD3_MARKDOWN_BLOCK_SYNTAX) ||
-      remaining_payload.match?(/\A(?: {0,3}=+[ \t]*| {0,3}-+[ \t]*)(?:\r\n|\n|\r|\z)/)
-  end
-
-  def initial_setext_heading?(remaining_payload)
-    remaining_payload.each_line do |line|
-      return true if line.match?(/\A {0,3}(?:=+|-+)[ \t]*(?:\r\n|\n|\r|\z)/)
-      return false if line.match?(/\A[ \t]*(?:\r\n|\n|\r|\z)/)
-    end
-
-    false
-  end
-
-  def preserved_payload_first_line?(payload_first_line, remaining_payload, preserved_first_line)
-    return false unless remaining_payload.start_with?(preserved_first_line)
-
-    remainder = remaining_payload.delete_prefix(preserved_first_line)
-    preserve_payload_first_line?(payload_first_line, remainder) ||
-      (remainder.start_with?(preserved_first_line) &&
-        preserve_payload_first_line?(payload_first_line, remainder.delete_prefix(preserved_first_line)))
   end
 
   def normalized_value(value, name, pattern: VALUE_PATTERN)
