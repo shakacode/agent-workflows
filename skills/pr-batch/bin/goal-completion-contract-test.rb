@@ -1755,65 +1755,55 @@ class GoalCompletionContractTest < Minitest::Test
     refute_match(/<MM-DD|<A\?>|<ID\?>/, @verified_batch_title_contract)
   end
 
-  def test_typed_title_examples_cover_identifier_cardinality_and_native_ids
+  def title_table_rows(text)
+    text.lines.grep(/^\|/).drop(2).map { |line| line.strip.split("|", -1)[1...-1].map(&:strip) }
+  end
+
+  def title_examples_valid?(rows)
+    return false unless rows.length == 10 && rows.all? { |cells| cells.length == 2 && cells.none?(&:empty?) }
+
+    # Ordered examples: issue, issue+PR, PR, neither, Linear+PR, multiple
+    # issues, multiple PRs, both multiple, cross-repository, user override.
+    tokens = ['i[1-9]\d*', 'i[1-9]\d* pr[1-9]\d*', 'pr[1-9]\d*', "",
+              '[A-Z][A-Z0-9]*-[1-9]\d* pr[1-9]\d*', 'pr[1-9]\d*', 'i[1-9]\d*', "", ""]
+    managed_valid = rows.first(9).zip(tokens).all? do |cells, identifiers|
+      suffix = identifiers.empty? ? "" : " #{identifiers}"
+      /\A[A-Z0-9]{1,6}#{suffix} -- \S.*\z/.match?(cells[1].delete("`"))
+    end
+    managed_valid && !rows.last[1].include?(" -- ")
+  end
+
+  def test_typed_title_examples_preserve_ordered_identifier_cardinality
     examples = extract_markdown_section(@prompt_intake, TITLE_EXAMPLES_HEADING, end_heading: /^###\s+/)
-    rows = examples.lines.grep(/^\|/).to_h do |line|
-      cells = line.split("|").map(&:strip)
-      [cells[1], cells[2].delete("`")]
+    rows = title_table_rows(examples)
+    assert title_examples_valid?(rows)
+    assert title_examples_valid?(rows.map { |_, title| ["Reworded case", title] })
+    [3, 7, 8].each do |index|
+      tampered = rows.map(&:dup)
+      tampered[index][1] = rows[1][1]
+      refute title_examples_valid?(tampered), "identifier-free example #{index} must reject issue+PR tokens"
     end
-    {
-      "GitHub issue" => "AW i840",
-      "Issue and owned PR" => "AW i840 pr856",
-      "PR only" => "AW pr856",
-      "No identifiers" => "AW",
-      "Native Linear ID" => "AW ENG-42 pr856",
-      "Multiple issues, one owned PR" => "AW pr856",
-      "One issue, multiple owned PRs" => "AW i840",
-      "Multiple issues and PRs" => "AW",
-      "Cross-repository task" => "AW"
-    }.each do |scenario, identity|
-      actual_identity, description = rows.fetch(scenario).split(" -- ", 2)
-      assert_equal identity, actual_identity, scenario
-      refute_empty description, scenario
-    end
-    refute_match(/\AAW\b/, rows.fetch("Explicit user override"))
   end
 
-  def title_lifecycle_rows_valid?(text)
-    rows = text.lines.grep(/^\|/).to_h do |line|
-      cells = line.split("|").map(&:strip)
-      [cells[1], cells[2]]
-    end
-    {
-      "Creation or adoption" => [/same task/, /read back/],
-      "Verified PR creation" => [/repository/, /number/, /owned-work association/, /verification/],
-      "Verified PR supersession" => [/Replace/, /verified replacement/, /preserve task identity/],
-      "Resume with stale managed title" => [/live owned-work evidence/, /same task/],
-      "Already-correct title" => [/No-op/, /do not.*rename/],
-      "Unverified or unrelated PR" => [/No rename/, /UNKNOWN/],
-      "Explicit user override" => [/Preserve override/, /no automatic rename/],
-      "Unsupported, failed, or unreadable rename" => [/Keep task/, /intended title/, /existing handoff/, /only.*normal reconciliation/]
-    }.all? { |event, guards| guards.all? { |guard| guard.match?(rows.fetch(event, "")) } }
+  def title_lifecycle_outcomes_valid?(rows)
+    rows.all? { |cells| cells.length == 3 && cells.none?(&:empty?) } &&
+      rows.map { |cells| cells[1].delete("`") } == %w[apply rename rename rename no-op no-op no-op defer]
   end
 
-  def test_in_place_title_lifecycle_covers_negative_idempotent_and_retry_cases
+  def test_in_place_title_lifecycle_preserves_outcomes_without_pinning_prose
     lifecycle = extract_markdown_section(
       @prompt_intake, "### Verified In-Place Rename Lifecycle", end_heading: /^##\s+/
     )
-    assert title_lifecycle_rows_valid?(lifecycle)
-    [
-      ["owned-work association", "body mention"],
-      ["No-op", "Rename again"],
-      ["No rename", "Rename"],
-      ["Preserve override", "Normalize override"],
-      ["Keep task", "Create replacement"],
-      ["only at normal reconciliation", "immediately"]
-    ].each do |from, to|
-      refute title_lifecycle_rows_valid?(lifecycle.gsub(from, to)), "must reject #{to}"
+    rows = title_table_rows(lifecycle)
+    assert title_lifecycle_outcomes_valid?(rows)
+    assert title_lifecycle_outcomes_valid?(rows.map { |_, outcome, _| ["Reworded condition", outcome, "Reworded evidence"] })
+    rows.each_index do |index|
+      tampered = rows.map(&:dup)
+      tampered[index][1] = index.between?(1, 3) ? "no-op" : "rename"
+      refute title_lifecycle_outcomes_valid?(tampered), "lifecycle outcome #{index} must remain stable"
     end
-    %w[task identity handoff].each do |concept|
-      assert_match(/#{concept}/, lifecycle)
-    end
+    refute title_lifecycle_outcomes_valid?(rows.drop(1))
+    refute title_lifecycle_outcomes_valid?(rows.map { |condition, outcome, _| [condition, outcome, ""] })
   end
 
   def test_title_lifecycle_is_routed_from_creation_execution_and_host_surfaces

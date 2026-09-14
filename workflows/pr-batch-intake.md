@@ -212,16 +212,22 @@ same task after renaming to verify the visible title; a submitted rename alone
 is not success. A provisional creation handle must resolve to a durable task
 identity before an in-place rename.
 
-| Event or condition | Required action |
-| --- | --- |
-| Creation or adoption | Apply verified title to the same task; read back when supported. |
-| Verified PR creation | Add `prN` after repository, number, and owned-work association verification. |
-| Verified PR supersession | Replace old `prN` with verified replacement; preserve task identity. |
-| Resume with stale managed title | Reconcile from live owned-work evidence and rename the same task. |
-| Already-correct title | No-op; do not issue a rename. |
-| Unverified or unrelated PR | No rename from this evidence; record `UNKNOWN` and reconcile normally. |
-| Explicit user override | Preserve override; no automatic rename. |
-| Unsupported, failed, or unreadable rename | Keep task; retain intended title and limitation in existing handoff state; retry only at normal reconciliation. |
+The outcome column controls the title operation: `apply` supplies the verified
+title at creation/adoption, `rename` updates the same existing task, `no-op`
+performs no title mutation, and `defer` retains the task and intended title and
+retries only at normal reconciliation. The last column explains the supporting evidence or
+state; it cannot override the outcome.
+
+| Event or condition | Outcome | Evidence or retained state |
+| --- | --- | --- |
+| Creation or adoption | `apply` | Verified title and same-task identity; readback when supported. |
+| Verified PR creation | `rename` | New `prN` with verified repository, number, and owned-work association. |
+| Verified PR supersession | `rename` | Replacement `prN` verified against the same task's owned work. |
+| Resume with stale managed title | `rename` | Intended title reconciled from live owned-work evidence. |
+| Already-correct title | `no-op` | Current and intended titles match. |
+| Unverified or unrelated PR | `no-op` | Verification is `UNKNOWN`; retained for normal reconciliation. |
+| Explicit user override | `no-op` | User-selected title retained. |
+| Unsupported, failed, or unreadable rename | `defer` | Intended title and limitation retained in existing handoff state. |
 
 Rename limitations are non-blocking for otherwise authorized work. Report the
 limitation without claiming success; keep the task and its existing Batch Plan

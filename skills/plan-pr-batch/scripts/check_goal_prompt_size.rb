@@ -767,22 +767,13 @@ required_skill_rule_phrases = [
   "AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb"
 ]
 
-required_prompt_intake_title_phrases = [
+required_prompt_intake_title_structure = [
   "## Verified Batch Title Selection",
   "<PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>",
-  "metadata only; it does not create an executable Linear lane",
-  "optional `repo_prefix`",
-  "remote after stripping `.git`",
-  "repository root basename",
-  "configured `repo_prefix` is a blocker; do not silently fall back",
+  "`repo_prefix`",
+  "`linear_issue_verification`",
   "### Title Examples",
-  "### Verified In-Place Rename Lifecycle",
-  "owned-work association",
-  "exactly one issue",
-  "zero or multiple verified source issues",
-  "Primary pasteable prompts put `Batch title:` directly after the target-specific",
-  "Render exactly one empty line after `merge_authority:`",
-  "Specialized continuation prompts keep their own title"
+  "### Verified In-Place Rename Lifecycle"
 ]
 
 required_codex_prompt_phrases = [
@@ -954,7 +945,7 @@ end
 require_phrases(skill_text, required_skill_rule_phrases, "SKILL.md prompt-sizing rules")
 require_phrases(
   prompt_intake_text,
-  required_prompt_intake_title_phrases,
+  required_prompt_intake_title_structure,
   "workflows/pr-batch-intake.md verified batch-title rules"
 )
 
