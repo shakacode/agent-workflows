@@ -258,26 +258,57 @@ snapshot_root_is_active() {
 
 source_managed_inventory_fingerprint() {
   local include_flat_skills="$1"
+  local include_companion="$2"
   ruby -rdigest -e '
-    source, include_flat_skills, install_mode = ARGV
-    paths = []
-    installer = File.join(source, "bin/install-agent-workflows")
-    if File.file?(installer) && !File.symlink?(installer)
-      paths << "bin/install-agent-workflows:#{Digest::SHA256.file(installer).hexdigest}"
+    source, include_flat_skills, include_companion, install_mode, host = ARGV
+    entries = []
+    append_tree = lambda do |relative|
+      pending = [[relative, File.join(source, relative)]]
+      until pending.empty?
+        entry_relative, entry_path = pending.pop
+        stat = File.lstat(entry_path)
+        if stat.symlink?
+          entries << ["link", entry_relative, File.readlink(entry_path)].join("\0")
+        elsif stat.directory?
+          entries << ["directory", entry_relative, stat.mode & 0o7777].join("\0")
+          Dir.children(entry_path).sort.reverse_each do |child|
+            pending << [File.join(entry_relative, child), File.join(entry_path, child)]
+          end
+        elsif stat.file?
+          entries << ["file", entry_relative, stat.mode & 0o7777, Digest::SHA256.file(entry_path).hexdigest].join("\0")
+        else
+          entries << ["other", entry_relative, stat.ftype, stat.mode & 0o7777].join("\0")
+        end
+      end
     end
-    Dir.glob(File.join(source, "docs/solutions", "*")).each do |path|
-      paths << "docs/solutions/#{File.basename(path)}" if File.file?(path) && !File.symlink?(path)
-    end
-    Dir.glob(File.join(source, "workflows", "*")).each do |path|
-      paths << "workflows/#{File.basename(path)}"
+    %w[LICENSE THIRD_PARTY-NOTICES.md bin docs workflows].each do |relative|
+      path = File.join(source, relative)
+      append_tree.call(relative) if File.exist?(path) || File.symlink?(path)
     end
     if include_flat_skills == "true"
       Dir.glob(File.join(source, "skills", "*")).each do |path|
-        paths << "skills/#{File.basename(path)}" if install_mode == "copy" || File.directory?(path)
+        append_tree.call("skills/#{File.basename(path)}") if install_mode == "copy" || File.directory?(path)
       end
     end
-    print Digest::SHA256.hexdigest(paths.sort.join("\0"))
-  ' "$source" "$include_flat_skills" "$mode"
+    scanner = "skills/secure-github-actions/lib/secure_github_actions_scanner.rb"
+    scanner_path = File.join(source, scanner)
+    append_tree.call(scanner) if include_companion == "true" &&
+                                 (File.exist?(scanner_path) || File.symlink?(scanner_path))
+    cursor_rule = ".cursor/rules/agent-workflows.mdc"
+    cursor_rule_path = File.join(source, cursor_rule)
+    append_tree.call(cursor_rule) if host == "cursor" &&
+                                     (File.exist?(cursor_rule_path) || File.symlink?(cursor_rule_path))
+    print Digest::SHA256.hexdigest(entries.sort.join("\0"))
+  ' "$source" "$include_flat_skills" "$include_companion" "$mode" "$host"
+}
+
+cleanup_backup_dir() {
+  local exit_status=$?
+  if [[ -n "${backup_dir:-}" ]]; then
+    rm -rf -- "${backup_dir:?}" || echo "Warning: could not remove temporary rollback snapshot: $backup_dir" >&2
+    backup_dir=""
+  fi
+  return "$exit_status"
 }
 
 recovery_artifact_inventory() {
@@ -300,6 +331,7 @@ recovery_artifact_inventory() {
 
 backup_target() {
   backup_dir="$(mktemp -d)"
+  trap cleanup_backup_dir EXIT
   backup_target_dir="$backup_dir/target"
   backup_manifest="$backup_dir/managed-paths"
   backup_existing_manifest="$backup_dir/existing-managed-paths"
@@ -333,7 +365,9 @@ backup_target() {
     if [[ "$delivery_mode" = "plugin-companion" || "$installed_delivery_mode" = "plugin-companion" ]]; then
       backup_includes_companion=true
     fi
-    backup_source_inventory_fingerprint="$(source_managed_inventory_fingerprint "$backup_includes_flat_skills")"
+    backup_source_inventory_fingerprint="$(
+      source_managed_inventory_fingerprint "$backup_includes_flat_skills" "$backup_includes_companion"
+    )"
     recovery_artifact_inventory > "$backup_recovery_artifact_manifest"
     if [[ -e "$target/.agent-workflows-migration-staging" ||
           -L "$target/.agent-workflows-migration-staging" ]]; then
@@ -777,7 +811,9 @@ restore_target() {
       rm -f -- "$target/.agent-workflows-migration-staging"
       cp -a "$backup_migration_receipt" "$target/.agent-workflows-migration-staging"
     fi
-    current_source_inventory_fingerprint="$(source_managed_inventory_fingerprint "$backup_includes_flat_skills")"
+    current_source_inventory_fingerprint="$(
+      source_managed_inventory_fingerprint "$backup_includes_flat_skills" "$backup_includes_companion"
+    )"
     if [[ "$current_source_inventory_fingerprint" != "$backup_source_inventory_fingerprint" ]]; then
       echo "ROLLBACK_SOURCE_CHANGED: managed source inventory changed after the rollback snapshot." >&2
       rollback_complete=false

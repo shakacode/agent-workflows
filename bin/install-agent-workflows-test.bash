@@ -7728,6 +7728,62 @@ test_upgrade_without_consumer_roots_succeeds() {
   assert_not_contains "$output" "unbound variable"
 }
 
+test_upgrade_removes_temporary_snapshot_after_success_and_failure() {
+  local tmp source target consumer backup_root wrap output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  backup_root="$tmp/backups"
+  wrap="$tmp/wrap"
+  mkdir -p "$source" "$consumer" "$backup_root" "$wrap"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  cat > "$wrap/bash-env" <<'BASH_ENV'
+mktemp() {
+  if [[ "$#" -eq 1 && "$1" = "-d" ]]; then
+    command mktemp -d "$BACKUP_TEST_ROOT/snapshot.XXXXXX"
+  else
+    command mktemp "$@"
+  fi
+}
+BASH_ENV
+
+  output="$(BACKUP_TEST_ROOT="$backup_root" BASH_ENV="$wrap/bash-env" \
+    "$source/bin/upgrade-agent-workflows" --target "$target" \
+    --source "$source" --no-fetch 2>&1)"
+  assert_contains "$output" "UPGRADE_COMPLETE"
+  [[ -z "$(find "$backup_root" -mindepth 1 -maxdepth 1 -print -quit)" ]] || \
+    fail "successful upgrade retained a temporary rollback snapshot"
+
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+  set +e
+  output="$(BACKUP_TEST_ROOT="$backup_root" BASH_ENV="$wrap/bash-env" \
+    "$source/bin/upgrade-agent-workflows" --target "$target" \
+    --source "$source" --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected seam validation failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ -z "$(find "$backup_root" -mindepth 1 -maxdepth 1 -print -quit)" ]] || \
+    fail "failed upgrade retained a temporary rollback snapshot"
+
+  printf '%s\n' "$target/.agent-workflows-flat-migration-missing" > \
+    "$target/.agent-workflows-migration-staging"
+  set +e
+  output="$(BACKUP_TEST_ROOT="$backup_root" BASH_ENV="$wrap/bash-env" \
+    "$source/bin/upgrade-agent-workflows" --target "$target" \
+    --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 3 ]] || fail "invalid migration receipt exited $status: $output"
+  assert_contains "$output" "CHECK_FAILED invalid migration recovery receipt"
+  [[ -z "$(find "$backup_root" -mindepth 1 -maxdepth 1 -print -quit)" ]] || \
+    fail "receipt validation failure retained a temporary rollback snapshot"
+}
+
 test_upgrade_reports_missing_source_as_check_failed() {
   local tmp target output status
   tmp="$(mktemp -d)"
@@ -9096,6 +9152,37 @@ PATCH
   assert_not_contains "$output" "ROLLBACK_COMPLETE"
 }
 
+test_failed_upgrade_rejects_managed_source_content_change_after_snapshot() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows-real"
+  cat > "$source/bin/install-agent-workflows" <<'PATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+"$root/bin/install-agent-workflows-real" "$@"
+printf '\n# changed after rollback snapshot\n' >> "$root/bin/agent-workflows-status"
+exit 7
+PATCH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" \
+    --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 7 ]] || fail "source content race replaced original exit 7 with $status: $output"
+  assert_contains "$output" "ROLLBACK_SOURCE_CHANGED"
+  assert_contains "$output" "ROLLBACK_INCOMPLETE"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+}
+
 test_failed_upgrade_rejects_new_recovery_artifacts() {
   local tmp source target output status residue
   tmp="$(mktemp -d)"
@@ -10371,6 +10458,7 @@ main() {
     test_upgrade_can_select_and_then_replay_companion_delivery_mode
     test_upgrade_dry_run_checks_requested_delivery_mode
     test_upgrade_without_consumer_roots_succeeds
+    test_upgrade_removes_temporary_snapshot_after_success_and_failure
     test_upgrade_reports_missing_source_as_check_failed
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_failed_upgrade_removes_new_migration_recovery_artifacts
@@ -10412,6 +10500,7 @@ main() {
     test_flat_skill_snapshot_manifest_excludes_dot_entries
     test_failed_upgrade_reports_incomplete_rollback_and_preserves_original_status
     test_failed_upgrade_rejects_source_inventory_change_after_snapshot
+    test_failed_upgrade_rejects_managed_source_content_change_after_snapshot
     test_failed_upgrade_rejects_new_recovery_artifacts
     test_failed_upgrade_restores_preexisting_recovery_artifacts
     test_failed_upgrade_restores_symlinked_bin_root_without_following_descendants
