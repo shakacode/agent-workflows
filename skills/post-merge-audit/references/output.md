@@ -161,7 +161,7 @@ every operator-authored field explicitly and use `none` rather than omitting a
 field:
 
 ````text
-🤖 Codex Completed-batch audit is clean. No reader action is needed.
+Completed-batch audit is clean. No reader action is needed.
 
 <details>
 <summary>Completed-batch audit receipt</summary>

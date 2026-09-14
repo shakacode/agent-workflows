@@ -115,7 +115,7 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   - Give the local receipt below to the helper. It publishes a visible outcome and reader action, then one closed `Completed-batch audit receipt` disclosure after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; historical HTML wrappers remain read-compatible only. Fill every operator-authored field explicitly and use `none` rather than omitting a field:
 
     ````text
-    🤖 Codex completed-batch audit is clean. No reader action is needed.
+    Completed-batch audit is clean. No reader action is needed.
 
     <details>
     <summary>Completed-batch audit receipt</summary>

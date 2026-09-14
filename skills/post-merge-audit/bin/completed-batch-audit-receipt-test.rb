@@ -2810,6 +2810,20 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     )
   end
 
+  def test_runner_neutral_local_receipt_example_is_accepted_by_the_visible_parser
+    output = File.read(File.expand_path("../references/output.md", __dir__), encoding: Encoding::UTF_8)
+    example = output.match(/````text\n(?<body>.*?)\n````/m)
+
+    refute_nil example
+    body = example[:body]
+    refute_match(/\A🤖 /, body)
+    fields = ready_marker.delete_prefix("<!-- completed-batch-audit v1\n").delete_suffix("-->\n")
+    canonical = body.sub(/(?<=completed-batch-audit v1\n).*?(?=^```\n)/m, fields)
+
+    assert CompletedBatchAuditReceipt.comment_marker(canonical)
+    assert CompletedBatchAuditReceipt.canonical_comment_body(canonical)
+  end
+
   def test_publish_canonicalizes_legacy_full_comment_to_the_concise_header
     with_fake_gh do |env, directory|
       targets_path = write_json(
