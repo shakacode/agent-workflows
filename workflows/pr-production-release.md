@@ -57,8 +57,9 @@ repo policy before merge readiness.
 3. Apply the canonical `AGENTS.md` decision for no tracker, stale tracker,
    missing release-mode block, duplicate trackers, cross-target trackers,
    accelerated-RC confidence, and final-release handling. When `AGENTS.md`
-   requires reporting, post a PR comment with a `Release Mode Block:` header,
-   the signal name, relevant tracker URLs, and the current decision.
+   requires reporting, post a PR comment through `github-comment-envelope
+   post-issue` with a `Release Mode Block:` header, the signal name, relevant
+   tracker URLs, and the current decision.
 4. Do not auto-create release trackers. A maintainer creates one when entering
    accelerated RC, strict RC, or final-release coordination.
 

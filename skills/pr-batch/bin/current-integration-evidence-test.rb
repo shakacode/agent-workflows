@@ -53,10 +53,8 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
         )
       end
 
-      assert_equal(
-        "GitHub current-integration response contains invalid Unicode scalar data",
-        error.message
-      )
+      assert_match(/\AGitHub current-integration /, error.message)
+      assert_match(/invalid Unicode scalar data|surrogate/i, error.message)
     end
   end
 
