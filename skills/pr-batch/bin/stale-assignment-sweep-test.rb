@@ -108,6 +108,8 @@ class StaleAssignmentSweepTest < Minitest::Test
 
     assert StaleAssignmentSweep::Runner.new.send(:nudge_comment?, rendered)
     assert StaleAssignmentSweep::Runner.new.send(:nudge_comment?, "#{LEGACY_NUDGE_MARKER}\nlegacy")
+    refute StaleAssignmentSweep::Runner.new.send(:nudge_comment?, "Assignment follow-up: example\n\n<!--\n#{payload}\n-->")
+    refute StaleAssignmentSweep::Runner.new.send(:nudge_comment?, "```text\n#{payload}\n```")
   end
 
   def test_enveloped_nudge_uses_the_configured_runner_once

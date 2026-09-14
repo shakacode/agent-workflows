@@ -774,6 +774,7 @@ module StaleAssignmentSweep
       body = body.to_s
       payload = GitHubCommentEnvelope.payload(body)
       return true if payload.include?(LEGACY_NUDGE_MARKER)
+      return false if payload.include?("<!--") || payload.match?(/\A[ \t]{0,3}(?:`{3,}|~{3,})/)
 
       payload.match?(%r{\AAssignment follow-up:.*?<details>\r?\n<summary>Assignment sweep details</summary>\r?\n\r?\n```text\r?\nstale-assignment-sweep:nudge:v1\r?\n```\r?\n</details>\r?\n?\z}m)
     end

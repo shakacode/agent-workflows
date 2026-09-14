@@ -73,6 +73,11 @@ class HumanAttentionContractTest < Minitest::Test
   end
 
   def test_address_review_filters_primary_checkpoints_through_unwrapped_payloads
+    workflow = File.read(File.join(ROOT, "workflows/address-review.md"))
+    filter_step = workflow[/^5\. Filter comments.*?(?=^6\. |\z)/m]
+    refute_nil filter_step
+    assert_match(%r{payload_body\s*//\s*body}, filter_step)
+
     payload = <<~MARKDOWN.chomp
       Address-review follow-up is complete. The next routine scan can start after this comment.
 

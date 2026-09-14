@@ -16,7 +16,7 @@ module GitHubCommentEnvelope
   LEGACY_AGENT_HEADER = /\A🤖 \*\*(?:Codex|Claude|Cursor)(?: · [^*\r\n]+)?\*\*(?:\r?\n|\z)/
   VISIBLE_AGENT_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:\r?\n|\z)/
   PAYLOAD_RUNNER_PREFIX = /\A🤖 (?:Codex|Claude|Cursor)(?:[ \t]+|(?=\z))/
-  MARKDOWN_BLOCK_SYNTAX = %r{\A[ \t]{0,3}(?:`{3,}|~{3,}|\#{1,6}(?:[ \t]|\z)|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+|(?:[-*_][ \t]*){3,}|<[A-Za-z!/])|\A(?: {4}|[ \t]*\t)}
+  MARKDOWN_BLOCK_SYNTAX = %r{\A[ \t]{0,3}(?:`{3,}|~{3,}|\#{1,6}(?:[ \t]|\z)|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+|(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|<[A-Za-z!/])|\A(?: {4}|[ \t]*\t)}
   PAYLOAD_LINE_ENDINGS = { "\r\n" => "crlf", "\n" => "lf", "\r" => "cr", "" => "none" }.freeze
   PAYLOAD_LINE_ENDING_VALUES = PAYLOAD_LINE_ENDINGS.invert.freeze
 
@@ -33,8 +33,8 @@ module GitHubCommentEnvelope
     end
     payload = body.sub(/\A[\r\n]+/, "")
     first_line, line_ending, remaining_payload = split_payload(payload)
-    visible = visible_line(display_runner, first_line)
-    remaining_payload = "#{first_line}#{line_ending}#{remaining_payload}" if preserve_payload_first_line?(first_line)
+    visible = visible_line(display_runner, first_line, remaining_payload)
+    remaining_payload = "#{first_line}#{line_ending}#{remaining_payload}" if preserve_payload_first_line?(first_line, remaining_payload)
     marker = [
       MARKER,
       "runner: #{runner}",
@@ -64,8 +64,8 @@ module GitHubCommentEnvelope
     return remaining_payload unless parsed.key?("payload_first_line")
 
     preserved_first_line = "#{parsed.fetch('payload_first_line')}#{parsed.fetch('payload_line_ending')}"
-    if preserve_payload_first_line?(parsed.fetch("payload_first_line")) &&
-       remaining_payload.start_with?(preserved_first_line)
+    if remaining_payload.start_with?(preserved_first_line) &&
+       preserve_payload_first_line?(parsed.fetch("payload_first_line"), remaining_payload.delete_prefix(preserved_first_line))
       return remaining_payload
     end
 
@@ -95,12 +95,16 @@ module GitHubCommentEnvelope
     payload_first_line = Base64.urlsafe_decode64(match[:payload_first_line]).force_encoding(Encoding::UTF_8)
     return unless Base64.urlsafe_encode64(payload_first_line, padding: false) == match[:payload_first_line]
     return unless payload_first_line.valid_encoding? && !payload_first_line.empty? && !payload_first_line.match?(/[\r\n]/)
-    return unless visible == visible_line(RUNNER_DISPLAY.fetch(runner.downcase), payload_first_line)
 
-    payload_first_line.force_encoding(body.encoding)
     payload_line_ending = PAYLOAD_LINE_ENDING_VALUES.fetch(match[:payload_line_ending])
     envelope_line_ending = body[/\r\n|\n|\r/]
     payload_line_ending = "\r\n" if payload_line_ending == "\n" && envelope_line_ending == "\r\n"
+    remaining_payload = body[match.end(0)..].to_s
+    preserved_first_line = "#{payload_first_line}#{payload_line_ending}"
+    return unless visible == visible_line(RUNNER_DISPLAY.fetch(runner.downcase), payload_first_line, remaining_payload) ||
+                  visible == visible_line(RUNNER_DISPLAY.fetch(runner.downcase), payload_first_line, remaining_payload.delete_prefix(preserved_first_line))
+
+    payload_first_line.force_encoding(body.encoding)
 
     parsed.merge(
       "payload_first_line" => payload_first_line,
@@ -146,17 +150,18 @@ module GitHubCommentEnvelope
     [payload[0...index], ending, payload[(index + ending.length)..].to_s]
   end
 
-  def visible_line(display_runner, payload_first_line)
+  def visible_line(display_runner, payload_first_line, remaining_payload = "")
     outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").strip
     visible = "🤖 #{display_runner}"
-    visible += " #{outcome}" unless outcome.empty? || outcome.match?(MARKDOWN_BLOCK_SYNTAX)
+    visible += " #{outcome}" unless outcome.empty? || preserve_payload_first_line?(payload_first_line, remaining_payload)
     visible
   end
 
-  def preserve_payload_first_line?(payload_first_line)
+  def preserve_payload_first_line?(payload_first_line, remaining_payload = "")
     return false if payload_first_line.empty?
 
-    payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "").match?(MARKDOWN_BLOCK_SYNTAX)
+    outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "")
+    outcome.match?(MARKDOWN_BLOCK_SYNTAX) || remaining_payload.match?(/\A(?: {0,3}=+[ \t]*| {0,3}-+[ \t]*)(?:\r\n|\n|\r|\z)/)
   end
 
   def normalized_value(value, name, pattern: VALUE_PATTERN)

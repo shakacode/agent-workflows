@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "set" # rubocop:disable Lint/RedundantRequireStatement
+
 # Replay machine-readable closeout evidence markers from PR bodies, issue
 # comments, or saved handoff files. The visible Markdown remains the operator
 # interface; these hidden markers make post-merge audit recovery deterministic.

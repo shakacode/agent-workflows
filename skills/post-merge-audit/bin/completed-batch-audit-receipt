@@ -760,7 +760,7 @@ module CompletedBatchAuditReceipt
 
   def visible_comment_marker(body)
     match = body.to_s.match(
-      %r{\A(?:(?:🤖 Codex )?completed-batch|Completed-batch) audit [^\r\n]+\r?\n\r?\n<details>\r?\n<summary>#{Regexp.escape(VISIBLE_DETAILS_SUMMARY)}</summary>\r?\n\r?\n```text\r?\ncompleted-batch-audit v1\r?\n(?<payload>.*?)^```\r?\n</details>\r?\n?\z}m
+      %r{\A(?:(?:🤖 (?:Codex|Claude|Cursor) )?completed-batch|Completed-batch) audit [^\r\n]+\r?\n\r?\n<details>\r?\n<summary>#{Regexp.escape(VISIBLE_DETAILS_SUMMARY)}</summary>\r?\n\r?\n```text\r?\ncompleted-batch-audit v1\r?\n(?<payload>.*?)^```\r?\n</details>\r?\n?\z}m
     )
     return unless match
 

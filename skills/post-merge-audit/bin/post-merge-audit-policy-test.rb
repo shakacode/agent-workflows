@@ -86,7 +86,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_INDEPENDENT_REPORT_HANDOFF_PROHIBITION = "Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line."
   REQUIRED_ADVISORY_VERDICT_PROHIBITION = "Advisory auditors must not issue the qualifying clean/ready verdict."
   COMPLETED_BATCH_AUDIT_MARKER_HEADER = "completed-batch-audit v1"
-  REQUIRED_DURABLE_RECEIPT_HEADER = "🤖 Codex completed-batch audit is clean. No reader action is needed."
+  REQUIRED_DURABLE_RECEIPT_TERMS = ["Completed-batch audit receipt", "completed-batch-audit v1"].freeze
   REQUIRED_PR_DESCRIPTION_AUDIT_RECEIPTS = "### Audit receipts"
   REQUIRED_PR_DESCRIPTION_SUMMARY_HEADING = "#### Completed-batch audit"
   REQUIRED_PR_DESCRIPTION_SUMMARY_START = "<summary>Audit receipt</summary>"
@@ -430,7 +430,6 @@ class PostMergeAuditPolicyTest < Minitest::Test
     body = guarded_block[:body]
     assert_match(/\]\([^)]*#audit-applicability\)/, body)
     [
-      REQUIRED_DURABLE_RECEIPT_HEADER,
       COMPLETED_BATCH_AUDIT_MARKER_HEADER,
       REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD
     ].each do |rule|
@@ -535,8 +534,10 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
       assert_includes text, COMPLETED_BATCH_AUDIT_MARKER_HEADER,
                       "#{relative_path} should require the completed-batch audit marker header"
-      assert_includes text, REQUIRED_DURABLE_RECEIPT_HEADER,
-                      "#{relative_path} should require the fixed durable comment header"
+      REQUIRED_DURABLE_RECEIPT_TERMS.each do |term|
+        assert_includes text, term,
+                        "#{relative_path} should require a visible durable receipt"
+      end
       assert_includes text, REQUIRED_BATCH_IDENTITY_FIELD,
                       "#{relative_path} should require the expanded completed-batch audit identity contract"
       assert_includes text, REQUIRED_STRUCTURED_NON_BACKEND_SCOPE_EVIDENCE,

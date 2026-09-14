@@ -134,6 +134,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     payloads = [
       "```ruby\nputs :ok\n```\n",
       "# Heading\nEvidence follows.\n",
+      "Setext heading\n---\nEvidence follows.\n",
       "> Quoted context\nEvidence follows.\n",
       "<details>\n<summary>Evidence</summary>\n\nVisible details.\n</details>\n"
     ]
@@ -147,6 +148,16 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       assert_equal payload, GitHubCommentEnvelope.payload(rendered)
       assert_includes rendered, "\n\n#{payload}"
     end
+  end
+
+  def test_render_does_not_treat_mixed_thematic_break_characters_as_a_block
+    payload = "-*_ evidence follows\nTail\n"
+    rendered = GitHubCommentEnvelope.render(
+      body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
+    )
+
+    assert_equal "#{VISIBLE_PREFIX} -*_ evidence follows\n", rendered.lines.first
+    assert_equal payload, GitHubCommentEnvelope.payload(rendered)
   end
 
   def test_payload_round_trips_repeated_plain_first_lines
