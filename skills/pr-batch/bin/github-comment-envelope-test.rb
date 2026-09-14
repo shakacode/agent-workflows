@@ -185,7 +185,10 @@ class GitHubCommentEnvelopeTest < Minitest::Test
   def test_render_preserves_multiline_and_repeated_setext_headings
     [
       "Title\nSubtitle\n---\nTail\n",
-      "Title\r\nTitle\r\nTitle\r\nTitle\r\n===\r\nTail\r\n"
+      "Title\r\nTitle\r\nTitle\r\nTitle\r\n===\r\nTail\r\n",
+      "Title\n    Subtitle\n---\nTail\n",
+      "Title\n<span>Subtitle</span>\n---\nTail\n",
+      "Title\n[docs]: https://example.com\n---\nTail [docs]\n"
     ].each do |payload|
       rendered = GitHubCommentEnvelope.render(
         body: payload, runner: "codex", host: "M5", task_or_run: "task-7"

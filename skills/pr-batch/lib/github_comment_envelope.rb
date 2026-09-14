@@ -199,7 +199,7 @@ module GitHubCommentEnvelope
   def initial_setext_heading?(remaining_payload)
     remaining_payload.each_line do |line|
       return true if line.match?(/\A {0,3}(?:=+|-+)[ \t]*(?:\r\n|\n|\r|\z)/)
-      return false if line.match?(/\A[ \t]*(?:\r\n|\n|\r|\z)/) || line.match?(MARKDOWN_BLOCK_SYNTAX)
+      return false if line.match?(/\A[ \t]*(?:\r\n|\n|\r|\z)/)
     end
 
     false
