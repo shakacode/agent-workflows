@@ -182,6 +182,21 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     end
   end
 
+  def test_render_preserves_multiline_and_repeated_setext_headings
+    [
+      "Title\nSubtitle\n---\nTail\n",
+      "Title\r\nTitle\r\nTitle\r\nTitle\r\n===\r\nTail\r\n"
+    ].each do |payload|
+      rendered = GitHubCommentEnvelope.render(
+        body: payload, runner: "codex", host: "M5", task_or_run: "task-7"
+      )
+
+      assert_equal "#{VISIBLE_PREFIX}\n", rendered.lines.first
+      assert_includes rendered, "payload_first_line_preserved: true"
+      assert_equal payload, GitHubCommentEnvelope.payload(rendered)
+    end
+  end
+
   def test_payload_reads_metadata_free_preserved_first_line_envelopes
     payload = "Setext heading\n---\nEvidence follows.\n"
     rendered = GitHubCommentEnvelope.render(

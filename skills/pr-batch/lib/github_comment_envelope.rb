@@ -193,7 +193,16 @@ module GitHubCommentEnvelope
     return false if payload_first_line.empty?
 
     outcome = payload_first_line.sub(PAYLOAD_RUNNER_PREFIX, "")
-    outcome.match?(MARKDOWN_BLOCK_SYNTAX) || remaining_payload.match?(/\A(?: {0,3}=+[ \t]*| {0,3}-+[ \t]*)(?:\r\n|\n|\r|\z)/)
+    outcome.match?(MARKDOWN_BLOCK_SYNTAX) || initial_setext_heading?(remaining_payload)
+  end
+
+  def initial_setext_heading?(remaining_payload)
+    remaining_payload.each_line do |line|
+      return true if line.match?(/\A {0,3}(?:=+|-+)[ \t]*(?:\r\n|\n|\r|\z)/)
+      return false if line.match?(/\A[ \t]*(?:\r\n|\n|\r|\z)/) || line.match?(MARKDOWN_BLOCK_SYNTAX)
+    end
+
+    false
   end
 
   def preserved_payload_first_line?(payload_first_line, remaining_payload, preserved_first_line)
