@@ -95,12 +95,10 @@ CI. The integration owner, not the implementation worker, performs this phase:
 Convention: `UNKNOWN` in capitals means coordination/backend state could not be
 verified; lowercase `unknown` is the QA lane status value.
 
-Use a QA lane when a batch needs evidence beyond each individual worker's local
-validation before coordinator closeout, release-readiness, release-promotion, or
-merge decisions rely on the batch. QA is a sibling lane to implementation and
-audit work: it verifies the user-visible, operator-visible, or developer-visible
-result of the batch, while audit verifies that the QA coverage and evidence were
-adequate.
+Use QA when worker validation cannot support coordinator closeout, release
+readiness or promotion, or merge decisions. QA is a sibling to implementation
+and audit: it verifies batch results visible to users, operators, or developers;
+audit verifies QA coverage and evidence.
 
 Create an explicit QA lane for release-affecting batches, release-candidate or
 final-release preparation, CI/tooling changes, generated-output changes,
@@ -1687,11 +1685,10 @@ remaining must-fix file changes into one final push and restart the current-head
 otherwise waive or record the optional item in a triage reply or decision log instead of spending
 another CI/review cycle.
 
-The final-candidate debounce above is ordinary PR integration policy. Any
-release-specific waiver soak, finalizer rule, or tracker acknowledgement remains
-owned by the downstream **Accelerated RC Auto-Merge** contract reached through
-the [Accelerated RC Auto-Merge Compatibility Route](pr-processing.md#accelerated-rc-auto-merge-compatibility-route)
-and is consumed only when the downstream release lifecycle selects it.
+Final-candidate debounce is ordinary PR integration policy. The release-specific
+waiver soak remains owned by the downstream **Accelerated RC Auto-Merge** contract,
+along with finalizer rules and tracker acknowledgements. Release lifecycles select it
+through the [compatibility route](pr-processing.md#accelerated-rc-auto-merge-compatibility-route).
 
 The batch coordinator or merge finalizer owns the closeout sweep for late post-merge bot findings
 before final batch handoff. Findings that arrive after closeout route into the next post-merge audit
@@ -1699,11 +1696,9 @@ intake by default.
 
 ### Review-Loop Convergence (push amplification)
 
-Every push re-triggers all configured review agents on the new head SHA, and each may emit a fresh
-batch of comments — including re-raises of already-addressed points, dead-code observations, optional
-nits, and positive confirmations. Responding to each comment with a commit therefore never
-terminates: every fix manufactures another full review round (and another CI cycle and reviewer-quota
-spend). Converge deliberately:
+Each push reruns all configured reviewers on its new head SHA. They may repeat
+findings, flag dead code or optional nits, or confirm correctness. A commit per
+comment perpetuates review, CI, and reviewer quota costs. Converge deliberately:
 
 - Use the local pre-push adversarial review, when available (e.g. `codex review --base origin/<base>`), as the
   authoritative gate to find real bugs cheaply, before any push. Treat the post-push GitHub review
