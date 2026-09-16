@@ -95,7 +95,7 @@ CI. The integration owner, not the implementation worker, performs this phase:
 Convention: `UNKNOWN` in capitals means coordination/backend state could not be
 verified; lowercase `unknown` is the QA lane status value.
 
-Use a QA lane when closeout, release, or merge decisions need evidence beyond each worker's
+Use a QA lane when closeout, release, or merge decisions need evidence beyond each worker's local
 validation. QA is a sibling to implementation and audit: it verifies batch results visible to
 users, operators, or developers; audit verifies QA coverage and evidence.
 
