@@ -1,5 +1,10 @@
 # Control Tower And Human Attention Desk
 
+This document preserves the legacy Agent Workflows control-tower procedures.
+Projects using installed Shaka can optionally adopt its Master Control Tower
+(MCT) and Repository Control Tower (RCT) roles; see the
+[Shaka control-tower guide](https://github.com/shakacode/shaka/blob/7535a08a68d8d11eba8825abadadad2cb2dca236/docs/control-towers.md).
+
 These prompts implement the short-term operating model recorded in
 [Multi-Repository Control Towers And Human Attention Desk](../project/plans/2026-09-02-multi-repository-control-tower-and-human-attention-desk.md).
 The dated plan is a point-in-time decision record. The live file layout,
