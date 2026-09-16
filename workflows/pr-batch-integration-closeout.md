@@ -95,10 +95,9 @@ CI. The integration owner, not the implementation worker, performs this phase:
 Convention: `UNKNOWN` in capitals means coordination/backend state could not be
 verified; lowercase `unknown` is the QA lane status value.
 
-Use QA when worker validation cannot support coordinator closeout, release
-readiness or promotion, or merge decisions. QA is a sibling to implementation
-and audit: it verifies batch results visible to users, operators, or developers;
-audit verifies QA coverage and evidence.
+Use a QA lane when closeout, release, or merge decisions need evidence beyond each worker's
+validation. QA is a sibling to implementation and audit: it verifies batch results visible to
+users, operators, or developers; audit verifies QA coverage and evidence.
 
 Create an explicit QA lane for release-affecting batches, release-candidate or
 final-release preparation, CI/tooling changes, generated-output changes,
@@ -1685,10 +1684,9 @@ remaining must-fix file changes into one final push and restart the current-head
 otherwise waive or record the optional item in a triage reply or decision log instead of spending
 another CI/review cycle.
 
-Final-candidate debounce is ordinary PR integration policy. The release-specific
-waiver soak remains owned by the downstream **Accelerated RC Auto-Merge** contract,
-along with finalizer rules and tracker acknowledgements. Release lifecycles select it
-through the [compatibility route](pr-processing.md#accelerated-rc-auto-merge-compatibility-route).
+Final-candidate debounce is ordinary PR policy. Any release-specific waiver soak, finalizer rule,
+or tracker acknowledgement remains owned by **Accelerated RC Auto-Merge** and is consumed only
+when the downstream release lifecycle selects it through the [Accelerated RC Auto-Merge Compatibility Route](pr-processing.md#accelerated-rc-auto-merge-compatibility-route).
 
 The batch coordinator or merge finalizer owns the closeout sweep for late post-merge bot findings
 before final batch handoff. Findings that arrive after closeout route into the next post-merge audit
