@@ -6,7 +6,7 @@ Portable Codex, Claude, and Cursor workflow pack.
 > **Agent Workflows is retired in favor of [Shaka](https://github.com/shakacode/shaka).**
 > Shaka gives your coding agent a task and returns a tested, reviewed pull request.
 > New adopters should start with the
-> [Shaka getting-started guide](https://github.com/shakacode/shaka/blob/main/docs/getting-started.md).
+> [Shaka getting-started guide](https://shaka.shakacode.com/docs/getting-started).
 > This repository accepts only security fixes, migration fixes, and retirement changes; see
 > [#857](https://github.com/shakacode/agent-workflows/issues/857).
 
