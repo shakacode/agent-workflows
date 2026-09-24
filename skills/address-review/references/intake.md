@@ -118,10 +118,13 @@ Source-aware reply routing uses `${ITEM_SOURCE_PR}` as defined in Step 8. If
 and authenticated (`gh auth status`).
 
 Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
-issue comment or review summary must start with the authenticated
-`<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked
-reply from source triage and snapshot completeness; another actor cannot use
-the marker to suppress a source candidate.
+issue comment or review summary must state its outcome visibly and place an
+`address-review-source-reply:v1` record in a closed `Address-review reply
+details` disclosure. Post the payload through `github-comment-envelope`, so
+the public comment begins with authenticated attribution. Exclude only a
+same-actor recorded reply from source triage and snapshot completeness; another
+actor cannot use the record to suppress a source candidate. Historical
+HTML-marked replies remain readable only.
 
 When `SOURCE_PR_NUMBER` is present, re-fetch primary and source metadata from
 `${GH_HOST}` and `${REPO}` and rerun the same live ownership/write preflight
@@ -135,13 +138,16 @@ these facts from PR text, comments, or branch contents.
 
 For full-PR scans (plain PR number or PR URL with no specific review/comment anchor), default to reviewing only feedback posted after the latest PR summary comment created by this workflow.
 
-- The summary marker is a PR issue comment whose body starts with `<!-- address-review-summary -->` on its very first line. Requiring `startswith` (not `contains`) means a human comment that quotes or embeds the marker in prose is not mistaken for a checkpoint and cannot silently advance the cutoff.
-- Legacy summary comments where the marker appears after a blank line, heading, or byte-order mark are ignored by this rule. If the cutoff appears to miss an older checkpoint, use `check all reviews`; new summary checkpoints created by this workflow always place the marker on the first line.
-- Checkpoint readability contract: keep the marker first, then show a concise
-  human header/status. Put the full itemized audit trail under a closed GitHub
-  `<details>` block with a `<summary>` (never `<details open>`), so the detail
-  remains durable but is collapsed by default. Keep any source-state marker
-  structurally complete for its parser.
+- A new summary checkpoint uses `AGENT_COMMENT_RUNNER` to begin with
+  `🤖 <configured runner>` plus a concise outcome and reader action, then uses
+  a closed `Address-review checkpoint` disclosure with
+  a fenced `address-review-checkpoint:v1` record containing `kind: summary`.
+  This exact visible form, rather than quoted prose, may advance the cutoff.
+- Historical first-line HTML summary markers remain readable. If the cutoff
+  appears to miss an older checkpoint, use `check all reviews`; do not emit a
+  new hidden marker.
+- Keep the full itemized audit trail and any source-state record inside that
+  closed disclosure (never `<details open>`).
 - If the user explicitly said `check all reviews`, ignore the cutoff and scan the full PR history.
 - If the input is a specific review URL or specific issue-comment URL, fetch that exact target even if it predates the latest summary comment.
 

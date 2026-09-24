@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "set" # rubocop:disable Lint/RedundantRequireStatement
+
 # Replay machine-readable closeout evidence markers from PR bodies, issue
 # comments, or saved handoff files. The visible Markdown remains the operator
 # interface; these hidden markers make post-merge audit recovery deterministic.
@@ -233,8 +235,9 @@ module CloseoutEvidenceReplay
     text = text.to_s.dup.force_encoding(Encoding::UTF_8)
     return invalid_utf8_replay unless text.valid_encoding?
 
-    qa_v1_markers = marker_bodies(text, "qa-evidence v1")
-    qa_v2_markers = marker_bodies(text, "qa-evidence v2")
+    visible_text = visible_markdown(text)
+    qa_v1_markers = marker_bodies(text, "qa-evidence v1", visible_text)
+    qa_v2_markers = marker_bodies(text, "qa-evidence v2", visible_text)
     applicable_v2_markers = qa_v2_markers.select do |marker|
       fields, = parse_fields(marker)
       head_sha = fields.fetch("head_sha", "").to_s.downcase
@@ -257,11 +260,11 @@ module CloseoutEvidenceReplay
         replay_qa_markers(qa_v1_markers, expected_head_sha: expected_head_sha, version: 1)
       end
     priority = replay_priority_markers(
-      marker_bodies(text, "priority-finding-dispositions v1"),
+      marker_bodies(text, "priority-finding-dispositions v1", visible_text),
       expected_head_sha:,
       required: require_priority_dispositions
     )
-    hosted_markers = marker_bodies(text, "hosted-qa-evidence v1")
+    hosted_markers = marker_bodies(text, "hosted-qa-evidence v1", visible_text)
     hosted_qa = if hosted_markers.empty?
                   hosted_qa_not_applicable("hosted-qa-evidence v1 marker missing")
                 else
@@ -275,7 +278,13 @@ module CloseoutEvidenceReplay
     }
   end
 
-  def marker_bodies(text, name)
+  def marker_bodies(text, name, visible_text = nil)
+    visible_text ||= visible_markdown(text)
+
+    legacy_marker_bodies(text, name) + visible_details_marker_bodies(visible_text, name)
+  end
+
+  def legacy_marker_bodies(text, name)
     if name == "hosted-qa-evidence v1"
       return text.scan(
         /<!--\s*#{Regexp.escape(name)}(?=\s|-->)\s*(.*?)^[ \t]*-->[ \t]*\r?$/m
@@ -283,6 +292,618 @@ module CloseoutEvidenceReplay
     end
 
     text.scan(/<!--\s*#{Regexp.escape(name)}(?=\s|-->)\s*(.*?)-->/m).map(&:first)
+  end
+
+  # New evidence is deliberately readable in a closed disclosure. Keep the
+  # legacy HTML envelope above for historical receipts only; writers use this
+  # exact details/fence shape so the parser cannot mistake ordinary prose for
+  # authority-bearing evidence.
+  def visible_details_marker_bodies(visible_text, name)
+    summary = {
+      "qa-evidence v1" => "QA evidence",
+      "qa-evidence v2" => "QA evidence",
+      "hosted-qa-evidence v1" => "Hosted QA evidence",
+      "priority-finding-dispositions v1" => "Priority finding dispositions"
+    }.fetch(name)
+
+    visible_text.scan(
+      %r{<details>[ \t]*\r?\n<summary>#{Regexp.escape(summary)}</summary>[ \t]*\r?\n\r?\n```text[ \t]*\r?\n#{Regexp.escape(name)}[ \t]*\r?\n(.*?)^`{3,}[ \t]*\r?\n</details>[ \t]*(?:\r?\n|\z)}m
+    ).map(&:first)
+  end
+
+  # Structural HTML tags inside a Markdown code span or escaped as literal text
+  # are not rendered tags. Keep those literals from changing disclosure depth.
+  def matching_backtick_run_index(text, delimiter, start_index)
+    index = start_index
+    while (opening = text.index("`", index))
+      run = text[opening..].match(/\A`+/)[0]
+      return opening if run.length == delimiter.length
+
+      index = opening + run.length
+    end
+  end
+
+  def markdown_escaped?(line, index)
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 && line[cursor] == "\\"
+      backslashes += 1
+      cursor -= 1
+    end
+    backslashes.odd?
+  end
+
+  def inline_code_lookahead(lines, start_index)
+    lines[start_index..].to_a.take_while do |line|
+      !line.strip.empty? && !line.match?(/\A[ \t]{0,3}>/) &&
+        !line.match?(%r{\A[ \t]*</?(?:blockquote|code|details|pre|script|style|textarea)(?:\s|>)}i) &&
+        !line.match?(/\A[ \t]{0,3}<!--/)
+    end.join
+  end
+
+  def html_comment_close(line, index)
+    closing = [line.index("-->", index), line.index("--!>", index)].compact.min
+    return unless closing
+
+    [closing, line[closing, 4] == "--!>" ? 4 : 3]
+  end
+
+  def html_context_line(line, code_delimiter:, html_comment_open:, remaining_text:, allow_new_code_span:)
+    rendered = +""
+    index = 0
+    while index < line.length
+      if html_comment_open
+        closing = html_comment_close(line, index)
+        return [rendered, code_delimiter, true] unless closing
+
+        index = closing[0] + closing[1]
+        html_comment_open = false
+        next
+      end
+
+      if code_delimiter
+        closing = matching_backtick_run_index(line, code_delimiter, index)
+        return [rendered, code_delimiter, html_comment_open] unless closing
+
+        index = closing + code_delimiter.length
+        code_delimiter = nil
+        next
+      end
+
+      if line[index, 6] == "<!--->"
+        index += 6
+        next
+      end
+      if line[index, 5] == "<!-->"
+        index += 5
+        next
+      end
+
+      if line[index, 4] == "<!--"
+        html_comment_open = true
+        index += 4
+        next
+      end
+
+      if line[index] == "\\" && line[index + 1] == "<" && markdown_escaped?(line, index + 1)
+        rendered << "\\"
+        index += 2
+        next
+      end
+
+      if allow_new_code_span && line[index] == "`" && !markdown_escaped?(line, index)
+        delimiter = line[index..].match(/\A`+/)[0]
+        closing = matching_backtick_run_index(line, delimiter, index + delimiter.length)
+        if closing
+          index = closing + delimiter.length
+          next
+        end
+        if matching_backtick_run_index(remaining_text.call, delimiter, 0)
+          code_delimiter = delimiter
+          break
+        end
+
+        # An unmatched delimiter run is literal text. Consume the whole run so
+        # an interior tick cannot be retried as a shorter, fabricated span.
+        rendered << delimiter
+        index += delimiter.length
+        next
+      end
+
+      rendered << line[index]
+      index += 1
+    end
+    [rendered, code_delimiter, html_comment_open]
+  end
+
+  RAW_HTML_TAGS = %w[pre code script style textarea blockquote].freeze
+  RAW_TEXT_HTML_TAGS = %w[pre script style textarea].freeze
+  STRUCTURAL_HTML_TAGS = (%w[details summary] + RAW_HTML_TAGS).freeze
+
+  def raw_html_tag?(tag)
+    RAW_HTML_TAGS.include?(tag)
+  end
+
+  def raw_text_html_tag?(tag)
+    RAW_TEXT_HTML_TAGS.include?(tag)
+  end
+
+  def active_raw_text_tag(raw_html_containers)
+    raw_html_containers.reverse.find { |container| raw_text_html_tag?(container.fetch(:tag)) }&.fetch(:tag)
+  end
+
+  def active_raw_text_closer(raw_html_containers, structural_tags)
+    active_tag = active_raw_text_tag(raw_html_containers)
+    return unless active_tag
+
+    active_tag if structural_tags.any? { |type, found, *_| type == :close && raw_text_html_tag?(found) }
+  end
+
+  def raw_text_comment_terminator?(_tag, comment_text)
+    comment_text.match?(%r{</(?:pre|script|style|textarea)\s*>}i)
+  end
+
+  def raw_text_structural_html_tags(line, open_tag: nil, html_comment_open: false)
+    tags = []
+    comment_text = +""
+    index = 0
+    while index < line.length
+      if html_comment_open
+        closing = html_comment_close(line, index)
+        unless closing
+          comment_text << line[index..]
+          return [tags, open_tag, true, comment_text]
+        end
+
+        comment_text << line[index...closing[0]]
+        index = closing[0] + closing[1]
+        html_comment_open = false
+        next
+      end
+
+      unless open_tag
+        opening = line.index("<", index)
+        break unless opening
+
+        remaining = line[opening..]
+        if remaining.start_with?("<!--->")
+          index = opening + 6
+          next
+        end
+        if remaining.start_with?("<!-->")
+          index = opening + 5
+          next
+        end
+        if remaining.start_with?("<!--")
+          html_comment_open = true
+          index = opening + 4
+          next
+        end
+        unless html_tag_start?(remaining)
+          index = opening + 1
+          next
+        end
+
+        open_tag = {
+          text: +"<",
+          quote: nil,
+          attribute_value_pending: false,
+          indented_code_origin: indented_code_line?(line)
+        }
+        index = opening + 1
+      end
+
+      while index < line.length
+        character = line[index]
+        if character == "<" && !open_tag[:quote] && !open_tag[:attribute_value_pending]
+          open_tag = nil
+          break
+        end
+
+        open_tag[:text] << character
+        if open_tag[:quote]
+          open_tag[:quote] = nil if character == open_tag[:quote]
+        elsif ['"', "'"].include?(character) && open_tag[:attribute_value_pending]
+          open_tag[:quote] = character
+          open_tag[:attribute_value_pending] = false
+        elsif character == ">"
+          tag = structural_html_tag(open_tag)
+          tags << tag if tag
+          open_tag = nil
+          index += 1
+          break
+        elsif character == "="
+          open_tag[:attribute_value_pending] = attribute_assignment?(open_tag[:text])
+        elsif !character.match?(/\s/)
+          open_tag[:attribute_value_pending] = false
+        end
+        index += 1
+      end
+    end
+    [tags, open_tag, html_comment_open, comment_text]
+  end
+
+  def structural_html_tag(token)
+    tag = token.fetch(:text)
+    match = tag.match(%r{\A<(?<closing>/)?(?<tag>[A-Za-z][A-Za-z0-9:-]*)(?=\s|/?>)}i)
+    return unless match
+
+    [match[:closing] ? :close : :open, match[:tag].downcase, nil, token.fetch(:indented_code_origin)]
+  end
+
+  def html_tag_start?(text)
+    text.match?(%r{\A</?[A-Za-z][A-Za-z0-9:-]*(?=\s|/?>|\z)}) ||
+      text.match?(/\A<![A-Za-z]/) || text.start_with?("<?")
+  end
+
+  def attribute_assignment?(text)
+    text.match?(/(?:\s|\A)[A-Za-z_:][A-Za-z0-9:_.-]*\s*=\z/)
+  end
+
+  def structural_html_tags(line, open_tag: nil)
+    tags = []
+    index = 0
+    while index < line.length
+      unless open_tag
+        opening = line.index("<", index)
+        break unless opening
+
+        remaining = line[opening..]
+        if (summary = remaining.match(%r{\A<summary>(?<text>[^<]*)</summary>}i))
+          tags << [:summary, "summary", summary[:text].strip]
+          index = opening + summary[0].length
+          next
+        end
+
+        unless html_tag_start?(remaining)
+          index = opening + 1
+          next
+        end
+
+        open_tag = {
+          text: +"<",
+          quote: nil,
+          attribute_value_pending: false,
+          indented_code_origin: indented_code_line?(line)
+        }
+        index = opening + 1
+      end
+
+      while index < line.length
+        character = line[index]
+        # An unquoted attribute cannot contain `<`. Treat a nested opener as
+        # the next candidate so malformed literal text cannot consume a real
+        # structural tag later on the line.
+        if character == "<" && !open_tag[:quote]
+          open_tag = nil
+          break
+        end
+
+        open_tag[:text] << character
+        if open_tag[:quote]
+          open_tag[:quote] = nil if character == open_tag[:quote]
+        elsif ['"', "'"].include?(character) && open_tag[:attribute_value_pending]
+          open_tag[:quote] = character
+          open_tag[:attribute_value_pending] = false
+        elsif character == ">"
+          tag = structural_html_tag(open_tag)
+          tags << tag if tag
+          open_tag = nil
+          index += 1
+          break
+        elsif character == "="
+          open_tag[:attribute_value_pending] = attribute_assignment?(open_tag[:text])
+        elsif !character.match?(/\s/)
+          open_tag[:attribute_value_pending] = false
+        end
+        index += 1
+      end
+    end
+    [tags, open_tag]
+  end
+
+  def details_tags(structural_tags)
+    structural_tags.filter_map do |type, tag, text|
+      case tag
+      when "details"
+        [type, nil]
+      when "summary"
+        if type == :summary
+          [:summary, text]
+        elsif type == :open
+          [:summary_element, nil]
+        end
+      else
+        [type == :open ? :html_open : :html_close, tag]
+      end
+    end
+  end
+
+  def details_entry
+    { label: nil, summary_seen: false, summary_eligible: true }
+  end
+
+  def direct_details_child?(entry)
+    entry.fetch(:summary_eligible)
+  end
+
+  def mark_details_summary_content(details_stack, line)
+    return if details_stack.empty?
+
+    entry = details_stack.last
+    return if entry.fetch(:summary_seen)
+    return if line.match?(%r{\A[ \t]*<summary>[^<]*</summary>[ \t]*\r?\n?\z}i)
+
+    text = line.gsub(%r{</?[A-Za-z][A-Za-z0-9:-]*(?=\s|/?>)[^>]*>}, "").strip
+    entry[:summary_eligible] = false unless text.empty?
+  end
+
+  def visible_summary_content_line(line, structural_line, html_comment_was_open:, html_comment_open:)
+    return structural_line unless structural_line.strip.empty?
+    return "" if html_comment_was_open || html_comment_open
+
+    line.gsub(/<!--->|<!-->|<!--.*?(?:-->|--!>|\z)/, "").strip.empty? ? "" : line
+  end
+
+  def advance_details_stack(details_stack, discard_details_depth, tags)
+    tags.each do |type, text|
+      if discard_details_depth
+        case type
+        when :open
+          details_stack << details_entry
+        when :close
+          details_stack.pop unless details_stack.empty?
+          discard_details_depth = nil if details_stack.length < discard_details_depth
+        end
+        next
+      end
+
+      case type
+      when :open
+        # PR bodies place trusted evidence directly in the canonical Agent
+        # details disclosure. Deeper nested details remain explanatory examples
+        # and cannot grant authority.
+        details_stack.last[:summary_eligible] = false if details_stack.any? && !details_stack.last.fetch(:summary_seen)
+        if details_stack.empty? || (details_stack.length == 1 && details_stack.last.fetch(:label) == "Agent details")
+          details_stack << details_entry
+        else
+          details_stack << details_entry
+          discard_details_depth = details_stack.length
+        end
+      when :summary
+        next if details_stack.empty?
+
+        entry = details_stack.last
+        # Only the first direct-child summary labels a disclosure. An empty or
+        # nested first summary still consumes that slot, as GitHub supplies a
+        # default direct summary instead of promoting a later nested one.
+        unless entry.fetch(:summary_seen)
+          entry[:summary_seen] = true
+          entry[:label] = text if direct_details_child?(entry)
+        end
+      when :summary_element
+        next if details_stack.empty?
+
+        entry = details_stack.last
+        entry[:summary_seen] = true unless entry.fetch(:summary_seen)
+      when :html_open
+        details_stack.last[:summary_eligible] = false if details_stack.any? && !details_stack.last.fetch(:summary_seen)
+      when :close
+        details_stack.pop unless details_stack.empty?
+      end
+    end
+
+    discard_details_depth
+  end
+
+  def advance_raw_html_containers(raw_html_containers, structural_tags, line)
+    raw_html_containers.each do |container|
+      container[:blank_since_open] ||= line.strip.empty?
+    end
+
+    structural_tags.each do |type, tag, _text, indented_origin|
+      next unless raw_html_tag?(tag)
+
+      if type == :open
+        # A split tag retains the context of its opening '<'. An indented
+        # completion must not turn a real opener into a synthetic one.
+        raw_html_containers << { tag:, synthetic: indented_origin, blank_since_open: false, poisoned: false }
+      elsif type == :close
+        index = raw_html_containers.rindex do |current|
+          current.fetch(:tag) == tag &&
+            !current.fetch(:poisoned) &&
+            (!(indented_code_line?(line) || indented_origin) || current.fetch(:synthetic) ||
+              !current.fetch(:blank_since_open) || raw_text_html_tag?(tag))
+        end
+        raw_html_containers.delete_at(index) if index
+      end
+    end
+    raw_html_containers
+  end
+
+  def indented_code_line?(line)
+    line.match?(/\A(?: {4}| {0,3}\t)/)
+  end
+
+  def indented_disclosure_code_line?(line)
+    indented_code_line?(line) && line.match?(%r{</?(?:details|summary)(?:\s|>)}i)
+  end
+
+  def visible_disclosure_tags(structural_tags, line)
+    return structural_tags unless indented_code_line?(line)
+
+    structural_tags.reject { |_type, tag, _text, _indented_origin| %w[details summary].include?(tag) }
+  end
+
+  def raw_containment_tags(structural_tags, line)
+    balanced = Set.new
+    openings = Hash.new { |hash, tag| hash[tag] = [] }
+    if indented_code_line?(line)
+      structural_tags.each_with_index do |(type, tag, _text, _indented_origin), index|
+        next unless raw_html_tag?(tag)
+
+        if type == :open
+          openings[tag] << index
+        elsif type == :close && (opening = openings[tag].pop)
+          balanced.merge([opening, index])
+        end
+      end
+    end
+
+    structural_tags.each_with_index.reject { |_tag, index| balanced.include?(index) }.map(&:first)
+  end
+
+  def visible_markdown(text)
+    fence = nil
+    record_fence = false
+    discard_details_depth = nil
+    raw_html_containers = []
+    raw_text_open_tag = nil
+    raw_text_html_comment_open = false
+    raw_html_block_end = nil
+    html_comment_open = false
+    open_html_tag = nil
+    inline_code_delimiter = nil
+    details_stack = []
+    evidence_summaries = ["QA evidence", "Hosted QA evidence", "Priority finding dispositions"]
+    rendered = []
+    lines = text.each_line.to_a
+    lines.each_with_index do |line, line_index|
+      opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
+      if fence
+        if opener && opener[:delimiter][0] == fence[0] && opener[:delimiter].length >= fence.length &&
+           opener[:info].strip.empty?
+          fence = nil
+        end
+        next
+      end
+      if record_fence
+        if opener && !(opener[:delimiter][0] == "`" && opener[:delimiter].length >= 3 && opener[:info].strip.empty?)
+          # A second fenced opener makes this disclosure a Markdown example.
+          # CommonMark treats a ` ```text` line inside an open ` ```text`
+          # block as code, so no record in that block is published evidence.
+          record_fence = false
+          discard_details_depth = details_stack.length
+          next
+        end
+        record_fence = false if opener
+        rendered << line
+        next
+      end
+      if raw_html_block_end
+        raw_html_block_end = nil if line.include?(raw_html_block_end)
+        next
+      end
+      if raw_html_containers.empty? && (raw_html_block_end = raw_html_block_terminator(line))
+        raw_html_block_end = nil if line.include?(raw_html_block_end)
+        next
+      end
+      opener = line.match(/\A[ \t]{0,3}(?<delimiter>`{3,}|~{3,})(?<info>[^\r\n]*)/)
+      html_comment_was_open = html_comment_open
+      structural_line, inline_code_delimiter, html_comment_open = html_context_line(
+        line,
+        code_delimiter: inline_code_delimiter,
+        html_comment_open:,
+        remaining_text: -> { inline_code_lookahead(lines, line_index + 1) },
+        allow_new_code_span: opener.nil?
+      )
+      active_raw_text_tag = active_raw_text_tag(raw_html_containers)
+      if active_raw_text_tag
+        raw_text_tags, raw_text_open_tag, raw_text_html_comment_open, raw_text_comment_text = raw_text_structural_html_tags(
+          line,
+          open_tag: raw_text_open_tag,
+          html_comment_open: raw_text_html_comment_open
+        )
+      else
+        raw_text_tags = []
+        raw_text_open_tag = nil
+        raw_text_html_comment_open = false
+        raw_text_comment_text = ""
+      end
+      if active_raw_text_tag && raw_text_html_comment_open &&
+         raw_text_comment_terminator?(active_raw_text_tag, raw_text_comment_text)
+        raw_html_containers.reverse_each do |container|
+          next unless container.fetch(:tag) == active_raw_text_tag
+
+          container[:poisoned] = true
+          break
+        end
+      end
+      raw_text_closer = active_raw_text_closer(raw_html_containers, raw_text_tags)
+      summary_content_line = visible_summary_content_line(
+        line,
+        structural_line,
+        html_comment_was_open:,
+        html_comment_open:
+      )
+      if structural_line.empty? && !raw_text_closer
+        mark_details_summary_content(details_stack, summary_content_line)
+        next
+      end
+
+      continuing_html_tag = !open_html_tag.nil?
+      structural_tags, open_html_tag = structural_html_tags(structural_line, open_tag: open_html_tag)
+      if raw_text_closer && structural_tags.none? { |type, tag, *_| type == :close && tag == raw_text_closer }
+        structural_tags << [:close, raw_text_closer, nil, indented_code_line?(line)]
+      end
+      current_details_tags = details_tags(visible_disclosure_tags(structural_tags, line))
+      if discard_details_depth
+        discard_details_depth = advance_details_stack(details_stack, discard_details_depth, current_details_tags)
+        next
+      end
+      # A label is valid only when it is the first rendered direct child. Mark
+      # visible Markdown before fence, quote, or raw-HTML branches can skip it.
+      mark_details_summary_content(details_stack, summary_content_line)
+      discard_details_depth = advance_details_stack(details_stack, discard_details_depth, current_details_tags)
+      next if discard_details_depth
+
+      # CommonMark keeps an unclosed raw code container literal through EOF, so
+      # preserving that discard is intentionally fail-closed: later apparent
+      # evidence is not rendered authority. Blockquotes are excluded too because
+      # a canonical disclosure must be top-level published content.
+      raw_tags = raw_containment_tags(structural_tags, line)
+      if active_raw_text_tag
+        raw_tags.reject! { |type, tag, *_| type == :close && tag == active_raw_text_tag }
+        raw_tags.concat(
+          raw_text_tags.filter_map do |type, tag, text, indented_origin|
+            [:close, active_raw_text_tag, text, indented_origin] if type == :close && raw_text_html_tag?(tag)
+          end
+        )
+      end
+      raw_html_containers = advance_raw_html_containers(raw_html_containers, raw_tags, line)
+      if raw_html_containers.any?
+        next
+      end
+
+      if opener
+        # The record itself is the exact ```text fence inside a visible
+        # disclosure. Every other Markdown fence is an outer example, even
+        # when nested in a descriptive details block.
+        if evidence_summaries.include?(details_stack.last&.fetch(:label, nil)) &&
+           opener[:delimiter] == "```" && opener[:info].strip == "text"
+          record_fence = true
+          rendered << line
+        else
+          fence = opener[:delimiter]
+        end
+        next
+      end
+      # A blockquote nested in an otherwise canonical disclosure is still an
+      # example, not an authoritative published record.
+      next if line.match?(/\A[ \t]{0,3}>/) && !continuing_html_tag
+
+      next if indented_disclosure_code_line?(line)
+
+      rendered << line
+    end
+    rendered.join
+  end
+
+  def raw_html_block_terminator(line)
+    return "?>" if line.match?(/\A[ \t]{0,3}<\?/)
+    return ">" if line.match?(/\A[ \t]{0,3}<![A-Z]/)
+
+    "]]>" if line.match?(/\A[ \t]{0,3}<!\[CDATA\[/)
   end
 
   def replay_qa_markers(markers, expected_head_sha: nil, version: 1, github_host: nil)

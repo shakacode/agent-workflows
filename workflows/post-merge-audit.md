@@ -93,6 +93,7 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   - For an issue-first proof, complete the [bounded publication-proof projection](../docs/coordination-backend.md#issue-first-publication-proof) before preflight: preserve original before-effects proof/history, independently verify the exact unchanged-scope mapping, and independently retain the new exact-manifest digest without backdating. This does not weaken helper equality or no-call guards.
   - An explicitly URL-less terminal `done` lane that already names mixed issue and pull-request targets reconciles the shared scalar `pr_state` per target only when durable terminal evidence exists, the scalar matches one resolved terminal state, every target state is freshly authenticated, the issue head remains absent, and exact-head QA stays bound to the pull request; this does not derive or union targets from a URL or admit auxiliary lanes.
   - WAIVED input supplies only the exact same-target `#issuecomment-<id>` URL. The helper must fetch that comment through authenticated `gh api`; HTTP/API failure or any comment ID, URL, target, exact-head, decision-marker, human author, trusted association, timestamp, or body mismatch blocks completion. The authenticated snapshot binds the exact comment ID/URL, body SHA-256, author/association, timestamps, target, and head. The fetched body must contain exactly one `qa-maintainer-waiver v1` marker with `target: <exact target URL>`, `head_sha: <full exact head>`, and `decision: waived`. Receipt publication and replay independently re-fetch and compare the bound waiver; a self-consistent preflight digest is not authentication.
+    New human maintainer waivers use a visible outcome followed by closed `QA waiver details` containing a fenced `qa-maintainer-waiver v1` record with those fields. Historical `<!-- qa-maintainer-waiver v1 ... -->` forms are read-compatible only.
   - Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync. For `audit_status: complete`, this additionally requires the eligible publication preflight and exact manifest match. Pass the refreshed preflight receipt, the same trusted applicability artifact, and its independently retained digest to both `publish` and `replay` with `--publication-preflight`, `--applicability-proof`, `--applicability-proof-sha256`, and explicit `--workflow-config <trusted repo workflow config>`; a changed applicability, coordination, target/head, or QA snapshot replays as mismatch/stale.
   - Use `completed-batch-audit-receipt` for both `publish` and `replay`; `--targets-json` is a JSON array of exact `host`, `repo`, `type` (`pull_request` or `issue`), and positive `number` objects. Before `publish` or `supersede`, export `AGENT_COMMENT_RUNNER`, `AGENT_COMMENT_HOST`, and `AGENT_COMMENT_TASK_OR_RUN` from the actual execution context; do not substitute the batch ID for the task or run identifier. Missing or invalid attribution blocks publication before the comment POST. The `completed-batch-publication-preflight-input` v1 fields are `batch_id`, `coordination_applicability`, `expected_targets`, raw `coordination_status`, `target_snapshots`, and `qa_evidence`. A WAIVED row's `maintainer_waiver` contains only its exact `url`. Never substitute a prose/caller summary for the bounded status payload. Each `qa_evidence` row must carry a coordinator-owned `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's canonical target and publication snapshot; `yes` requires strict visual-evidence v2 replay, `no` preserves historical non-UI v1 replay, and missing, invalid, or v2-contradictory classification blocks.
   - The preflight receipt embeds the canonical raw v1 input as `source_input` with `source_input_digest`; digests prove integrity only and never authenticate applicability or terminal facts. Before publish or replay accepts a complete receipt, it authenticates the separate applicability artifact against the independently retained digest, re-assesses that bound source input, re-fetches each exact target through authenticated `gh api`, reruns bounded exact-batch coordination status only for `coordination_required`, and re-authenticates any waiver. Missing, altered, stale, tampered, contradictory, or mismatched facts block before any verifier or POST.
@@ -101,7 +102,7 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   - For `coordination_not_applicable`, `coordination_status` must be a typed single-controller proof: a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks. An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks.
   - A closed verification-only issue may retain a same-repository temporary `pr_url` without changing the primary target to that PR. Add only `supporting_artifact: {"url":"<exact same-issue comment URL>"}` to that issue's target snapshot. The fetched current-write-authorized human comment must contain exactly one marker with no extra fields: `completed-batch-supporting-artifact v1`, `primary_target: <exact issue URL>`, `artifact_pr: <exact PR URL>`, `head_sha: <full exact PR head>`, and `role: verification_only`. Preflight and receipt replay independently authenticate the comment and require the marker PR to equal the lane `pr_url`, share the primary repository, and remain closed with `merged: false`, `merged_at: null`, and that exact head. Missing, malformed, foreign, open, merged, stale, tampered, or conflicting evidence blocks; prose and caller-asserted state never establish the role.
   - Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
-  - A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Ordinary new complete receipts additionally require the helper-managed `publication_snapshot` to match a refreshed eligible preflight; the accepted-deferral path below uses exactly one `accepted_deferral_snapshot` instead. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. Ordinary new complete receipts also contain exactly one helper-managed `publication_snapshot`; accepted-deferral receipts contain exactly one `accepted_deferral_snapshot`, and either kind fails closed when its snapshot is unrefreshed or mismatched. A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
+  - A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Ordinary new complete receipts additionally require the helper-managed `publication_snapshot` to match a refreshed eligible preflight; the accepted-deferral path below uses exactly one `accepted_deferral_snapshot` instead. Replay exactly one current closed `Completed-batch audit receipt` disclosure containing a fenced `completed-batch-audit v1` record, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. Historical exact versioned `<!-- completed-batch-audit v1` wrappers through their single final `-->` are read-compatible only. Ordinary new complete receipts also contain exactly one helper-managed `publication_snapshot`; accepted-deferral receipts contain exactly one `accepted_deferral_snapshot`, and either kind fails closed when its snapshot is unrefreshed or mismatched. A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
   - An old helper-managed `publication_snapshot` missing `coordination_applicability` or `applicability_proof_digest` stays non-ready even after replay refresh. Preserve the old comment; establish trusted applicability proof and a fresh eligible preflight, then use ordinary `publish` with a fresh marker to create a newly bound receipt and reference after all gates pass. Ordinary snapshot migration is not the accepted-deferral-only `supersede` operation.
   - Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it. This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed.
   - The accepted-deferral input is exactly `completed-batch-accepted-deferral-input` v1 plus one `decision_url`. That URL must name a comment on the deterministic batch anchor whose body is exactly one `completed-batch-accepted-deferral-decision v1` marker binding `batch_id`, the predecessor's exact canonical `blocker_ref`, `blocker_category: workflow-process-mechanism-defect`, `mechanism: publication-preflight-target-resolution`, the exact full-URL `tracking_issue`, the predecessor's exact `owner`, original receipt SHA-256/URL/author/created/updated values (or the canonical pre-publication sentinels), `product_evidence_receipt`, and `decision: accepted-deferral`. The predecessor evidence must be that exact tracking URL; a shorthand `<repository>-<number>` blocker ref is valid only when it maps to the same evidence repository and issue number.
@@ -112,12 +113,16 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   - Replay the final visible status line from the normalized blocker union: render a nonterminal record as `<ref> (<current status>): <action>`, imperfect terminal evidence as `<ref> (terminal): evidence UNKNOWN` or `evidence missing`, and exact `UNKNOWN` scalars as `<field>: UNKNOWN`. External blockers must be nonempty single-line text without HTML comment tokens; normalize and dedupe them with marker blockers. If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line. Use `Ready` iff archive-ready and the union is empty; otherwise use nonempty `Follow-ups` with that exact union.
   - Use exactly `Conversation status: Ready for archiving.` only when archive-ready and the blocker union is empty. Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and emit the [Unblock Block](pr-processing.md#unblock-block) immediately before it, with one entry per blocker in that same union.
   - In final chat, this compact receipt line opens the closing lines: it is followed by the [Unblock Block](pr-processing.md#unblock-block) whenever the status is not clean, and then by the exact `Conversation status` final line; never include the full wrapper: Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
-  - Give the local marker body below to the receipt helper. It publishes one concise header, one blank line, and exactly one canonical v1 wrapper after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; fill every operator-authored field explicitly and use `none` rather than omitting a field:
+  - Give the local receipt below to the helper. It publishes a visible outcome and reader action, then one closed `Completed-batch audit receipt` disclosure after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; historical HTML wrappers remain read-compatible only. Fill every operator-authored field explicitly and use `none` rather than omitting a field:
+
+    ````text
+    Completed-batch audit is clean. No reader action is needed.
+
+    <details>
+    <summary>Completed-batch audit receipt</summary>
 
     ```text
-    Completed-batch audit: replay evidence follows.
-
-    <!-- completed-batch-audit v1
+    completed-batch-audit v1
     batch_id: <opaque coordination batch id (may contain : or ;)|non-backend: identity; rationale: why no backend applies|not-applicable: rationale|UNKNOWN>
     audit_status: <complete|blocked|UNKNOWN>
     verdict: <clean|follow-ups-remain|UNKNOWN>
@@ -125,17 +130,22 @@ self-contained. Keep state-machine changes mirrored across this workflow,
     checker_evidence: <identity/route/independence refs|UNKNOWN>
     findings: <none|OUTSTANDING concise refs|UNKNOWN>
     followups_dispositions: <none|one or more ` | `-separated records with ref, owner, current status, disposition, and evidence; unescaped `;` and `|` are rejected in every record-field value; escaping is not supported; terminal disposition is resolved|accepted-waiver|accepted-deferral|not-applicable; nonterminal action is investigate|fix|await-input|retry|replay|track>
-    -->
     ```
+    </details>
+    ````
 
-  - For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it inside `### Audit receipts` in the canonical `Agent details` disclosure through a separate freshly-read update, preserves all surrounding text, never duplicates the markers, and never reruns `publish` to retry description sync:
+  - For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it inside `### Audit receipts` in the canonical `Agent details` disclosure through a separate freshly-read update, preserves all surrounding text, never duplicates the receipt section, and never reruns `publish` to retry description sync:
 
     ```markdown
-    <!-- completed-batch-audit-summary:start -->
     #### Completed-batch audit
 
-    **Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.> [Durable receipt](<exact-comment-url>).
-    <!-- completed-batch-audit-summary:end -->
+    **Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.>
+
+    <details>
+    <summary>Audit receipt</summary>
+
+    [Durable receipt](<exact-comment-url>)
+    </details>
     ```
 
   - For `non-backend` and `not-applicable`, the structured `scope_evidence` grammar is `targets=<exact refs>; source=<durable ref>`: name the exact verified target set and durable evidence source. `batch_id: UNKNOWN` is allowed only for genuinely unresolved batch identity, never for release/archive readiness.
@@ -204,10 +214,12 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   coordination state cannot be verified, record
   `worked_issue_scope: UNKNOWN (setup)` or
   `worked_issue_scope: UNKNOWN (access)` with the exact command/error. Use
-  structured public `codex-claim` comments (GitHub comments containing a
-  `codex-claim` HTML comment with key/value fields in the "Public claim
-  comment" format from `.agents/workflows/pr-processing.md`) as advisory
-  recovery evidence when available before reducing unknown scope to merged PRs.
+  structured public `codex-claim` comments (GitHub comments whose visible
+  payload has a closed `Claim details` disclosure containing a fenced
+  `codex-claim v1` record with key/value fields in the "Public claim comment"
+  format from `.agents/workflows/pr-processing.md`; historical HTML forms are
+  read-compatible only) as advisory recovery evidence when available before
+  reducing unknown scope to merged PRs.
   If the batch id itself is unknown, scope advisory public-claim discovery to
   issues and open PRs active within the audit time window; use claim `batch:`
   fields to surface candidate ids until the user confirms one.
@@ -228,7 +240,7 @@ affected_prs: <PR>
 
 Paste this into completed batch chats. This is for memory extraction only, not ground truth.
 
-```text
+````text
 Please produce a post-batch audit handoff. Do not make code changes or GitHub writes.
 
 List every issue/PR you worked on in this batch, with:
@@ -250,7 +262,7 @@ List any QA lane or intentionally omitted QA lane, with:
 - release-blocking status and any findings
 
 If you do not know or cannot verify an item from GitHub/local git, say UNKNOWN rather than guessing.
-```
+````
 
 ## Independent Audit Prompt
 

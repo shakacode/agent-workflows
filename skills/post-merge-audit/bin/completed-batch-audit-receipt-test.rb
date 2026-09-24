@@ -1040,12 +1040,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
-  # Production break: a valid agent-attribution envelope posted through a
-  # human account could be mistaken for a human accepted-deferral decision.
   def test_accepted_deferral_rejects_an_agent_attributed_decision
     blocked = File.read(
-      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"),
-      encoding: "UTF-8"
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
     )
     input = JSON.parse(
       File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
@@ -1057,10 +1054,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       preflight,
       mutate_decision: lambda do |body|
         GitHubCommentEnvelope.render(
-          body:,
-          runner: "codex",
-          host: "test-host",
-          task_or_run: "accepted-deferral-test"
+          body:, runner: "codex", host: "test-host", task_or_run: "accepted-deferral-test"
         )
       end
     )
@@ -1939,7 +1933,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert published.fetch("ready")
       assert_match(/\Asha256:[0-9a-f]{64}\z/, published.fetch("publication_snapshot_digest"))
       posted_body = File.read(env.fetch("FAKE_GH_BODY"), encoding: "UTF-8")
-      assert_equal 1, posted_body.scan("<!-- completed-batch-audit v1").length
+      assert_equal 1, posted_body.scan("completed-batch-audit v1").length
+      refute_includes posted_body, "<!--"
       assert_includes posted_body, "publication_snapshot: sha256:"
 
       stale_path = File.join(directory, "stale-preflight.json")
@@ -2190,8 +2185,6 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
-  # Production break: publish could authenticate targets through GitHub before
-  # discovering that its outbound agent comment lacked valid attribution.
   def test_publish_cli_rejects_missing_or_invalid_comment_attribution_before_github
     with_fake_gh do |env, directory|
       targets_path = write_json(
@@ -2740,15 +2733,18 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert_match(/SHA-256 `[0-9a-f]{64}`/, reference)
       refute_includes reference, "<!-- completed-batch-audit"
       posted_comment = File.read(env.fetch("FAKE_GH_BODY"))
-      assert posted_comment.start_with?("🤖 Codex\n")
-      assert GitHubCommentEnvelope.payload(posted_comment).start_with?("Completed-batch audit: replay evidence follows.\n\n")
+      assert posted_comment.start_with?("🤖 Codex Completed-batch audit is clean. No reader action is needed.\n")
+      assert GitHubCommentEnvelope.payload(posted_comment).start_with?("Completed-batch audit is clean. No reader action is needed.\n\n")
+      assert_includes posted_comment, "<summary>Completed-batch audit receipt</summary>"
+      assert_includes posted_comment, "```text\ncompleted-batch-audit v1\n"
+      refute_includes posted_comment, "<!--"
       summary = result.fetch("pr_description_summary")
       assert_equal "https://github.com/acme/widgets/pull/184", summary.fetch("url")
-      assert_includes summary.fetch("section"), CompletedBatchAuditReceipt::PR_SUMMARY_START
       assert_includes summary.fetch("section"), "#### Completed-batch audit"
       assert_includes summary.fetch("section"), "**Status:** Clean — no outstanding findings or follow-ups."
+      assert_includes summary.fetch("section"), "<summary>Audit receipt</summary>"
       assert_includes summary.fetch("section"), "pull/184#issuecomment-9001"
-      assert_includes summary.fetch("section"), CompletedBatchAuditReceipt::PR_SUMMARY_END
+      refute_includes summary.fetch("section"), "<!--"
 
       calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
       assert_equal(1, calls.count { |call| call.include?("--method POST") })
@@ -2787,9 +2783,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         result = JSON.parse(out)
         assert result.fetch("ready")
         posted_body = File.read(env.fetch("FAKE_GH_BODY"))
-        assert GitHubCommentEnvelope.payload(posted_body).start_with?(
-          "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n"
-        )
+        assert posted_body.start_with?("🤖 Codex Completed-batch audit is clean. No reader action is needed.\n")
+        assert GitHubCommentEnvelope.payload(posted_body).start_with?("Completed-batch audit is clean. No reader action is needed.\n\n")
+        refute_includes posted_body, "<!--"
         bound_marker = CompletedBatchAuditReceipt.comment_marker(posted_body)
         assert_includes bound_marker, "publication_snapshot: sha256:"
         assert_equal "batch-184", CompletedBatchAuditReceipt.marker_fields(bound_marker).fetch("batch_id")
@@ -2812,6 +2808,20 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       ["completed-batch-audit publication snapshot refresh required"],
       replayed.fetch("blockers")
     )
+  end
+
+  def test_runner_neutral_local_receipt_example_is_accepted_by_the_visible_parser
+    output = File.read(File.expand_path("../references/output.md", __dir__), encoding: Encoding::UTF_8)
+    example = output.match(/````text\n(?<body>.*?)\n````/m)
+
+    refute_nil example
+    body = example[:body]
+    refute_match(/\A🤖 /, body)
+    fields = ready_marker.delete_prefix("<!-- completed-batch-audit v1\n").delete_suffix("-->\n")
+    canonical = body.sub(/(?<=completed-batch-audit v1\n).*?(?=^```\n)/m, fields)
+
+    assert CompletedBatchAuditReceipt.comment_marker(canonical)
+    assert CompletedBatchAuditReceipt.canonical_comment_body(canonical)
   end
 
   def test_publish_canonicalizes_legacy_full_comment_to_the_concise_header
@@ -2839,9 +2849,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
       assert status.success?, err
       posted_body = File.read(env.fetch("FAKE_GH_BODY"))
-      assert GitHubCommentEnvelope.payload(posted_body).start_with?(
-        "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n"
-      )
+      assert posted_body.start_with?("🤖 Codex Completed-batch audit is clean. No reader action is needed.\n")
+      assert GitHubCommentEnvelope.payload(posted_body).start_with?("Completed-batch audit is clean. No reader action is needed.\n\n")
+      refute_includes posted_body, "<!--"
       refute_includes posted_body, CompletedBatchAuditReceipt::LEGACY_COMMENT_HEADER
     end
   end

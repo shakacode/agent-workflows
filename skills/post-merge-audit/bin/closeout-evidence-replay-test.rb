@@ -77,6 +77,28 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     MARKDOWN
   end
 
+  def visible_qa_details(head_sha:, scope: "visible details regression")
+    <<~MARKDOWN
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: #{scope}
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ```
+      </details>
+    MARKDOWN
+  end
+
   def hosted_v1_marker
     <<~MARKDOWN
       <!-- hosted-qa-evidence v1
@@ -132,6 +154,1441 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     assert_equal "SATISFIED", data.fetch("qa_evidence").fetch("verdict")
     assert_equal 1, data.fetch("qa_evidence").fetch("marker_version")
+  end
+
+  # Production break: a new QA handoff hides the exact-head evidence in an
+  # HTML comment, so a reviewer sees only "evidence follows" and cannot act
+  # without inspecting source. New disclosures must remain replayable without
+  # reintroducing that invisible payload.
+  def test_visible_details_evidence_replays_without_an_html_comment_marker
+    head_sha = "1111111111111111111111111111111111111111"
+    body = <<~MARKDOWN
+      🤖 Codex QA evidence is satisfied for the exact head; no reader action is needed.
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: visible details regression
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ```
+      </details>
+    MARKDOWN
+
+    data = run_replay(body, expected_head_sha: head_sha)
+
+    assert_equal "SATISFIED", data.dig("qa_evidence", "verdict")
+    refute_includes body, "<!--"
+  end
+
+  def test_visible_details_inside_examples_or_html_comments_do_not_authorize_evidence
+    body = <<~MARKDOWN
+      Evidence follows.
+
+      <!--
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{'1' * 40}
+      ```
+      </details>
+      -->
+
+      ````markdown
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{'1' * 40}
+      ```
+      </details>
+      ````
+    MARKDOWN
+
+    evidence = run_replay(body).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_quoted_record_inside_agent_details_does_not_authorize_evidence
+    body = <<~MARKDOWN
+      🤖 Codex QA evidence is documented below.
+
+      <details>
+      <summary>Agent details</summary>
+
+      > <details>
+      > <summary>QA evidence</summary>
+      >
+      > ```text
+      > qa-evidence v1
+      > required: yes
+      > status: satisfied
+      > head_sha: #{'1' * 40}
+      > ```
+      > </details>
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_complete_example_inside_agent_details_does_not_authorize_evidence
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      Example:
+
+      ````markdown
+      🤖 Codex QA evidence is satisfied for the exact head; no reader action is needed.
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: example only
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ```
+      </details>
+      ````
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_tilde_fenced_markdown_example_inside_agent_details_does_not_authorize_evidence
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      Example:
+
+      ~~~markdown
+      🤖 Codex QA evidence is satisfied for the exact head; no reader action is needed.
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: example only
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ```
+      </details>
+      ~~~
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_triple_text_example_inside_agent_details_does_not_authorize_evidence
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      ```text
+      🤖 Codex QA evidence is satisfied for the exact head; no reader action is needed.
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: example only
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ```
+      </details>
+      ```
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_nested_triple_text_example_inside_qa_disclosure_does_not_authorize_evidence
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: example only
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ```text
+      This is still CommonMark code, not a second published record.
+      ```
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_raw_html_code_containers_do_not_authorize_visible_evidence
+    head_sha = "1" * 40
+    %w[pre code blockquote].each do |tag|
+      body = <<~MARKDOWN
+        <#{tag}>
+        <details>
+        <summary>QA evidence</summary>
+
+        ```text
+        qa-evidence v1
+        required: yes
+        status: satisfied
+        head_sha: #{head_sha}
+        tested_at: PR #123 head #{head_sha}
+        scope: example only
+        automated_checks: bin/validate
+        manual_checks: browser path
+        findings: none
+        release_blocking: clear
+        process_gap_disposition: schema
+        ```
+        </details>
+        </#{tag}>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), tag
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", tag
+    end
+  end
+
+  def test_processing_instruction_and_cdata_blocks_do_not_authorize_visible_evidence
+    {
+      "processing instruction" => ["<?example\n", "?>\n"],
+      "CDATA" => ["<![CDATA[\n", "]]>\n"],
+      "type-4 declaration" => ["<!DOCTYPE\n", ">\n"],
+      "type-4 declaration variant" => ["<!ENTITY\n", ">\n"]
+    }.each do |description, (opener, closer)|
+      head_sha = "1" * 40
+      body = <<~MARKDOWN
+        #{opener}#{visible_qa_details(head_sha:, scope: "#{description} example")}#{closer}
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), description
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", description
+    end
+  end
+
+  def test_unclosed_raw_code_container_keeps_later_apparent_evidence_non_authoritative
+    body = <<~MARKDOWN
+      <pre>
+      Example:
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{'1' * 40}
+      ```
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_nested_raw_blockquotes_keep_inner_disclosures_non_authoritative
+    body = <<~MARKDOWN
+      <blockquote>
+      <blockquote>
+      Example:
+      </blockquote>
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{'1' * 40}
+      ```
+      </details>
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_agent_details_direct_evidence_replays_but_deeper_examples_do_not
+    head_sha = "1" * 40
+    nested = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: Agent details evidence
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ```
+      </details>
+      </details>
+    MARKDOWN
+    trailing_info = <<~MARKDOWN
+      ````markdown
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: nested example
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ```
+      </details>
+      ```` text
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(nested, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+
+    nested_example = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      <details>
+      <summary>Example</summary>
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      ```
+      </details>
+      </details>
+      </details>
+    MARKDOWN
+
+    [nested_example, trailing_info].each do |body|
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict")
+    end
+  end
+
+  def test_visible_record_accepts_a_longer_valid_closing_fence
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      QA evidence is satisfied.
+
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: valid longer close
+      automated_checks: bin/validate
+      manual_checks: browser path
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      ````
+      </details>
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
+  def test_fenced_unclosed_html_comment_literal_does_not_hide_following_visible_evidence
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      ```text
+      <!-- literal example text without a closing comment delimiter
+      ```
+
+      #{visible_qa_details(head_sha:, scope: 'fenced literal comment regression')}
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
+  def test_indented_details_openers_are_not_visible_evidence_disclosures
+    head_sha = "1" * 40
+    { "    " => "UNKNOWN", "\t" => "UNKNOWN", " \t" => "UNKNOWN", "   " => "SATISFIED" }.each do |indent, expected|
+      body = visible_qa_details(head_sha:, scope: "indented details opener").sub("<details>", "#{indent}<details>")
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+
+      assert_equal expected, evidence.fetch("verdict"), indent.inspect
+    end
+  end
+
+  def test_indented_raw_blockquotes_remain_structural_after_nonblank_context
+    head_sha = "1" * 40
+    [
+      "A paragraph.\n    <blockquote>",
+      "<div>\n    <blockquote>"
+    ].each do |prefix|
+      body = <<~MARKDOWN
+        #{prefix}
+
+        #{visible_qa_details(head_sha:, scope: 'indented raw blockquote')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), prefix
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", prefix
+    end
+  end
+
+  def test_indented_code_blocks_cannot_close_nested_details_examples
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      <details>
+      <summary>Example</summary>
+
+          example
+          </details>
+
+      #{visible_qa_details(head_sha:, scope: 'nested indented code')}
+      </details>
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_headings_and_thematic_breaks_start_indented_code_blocks
+    head_sha = "1" * 40
+    ["# Heading\n    <details>", "---\n    <details>"].each do |prefix|
+      body = visible_qa_details(head_sha:, scope: "indented block after heading").sub("<details>", prefix)
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), prefix
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", prefix
+    end
+  end
+
+  def test_indented_disclosures_fail_closed_across_markdown_blocks
+    head_sha = "1" * 40
+    ["Heading\n=", "Heading\n--", "```text\nexample\n```", "- item", "> text"].each do |prefix|
+      body = visible_qa_details(head_sha:, scope: "indented markdown block").sub("<details>", "#{prefix}\n    <details>")
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), prefix
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", prefix
+    end
+  end
+
+  def test_raw_html_context_keeps_indented_raw_blockquotes_structural
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <div>
+      # This is raw HTML text
+          <blockquote>
+
+      #{visible_qa_details(head_sha:, scope: 'indented raw HTML blockquote')}
+      </blockquote>
+      </div>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_indented_raw_closers_cannot_release_containment
+    head_sha = "1" * 40
+    ["    ", "\t"].each do |indent|
+      body = <<~MARKDOWN
+        <blockquote>
+
+        #{indent}</blockquote>
+
+        #{visible_qa_details(head_sha:, scope: 'indented raw closer')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), indent.inspect
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", indent.inspect
+    end
+  end
+
+  def test_split_indented_raw_closers_cannot_release_containment
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <blockquote>
+
+          </blockquote
+      >
+
+      #{visible_qa_details(head_sha:, scope: 'split indented raw closer')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_indented_raw_closer_closes_an_active_raw_block_before_a_blank_boundary
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <blockquote>
+      text
+          </blockquote>
+
+      #{visible_qa_details(head_sha:, scope: 'indented raw closer before blank boundary')}
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
+  def test_indented_raw_closers_respect_tag_specific_blank_boundaries
+    expected_by_tag = {
+      "pre" => "SATISFIED",
+      "script" => "SATISFIED",
+      "style" => "SATISFIED",
+      "textarea" => "SATISFIED",
+      "blockquote" => "UNKNOWN",
+      "code" => "UNKNOWN"
+    }
+
+    expected_by_tag.each do |tag, expected|
+      head_sha = "1" * 40
+      body = <<~MARKDOWN
+        <#{tag}>
+        text
+
+            </#{tag}>
+
+        #{visible_qa_details(head_sha:, scope: "#{tag} blank-boundary closer")}
+      MARKDOWN
+
+      assert_equal expected, run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), tag
+    end
+  end
+
+  def test_active_raw_text_closers_are_not_hidden_by_markdown_literals
+    %w[pre script style textarea].each do |tag|
+      ["`</#{tag}>`", "\\</#{tag}>"].each do |literal_closer|
+        head_sha = "1" * 40
+        body = <<~MARKDOWN
+          <#{tag}>
+          text
+
+          #{literal_closer}
+
+          #{visible_qa_details(head_sha:, scope: "#{tag} literal raw-text closer")}
+        MARKDOWN
+
+        assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"),
+                     "#{tag}: #{literal_closer}"
+      end
+
+      head_sha = "1" * 40
+      commented = <<~MARKDOWN
+        <#{tag}>
+        text
+
+        <!-- </#{tag}> -->
+
+        #{visible_qa_details(head_sha:, scope: "#{tag} commented raw-text closer")}
+      MARKDOWN
+
+      assert_equal "UNKNOWN", run_replay(commented, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), tag
+
+      [
+        "<!-- </#{tag}> -->\n</#{tag}>",
+        "<!-- </#{tag}> --></#{tag}>",
+        "<!-- ordinary --!>\n</#{tag}>",
+        "<!--></#{tag}>",
+        "<!---></#{tag}>",
+        "<!----></#{tag}>",
+        "<!----!></#{tag}>"
+      ].each do |completed_comment|
+        head_sha = "1" * 40
+        body = <<~MARKDOWN
+          <#{tag}>
+          #{completed_comment}
+
+          #{visible_qa_details(head_sha:, scope: "#{tag} completed comment closer")}
+        MARKDOWN
+
+        assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"),
+                     "#{tag}: #{completed_comment}"
+      end
+    end
+
+    [
+      "<span title=\"</pre>\">x</span>",
+      "<span title=\"\n</pre>\n\">x</span>",
+      "<span title=</pre>>x</span>"
+    ].each do |attribute|
+      head_sha = "1" * 40
+      body = <<~MARKDOWN
+        <pre>
+        #{attribute}
+
+        #{visible_qa_details(head_sha:, scope: 'raw-text attribute closer')}
+      MARKDOWN
+
+      assert_equal "UNKNOWN", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), attribute
+    end
+
+    head_sha = "1" * 40
+    comment_terminator = <<~MARKDOWN
+      <pre>
+      <!--
+      </pre>
+      -->
+      </pre>
+
+      #{visible_qa_details(head_sha:, scope: 'raw-text comment terminator')}
+    MARKDOWN
+
+    assert_equal "UNKNOWN", run_replay(comment_terminator, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
+  def test_any_raw_text_closer_ends_a_commonmark_raw_text_block
+    %w[pre script style textarea].product(%w[pre script style textarea]).each do |opening_tag, closing_tag|
+      next if opening_tag == closing_tag
+
+      head_sha = "1" * 40
+      body = <<~MARKDOWN
+        <#{opening_tag}>
+        raw text
+        </#{closing_tag}>
+
+        #{visible_qa_details(head_sha:, scope: "#{opening_tag} closed by #{closing_tag}")}
+      MARKDOWN
+
+      assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"),
+                   "#{opening_tag} closed by #{closing_tag}"
+    end
+  end
+
+  def test_split_real_raw_opener_stays_real_after_an_indented_completion
+    head_sha = "1" * 40
+    indent = "    "
+    body = <<~MARKDOWN
+      <blockquote
+      #{indent}>
+      text
+
+      #{indent}</blockquote>
+
+      #{visible_qa_details(head_sha:, scope: 'split real raw opener')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_later_details_summary_cannot_relabel_an_example
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>Example</summary>
+      <summary>Agent details</summary>
+      #{visible_qa_details(head_sha:, scope: 'duplicate details summary')}
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_only_the_first_direct_details_summary_can_label_agent_details
+    head_sha = "1" * 40
+    invalid_prefixes = [
+      "<summary></summary>\n<summary>Agent details</summary>",
+      "<div>\n<summary>Agent details</summary>\n</div>",
+      "<summary\n>Example</summary>\n<summary>Agent details</summary>",
+      "<summary><strong>Example</strong></summary>\n<summary>Agent details</summary>"
+    ]
+
+    invalid_prefixes.each do |prefix|
+      body = <<~MARKDOWN
+        <details>
+        #{prefix}
+        #{visible_qa_details(head_sha:, scope: 'noncanonical first details summary')}
+        </details>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), prefix
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", prefix
+    end
+
+    canonical = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+      #{visible_qa_details(head_sha:, scope: 'direct first details summary')}
+      </details>
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(canonical, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
+  def test_content_before_a_details_summary_permanently_consumes_its_label_slot
+    head_sha = "1" * 40
+    invalid_prefixes = [
+      "<div></div>\n<summary>Agent details</summary>",
+      "<div>\n\n    </div>\n<summary>Agent details</summary>",
+      "Explanatory text.\n<summary>Agent details</summary>",
+      "```text\nexample\n```\n<summary>Agent details</summary>",
+      "> quoted content\n<summary>Agent details</summary>",
+      "`example`\n<summary>Agent details</summary>",
+      "<https://example.com>\n<summary>Agent details</summary>",
+      "visible <!-- comment\n-->\n<summary>Agent details</summary>"
+    ]
+
+    invalid_prefixes.each do |prefix|
+      body = <<~MARKDOWN
+        <details>
+        #{prefix}
+        #{visible_qa_details(head_sha:, scope: 'content before details summary')}
+        </details>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), prefix
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", prefix
+    end
+
+    whitespace_only = <<~MARKDOWN
+      <details>
+
+
+      <summary>Agent details</summary>
+
+      #{visible_qa_details(head_sha:, scope: 'whitespace before direct details summary')}
+      </details>
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(whitespace_only, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+
+    ["<!-- explanatory comment -->", "<!-- ordinary --!>", "<!-->", "<!--->", "<!---->", "<!----!>"].each do |comment|
+      comment_only = <<~MARKDOWN
+        <details>
+        #{comment}
+        <summary>Agent details</summary>
+        #{visible_qa_details(head_sha:, scope: 'comment before direct details summary')}
+        </details>
+      MARKDOWN
+
+      assert_equal "SATISFIED", run_replay(comment_only, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), comment
+    end
+
+    multiline_comment = <<~MARKDOWN
+      <details>
+      <!-- explanatory comment
+      still comment
+      -->
+      <summary>Agent details</summary>
+      #{visible_qa_details(head_sha:, scope: 'multiline comment before direct details summary')}
+      </details>
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(multiline_comment, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
+  def test_indented_balanced_raw_tags_do_not_create_permanent_containment
+    head_sha = "1" * 40
+    ["    <code></code>", "A paragraph.\n    <blockquote></blockquote>"].each do |prefix|
+      body = <<~MARKDOWN
+        #{prefix}
+
+        #{visible_qa_details(head_sha:, scope: 'balanced indented raw tags')}
+      MARKDOWN
+
+      assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), prefix
+    end
+  end
+
+  def test_indented_disclosure_tokens_do_not_hide_same_line_raw_openers
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      A paragraph.
+          <details></details><blockquote>
+
+      #{visible_qa_details(head_sha:, scope: 'mixed indented details and raw opener')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_indented_multiline_balanced_code_cancels_its_synthetic_guard
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+          <code>
+          </code>
+
+      #{visible_qa_details(head_sha:, scope: 'multiline balanced indented code')}
+    MARKDOWN
+
+    assert_equal "SATISFIED", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
+  def test_html_comment_cannot_close_a_raw_blockquote_before_visible_evidence
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <blockquote>
+      <!-- </blockquote> -->
+      #{visible_qa_details(head_sha:, scope: 'commented blockquote closer')}
+      </blockquote>
+    MARKDOWN
+
+    assert_equal "UNKNOWN", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
+  def test_html_comment_cannot_close_a_discarded_nested_details_example
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      <details>
+      <summary>Example</summary>
+      <!-- </details> -->
+      #{visible_qa_details(head_sha:, scope: 'commented nested details closer')}
+      </details>
+      </details>
+    MARKDOWN
+
+    assert_equal "UNKNOWN", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+  end
+
+  def test_inline_or_escaped_details_closers_cannot_escape_a_nested_example
+    head_sha = "1" * 40
+    ["`</details>`", "\\</details>"].each do |literal_closer|
+      body = <<~MARKDOWN
+        <details>
+        <summary>Agent details</summary>
+
+        <details>
+        <summary>Example</summary>
+        This literal #{literal_closer} is not an HTML closer.
+        #{visible_qa_details(head_sha:, scope: "#{literal_closer} nested closer")}
+        </details>
+        </details>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), literal_closer
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", literal_closer
+    end
+  end
+
+  def test_multiline_inline_details_closer_cannot_escape_a_nested_example
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      <details>
+      <summary>Example</summary>
+      This literal `</details>
+      continued` is not an HTML closer.
+      #{visible_qa_details(head_sha:, scope: 'multiline inline closer')}
+      </details>
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_non_equal_backtick_runs_cannot_close_an_inline_details_literal
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <details>
+      <summary>Agent details</summary>
+
+      <details>
+      <summary>Example</summary>
+      This literal ``first ``` b ` </details> continued`` trailing ``.
+      #{visible_qa_details(head_sha:, scope: 'non-equal backtick runs')}
+      </details>
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_unmatched_backtick_runs_are_not_retried_as_shorter_delimiters
+    head_sha = "1" * 40
+    [["``", "`"], ["```", "``"]].each do |opening, later_run|
+      scope = "#{opening.length} unmatched backticks"
+      body = <<~MARKDOWN
+        This #{opening} unmatched <blockquote> #{later_run} text.
+
+        #{visible_qa_details(head_sha:, scope:)}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), [opening, later_run].inspect
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", [opening, later_run].inspect
+    end
+  end
+
+  def test_multiple_details_tags_on_one_line_keep_nested_examples_discarded
+    head_sha = "1" * 40
+    bodies = [
+      <<~MARKDOWN,
+        <details>
+        <summary>Agent details</summary>
+
+        <details>
+        <summary>Example</summary>
+        <details><details>
+        </details>
+        </details>
+        #{visible_qa_details(head_sha:, scope: 'same-line nested details')}
+        </details>
+        </details>
+      MARKDOWN
+      <<~MARKDOWN
+        <details>
+        <summary>Agent details</summary>
+
+        <details>
+        <summary>Example</summary>
+        <details><details></details>
+        </details>
+        #{visible_qa_details(head_sha:, scope: 'mixed-order nested details')}
+        </details>
+        </details>
+      MARKDOWN
+    ]
+
+    bodies.each do |body|
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict")
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+    end
+  end
+
+  def test_quoted_details_attributes_do_not_close_nested_disclosures
+    head_sha = "1" * 40
+    [
+      'title="x> </details>"',
+      "title='x> </details>'",
+      'title="x&gt; &lt;/details&gt; &quot; escaped&quot;"'
+    ].each do |attributes|
+      body = <<~MARKDOWN
+        <details>
+        <summary>Agent details</summary>
+
+        <details #{attributes}>
+        #{visible_qa_details(head_sha:, scope: 'quoted details attribute')}
+        </details>
+        </details>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), attributes
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", attributes
+    end
+  end
+
+  def test_quoted_raw_html_attributes_do_not_close_a_blockquote
+    head_sha = "1" * 40
+    ['title="</blockquote>"', "title='</blockquote>'"].each do |attributes|
+      body = <<~MARKDOWN
+        <blockquote #{attributes}>
+
+        #{visible_qa_details(head_sha:, scope: 'quoted blockquote attribute')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), attributes
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", attributes
+    end
+  end
+
+  def test_unrecognized_html_tag_attributes_cannot_close_a_nested_example
+    head_sha = "1" * 40
+    [
+      '<span title="</details>">Text</span>',
+      "<div data-note='</details>'>Text</div>"
+    ].each do |literal_tag|
+      body = <<~MARKDOWN
+        <details>
+        <summary>Agent details</summary>
+
+        <details>
+        <summary>Example</summary>
+        #{literal_tag}
+        #{visible_qa_details(head_sha:, scope: 'unrecognized HTML tag')}
+        </details>
+        </details>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), literal_tag
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", literal_tag
+    end
+  end
+
+  def test_literal_less_than_text_does_not_hide_a_following_raw_blockquote
+    head_sha = "1" * 40
+    ["1 < 2.", "1 <\t2.", "1 <= 2.", "1 <3."].each do |literal_text|
+      body = <<~MARKDOWN
+        #{literal_text}
+
+        <blockquote>
+
+        #{visible_qa_details(head_sha:, scope: 'literal less-than text')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), literal_text
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", literal_text
+    end
+  end
+
+  def test_unfinished_unquoted_tag_like_text_does_not_cross_a_paragraph
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      A literal <word
+
+      <blockquote>
+
+      #{visible_qa_details(head_sha:, scope: 'unfinished unquoted tag')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_multiline_unquoted_raw_html_tags_remain_containment
+    head_sha = "1" * 40
+    %w[blockquote BLOCKQUOTE].each do |tag|
+      body = <<~MARKDOWN
+        <#{tag}
+        >
+
+        #{visible_qa_details(head_sha:, scope: 'multiline raw blockquote')}
+        </#{tag}>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), tag
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", tag
+    end
+  end
+
+  def test_malformed_unquoted_tag_prefix_restarts_at_a_real_raw_tag
+    head_sha = "1" * 40
+    %w[word details].each do |malformed_name|
+      body = <<~MARKDOWN
+        A literal <#{malformed_name} <blockquote>
+
+        #{visible_qa_details(head_sha:, scope: 'nested malformed tag prefix')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), malformed_name
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", malformed_name
+    end
+  end
+
+  def test_raw_container_transitions_process_every_tag_in_order
+    head_sha = "1" * 40
+    [
+      "<code></code><blockquote>",
+      "<pre></pre><blockquote>",
+      "<code>\n</code><blockquote>"
+    ].each do |raw_prefix|
+      body = <<~MARKDOWN
+        #{raw_prefix}
+
+        #{visible_qa_details(head_sha:, scope: 'ordered raw container transition')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), raw_prefix
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", raw_prefix
+    end
+  end
+
+  def test_quotes_without_an_attribute_assignment_do_not_hide_a_raw_tag
+    head_sha = "1" * 40
+    ["'", '"'].each do |quote|
+      body = <<~MARKDOWN
+        <word #{quote} <blockquote> #{quote}>
+
+        #{visible_qa_details(head_sha:, scope: 'unassigned quote')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), quote
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", quote
+    end
+  end
+
+  def test_equals_without_an_attribute_name_does_not_quote_a_raw_tag
+    head_sha = "1" * 40
+    ["'", '"'].each do |quote|
+      body = <<~MARKDOWN
+        <word =#{quote} <blockquote> #{quote}>
+
+        #{visible_qa_details(head_sha:, scope: 'unnamed attribute assignment')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), quote
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", quote
+    end
+  end
+
+  def test_overlapping_raw_html_containers_remain_excluded_until_each_closes
+    head_sha = "1" * 40
+    [
+      ["<code><blockquote></code>", "</blockquote>"],
+      ["<blockquote><code></blockquote>", "</code>"],
+      ["<code><blockquote></blockquote>", "</code>"]
+    ].each do |prefix, suffix|
+      body = <<~MARKDOWN
+        #{prefix}
+
+        #{visible_qa_details(head_sha:, scope: 'overlapping raw containers')}
+        #{suffix}
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), prefix
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", prefix
+    end
+  end
+
+  def test_inline_code_comment_delimiters_do_not_hide_raw_blockquotes
+    head_sha = "1" * 40
+    [
+      ["`<!--`", "`-->`"],
+      ["``<!--``", "``-->``"],
+      ["`<!--\nliteral`", "`-->`"],
+      ["`a multiline\nvalue <!--`", "`-->`"]
+    ].each do |opening_literal, closing_literal|
+      body = <<~MARKDOWN
+        Use #{opening_literal} literally.
+
+        <blockquote>
+
+        Use #{closing_literal} literally.
+
+        #{visible_qa_details(head_sha:, scope: 'inline code comment delimiter')}
+        </blockquote>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), [opening_literal, closing_literal].inspect
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", [opening_literal, closing_literal].inspect
+    end
+  end
+
+  def test_multiline_inline_code_comment_literals_preserve_later_visible_evidence
+    head_sha = "1" * 40
+    ["value <!--", "  indented value <!--"].each do |literal_line|
+      body = <<~MARKDOWN
+        Use `a multiline
+        #{literal_line}` literally.
+
+        <blockquote>
+
+        Use `-->` literally.
+
+        #{visible_qa_details(head_sha:, scope: 'quoted multiline literal')}
+        </blockquote>
+
+        #{visible_qa_details(head_sha:, scope: 'visible evidence after quote')}
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "SATISFIED", evidence.fetch("verdict"), literal_line
+    end
+  end
+
+  def test_column_start_comment_still_blocks_multiline_inline_code_lookahead
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      Use `a multiline
+      <!-- literal comment delimiter`
+
+      #{visible_qa_details(head_sha:, scope: 'column start comment')}
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_large_plain_body_does_not_eagerly_compute_inline_code_lookahead
+    head_sha = "1" * 40
+    body = ("Ordinary review context without inline code.\n" * 8_000) + visible_qa_details(
+      head_sha:, scope: "large plain body"
+    )
+
+    original_lookahead = CloseoutEvidenceReplay.method(:inline_code_lookahead)
+    CloseoutEvidenceReplay.define_singleton_method(:inline_code_lookahead) do |*|
+      raise "plain Markdown must not scan a code lookahead"
+    end
+    begin
+      rendered = CloseoutEvidenceReplay.visible_markdown(body)
+
+      assert_includes rendered, "qa-evidence v1"
+    ensure
+      CloseoutEvidenceReplay.define_singleton_method(:inline_code_lookahead, original_lookahead)
+    end
+  end
+
+  def test_multiline_quoted_details_attributes_remain_nested
+    head_sha = "1" * 40
+    [["\"", "\""], ["'", "'"]].each do |opening_quote, closing_quote|
+      body = <<~MARKDOWN
+        <details>
+        <summary>Agent details</summary>
+
+        <details title=#{opening_quote}x>
+        </details>#{closing_quote}>
+        #{visible_qa_details(head_sha:, scope: 'multiline quoted details attribute')}
+        </details>
+        </details>
+      MARKDOWN
+
+      evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+      assert_equal "UNKNOWN", evidence.fetch("verdict"), opening_quote
+      assert_includes evidence.fetch("missing"), "qa-evidence marker missing", opening_quote
+    end
+  end
+
+  def test_unmatched_backticks_do_not_cross_paragraph_or_raw_html_boundaries
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      Unmatched ` before a block.
+
+      <blockquote>
+
+      Another unmatched ` in a different paragraph.
+
+      #{visible_qa_details(head_sha:, scope: 'paragraph boundary')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_unmatched_backtick_does_not_cross_a_markdown_blockquote_boundary
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      Unmatched ` before a new block.
+      > Quoted <blockquote> `
+
+      #{visible_qa_details(head_sha:, scope: 'blockquote boundary')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_backslash_parity_controls_literal_html_and_inline_code_context
+    head_sha = "1" * 40
+    { "\\" => "SATISFIED", "\\\\" => "UNKNOWN" }.each do |slashes, expected_verdict|
+      nested = <<~MARKDOWN
+        <details>
+        <summary>Agent details</summary>
+
+        <details>
+        <summary>Example</summary>
+        This literal #{slashes}`</details>` trailing.
+        #{visible_qa_details(head_sha:, scope: "#{slashes.length} backslash code parity")}
+        </details>
+        </details>
+      MARKDOWN
+      raw_blockquote = <<~MARKDOWN
+        #{slashes}<blockquote>
+
+        #{visible_qa_details(head_sha:, scope: "#{slashes.length} backslash HTML parity")}
+        </blockquote>
+      MARKDOWN
+
+      [nested, raw_blockquote].each do |body|
+        assert_equal expected_verdict, run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict"), slashes.inspect
+      end
+    end
+  end
+
+  def test_inline_blockquote_closer_cannot_escape_raw_blockquote_context
+    head_sha = "1" * 40
+    body = <<~MARKDOWN
+      <blockquote>
+
+      This literal `</blockquote>` is not an HTML closer.
+
+      #{visible_qa_details(head_sha:, scope: 'inline blockquote closer')}
+      </blockquote>
+    MARKDOWN
+
+    evidence = run_replay(body, expected_head_sha: head_sha).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
+  end
+
+  def test_unclosed_html_comment_in_raw_text_container_hides_following_visible_evidence
+    head_sha = "1" * 40
+    %w[textarea script style].each do |tag|
+      body = <<~MARKDOWN
+        <#{tag}>
+        <!-- literal raw text without a closing comment delimiter
+        </#{tag}>
+
+        #{visible_qa_details(head_sha:, scope: "#{tag} literal comment")}
+      MARKDOWN
+
+      assert_equal "UNKNOWN", run_replay(body, expected_head_sha: head_sha).dig("qa_evidence", "verdict")
+    end
+  end
+
+  def test_unclosed_html_comment_hides_visible_evidence
+    body = <<~MARKDOWN
+      Evidence follows.
+
+      <!--
+      <details>
+      <summary>QA evidence</summary>
+
+      ```text
+      qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{'1' * 40}
+      ```
+      </details>
+    MARKDOWN
+
+    evidence = run_replay(body).fetch("qa_evidence")
+    assert_equal "UNKNOWN", evidence.fetch("verdict")
+    assert_includes evidence.fetch("missing"), "qa-evidence marker missing"
   end
 
   def test_hosted_v1_replays_as_distinct_exact_head_deployment_evidence
