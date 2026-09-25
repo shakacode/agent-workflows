@@ -443,6 +443,35 @@ class PrCiReadinessTest < Minitest::Test
     end
   end
 
+  def test_trusted_ci_policy_prefers_exact_base_operational_sidecar
+    operational_path = ".agents/agent-workflow-operational.yml"
+    Dir.mktmpdir("pr-ci-readiness-operational-policy") do |root|
+      run_git!(root, "init", "-q")
+      run_git!(root, "config", "user.name", "Test")
+      run_git!(root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      operational_policy = optional_approval_held_policy(name: "operational")
+      File.write(File.join(root, operational_path), { "ci_readiness" => operational_policy }.to_yaml)
+      File.write(
+        File.join(root, PrCiReadiness::POLICY_PATH),
+        { "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+      )
+      run_git!(root, "add", ".agents")
+      run_git!(root, "commit", "-qm", "trusted operational policy")
+      base_sha = run_git!(root, "rev-parse", "HEAD").strip
+      File.write(File.join(root, operational_path), "ci_readiness: malformed\n")
+
+      policy = PrCiReadiness.trusted_ci_policy_at(
+        repo_root: root, base_ref: "main", base_sha:
+      )
+
+      assert_equal "operational", policy.dig("optional_approval_held_checks", 0, "name")
+      assert_match(
+        /\Agit:#{base_sha}:#{Regexp.escape(operational_path)}@/, policy.fetch("provenance")
+      )
+    end
+  end
+
   def test_trusted_ci_policy_rejects_duplicate_yaml_keys_and_noncanonical_base
     Dir.mktmpdir("pr-ci-readiness-policy") do |root|
       run_git!(root, "init", "-q")

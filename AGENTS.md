@@ -11,6 +11,14 @@ Portable shared skills resolve this repo's commands and policy through:
 - **Commands** — run `.agents/bin/<name>` (`setup`, `validate`, `test`, ...); see `.agents/bin/README.md`. A missing script means that capability is n/a here.
 - **Policy / config** — `.agents/agent-workflow.yml`.
 
+## Operational Compatibility Policy
+
+Shared gates read `ci_readiness` and `trusted_actions` from
+`.agents/agent-workflow-operational.yml` when present, falling back to those
+keys in `.agents/agent-workflow.yml` for older consumers. Keep this sidecar
+limited to operational policy that does not fit a consumer's typed workflow
+seam.
+
 ## Changelog Ownership
 
 Only dedicated `/update-changelog` or release lanes may edit `CHANGELOG.md`.

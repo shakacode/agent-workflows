@@ -60,6 +60,8 @@ module SecureGitHubActions
   end
 
   class Scanner
+    OPERATIONAL_POLICY_PATH = ".agents/agent-workflow-operational.yml"
+    LEGACY_POLICY_PATH = ".agents/agent-workflow.yml"
     EXPRESSION_PATTERN = /\$\{\{.*?\}\}/m
     ACTION_DESCRIPTORS = %w[action.yml action.yaml].freeze
     PATH_ENCODING = Encoding::UTF_8
@@ -744,7 +746,12 @@ module SecureGitHubActions
     end
 
     def load_trusted_actions
-      path = File.join(@root, ".agents/agent-workflow.yml")
+      operational_path = File.join(@root, OPERATIONAL_POLICY_PATH)
+      path = if File.exist?(operational_path) || File.symlink?(operational_path)
+               operational_path
+             else
+               File.join(@root, LEGACY_POLICY_PATH)
+             end
       return [[], []] unless File.exist?(path) || File.symlink?(path)
 
       stream = Psych.parse_stream(safely_read(path), filename: path)

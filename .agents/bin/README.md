@@ -13,4 +13,7 @@ is absent means that capability is n/a in this repository.
 | `docs` | Docs checks | `bin/validate` plus manual link/path review |
 | `ci-detect` | CI change detector | n/a |
 
-Non-command policy lives in [`../agent-workflow.yml`](../agent-workflow.yml).
+Workflow policy lives in [`../agent-workflow.yml`](../agent-workflow.yml).
+Shared gates read `ci_readiness` and `trusted_actions` from
+[`../agent-workflow-operational.yml`](../agent-workflow-operational.yml) when
+present, with the workflow config retained as a legacy fallback.

@@ -124,6 +124,45 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_cli_reads_trusted_actions_from_operational_policy_sidecar
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    with_repository(<<~YAML) do |root|
+      jobs:
+        build:
+          steps:
+            - uses: owner/action@#{sha} # v1.2.3
+    YAML
+      policy_path = File.join(root, ".agents/agent-workflow-operational.yml")
+      FileUtils.mkdir_p(File.dirname(policy_path))
+      File.write(policy_path, YAML.dump("trusted_actions" => ["owner/action"]))
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_predicate status, :success?
+      assert_empty stderr
+      assert_empty rule_ids(JSON.parse(stdout))
+    end
+  end
+
+  def test_operational_empty_trusted_actions_overrides_legacy_allowlist
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    with_repository(<<~YAML, trusted_actions: ["owner/action"]) do |root|
+      jobs:
+        build:
+          steps:
+            - uses: owner/action@#{sha} # v1.2.3
+    YAML
+      policy_path = File.join(root, ".agents/agent-workflow-operational.yml")
+      File.write(policy_path, YAML.dump("trusted_actions" => []))
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      assert_equal ["secure-github-actions/untrusted-external-use"], rule_ids(JSON.parse(stdout))
+    end
+  end
+
   def test_cli_accepts_flow_style_pinned_uses_with_same_line_version_comments
     sha = "0123456789abcdef0123456789abcdef01234567"
     workflows = [

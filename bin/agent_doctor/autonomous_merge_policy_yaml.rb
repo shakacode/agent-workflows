@@ -32,7 +32,11 @@ module AutonomousMergePolicy
     skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
   ].freeze
   BUILTIN_POLICY_PATTERNS = (
-    %w[AGENTS.md **/AGENTS.md .agents/agent-workflow.yml docs/adr/0003-smarter-autonomous-merge-gates.md] +
+    %w[
+      AGENTS.md **/AGENTS.md .agents/agent-workflow.yml
+      .agents/agent-workflow-operational.yml
+      docs/adr/0003-smarter-autonomous-merge-gates.md
+    ] +
     SOURCE_POLICY_PATTERNS + SOURCE_POLICY_PATTERNS.map { |pattern| ".agents/#{pattern}" }
   ).freeze
 
