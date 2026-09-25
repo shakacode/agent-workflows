@@ -22,7 +22,7 @@ a scanner supplied by the consumer under review.
 The scanner reads `trusted_actions` from
 `.agents/agent-workflow-operational.yml` when that key is present there,
 otherwise from `.agents/agent-workflow.yml` only when that file is a legacy map
-without top-level `version: 1` and contains the key. A typed v1 contract cannot
+without integer top-level `version: 1` and contains the key. A typed v1 contract cannot
 supply the moved key. A missing sequence is a closed empty allowlist; an invalid
 or wildcard entry fails closed. A sidecar value is authoritative, including
 when its sequence is empty. The allowlist applies to

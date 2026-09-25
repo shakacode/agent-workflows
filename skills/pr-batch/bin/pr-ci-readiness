@@ -515,15 +515,13 @@ module PrCiReadiness
         raise Error, "trusted-base ci_readiness policy contains duplicate keys: #{duplicate_errors.join('; ')}"
       end
 
-      candidate_config = YAML.safe_load(raw, permitted_classes: [], permitted_symbols: [], aliases: false) || {}
+      candidate_config = YAML.safe_load(raw, permitted_classes: [], permitted_symbols: [], aliases: false)
+      candidate_config = {} if candidate_config.nil?
       raise Error, "trusted-base policy is not a mapping" unless candidate_config.is_a?(Hash)
       next if candidate_path == OPERATIONAL_POLICY_PATH && !candidate_config.key?("ci_readiness")
 
-      if candidate_path == POLICY_PATH && candidate_config.key?("version")
-        unless candidate_config["version"].instance_of?(Integer) && candidate_config["version"] == 1
-          raise Error, "trusted-base workflow contract version must be integer 1"
-        end
-
+      if candidate_path == POLICY_PATH && candidate_config["version"].instance_of?(Integer) &&
+         candidate_config["version"] == 1
         raise Error, "typed v1 contract cannot contain legacy ci_readiness" if candidate_config.key?("ci_readiness")
 
         next
@@ -534,6 +532,9 @@ module PrCiReadiness
       break
     end
     return nil unless policy_path
+    if policy_path == OPERATIONAL_POLICY_PATH && typed_v1_contract_supplies_legacy_ci_readiness?(root, base_sha)
+      raise Error, "typed v1 contract cannot contain legacy ci_readiness"
+    end
 
     policy = config["ci_readiness"]
     return nil if policy.nil? || policy == "n/a"
@@ -550,6 +551,15 @@ module PrCiReadiness
     }
   rescue Errno::ENOENT, Errno::EACCES, Psych::Exception => e
     raise Error, "trusted-base ci_readiness policy is unavailable or malformed: #{e.message.lines.first.to_s.strip}"
+  end
+
+  def typed_v1_contract_supplies_legacy_ci_readiness?(root, base_sha)
+    return false if git_capture!(root, "ls-tree", base_sha, "--", POLICY_PATH).empty?
+
+    raw = git_capture!(root, "cat-file", "blob", "#{base_sha}:#{POLICY_PATH}")
+    config = YAML.safe_load(raw, permitted_classes: [], permitted_symbols: [], aliases: false)
+    config.is_a?(Hash) && config["version"].instance_of?(Integer) && config["version"] == 1 &&
+      config.key?("ci_readiness")
   end
 
   def validate_trusted_policy_binding!(base_ref:, base_sha:)
@@ -678,7 +688,7 @@ module PrCiReadiness
           --trusted-repo-root DIR             Load ci_readiness policy from the live base SHA's
                                               operational sidecar when it declares that key,
                                               otherwise from a legacy .agents/agent-workflow.yml
-                                              without top-level version: 1.
+                                              without integer top-level version: 1.
           --diff-base-sha SHA                 Bind evidence to the reviewed effective merge base.
                                               Defaults to the PR's current base SHA.
           --configured-review-exception FILE  JSON with exact comment_id and body_sha256 for a

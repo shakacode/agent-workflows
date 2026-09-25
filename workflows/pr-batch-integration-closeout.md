@@ -1466,7 +1466,7 @@ links. For private channels, the Slack app or bot must be invited first.
 Use the repo's hosted-CI trigger from
 `.agents/agent-workflow-operational.yml` (`hosted_ci_trigger`). Use
 `.agents/agent-workflow.yml` only when the sidecar key is absent and that file
-is a legacy map without top-level `version: 1`; a typed v1 contract cannot
+is a legacy map without integer top-level `version: 1`; a typed v1 contract cannot
 supply the moved key. Its subcommands provide the audit trail for running,
 stopping, checking, or waiving hosted CI.
 

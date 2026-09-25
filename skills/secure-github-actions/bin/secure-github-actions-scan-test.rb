@@ -209,9 +209,33 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
-  def test_non_integer_contract_version_cannot_supply_legacy_trusted_actions
+  def test_operational_allowlist_does_not_mask_legacy_trusted_actions_in_typed_v1
     sha = "0123456789abcdef0123456789abcdef01234567"
-    ["1", 1.0].each do |version|
+    with_repository(<<~YAML, trusted_actions: ["owner/action"]) do |root|
+      jobs:
+        build:
+          steps:
+            - uses: owner/action@#{sha} # v1.2.3
+    YAML
+      operational_path = File.join(root, ".agents/agent-workflow-operational.yml")
+      legacy_path = File.join(root, ".agents/agent-workflow.yml")
+      File.write(operational_path, YAML.dump("trusted_actions" => ["owner/action"]))
+      File.write(legacy_path, YAML.dump("version" => 1, "trusted_actions" => ["owner/action"]))
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      assert_equal [
+        "secure-github-actions/invalid-trusted-actions-policy",
+        "secure-github-actions/untrusted-external-use"
+      ], rule_ids(JSON.parse(stdout))
+    end
+  end
+
+  def test_non_v1_contract_version_keeps_legacy_trusted_actions
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    ["1", 1.0, 2].each do |version|
       with_repository(<<~YAML, trusted_actions: ["owner/action"]) do |root|
         jobs:
           build:
@@ -225,13 +249,28 @@ class SecureGitHubActionsScanTest < Minitest::Test
 
         stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
 
-        assert_equal 1, status.exitstatus
+        assert_predicate status, :success?
         assert_empty stderr
-        assert_equal [
-          "secure-github-actions/invalid-trusted-actions-policy",
-          "secure-github-actions/untrusted-external-use"
-        ], rule_ids(JSON.parse(stdout))
+        assert_empty rule_ids(JSON.parse(stdout))
       end
+    end
+  end
+
+  def test_non_v1_contract_without_legacy_allowlist_is_empty_not_invalid
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    with_repository(<<~YAML, trusted_actions: ["owner/action"]) do |root|
+      jobs:
+        build:
+          steps:
+            - uses: owner/action@#{sha} # v1.2.3
+    YAML
+      File.write(File.join(root, ".agents/agent-workflow.yml"), YAML.dump("version" => 2))
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      assert_equal ["secure-github-actions/untrusted-external-use"], rule_ids(JSON.parse(stdout))
     end
   end
 

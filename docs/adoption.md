@@ -257,7 +257,7 @@ libraries provides no guarantee of token or cost savings, quality, or security.
    must also add a closed, exact `trusted_actions` allowlist in
    `.agents/agent-workflow-operational.yml`. Sidecar-aware shared readers use
    this key when present. Per-key fallback to `.agents/agent-workflow.yml`
-   applies only when that file is a legacy map without top-level `version: 1`
+   applies only when that file is a legacy map without integer top-level `version: 1`
    and contains the key. Install those readers before moving an existing key.
    The sidecar may also hold `hosted_ci_trigger`, `ci_change_detector`, and
    `ci_parity_environment`; shared workflow guidance resolves those with the

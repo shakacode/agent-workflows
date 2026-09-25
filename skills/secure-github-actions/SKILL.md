@@ -53,7 +53,7 @@ them fail closed.
 `trusted_actions` defaults to an empty list when absent. The scanner reads it
 from `.agents/agent-workflow-operational.yml` when that key is present there,
 otherwise from `.agents/agent-workflow.yml` only when that file is a legacy map
-without top-level `version: 1` and contains the key. A typed v1 contract cannot
+without integer top-level `version: 1` and contains the key. A typed v1 contract cannot
 supply the moved key. A sidecar value is authoritative, including an empty
 list; malformed policy fails closed. Entries are unique,
 case-insensitive exact repository identities. Wildcards, organization-wide

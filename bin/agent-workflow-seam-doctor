@@ -37,6 +37,7 @@ module AgentWorkflowSeamDoctor
   COMMANDS_DIR = ".agents/bin"
   COMMAND_README = ".agents/bin/README.md"
   POLICY_CONFIG = ".agents/agent-workflow.yml"
+  OPERATIONAL_POLICY_CONFIG = ".agents/agent-workflow-operational.yml"
   TRUST_CONFIG = ".agents/trusted-github-actors.yml"
   STANDARD_SCRIPTS = %w[setup validate test lint build docs ci-detect].freeze
   CORE_SCRIPTS = %w[validate test].freeze
@@ -1433,7 +1434,7 @@ module AgentWorkflowSeamDoctor
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
     issues.concat(selected_hosted_ci_receipts_policy_issues(root, config))
-    issues.concat(ci_readiness_policy_issues(config, yaml))
+    issues.concat(ci_readiness_policy_issues(root, config, yaml))
     issues.concat(hosted_qa_policy_issues(root, yaml))
     issues.concat(human_attention_policy_issues(config))
     if config.key?("autonomous_merge")
@@ -1749,20 +1750,53 @@ module AgentWorkflowSeamDoctor
     selected_hosted_ci_file_issues(root, executable)
   end
 
-  def ci_readiness_policy_issues(config, yaml)
+  def ci_readiness_policy_issues(root, config, legacy_yaml)
+    if typed_v1_policy_config?(config) && config.key?(CI_READINESS_POLICY_KEY)
+      return ["typed v1 contract cannot contain legacy ci_readiness"]
+    end
+
+    operational_path = File.join(root, OPERATIONAL_POLICY_CONFIG)
+    if File.exist?(operational_path) || File.symlink?(operational_path)
+      operational_yaml = File.read(operational_path, encoding: "UTF-8")
+      structure_error = AgentWorkflowWritingStyle.policy_structure_error(operational_yaml)
+      return ["invalid operational policy config: #{structure_error}"] if structure_error
+
+      operational_config = YAML.safe_load(operational_yaml, aliases: false)
+      operational_config = {} if operational_config.nil?
+      return ["invalid operational policy config: expected a top-level mapping"] unless
+        operational_config.is_a?(Hash)
+
+      if operational_config.key?(CI_READINESS_POLICY_KEY)
+        return ci_readiness_policy_value_issues(
+          operational_config[CI_READINESS_POLICY_KEY], operational_yaml
+        )
+      end
+
+    end
+
     return [] unless config.key?(CI_READINESS_POLICY_KEY)
 
-    duplicate_errors = CiReadinessPolicy.duplicate_key_errors(yaml)
-    issues = duplicate_errors.map { |error| "invalid ci_readiness policy: #{error}" }
-    policy = config[CI_READINESS_POLICY_KEY]
-    return issues if policy == "n/a"
+    ci_readiness_policy_value_issues(config[CI_READINESS_POLICY_KEY], legacy_yaml)
+  rescue Psych::Exception, EncodingError, SystemCallError
+    ["invalid operational policy config: #{OPERATIONAL_POLICY_CONFIG}"]
+  end
+
+  def ci_readiness_policy_value_issues(policy, yaml)
+    issues = CiReadinessPolicy.duplicate_key_errors(yaml).map do |error|
+      "invalid ci_readiness policy: #{error}"
+    end
+    return issues if policy.nil? || policy == "n/a"
 
     issues.concat(
       CiReadinessPolicy.validation_errors(policy).map do |error|
         "invalid ci_readiness policy: #{error}"
       end
     )
-    issues
+    issues.uniq
+  end
+
+  def typed_v1_policy_config?(config)
+    config["version"].instance_of?(Integer) && config["version"] == 1
   end
 
   def selected_hosted_ci_file_issues(root, relative_path)
@@ -1959,7 +1993,8 @@ module AgentWorkflowSeamDoctor
   end
 
   def parse_policy_config(yaml)
-    YAML.safe_load(yaml, aliases: false) || {}
+    value = YAML.safe_load(yaml, aliases: false)
+    value.nil? ? {} : value
   end
 
   def unresolved_policy_value?(value, placeholder_mode:, empty_collections_unresolved: true)

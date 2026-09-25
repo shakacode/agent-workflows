@@ -1377,7 +1377,7 @@ final push is a non-blocking decision. If the branch needs remote confirmation,
 request optimized hosted CI via the repo's hosted-CI trigger (see
 `hosted_ci_trigger` in `.agents/agent-workflow-operational.yml`). Use
 `.agents/agent-workflow.yml` only when the sidecar key is absent and that file
-is a legacy map without top-level `version: 1`; a typed v1 contract cannot
+is a legacy map without integer top-level `version: 1`; a typed v1 contract cannot
 supply the moved key. If the remaining concern is that optimized suite
 selection may be insufficient, request force-full hosted CI and record why.
 Re-fetch and wait for the newly requested current-head checks, then continue the

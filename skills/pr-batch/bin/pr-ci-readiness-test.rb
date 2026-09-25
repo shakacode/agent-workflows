@@ -524,26 +524,86 @@ class PrCiReadinessTest < Minitest::Test
     end
   end
 
-  def test_non_integer_contract_version_cannot_supply_legacy_ci_readiness
-    ["1", 1.0].each do |version|
+  def test_typed_v1_legacy_ci_readiness_is_invalid_even_when_sidecar_declares_policy
+    operational_path = ".agents/agent-workflow-operational.yml"
+    Dir.mktmpdir("pr-ci-readiness-typed-contract-sidecar") do |root|
+      run_git!(root, "init", "-q")
+      run_git!(root, "config", "user.name", "Test")
+      run_git!(root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(
+        File.join(root, operational_path),
+        { "ci_readiness" => optional_approval_held_policy(name: "operational") }.to_yaml
+      )
+      File.write(
+        File.join(root, PrCiReadiness::POLICY_PATH),
+        { "version" => 1, "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+      )
+      run_git!(root, "add", ".agents")
+      run_git!(root, "commit", "-qm", "invalid typed workflow policy")
+      base_sha = run_git!(root, "rev-parse", "HEAD").strip
+
+      error = assert_raises(PrCiReadiness::Error) do
+        PrCiReadiness.trusted_ci_policy_at(repo_root: root, base_ref: "main", base_sha:)
+      end
+
+      assert_equal "typed v1 contract cannot contain legacy ci_readiness", error.message
+    end
+  end
+
+  def test_non_v1_contract_version_keeps_legacy_ci_readiness
+    [{ "version" => "1", "has_policy" => true },
+     { "version" => 1.0, "has_policy" => true },
+     { "version" => 2, "has_policy" => false }].each do |example|
       Dir.mktmpdir("pr-ci-readiness-invalid-contract-version") do |root|
         run_git!(root, "init", "-q")
         run_git!(root, "config", "user.name", "Test")
         run_git!(root, "config", "user.email", "test@example.com")
         FileUtils.mkdir_p(File.join(root, ".agents"))
+        legacy_policy = { "version" => example.fetch("version") }
+        legacy_policy["ci_readiness"] = optional_approval_held_policy(name: "legacy") if example.fetch("has_policy")
         File.write(
           File.join(root, PrCiReadiness::POLICY_PATH),
-          { "version" => version, "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+          legacy_policy.to_yaml
         )
         run_git!(root, "add", ".agents")
         run_git!(root, "commit", "-qm", "invalid workflow contract version")
         base_sha = run_git!(root, "rev-parse", "HEAD").strip
 
-        error = assert_raises(PrCiReadiness::Error) do
-          PrCiReadiness.trusted_ci_policy_at(repo_root: root, base_ref: "main", base_sha:)
-        end
+        policy = PrCiReadiness.trusted_ci_policy_at(
+          repo_root: root, base_ref: "main", base_sha:
+        )
 
-        assert_equal "trusted-base workflow contract version must be integer 1", error.message
+        if example.fetch("has_policy")
+          assert_equal "legacy", policy.dig("optional_approval_held_checks", 0, "name")
+          assert_match(
+            /\Agit:#{base_sha}:#{Regexp.escape(PrCiReadiness::POLICY_PATH)}@/,
+            policy.fetch("provenance")
+          )
+        else
+          assert_nil policy
+        end
+      end
+    end
+  end
+
+  def test_false_operational_sidecar_fails_closed_instead_of_falling_back
+    Dir.mktmpdir("pr-ci-readiness-false-operational-policy") do |root|
+      run_git!(root, "init", "-q")
+      run_git!(root, "config", "user.name", "Test")
+      run_git!(root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents/agent-workflow-operational.yml"), "false\n")
+      File.write(
+        File.join(root, PrCiReadiness::POLICY_PATH),
+        { "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+      )
+      run_git!(root, "add", ".agents")
+      run_git!(root, "commit", "-qm", "false operational policy")
+      base_sha = run_git!(root, "rev-parse", "HEAD").strip
+
+      assert_raises(PrCiReadiness::Error) do
+        PrCiReadiness.trusted_ci_policy_at(repo_root: root, base_ref: "main", base_sha:)
       end
     end
   end
