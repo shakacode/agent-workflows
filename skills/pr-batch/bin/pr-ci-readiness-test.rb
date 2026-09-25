@@ -500,6 +500,30 @@ class PrCiReadinessTest < Minitest::Test
     end
   end
 
+  def test_typed_v1_contract_cannot_supply_legacy_ci_readiness
+    operational_path = ".agents/agent-workflow-operational.yml"
+    Dir.mktmpdir("pr-ci-readiness-typed-contract") do |root|
+      run_git!(root, "init", "-q")
+      run_git!(root, "config", "user.name", "Test")
+      run_git!(root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, operational_path), { "trusted_actions" => ["owner/action"] }.to_yaml)
+      File.write(
+        File.join(root, PrCiReadiness::POLICY_PATH),
+        { "version" => 1, "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+      )
+      run_git!(root, "add", ".agents")
+      run_git!(root, "commit", "-qm", "invalid typed workflow policy")
+      base_sha = run_git!(root, "rev-parse", "HEAD").strip
+
+      error = assert_raises(PrCiReadiness::Error) do
+        PrCiReadiness.trusted_ci_policy_at(repo_root: root, base_ref: "main", base_sha:)
+      end
+
+      assert_equal "typed v1 contract cannot contain legacy ci_readiness", error.message
+    end
+  end
+
   def test_trusted_ci_policy_does_not_fall_back_when_sidecar_value_is_nil_or_not_applicable
     operational_path = ".agents/agent-workflow-operational.yml"
     overrides = {

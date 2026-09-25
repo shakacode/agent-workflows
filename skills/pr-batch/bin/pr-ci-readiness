@@ -519,6 +519,12 @@ module PrCiReadiness
       raise Error, "trusted-base policy is not a mapping" unless candidate_config.is_a?(Hash)
       next if candidate_path == OPERATIONAL_POLICY_PATH && !candidate_config.key?("ci_readiness")
 
+      if candidate_path == POLICY_PATH && candidate_config["version"] == 1
+        raise Error, "typed v1 contract cannot contain legacy ci_readiness" if candidate_config.key?("ci_readiness")
+
+        next
+      end
+
       policy_path = candidate_path
       config = candidate_config
       break

@@ -31,11 +31,11 @@ entry-format reference or unrelated release runbooks.
 ## Resolve authority and current state
 
 - Resolve `CHANGELOG_PATH` and changelog policy from `changelog` in
-  `.agents/agent-workflow.yml`, or from the consumer's `AGENTS.md` for a typed
-  Shaka contract. If that policy says no changelog exists, stop as not
-  applicable. Resolve `BASE_BRANCH` from the typed contract when present, or
-  from the repository's verified default branch. Follow the repo's release
-  policy.
+  `.agents/agent-workflow.yml`; when it has top-level `version: 1`, read moved
+  changelog policy from the consumer's `AGENTS.md`. If policy says no changelog
+  exists, stop as not applicable. Resolve `BASE_BRANCH` from the configured
+  `base_branch` in `.agents/agent-workflow.yml`, or the verified repository
+  default branch when unset. Follow the repo's release policy.
 - Independently resolve `PR_TARGET_BRANCH` from release/branch policy and
   `COMPARE_BRANCH` from changelog policy. Default each to `BASE_BRANCH` only
   when its own policy has no override. An ambiguous required target is `UNKNOWN`.

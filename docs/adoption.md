@@ -256,11 +256,12 @@ libraries provides no guarantee of token or cost savings, quality, or security.
    Repositories that use repository-based GitHub Actions and reusable workflows
    must also add a closed, exact `trusted_actions` allowlist in
    `.agents/agent-workflow-operational.yml`. Sidecar-aware shared readers use
-   this key when present and fall back to `.agents/agent-workflow.yml` only
-   when it is omitted. Install those readers before moving an existing key.
+   this key when present. Per-key fallback to `.agents/agent-workflow.yml`
+   applies only when that file is a legacy map without top-level `version: 1`
+   and contains the key. Install those readers before moving an existing key.
    The sidecar may also hold `hosted_ci_trigger`, `ci_change_detector`, and
    `ci_parity_environment`; shared workflow guidance resolves those with the
-   same per-key fallback.
+   same legacy-only per-key fallback.
    Entries are case-insensitive `owner/repository` identities, with no refs,
    subpaths, or wildcards:
 

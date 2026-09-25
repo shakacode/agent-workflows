@@ -6,7 +6,8 @@ Resolve integration versus promotion from the task and trusted repository
 policy. Read `AGENTS.md`, `.agents/bin/README.md`, and existing
 `.agents/agent-workflow.yml` notes: wrappers own required checks,
 `review_gate` owns review requirements, and `hosted_qa_gate` owns broader
-hosted QA. With a typed Shaka contract, resolve those human policy details from
+hosted QA. When `.agents/agent-workflow.yml` has top-level `version: 1`, resolve
+those human policy details from
 the consumer's `AGENTS.md` and readiness guide; use its typed review fields for
 current-head CI review checks. Use the documented complete invocation for
 promotion; there is no portable fast/full flag or effort preset. Omission

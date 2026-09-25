@@ -205,7 +205,7 @@ its infrastructure provider.
    - Fetch/prune `main`, confirm the expected repository root, and verify nested repo paths before assigning work.
    - Only for `coordination_required`, when the repo's private coordination
      backend (see `coordination_backend` in `.agents/agent-workflow.yml`, or
-     the consumer's `AGENTS.md` for a typed Shaka contract) is
+     the consumer's `AGENTS.md` when `.agents/agent-workflow.yml` has top-level `version: 1`) is
      available, acquire an `agent-coord`
      claim for each issue/PR/ad-hoc lane before creating that lane's worktree or
      branch. Resolve `PR_BATCH_SKILL_DIR` in this order: explicit environment
@@ -424,7 +424,7 @@ dependency edge is terminally satisfied.
 Hosted-CI output is only `not-yet-eligible` or
 `eligible-via-repo-seam`; the latter means consult the consumer repo's
 `hosted_ci_trigger` policy from `.agents/agent-workflow-operational.yml`, with
-per-key fallback to `.agents/agent-workflow.yml`, not that CI was requested or passed. The helper
+legacy-only per-key fallback to `.agents/agent-workflow.yml`, not that CI was requested or passed. The helper
 also emits the longest dependency path and maker/checker assignments, breaking
 equal-length paths by the lexicographically smallest lane-id sequence. Cycles
 fail closed. Maker/checker identities are trimmed and Unicode case-folded; every
@@ -529,7 +529,7 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 
 At merge readiness or batch closeout, build the machine-checkable per-PR merge
 ledger using the repo's `merge_ledger` policy in `.agents/agent-workflow.yml` or
-the consumer's `AGENTS.md` and readiness guide for a typed Shaka contract.
+the consumer's `AGENTS.md` and readiness guide when `.agents/agent-workflow.yml` has top-level `version: 1`.
 The command uses GitHub GraphQL/API reviewThreads, reviews, and
 PR comments, then emits JSON against the ledger's schema. Run it for `<PR>`
 (passing `--repo "${REPO}"` when not in the repo) with an explicit

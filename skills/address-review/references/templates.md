@@ -146,7 +146,7 @@ Rules for follow-up issues:
 - Follow-up issues are expensive; default to no new issue. Drop optional and speculative items by default; only an observed failure or verified defect with a known affected user, and a fix smaller than the problem, belongs in the bundle.
 - Prefer linking an existing issue over creating a new one.
 - Create at most one follow-up issue per PR by default. More than one follow-up issue requires explicit user approval.
-- Every new follow-up issue title must begin with the repo's follow-up issue prefix (see `follow_up_prefix` in `.agents/agent-workflow.yml`, or the consumer's `AGENTS.md` for a typed Shaka contract).
+- Every new follow-up issue title must begin with the repo's follow-up issue prefix (see `follow_up_prefix` in `.agents/agent-workflow.yml`, or the consumer's `AGENTS.md` when `.agents/agent-workflow.yml` has top-level `version: 1`).
 - Build multi-line issue bodies with `--body-file`; never pass escaped newline strings through `--body`.
 - Only include non-trivial `SKIPPED` items (skip pure duplicates and factually incorrect suggestions)
 - For `f+i`, omit the must-fix section because must-fix items were addressed in the current PR

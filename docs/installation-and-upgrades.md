@@ -672,7 +672,9 @@ their provider approval hold may opt into the closed trusted-base policy:
 Store `ci_readiness` in `.agents/agent-workflow-operational.yml` when its
 sidecar-aware reader is installed. Until then, keep it in
 `.agents/agent-workflow.yml`. If both files exist, a sidecar key is
-authoritative; only an omitted key falls back to the legacy file.
+authoritative. An omitted key falls back only when `.agents/agent-workflow.yml`
+is a legacy map without top-level `version: 1` and contains that key; a typed
+v1 contract cannot supply moved fields.
 Store `trusted_actions`, `hosted_ci_trigger`, `ci_change_detector`, and
 `ci_parity_environment` in that sidecar when the matching shared readers are
 installed.

@@ -780,6 +780,10 @@ module SecureGitHubActions
       values = root.children.each_slice(2).filter_map do |key, value|
         value if key.is_a?(Psych::Nodes::Scalar) && key.value == "trusted_actions"
       end
+      legacy_path = File.join(@root, LEGACY_POLICY_PATH)
+      if path == legacy_path && typed_v1_contract?(root)
+        return values.empty? ? :absent : invalid_trusted_actions(path)
+      end
       return :absent if values.empty?
       return invalid_trusted_actions(path) unless values.length == 1 && values.first.is_a?(Psych::Nodes::Sequence)
 
@@ -806,6 +810,13 @@ module SecureGitHubActions
                      node.children.each_slice(2).any? { |key, _value| yaml_merge_key?(key) }
 
       node.respond_to?(:children) && node.children&.any? { |child| policy_indirection?(child) }
+    end
+
+    def typed_v1_contract?(root)
+      root.children.each_slice(2).any? do |key, value|
+        key.is_a?(Psych::Nodes::Scalar) && key.value == "version" &&
+          value.is_a?(Psych::Nodes::Scalar) && value.value == "1"
+      end
     end
 
     def yaml_merge_key?(node)

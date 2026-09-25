@@ -17,8 +17,10 @@ Shared gates read `ci_readiness` and `trusted_actions` from
 `.agents/agent-workflow-operational.yml` when those keys are present there.
 Workflow guidance reads `ci_parity_environment`, `ci_change_detector`, and
 `hosted_ci_trigger` from the same sidecar. Each omitted key falls back to
-`.agents/agent-workflow.yml` during migration. A present value, including an
-empty allowlist, overrides its legacy value. Malformed `ci_readiness` or
+`.agents/agent-workflow.yml` only when that file is a legacy map without
+top-level `version: 1` and contains the key. A typed v1 contract cannot supply
+moved fields. A present sidecar value, including an empty allowlist, overrides
+its legacy value. Malformed `ci_readiness` or
 `trusted_actions` policy fails closed. Install sidecar-aware shared readers before migrating a consumer's
 keys. Keep the sidecar limited to operational policy that does not fit a
 consumer's typed workflow seam.
