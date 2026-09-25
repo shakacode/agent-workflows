@@ -19,10 +19,9 @@ scripts for PR batches, review triage, merge readiness, CI routing, changelog
 updates, and audit loops.
 
 The shared pack provides process. Each adopting repository keeps its concrete
-commands in `.agents/bin/`, workflow policy in `.agents/agent-workflow.yml`,
-and operational compatibility settings in `.agents/agent-workflow-operational.yml`
-when using gates that read `ci_readiness` or `trusted_actions`. The repository
-also keeps a short `AGENTS.md` pointer section named
+commands in `.agents/bin/`, typed workflow policy in `.agents/agent-workflow.yml`,
+and optional operational policy in `.agents/agent-workflow-operational.yml`.
+The repository also keeps a short `AGENTS.md` pointer section named
 `## Agent Workflow Configuration`.
 
 ## Why This Exists

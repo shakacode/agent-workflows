@@ -51,13 +51,12 @@ temporary and metadata roots are not discovered, and explicit references into
 them fail closed.
 
 `trusted_actions` defaults to an empty list when absent. The scanner reads it
-from `.agents/agent-workflow-operational.yml` when that file exists, falling
-back to `.agents/agent-workflow.yml` for older consumers. The sidecar is
-authoritative when present, including when it contains an empty list; malformed
-sidecar policy fails closed. Entries are unique, case-insensitive exact
-repository identities. Wildcards, organization-wide trust, refs, subpaths,
-aliases, and `UNKNOWN` are invalid. Allowlisting never waives the full-SHA or
-readable-version-comment rules.
+from `.agents/agent-workflow-operational.yml` when that key is present there,
+otherwise from `.agents/agent-workflow.yml`. A sidecar value is authoritative,
+including an empty list; malformed policy fails closed. Entries are unique,
+case-insensitive exact repository identities. Wildcards, organization-wide
+trust, refs, subpaths, aliases, and `UNKNOWN` are invalid. Allowlisting never
+waives the full-SHA or readable-version-comment rules.
 
 The scanner reads `trusted_actions` from the checkout being scanned; it does
 not prove that a pull request left the allowlist unchanged. Treat every change

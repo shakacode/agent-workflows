@@ -504,19 +504,26 @@ module PrCiReadiness
     resolved = git_capture!(root, "rev-parse", "#{base_sha}^{commit}").strip.downcase
     raise Error, "trusted repository does not resolve the exact base SHA" unless resolved == base_sha
 
-    policy_path = [OPERATIONAL_POLICY_PATH, POLICY_PATH].find do |candidate_path|
-      !git_capture!(root, "ls-tree", base_sha, "--", candidate_path).empty?
+    policy_path = nil
+    config = nil
+    [OPERATIONAL_POLICY_PATH, POLICY_PATH].each do |candidate_path|
+      next if git_capture!(root, "ls-tree", base_sha, "--", candidate_path).empty?
+
+      raw = git_capture!(root, "cat-file", "blob", "#{base_sha}:#{candidate_path}")
+      duplicate_errors = CiReadinessPolicy.duplicate_key_errors(raw)
+      unless duplicate_errors.empty?
+        raise Error, "trusted-base ci_readiness policy contains duplicate keys: #{duplicate_errors.join('; ')}"
+      end
+
+      candidate_config = YAML.safe_load(raw, permitted_classes: [], permitted_symbols: [], aliases: false) || {}
+      raise Error, "trusted-base policy is not a mapping" unless candidate_config.is_a?(Hash)
+      next if candidate_path == OPERATIONAL_POLICY_PATH && !candidate_config.key?("ci_readiness")
+
+      policy_path = candidate_path
+      config = candidate_config
+      break
     end
     return nil unless policy_path
-
-    raw = git_capture!(root, "cat-file", "blob", "#{base_sha}:#{policy_path}")
-    duplicate_errors = CiReadinessPolicy.duplicate_key_errors(raw)
-    unless duplicate_errors.empty?
-      raise Error, "trusted-base ci_readiness policy contains duplicate keys: #{duplicate_errors.join('; ')}"
-    end
-
-    config = YAML.safe_load(raw, permitted_classes: [], permitted_symbols: [], aliases: false) || {}
-    raise Error, "trusted-base policy is not a mapping" unless config.is_a?(Hash)
 
     policy = config["ci_readiness"]
     return nil if policy.nil? || policy == "n/a"
@@ -659,8 +666,8 @@ module PrCiReadiness
                                               With no usable required checks, requested runs replace
                                               the full advisory-list fallback gate.
           --trusted-repo-root DIR             Load ci_readiness policy from the live base SHA's
-                                              operational policy Git blob, falling back to the
-                                              legacy .agents/agent-workflow.yml path.
+                                              operational sidecar when it declares that key,
+                                              otherwise from .agents/agent-workflow.yml.
           --diff-base-sha SHA                 Bind evidence to the reviewed effective merge base.
                                               Defaults to the PR's current base SHA.
           --configured-review-exception FILE  JSON with exact comment_id and body_sha256 for a

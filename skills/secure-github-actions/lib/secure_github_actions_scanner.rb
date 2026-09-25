@@ -747,13 +747,19 @@ module SecureGitHubActions
 
     def load_trusted_actions
       operational_path = File.join(@root, OPERATIONAL_POLICY_PATH)
-      path = if File.exist?(operational_path) || File.symlink?(operational_path)
-               operational_path
-             else
-               File.join(@root, LEGACY_POLICY_PATH)
-             end
-      return [[], []] unless File.exist?(path) || File.symlink?(path)
+      if File.exist?(operational_path) || File.symlink?(operational_path)
+        operational_result = load_trusted_actions_at(operational_path)
+        return operational_result unless operational_result == :absent
+      end
 
+      legacy_path = File.join(@root, LEGACY_POLICY_PATH)
+      return [[], []] unless File.exist?(legacy_path) || File.symlink?(legacy_path)
+
+      result = load_trusted_actions_at(legacy_path)
+      result == :absent ? [[], []] : result
+    end
+
+    def load_trusted_actions_at(path)
       stream = Psych.parse_stream(safely_read(path), filename: path)
       return invalid_trusted_actions(path) unless stream.children.length == 1
 
@@ -767,7 +773,7 @@ module SecureGitHubActions
       values = root.children.each_slice(2).filter_map do |key, value|
         value if key.is_a?(Psych::Nodes::Scalar) && key.value == "trusted_actions"
       end
-      return [[], []] if values.empty?
+      return :absent if values.empty?
       return invalid_trusted_actions(path) unless values.length == 1 && values.first.is_a?(Psych::Nodes::Sequence)
 
       entries = values.first.children

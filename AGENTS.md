@@ -14,10 +14,11 @@ Portable shared skills resolve this repo's commands and policy through:
 ## Operational Compatibility Policy
 
 Shared gates read `ci_readiness` and `trusted_actions` from
-`.agents/agent-workflow-operational.yml` when present, falling back to those
-keys in `.agents/agent-workflow.yml` for older consumers. Keep this sidecar
-limited to operational policy that does not fit a consumer's typed workflow
-seam.
+`.agents/agent-workflow-operational.yml` when those keys are present there. Each
+omitted key falls back to `.agents/agent-workflow.yml` for older consumers. A
+present value, including an empty allowlist, overrides its legacy value, and
+malformed policy fails closed. Keep the sidecar limited to operational policy
+that does not fit a consumer's typed workflow seam.
 
 ## Changelog Ownership
 
