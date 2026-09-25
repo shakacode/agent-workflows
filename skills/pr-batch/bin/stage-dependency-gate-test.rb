@@ -39,10 +39,10 @@ BACKEND_TYPED_GATE_CONTRACT = "Known backend `depends_on`/`blocked_on` facts ref
                               "action. Set a blocked heartbeat or move away only when that permission is false. " \
                               "Missing or `UNKNOWN` backend dependency state remains a blanket hard stop."
 COMPACT_BACKEND_TYPED_GATE_CONTRACT = "- coordination_not_applicable=>no calls;coordination_required+n/a=>stop;" \
-                                      "claims/deps: " \
-                                      "stable ids+heartbeats; register before launch when supported; claim " \
-                                      "refusal=>stop; push holder/generation check; known deps=>gate permissions; " \
-                                      "missing/UNKNOWN deps=>stop."
+  "coordination_required=>claims/deps:" \
+  "stable ids+heartbeats;register before launch when supported;claim " \
+  "refusal=>stop; push holder/generation check;known deps=>gate permissions;" \
+  "missing/UNKNOWN deps=>stop."
 REQUIRED_DEPENDENCY_CLOSEOUT_CONTRACT = "A lane may perform helper-permitted intermediate work while dependencies " \
                                         "are pending, but it cannot be reported ready or closed out until every " \
                                         "required dependency edge is terminally satisfied."
