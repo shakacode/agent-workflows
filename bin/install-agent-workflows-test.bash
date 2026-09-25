@@ -1812,6 +1812,50 @@ RUBY
     fail "replaced prepared metadata left an unnecessary empty install lock"
 }
 
+test_metadata_refresh_classifies_scalar_and_symlink_replacements_as_corrupt() {
+  local variant tmp target metadata injection marker attacker output status
+
+  for variant in scalar symlink; do
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    metadata="$target/.agent-workflows-install.json"
+    injection="$tmp/replace-prepared-install-metadata.rb"
+    marker="$tmp/prepared-install-metadata-replaced"
+    attacker="$tmp/attacker-metadata.json"
+
+    cat > "$injection" <<'RUBY'
+metadata = ENV.fetch("QA_INSTALL_METADATA")
+if ARGV.first == "#{metadata}.tmp" && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  at_exit do
+    case ENV.fetch("QA_REPLACEMENT_VARIANT")
+    when "scalar"
+      File.write("#{metadata}.tmp", "null\n")
+    when "symlink"
+      File.unlink("#{metadata}.tmp")
+      File.write(ENV.fetch("QA_ATTACKER_METADATA"), "attacker\n")
+      File.symlink(ENV.fetch("QA_ATTACKER_METADATA"), "#{metadata}.tmp")
+    end
+    File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+  end
+end
+RUBY
+
+    set +e
+    output="$(QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" \
+      QA_REPLACEMENT_VARIANT="$variant" QA_ATTACKER_METADATA="$attacker" \
+      RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex \
+      --target "$target" --mode copy --delivery-mode flat 2>&1)"
+    status=$?
+    set -e
+
+    assert_file "$marker"
+    [[ "$status" -eq 65 ]] || fail "$variant prepared metadata replacement exited $status: $output"
+    assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+    assert_not_contains "$output" "RUNTIME_DIGEST_FAILED"
+    [[ ! -e "$metadata" ]] || fail "$variant prepared metadata replacement was committed"
+  done
+}
+
 test_metadata_commit_capability_failure_stops_before_managed_mutation() {
   local tmp source target canonical_target injection output status license_before metadata_before
   tmp="$(mktemp -d)"
@@ -4696,6 +4740,364 @@ test_copy_metadata_fingerprint_matches_delivery_state_verifier() {
     fail "installer metadata omitted the fixture skill fingerprint"
   [[ "$recorded_fingerprint" = "$verified_fingerprint" ]] || \
     fail "installer and delivery-state directory fingerprints drifted"
+}
+
+test_copy_metadata_records_exact_installed_autonomous_merge_runtime_digest() {
+  local tmp source target recorded recomputed consumer output metadata_mode
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/install.out"
+
+  recorded="$(jq -r '.managed_runtime_manifest_digests["autonomous-merge"]' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$recorded" =~ ^[0-9a-f]{64}$ ]] || \
+    fail "installer metadata omitted the autonomous-merge runtime manifest digest: $recorded"
+  metadata_mode="$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0777' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$metadata_mode" = "600" ]] || fail "install metadata mode was $metadata_mode, expected 600"
+
+  recomputed="$(ruby -e '
+    load ARGV.fetch(0)
+    puts AutonomousMergeRuntimeTrust.default_installed_pack_digest
+  ' "$target/skills/pr-batch/lib/autonomous_merge_runtime_trust.rb")"
+  [[ "$recorded" = "$recomputed" ]] || \
+    fail "recorded digest does not match installed runtime: $recorded vs $recomputed"
+
+  mkdir -p "$consumer"
+  git -C "$consumer" init --quiet
+  git -C "$consumer" config user.email "agent-workflows-test@example.com"
+  git -C "$consumer" config user.name "Agent Workflows Test"
+  printf 'consumer\n' > "$consumer/README.md"
+  git -C "$consumer" add .
+  git -C "$consumer" commit --quiet -m "initial"
+
+  output="$(printf '{}' | "$target/skills/pr-batch/bin/autonomous-merge-eligibility" \
+    --repo-root "$consumer" --trusted-base HEAD \
+    --trusted-helper-provenance "verified-installed-pack:$recorded")"
+  ruby -rjson -e '
+    payload = JSON.parse(ARGV.fetch(0))
+    abort payload.inspect unless payload.dig("helper_trust", "status") == "mechanically-verified"
+    abort payload.inspect unless payload["helper_provenance"] == ARGV.fetch(1)
+  ' "$output" "verified-installed-pack:$recorded" || \
+    fail "recorded digest did not satisfy installed-pack helper trust"
+
+  printf '\n# tampered after install\n' >> \
+    "$target/skills/pr-batch/lib/autonomous_merge_runtime_trust.rb"
+  output="$(printf '{}' | "$target/skills/pr-batch/bin/autonomous-merge-eligibility" \
+    --repo-root "$consumer" --trusted-base HEAD \
+    --trusted-helper-provenance "verified-installed-pack:$recorded")"
+  ruby -rjson -e '
+    payload = JSON.parse(ARGV.fetch(0))
+    abort payload.inspect unless payload["verdict"] == "UNKNOWN"
+    abort payload.inspect unless payload.fetch("evidence_failures").include?("installed-pack runtime digest mismatch")
+  ' "$output" || fail "post-install runtime tampering did not invalidate recorded trust"
+}
+
+# Production break: source bytes change after metadata preparation, and the
+# installer records the stale pre-copy digest instead of the installed bytes.
+test_copy_metadata_refreshes_runtime_digest_after_source_mutation() {
+  local tmp source target injection marker recorded recomputed
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/mutate-runtime-policy.rb"
+  marker="$tmp/mutated"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  cat > "$injection" <<'RUBY'
+module PreparedMetadataHook
+  def self.call(phase)
+    return unless phase == :after_create && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+
+    File.write(ENV.fetch("QA_RACE_MARKER"), "mutated\n")
+    File.open(ENV.fetch("QA_MUTATE_TARGET"), "a") { |file| file.puts "# mutated during install" }
+  end
+end
+RUBY
+
+  QA_RACE_MARKER="$marker" \
+  QA_MUTATE_TARGET="$source/bin/agent_doctor/autonomous_merge_policy_yaml.rb" \
+    RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/install.out"
+
+  assert_file "$marker"
+  grep -Fqx '# mutated during install' "$target/bin/agent_doctor/autonomous_merge_policy_yaml.rb" || \
+    fail "source mutation was not copied into the installed runtime"
+  recorded="$(jq -r '.managed_runtime_manifest_digests["autonomous-merge"]' \
+    "$target/.agent-workflows-install.json")"
+  recomputed="$(ruby -e '
+    load ARGV.fetch(0)
+    puts AutonomousMergeRuntimeTrust.default_installed_pack_digest
+  ' "$target/skills/pr-batch/lib/autonomous_merge_runtime_trust.rb")"
+  [[ "$recorded" = "$recomputed" ]] || \
+    fail "metadata attested different bytes from the installed runtime: $recorded vs $recomputed"
+}
+
+test_repeat_copy_install_keeps_runtime_metadata_private() {
+  local tmp source target metadata mode
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >/dev/null
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >/dev/null
+
+  mode="$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0777' "$metadata")"
+  [[ "$mode" = "600" ]] || fail "replacement metadata mode was $mode, expected 600"
+  jq -e '.managed_runtime_manifest_digests["autonomous-merge"] | test("^[0-9a-f]{64}$")' \
+    "$metadata" >/dev/null || fail "replacement metadata lost the runtime digest"
+}
+
+# Production break: unsupported delivery modes publish an attestation for a
+# runtime closure they did not install.
+test_unsupported_install_modes_publish_no_runtime_digest() {
+  local tmp source target recorded mode delivery
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  for mode_delivery in "symlink flat" "copy plugin-companion"; do
+    read -r mode delivery <<<"$mode_delivery"
+    target="$tmp/${mode}-${delivery}"
+    if [[ "$delivery" = "plugin-companion" ]]; then
+      mkdir -p "$target"
+      write_native_scw_state codex "$target"
+    fi
+    "$source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$mode" --delivery-mode "$delivery" >"$tmp/${mode}-${delivery}.out"
+    recorded="$(jq -r '.managed_runtime_manifest_digests | length' \
+      "$target/.agent-workflows-install.json")"
+    [[ "$recorded" = "0" ]] || \
+      fail "$mode/$delivery install published unsupported runtime digests: $recorded"
+  done
+}
+
+# Production break: executed runtime code can print a forged digest and become
+# its own trust root. The installer must hash bytes without loading that code.
+test_runtime_output_cannot_forge_installer_digest() {
+  local tmp source target recorded recomputed
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  printf '%s\n' 'puts "%064d" % 0' >> "$source/skills/pr-batch/lib/autonomous_merge_runtime_trust.rb"
+  git -C "$source" add -A
+  git -C "$source" commit --quiet -m "runtime library attempts to forge digest output"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/install.out"
+  recorded="$(jq -r '.managed_runtime_manifest_digests["autonomous-merge"]' \
+    "$target/.agent-workflows-install.json")"
+  recomputed="$(ruby -e '
+    load ARGV.fetch(0)
+    print AutonomousMergeRuntimeTrust.default_installed_pack_digest
+  ' "$target/skills/pr-batch/lib/autonomous_merge_runtime_trust.rb" | tail -c 64)"
+  [[ "$recorded" = "$recomputed" ]] || \
+    fail "installer trusted runtime output instead of independently hashing its bytes"
+  [[ "$recorded" != "$(printf '%064d' 0)" ]] || fail "runtime forged the recorded digest"
+}
+
+# Production break: an incomplete runtime closure is incorrectly authenticated
+# instead of remaining fail-closed and installable.
+test_incomplete_runtime_closure_publishes_no_runtime_digest() {
+  local tmp source target recorded
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  rm -f "$source/bin/agent_doctor/autonomous_merge_policy_yaml.rb"
+  git -C "$source" add -A
+  git -C "$source" commit --quiet -m "drop a runtime closure member"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/install.out"
+  [[ -f "$target/LICENSE" ]] || fail "incomplete runtime closure blocked the install"
+  recorded="$(jq -r '.managed_runtime_manifest_digests | length' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$recorded" = "0" ]] || \
+    fail "incomplete runtime closure published a runtime digest: $recorded"
+}
+
+# Production break: a flat copy preserves a source-pack symlink and publishes a
+# digest over bytes outside the installed runtime boundary.
+test_symlinked_runtime_closure_member_publishes_no_runtime_digest() {
+  local tmp source target external recorded
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external="$tmp/external-policy.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  cp "$source/bin/agent_doctor/autonomous_merge_policy_yaml.rb" "$external"
+  rm "$source/bin/agent_doctor/autonomous_merge_policy_yaml.rb"
+  ln -s "$external" "$source/bin/agent_doctor/autonomous_merge_policy_yaml.rb"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/install.out"
+  [[ -L "$target/bin/agent_doctor/autonomous_merge_policy_yaml.rb" ]] || \
+    fail "flat copy did not preserve the closure-member symlink fixture"
+  recorded="$(jq -r '.managed_runtime_manifest_digests | length' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$recorded" = "0" ]] || \
+    fail "symlinked runtime closure member published a runtime digest: $recorded"
+}
+
+test_symlinked_runtime_closure_ancestor_publishes_no_runtime_digest() {
+  local tmp source target external_fixtures recorded
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  external_fixtures="$tmp/external-fixtures"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mv "$source/skills/pr-batch/fixtures" "$external_fixtures"
+  ln -s "$external_fixtures" "$source/skills/pr-batch/fixtures"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/install.out"
+  [[ -L "$target/skills/pr-batch/fixtures" ]] || \
+    fail "flat copy did not preserve the closure-ancestor symlink fixture"
+  recorded="$(jq -r '.managed_runtime_manifest_digests | length' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$recorded" = "0" ]] || \
+    fail "symlinked runtime closure ancestor published a runtime digest: $recorded"
+}
+
+test_restrictive_umask_still_writes_private_metadata_in_supported_modes() {
+  local tmp source target metadata mode mode_delivery delivery install_mode injection
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  injection="$tmp/restrict-metadata-umask.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  cat > "$injection" <<'RUBY'
+module PreparedMetadataHook
+  def self.call(phase)
+    File.umask(0o777) if phase == :before_create
+  end
+end
+RUBY
+
+  for mode_delivery in "copy flat" "symlink flat"; do
+    read -r install_mode delivery <<<"$mode_delivery"
+    target="$tmp/${install_mode}-${delivery}"
+    mkdir -p "$target"
+    chmod 0700 "$target"
+    RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$install_mode" --delivery-mode "$delivery" >/dev/null
+    if [[ "$install_mode" = "copy" ]]; then
+      RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex --target "$target" \
+        --mode "$install_mode" --delivery-mode "$delivery" >/dev/null
+    fi
+    metadata="$target/.agent-workflows-install.json"
+    mode="$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0777' "$metadata")"
+    [[ "$mode" = "600" ]] || \
+      fail "$install_mode/$delivery metadata mode under restrictive umask was $mode, expected 600"
+  done
+}
+
+test_installed_runtime_rebind_during_digest_read_blocks_metadata_commit() {
+  local tmp source target injection output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/rebind-runtime-source.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  cat > "$injection" <<'RUBY'
+module RuntimeManifestDigestHook
+  def self.call(path)
+    target = ENV.fetch("QA_DIGEST_RACE_TARGET")
+    marker = ENV.fetch("QA_DIGEST_RACE_MARKER")
+    return unless path == target && !File.exist?(marker)
+
+    File.rename(path, marker)
+    File.write(path, "# replacement during digest read\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_DIGEST_RACE_TARGET="$target/bin/agent_doctor/autonomous_merge_policy.rb" \
+    QA_DIGEST_RACE_MARKER="$tmp/original-policy.rb" RUBYOPT="-r$injection" \
+    "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 68 ]] || fail "runtime digest rebind exited $status: $output"
+  assert_contains "$output" "RUNTIME_DIGEST_FAILED"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || \
+    fail "runtime digest rebind committed install metadata"
+  [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || \
+    fail "runtime digest rebind retained an unchanged, safely removable metadata temp"
+}
+
+# Production break: corrupt persisted provenance is treated as legacy absence,
+# allowing the installer to mutate managed files before reporting the problem.
+test_invalid_runtime_manifest_digest_metadata_fails_before_mutation() {
+  local tmp target metadata pristine variant output status metadata_before paths_before tree_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  pristine="$tmp/pristine-metadata.json"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >/dev/null
+  cp "$metadata" "$pristine"
+
+  for variant in scalar null_digest short_digest uppercase_digest empty_name nested_name; do
+    cp "$pristine" "$metadata"
+    chmod 0600 "$metadata"
+    ruby -rjson -e '
+      path, variant = ARGV
+      value = JSON.parse(File.read(path))
+      digests = value.fetch("managed_runtime_manifest_digests")
+      case variant
+      when "scalar" then value["managed_runtime_manifest_digests"] = "corrupt"
+      when "null_digest" then digests["autonomous-merge"] = nil
+      when "short_digest" then digests["autonomous-merge"] = "abc123"
+      when "uppercase_digest" then digests["autonomous-merge"] = "A" * 64
+      when "empty_name" then digests[""] = "a" * 64
+      when "nested_name" then digests["nested/name"] = "a" * 64
+      else abort variant
+      end
+      File.write(path, JSON.pretty_generate(value) + "\n")
+    ' "$metadata" "$variant"
+    metadata_before="$(shasum -a 256 "$metadata")"
+    paths_before="$(find "$target" -print | LC_ALL=C sort)"
+    tree_before="$(find "$target" -type f -exec shasum -a 256 {} + | LC_ALL=C sort)"
+
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -eq 65 ]] || fail "$variant digest metadata exited $status: $output"
+    assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+    [[ "$metadata_before" = "$(shasum -a 256 "$metadata")" ]] || \
+      fail "$variant digest metadata was rewritten"
+    [[ "$paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+      fail "$variant digest metadata changed the target tree"
+    [[ "$tree_before" = "$(find "$target" -type f -exec shasum -a 256 {} + | LC_ALL=C sort)" ]] || \
+      fail "$variant digest metadata changed managed file contents"
+    [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+      fail "$variant digest metadata created an install lock"
+  done
 }
 
 test_installation_docs_describe_managed_coordination_doc_fingerprints() {
@@ -8701,6 +9103,7 @@ main() {
     test_metadata_commit_preserves_both_names_when_present_rollback_fails
     test_metadata_commit_does_not_unlink_replaced_attested_old_destination
     test_metadata_commit_rejects_replaced_prepared_file
+    test_metadata_refresh_classifies_scalar_and_symlink_replacements_as_corrupt
     test_metadata_commit_capability_failure_stops_before_managed_mutation
     test_metadata_actual_source_prebind_failure_stops_before_managed_mutation
     test_metadata_partial_prebind_failure_cleans_guard_and_allows_retry
@@ -8768,6 +9171,17 @@ main() {
     test_repeat_flat_copy_install_uses_fingerprints_without_git_history
     test_flat_copy_migrates_to_companion_with_fingerprints_without_git_history
     test_copy_metadata_fingerprint_matches_delivery_state_verifier
+    test_copy_metadata_records_exact_installed_autonomous_merge_runtime_digest
+    test_copy_metadata_refreshes_runtime_digest_after_source_mutation
+    test_repeat_copy_install_keeps_runtime_metadata_private
+    test_unsupported_install_modes_publish_no_runtime_digest
+    test_runtime_output_cannot_forge_installer_digest
+    test_incomplete_runtime_closure_publishes_no_runtime_digest
+    test_symlinked_runtime_closure_member_publishes_no_runtime_digest
+    test_symlinked_runtime_closure_ancestor_publishes_no_runtime_digest
+    test_restrictive_umask_still_writes_private_metadata_in_supported_modes
+    test_installed_runtime_rebind_during_digest_read_blocks_metadata_commit
+    test_invalid_runtime_manifest_digest_metadata_fails_before_mutation
     test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc
     test_repeat_copy_install_blocks_modified_solution_document
     test_installation_docs_describe_managed_coordination_doc_fingerprints
