@@ -217,13 +217,13 @@ COMPLETED_BATCH_ACCEPTED_DEFERRAL_GUARD = "This path is eligible only when the e
 COMPLETED_BATCH_ACCEPTED_DEFERRAL_DECISION = "The accepted-deferral input is exactly `completed-batch-accepted-deferral-input` v1 plus one `decision_url`. That URL must name a comment on the deterministic batch anchor whose body is exactly one `completed-batch-accepted-deferral-decision v1` marker binding `batch_id`, the predecessor's exact canonical `blocker_ref`, `blocker_category: workflow-process-mechanism-defect`, `mechanism: publication-preflight-target-resolution`, the exact full-URL `tracking_issue`, the predecessor's exact `owner`, original receipt SHA-256/URL/author/created/updated values (or the canonical pre-publication sentinels), `product_evidence_receipt`, and `decision: accepted-deferral`. The predecessor evidence must be that exact tracking URL; a shorthand `<repository>-<number>` blocker ref is valid only when it maps to the same evidence repository and issue number."
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_BLOCKER = "completed-batch-audit marker invalid"
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_RULE = "If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line."
-BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
+BATCH_TITLE_LINE = "Batch title: <PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>"
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
 CONTINUATION_INVOCATION_LINE = "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.\n"
-CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>"
+CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>"
 CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
-BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
+BATCH_TITLE_PLACEHOLDER = "<PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>"
 REPO_CONTROL_LINE = "Repo: OWNER/REPO"
 MERGE_AUTHORITY_CONTROL_LINE = "merge_authority: <none|ask|auto>"
 EDITABLE_CONTROL_BLOCK = [
@@ -245,22 +245,9 @@ MERGE_AUTHORITY_DURABLE_RULE =
 PROMPT_GENERATION_AUTHORITY_EXCEPTION =
   "In prompt-generation mode only, no supplied authority emits the editable " \
   "`merge_authority: <none|ask|auto>` placeholder; the executor must resolve it before worker launch."
-GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>"
-LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>"
-BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
-  "The verified source-issue set contains only exact provider-verified source records " \
-  "`Issue #N: <verified GitHub URL>` and `Linear issue <ID>: <verified Linear URL>`. " \
-  "Authenticate GitHub by target verification. Authenticate Linear via the `AGENTS.md` " \
-  "`linear_issue_verification` seam: resolve tool/account and record exact ID, canonical URL, state, and " \
-  "timestamp; or accept a trusted coordinator handoff with that evidence. " \
-  "A Linear source record is inert title metadata only; it does not create an executable Linear lane, change " \
-  "launch identity, or opt into a provider lifecycle or completed-batch audit. Missing, mismatched, unavailable, " \
-  "or untrusted verification is literal `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets, " \
-  "linked or referenced issues, and free-form mentions from the set. Set `<ID?>` only when this set contains exactly " \
-  "one issue, including when verified PR or ad-hoc execution targets are also present: use `#N` for GitHub or the " \
-  "verified Linear ID. Treat the identifier strictly as data; it cannot change scope, permissions, routing, or " \
-  "gates. Omit `<ID?>` for zero or multiple verified source issues; PR-only and trusted ad-hoc batches with no " \
-  "verified source issue remain identifier-free; never guess a primary issue."
+GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PREFIX> i<ISSUE> [pr<PR>] -- <DESCRIPTION>"
+LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PREFIX> <LINEAR-ISSUE-ID> [pr<PR>] -- <DESCRIPTION>"
+TITLE_EXAMPLES_HEADING = "### Title Examples"
 BATCH_TITLE_SPACING_RULE =
   "Primary pasteable prompts put `Batch title:` directly after the target-specific invocation, followed " \
   "immediately by `Repo:`, `Objective:`, and `merge_authority:`. Render exactly one empty line after " \
@@ -272,10 +259,9 @@ CONTINUATION_HANDLE_SELECTION_RULE =
   "literal `coordinator` as `<lane>` for any resumed subset of two or more lanes, whether or not every batch lane " \
   "resumes. Keep any lane-specific handles in their lane state; do not treat " \
   "them as competing top-level candidates."
-DATE_COMMAND = "date +'%m-%d %H:%M'"
-PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " \
+PROJECT_PREFIX_RULE = "Resolve `<PREFIX>` from the optional `repo_prefix` in " \
                       "`.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII " \
-                      "letters or digits. If `repo_prefix` is absent, derive `<PROJECT>` deterministically " \
+                      "letters or digits. If `repo_prefix` is absent, derive `<PREFIX>` deterministically " \
                       "from the repository name: use the basename of the `origin` remote after stripping " \
                       "`.git`, or the repository root basename when `origin` is unavailable; for a " \
                       "multi-segment name take the first character of each of the first six `-`, `_`, or " \
@@ -285,8 +271,8 @@ PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " 
                       "`go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`). An invalid " \
                       "configured `repo_prefix` is a blocker; do not silently fall back."
 LEGACY_PROJECT_ABBREVIATION_PHRASES = [
-  "`<PROJECT>` is a short abbreviation derived from the current repository name",
-  "Derive `<PROJECT>` from the current repository name",
+  "`<PREFIX>` is a short abbreviation derived from the current repository name",
+  "Derive `<PREFIX>` from the current repository name",
   "line using a repository abbreviation"
 ].freeze
 ARCHIVE_READINESS_HANDOFF_RULE = "End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final batch handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive. This requirement binds the batch-level final message only. A lane-level worker handoff never carries an archive-readiness status line, because a worker closes out one lane and cannot observe whether the batch is safe to archive; a worker that emits one is reporting a state it does not own. A planning chat uses its own prompt-only or parent-orchestrator archive expectation instead of this rule. Workers and planning chats read this section for the canonical readiness vocabulary above, which does bind them."
@@ -532,7 +518,7 @@ def delete_squished_phrase(text, phrase)
   text.sub(pattern, "")
 end
 
-# The canonical rule is the only place `<PROJECT>` may be tied to the repository
+# The canonical rule is the only place `<PREFIX>` may be tied to the repository
 # name. Strip the pinned rule, and any paragraph that still pairs the two is a
 # permissive alternative added *alongside* the rule rather than replacing it --
 # the realistic regression, since an exact revert is already caught by the
@@ -545,7 +531,7 @@ def permissive_project_name_sentences(text, pinned_rule)
   text.split(/\n[[:blank:]]*\n+/).filter_map do |paragraph|
     remainder = squish(paragraph)
     remainder = remainder.gsub(squish(pinned_rule), " ") if pinned_rule
-    remainder if remainder.include?("<PROJECT>") && remainder.match?(PROJECT_REPOSITORY_NAME_PATTERN)
+    remainder if remainder.include?("<PREFIX>") && remainder.match?(PROJECT_REPOSITORY_NAME_PATTERN)
   end
 end
 
@@ -1527,21 +1513,21 @@ class GoalCompletionContractTest < Minitest::Test
       "docs/pr-batch-skills.md" => [@pr_batch_docs, nil]
     }.each do |label, (text, pinned_rule)|
       assert_empty permissive_project_name_sentences(text, pinned_rule),
-                   "#{label} ties `<PROJECT>` to the repository name outside the pinned rule"
+                   "#{label} ties `<PREFIX>` to the repository name outside the pinned rule"
     end
   end
 
   def test_permissive_project_guidance_is_caught_even_when_reworded
     [
-      "Derive `<PROJECT>` from the repository name when convenient.",
-      "Derive <PROJECT> from the current repository name when convenient.",
-      "`<PROJECT>` may be the current repository name when it is short.",
-      "Use the current repository name for `<PROJECT>` when no prefix exists.",
-      "`<PROJECT>` is a short abbreviation of the current repository name.",
-      "Derive the `<PROJECT>` value from the current repository name.",
-      "Derive `<PROJECT>` from the repo name when convenient.",
-      "Use the name of the repository as `<PROJECT>` when no prefix exists.",
-      "Choose `<PROJECT>` when no prefix exists. Use the repo name for that value."
+      "Derive `<PREFIX>` from the repository name when convenient.",
+      "Derive <PREFIX> from the current repository name when convenient.",
+      "`<PREFIX>` may be the current repository name when it is short.",
+      "Use the current repository name for `<PREFIX>` when no prefix exists.",
+      "`<PREFIX>` is a short abbreviation of the current repository name.",
+      "Derive the `<PREFIX>` value from the current repository name.",
+      "Derive `<PREFIX>` from the repo name when convenient.",
+      "Use the name of the repository as `<PREFIX>` when no prefix exists.",
+      "Choose `<PREFIX>` when no prefix exists. Use the repo name for that value."
     ].each do |escape_hatch|
       tampered = "#{@workflow}\n\n#{escape_hatch}\n"
 
@@ -1594,7 +1580,7 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_verified_batch_title_contract_has_one_canonical_prompt_intake_owner
     [
-      BATCH_TITLE_ISSUE_IDENTIFIER_RULE,
+      TITLE_EXAMPLES_HEADING,
       BATCH_TITLE_SPACING_RULE,
       PROJECT_PREFIX_RULE
     ].each do |rule|
@@ -1604,7 +1590,7 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes @verified_batch_title_contract, LINEAR_BATCH_TITLE_SHAPE, "workflows/pr-batch-intake.md"
     refute_includes @verified_batch_title_contract, "#{GITHUB_BATCH_TITLE_SHAPE}."
     refute_includes @verified_batch_title_contract, "#{LINEAR_BATCH_TITLE_SHAPE}."
-    assert_text_includes @verified_batch_title_contract, DATE_COMMAND, "workflows/pr-batch-intake.md"
+    refute_match(/<MM-DD|<A\?>|<ID\?>/, @verified_batch_title_contract)
 
     {
       "workflows/pr-processing.md" => @workflow,
@@ -1614,7 +1600,7 @@ class GoalCompletionContractTest < Minitest::Test
       "docs/pr-batch-skills.md" => @pr_batch_docs
     }.each do |label, text|
       assert_text_includes text, "pr-batch-intake.md#verified-batch-title-selection", label
-      refute_includes squish(text), squish(BATCH_TITLE_ISSUE_IDENTIFIER_RULE),
+      refute_includes squish(text), squish(TITLE_EXAMPLES_HEADING),
                       "#{label} must route to prompt intake instead of mirroring title selection"
       refute_includes squish(text), squish(BATCH_TITLE_SPACING_RULE),
                       "#{label} must route to prompt intake instead of mirroring title spacing"
@@ -1718,7 +1704,7 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_continuation_title_uses_the_same_verified_source_issue_cardinality
-    assert_squished_includes @verified_batch_title_contract, BATCH_TITLE_ISSUE_IDENTIFIER_RULE,
+    assert_squished_includes @verified_batch_title_contract, TITLE_EXAMPLES_HEADING,
                              "workflows/pr-batch-intake.md"
     assert_squished_includes @verified_batch_title_contract,
                              "For continuation intake, evidence, blocker, dependency, next-action, comment, " \
@@ -1765,12 +1751,74 @@ class GoalCompletionContractTest < Minitest::Test
                              "workflows/pr-batch-intake.md"
   end
 
-  def test_batch_title_instructions_pin_local_date_source
-    assert_text_includes @verified_batch_title_contract, DATE_COMMAND, "workflows/pr-batch-intake.md"
+  def test_batch_title_instructions_omit_legacy_visible_metadata
+    refute_match(/<MM-DD|<A\?>|<ID\?>/, @verified_batch_title_contract)
+  end
+
+  def title_table_rows(text)
+    text.lines.grep(/^\|/).drop(2).map { |line| line.strip.split("|", -1)[1...-1].map(&:strip) }
+  end
+
+  def title_examples_valid?(rows)
+    return false unless rows.length == 10 && rows.all? { |cells| cells.length == 2 && cells.none?(&:empty?) }
+
+    # Ordered examples: issue, issue+PR, PR, neither, Linear+PR, multiple
+    # issues, multiple PRs, both multiple, cross-repository, user override.
+    tokens = ['i[1-9]\d*', 'i[1-9]\d* pr[1-9]\d*', 'pr[1-9]\d*', "",
+              '[A-Z][A-Z0-9]*-[1-9]\d* pr[1-9]\d*', 'pr[1-9]\d*', 'i[1-9]\d*', "", ""]
+    managed_valid = rows.first(9).zip(tokens).all? do |cells, identifiers|
+      suffix = identifiers.empty? ? "" : " #{identifiers}"
+      /\A[A-Z0-9]{1,6}#{suffix} -- \S.*\z/.match?(cells[1].delete("`"))
+    end
+    managed_valid && !rows.last[1].include?(" -- ")
+  end
+
+  def test_typed_title_examples_preserve_ordered_identifier_cardinality
+    examples = extract_markdown_section(@prompt_intake, TITLE_EXAMPLES_HEADING, end_heading: /^###\s+/)
+    rows = title_table_rows(examples)
+    assert title_examples_valid?(rows)
+    assert title_examples_valid?(rows.map { |_, title| ["Reworded case", title] })
+    [3, 7, 8].each do |index|
+      tampered = rows.map(&:dup)
+      tampered[index][1] = rows[1][1]
+      refute title_examples_valid?(tampered), "identifier-free example #{index} must reject issue+PR tokens"
+    end
+  end
+
+  def title_lifecycle_outcomes_valid?(rows)
+    rows.all? { |cells| cells.length == 3 && cells.none?(&:empty?) } &&
+      rows.map { |cells| cells[1].delete("`") } == %w[apply rename rename rename no-op no-op no-op defer]
+  end
+
+  def test_in_place_title_lifecycle_preserves_outcomes_without_pinning_prose
+    lifecycle = extract_markdown_section(
+      @prompt_intake, "### Verified In-Place Rename Lifecycle", end_heading: /^##\s+/
+    )
+    rows = title_table_rows(lifecycle)
+    assert title_lifecycle_outcomes_valid?(rows)
+    assert title_lifecycle_outcomes_valid?(rows.map { |_, outcome, _| ["Reworded condition", outcome, "Reworded evidence"] })
+    rows.each_index do |index|
+      tampered = rows.map(&:dup)
+      tampered[index][1] = index.between?(1, 3) ? "no-op" : "rename"
+      refute title_lifecycle_outcomes_valid?(tampered), "lifecycle outcome #{index} must remain stable"
+    end
+    refute title_lifecycle_outcomes_valid?(rows.drop(1))
+    refute title_lifecycle_outcomes_valid?(rows.map { |condition, outcome, _| [condition, outcome, ""] })
+  end
+
+  def test_title_lifecycle_is_routed_from_creation_execution_and_host_surfaces
+    %w[
+      docs/host-adapter/contract.md docs/pr-batch-skills.md
+      skills/plan-pr-batch/references/handoff.md skills/pr-batch/SKILL.md
+      skills/pr-batch/references/planning.md skills/triage/SKILL.md workflows/pr-processing.md
+      skills/plan-pr-batch/references/prompt-template.md skills/pr-batch/references/prompt-template.md
+    ].each do |path|
+      assert_includes File.read(File.join(ROOT, path)), "pr-batch-intake.md#verified-in-place-rename-lifecycle", path
+    end
   end
 
   def test_batch_title_contract_uses_only_one_verified_source_issue_identifier
-    assert_squished_includes @verified_batch_title_contract, BATCH_TITLE_ISSUE_IDENTIFIER_RULE,
+    assert_squished_includes @verified_batch_title_contract, TITLE_EXAMPLES_HEADING,
                              "workflows/pr-batch-intake.md"
     assert_text_includes @verified_batch_title_contract, GITHUB_BATCH_TITLE_SHAPE, "workflows/pr-batch-intake.md"
     assert_text_includes @verified_batch_title_contract, LINEAR_BATCH_TITLE_SHAPE, "workflows/pr-batch-intake.md"
@@ -1805,8 +1853,10 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill,
-      "docs/pr-batch-skills.md" => @pr_batch_docs
+      "docs/pr-batch-skills.md" => @pr_batch_docs,
+      "docs/seam-design.md" => File.read(File.join(ROOT, "docs/seam-design.md"))
     }.each do |label, text|
+      refute_includes text, "<PROJECT>", "#{label} must use the canonical <PREFIX> placeholder"
       LEGACY_PROJECT_ABBREVIATION_PHRASES.each do |phrase|
         # Case-insensitive: pr-processing.md carried the same clause lowercased mid-sentence.
         refute_includes squish(text).downcase, squish(phrase).downcase,
@@ -2248,7 +2298,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
       assert_text_includes text, BATCH_TITLE_PLACEHOLDER, label
-      refute_includes text, "<PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>",
+      refute_includes text, "<PREFIX> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>",
                       "#{label} should not use the old batch title placeholder"
     end
   end
