@@ -310,8 +310,10 @@ module GithubActorTrust
   end
 
   def build_config(data, contents:, path:, global:)
-    trusted_bots = Array(data["trusted_bots"]).to_set { |login| normalized_bot_login(login) }
-    trusted_metadata_bots = Array(data["trusted_metadata_bots"]).to_set { |login| normalized_bot_login(login) }
+    trusted_bots = strict_string_list(data["trusted_bots"], name: "trusted_bots")
+                   .to_set { |login| normalized_bot_login(login) }
+    trusted_metadata_bots = strict_string_list(data["trusted_metadata_bots"], name: "trusted_metadata_bots")
+                            .to_set { |login| normalized_bot_login(login) }
     trusted_metadata_bots.merge(packaged_metadata_bots - trusted_bots)
     overlapping_bots = trusted_bots & trusted_metadata_bots
     if overlapping_bots.any?
@@ -327,6 +329,31 @@ module GithubActorTrust
       trusted_teams: normalized_teams(data["trusted_teams"], require_owner: global),
       trusted_users: Array(data["trusted_users"]).to_set { |login| normalized_login(login) }
     }
+  end
+
+  # Bot roles are a compatibility boundary: legacy scalar strings and lists are
+  # both supported, but values must be meaningful strings before any caller
+  # normalizes them. Otherwise YAML types such as hashes can be stringified into
+  # a surprising allowlist entry or silently disappear during normalization.
+  def strict_string_list(value, name:)
+    case value
+    when nil
+      []
+    when String
+      validate_role_string!(value, name:)
+      [value]
+    when Array
+      value.each { |entry| validate_role_string!(entry, name:) }
+      value
+    else
+      raise Error, "#{name} must be a nonempty string or an array of nonempty strings"
+    end
+  end
+
+  def validate_role_string!(value, name:)
+    return if value.is_a?(String) && !value.strip.empty?
+
+    raise Error, "#{name} must be a nonempty string or an array of nonempty strings"
   end
 
   def normalized_teams(values, require_owner:)
