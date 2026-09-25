@@ -204,7 +204,8 @@ its infrastructure provider.
      mirror, or public fallback action.
    - Fetch/prune `main`, confirm the expected repository root, and verify nested repo paths before assigning work.
    - Only for `coordination_required`, when the repo's private coordination
-     backend (see `coordination_backend` in `.agents/agent-workflow.yml`) is
+     backend (see `coordination_backend` in `.agents/agent-workflow.yml`, or
+     the consumer's `AGENTS.md` when `.agents/agent-workflow.yml` has top-level `version: 1`) is
      available, acquire an `agent-coord`
      claim for each issue/PR/ad-hoc lane before creating that lane's worktree or
      branch. Resolve `PR_BATCH_SKILL_DIR` in this order: explicit environment
@@ -422,7 +423,8 @@ dependency edge is terminally satisfied.
 
 Hosted-CI output is only `not-yet-eligible` or
 `eligible-via-repo-seam`; the latter means consult the consumer repo's
-`hosted_ci_trigger` policy, not that CI was requested or passed. The helper
+`hosted_ci_trigger` policy from `.agents/agent-workflow-operational.yml`, with
+legacy-only per-key fallback to `.agents/agent-workflow.yml`, not that CI was requested or passed. The helper
 also emits the longest dependency path and maker/checker assignments, breaking
 equal-length paths by the lexicographically smallest lane-id sequence. Cycles
 fail closed. Maker/checker identities are trimmed and Unicode case-folded; every
@@ -526,7 +528,8 @@ gh api graphql --paginate -f owner="${OWNER}" -f name="${NAME}" -F pr="${PR_NUMB
 Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$pr:Int!`, and raw `-f pr=...` sends a string.
 
 At merge readiness or batch closeout, build the machine-checkable per-PR merge
-ledger using the repo's `merge_ledger` policy in `.agents/agent-workflow.yml`.
+ledger using the repo's `merge_ledger` policy in `.agents/agent-workflow.yml` or
+the consumer's `AGENTS.md` and readiness guide when `.agents/agent-workflow.yml` has top-level `version: 1`.
 The command uses GitHub GraphQL/API reviewThreads, reviews, and
 PR comments, then emits JSON against the ledger's schema. Run it for `<PR>`
 (passing `--repo "${REPO}"` when not in the repo) with an explicit
@@ -582,8 +585,8 @@ rollback. This compatibility workflow does not restate those rules.
 
 Workflow, build-configuration, package-script, dependency, lockfile, and the
 repo's approval-exempt package edits (see `approval_exempt` in
-`.agents/agent-workflow.yml`) are normal implementation scope when they are relevant to the
-assigned issue, PR, or batch. Do not stop solely to ask whether these files are
+`.agents/agent-workflow.yml` or the consumer's `AGENTS.md`) are normal
+implementation scope when relevant to the assigned issue, PR, or batch. Do not stop solely to ask whether these files are
 allowed.
 
 The assigned target must still be trusted: direct user or maintainer instruction,
@@ -1372,8 +1375,11 @@ maintainer pings.
 Hosted-CI uncertainty at the final readiness gate after local validation and the
 final push is a non-blocking decision. If the branch needs remote confirmation,
 request optimized hosted CI via the repo's hosted-CI trigger (see
-`hosted_ci_trigger` in `.agents/agent-workflow.yml`). If the remaining concern is that optimized
-suite selection may be insufficient, request force-full hosted CI and record why.
+`hosted_ci_trigger` in `.agents/agent-workflow-operational.yml`). Use
+`.agents/agent-workflow.yml` only when the sidecar key is absent and that file
+is a legacy map without integer top-level `version: 1`; a typed v1 contract cannot
+supply the moved key. If the remaining concern is that optimized suite
+selection may be insufficient, request force-full hosted CI and record why.
 Re-fetch and wait for the newly requested current-head checks, then continue the
 readiness flow instead of escalating it as an immediate maintainer question.
 

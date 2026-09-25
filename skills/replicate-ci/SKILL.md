@@ -106,8 +106,12 @@ record the trigger-ref dimension as `UNKNOWN`.
    environment, and timestamp. Use `.agents/bin/validate` instead of inventing a
    substitute command.
 5. Find the intended parity environment from `ci_parity_environment` in
-   `.agents/agent-workflow.yml`. Use the documented parity command, runner image,
-   or reproduction guide exactly as written. If the policy names a local runner tool, use the repo's
+   `.agents/agent-workflow-operational.yml` when present, falling back to the
+   same key in `.agents/agent-workflow.yml` only when the sidecar key is absent
+   and that file is a legacy map without integer top-level `version: 1`. A typed v1
+   contract cannot supply the moved key. Use the documented
+   parity command, runner image, or reproduction guide exactly as written. If
+   the policy names a local runner tool, use the repo's
    documented workflow or provider target, job selector, image or environment
    mapping, event payload, service strategy, and secret strategy. If any of
    those facts are undocumented, record the gap instead of guessing. Use dummy

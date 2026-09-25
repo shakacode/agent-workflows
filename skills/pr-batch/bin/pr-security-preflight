@@ -1819,6 +1819,7 @@ def high_risk_file_findings(files)
 end
 
 WORKFLOW_CONFIG_PATH = ".agents/agent-workflow.yml"
+OPERATIONAL_WORKFLOW_CONFIG_PATH = ".agents/agent-workflow-operational.yml"
 TRUSTED_BASE_POLICY_KEYS = Set.new(%w[enabled repository remote ref]).freeze
 
 def trusted_base_ref_validity(ref)
@@ -2518,7 +2519,10 @@ class TrustedBaseHighRiskOperations
   TRACKED_WORKTREE_CHANGES = "trusted checkout has tracked working-tree changes"
   COMMAND_SEAM_PATH = ".agents/bin".b.freeze
   COMMAND_SEAM_ANCESTOR_PATH = ".agents".b.freeze
-  WORKFLOW_POLICY_SEAM_PATH = WORKFLOW_CONFIG_PATH.b.freeze
+  WORKFLOW_POLICY_SEAM_PATHS = [
+    WORKFLOW_CONFIG_PATH.b.freeze,
+    OPERATIONAL_WORKFLOW_CONFIG_PATH.b.freeze
+  ].freeze
   INSTRUCTION_SEAM_BASENAMES = Set.new(["AGENTS.md".b, "CLAUDE.md".b]).freeze
 
   def git_toplevel
@@ -2876,9 +2880,11 @@ class TrustedBaseHighRiskOperations
     return [nil, directory_symlink_error] if directory_symlink_error
     return [true, nil] if directory_symlink
 
-    policy_alias, policy_alias_error = same_checkout_entry?(root, path, WORKFLOW_POLICY_SEAM_PATH)
-    return [nil, policy_alias_error] if policy_alias_error
-    return [true, nil] if policy_alias
+    WORKFLOW_POLICY_SEAM_PATHS.each do |policy_path|
+      policy_alias, policy_alias_error = same_checkout_entry?(root, path, policy_path)
+      return [nil, policy_alias_error] if policy_alias_error
+      return [true, nil] if policy_alias
+    end
 
     components = path.b.split("/".b, -1)
     if components.length == 1
@@ -2918,7 +2924,7 @@ class TrustedBaseHighRiskOperations
   end
 
   def exact_command_or_instruction_seam_path?(path)
-    path == WORKFLOW_POLICY_SEAM_PATH ||
+    WORKFLOW_POLICY_SEAM_PATHS.include?(path) ||
       path == COMMAND_SEAM_PATH || path.start_with?("#{COMMAND_SEAM_PATH}/".b) ||
       (!path.empty? && COMMAND_SEAM_PATH.start_with?("#{path}/".b)) ||
       INSTRUCTION_SEAM_BASENAMES.include?(File.basename(path))

@@ -47,6 +47,14 @@ module AgentWorkflowSeamDoctorTestHelpers
     File.write(File.join(root, ".agents/agent-workflow.yml"), "#{values.to_yaml}\n")
   end
 
+  def write_operational_policy(root, values)
+    File.write(File.join(root, ".agents/agent-workflow-operational.yml"), "#{values.to_yaml}\n")
+  end
+
+  def write_operational_policy_yaml(root, yaml)
+    File.write(File.join(root, ".agents/agent-workflow-operational.yml"), yaml)
+  end
+
   def write_bin_readme(root)
     File.write(File.join(root, ".agents/bin/README.md"), <<~MARKDOWN)
       # Agent Workflow Scripts
@@ -785,6 +793,104 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
                    end
         assert_includes out, expected, label
       end
+    end
+  end
+
+  def test_ci_readiness_sidecar_overrides_legacy_policy
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("ci_readiness" => "invalid legacy policy"))
+      write_operational_policy(
+        root,
+        "ci_readiness" => {
+          "version" => 1,
+          "optional_approval_held_checks" => [{
+            "id" => "storybook-review-app", "app_slug" => "circleci-checks",
+            "name" => "storybook-review-app"
+          }]
+        }
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_ci_readiness_validates_the_operational_sidecar
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root)
+      write_operational_policy(root, "ci_readiness" => { "version" => 1 })
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid ci_readiness policy"
+    end
+  end
+
+  def test_ci_readiness_rejects_a_non_mapping_operational_sidecar
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root)
+      write_operational_policy_yaml(root, "false\n")
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid operational policy config: expected a top-level mapping"
+    end
+  end
+
+  def test_ci_readiness_rejects_a_legacy_value_inside_typed_v1_config
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("version" => 1, "ci_readiness" => "n/a"))
+      write_operational_policy(
+        root,
+        "ci_readiness" => {
+          "version" => 1,
+          "optional_approval_held_checks" => [{
+            "id" => "storybook-review-app", "app_slug" => "circleci-checks",
+            "name" => "storybook-review-app"
+          }]
+        }
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "typed v1 contract cannot contain legacy ci_readiness"
+    end
+  end
+
+  def test_ci_readiness_rejects_duplicate_keys_in_the_operational_sidecar
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root)
+      write_operational_policy_yaml(
+        root,
+        <<~YAML
+          ci_readiness:
+            version: 1
+            optional_approval_held_checks: []
+          ci_readiness:
+            version: 1
+            optional_approval_held_checks: []
+        YAML
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, 'invalid ci_readiness policy: $ contains duplicate key "ci_readiness"'
     end
   end
 

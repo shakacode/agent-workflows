@@ -288,6 +288,7 @@ class AutonomousMergeContractTest < Minitest::Test
       AGENTS.md
       **/AGENTS.md
       .agents/agent-workflow.yml
+      .agents/agent-workflow-operational.yml
       docs/adr/0003-smarter-autonomous-merge-gates.md
     ].each { |pattern| assert_includes builtin, pattern }
     assert_equal builtin.uniq, builtin

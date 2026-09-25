@@ -207,6 +207,7 @@ module PrCiReadiness
 
   EVIDENCE_STATES = %w[READY NOT_READY NOT_APPLICABLE UNKNOWN].freeze
   SUCCESSFUL_CONCLUSIONS = %w[success neutral skipped].freeze
+  OPERATIONAL_POLICY_PATH = ".agents/agent-workflow-operational.yml"
   POLICY_PATH = ".agents/agent-workflow.yml"
   CIRCLECI_APP_SLUG = CiReadinessPolicy::CIRCLECI_APP_SLUG
   CIRCLECI_WORKFLOW_URL = %r{\Ahttps://app\.circleci\.com/workflow/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:\?[^#\s]*)?\z}
@@ -503,33 +504,62 @@ module PrCiReadiness
     resolved = git_capture!(root, "rev-parse", "#{base_sha}^{commit}").strip.downcase
     raise Error, "trusted repository does not resolve the exact base SHA" unless resolved == base_sha
 
-    tree_entry = git_capture!(root, "ls-tree", base_sha, "--", POLICY_PATH)
-    return nil if tree_entry.empty?
+    policy_path = nil
+    config = nil
+    [OPERATIONAL_POLICY_PATH, POLICY_PATH].each do |candidate_path|
+      next if git_capture!(root, "ls-tree", base_sha, "--", candidate_path).empty?
 
-    raw = git_capture!(root, "cat-file", "blob", "#{base_sha}:#{POLICY_PATH}")
-    duplicate_errors = CiReadinessPolicy.duplicate_key_errors(raw)
-    unless duplicate_errors.empty?
-      raise Error, "trusted-base ci_readiness policy contains duplicate keys: #{duplicate_errors.join('; ')}"
+      raw = git_capture!(root, "cat-file", "blob", "#{base_sha}:#{candidate_path}")
+      duplicate_errors = CiReadinessPolicy.duplicate_key_errors(raw)
+      unless duplicate_errors.empty?
+        raise Error, "trusted-base ci_readiness policy contains duplicate keys: #{duplicate_errors.join('; ')}"
+      end
+
+      candidate_config = YAML.safe_load(raw, permitted_classes: [], permitted_symbols: [], aliases: false)
+      candidate_config = {} if candidate_config.nil?
+      raise Error, "trusted-base policy is not a mapping" unless candidate_config.is_a?(Hash)
+      next if candidate_path == OPERATIONAL_POLICY_PATH && !candidate_config.key?("ci_readiness")
+
+      if candidate_path == POLICY_PATH && candidate_config["version"].instance_of?(Integer) &&
+         candidate_config["version"] == 1
+        raise Error, "typed v1 contract cannot contain legacy ci_readiness" if candidate_config.key?("ci_readiness")
+
+        next
+      end
+
+      policy_path = candidate_path
+      config = candidate_config
+      break
     end
-
-    config = YAML.safe_load(raw, permitted_classes: [], permitted_symbols: [], aliases: false) || {}
-    raise Error, "trusted-base policy is not a mapping" unless config.is_a?(Hash)
+    return nil unless policy_path
+    if policy_path == OPERATIONAL_POLICY_PATH && typed_v1_contract_supplies_legacy_ci_readiness?(root, base_sha)
+      raise Error, "typed v1 contract cannot contain legacy ci_readiness"
+    end
 
     policy = config["ci_readiness"]
     return nil if policy.nil? || policy == "n/a"
 
     validate_optional_approval_held_policy!(policy)
-    blob_sha = git_capture!(root, "rev-parse", "#{base_sha}:#{POLICY_PATH}").strip.downcase
+    blob_sha = git_capture!(root, "rev-parse", "#{base_sha}:#{policy_path}").strip.downcase
     raise Error, "trusted-base policy blob SHA is invalid" unless blob_sha.match?(/\A[0-9a-f]{40}\z/)
 
     {
       "version" => 1,
-      "provenance" => "git:#{base_sha}:#{POLICY_PATH}@#{blob_sha}",
+      "provenance" => "git:#{base_sha}:#{policy_path}@#{blob_sha}",
       "base" => { "ref" => base_ref, "sha" => base_sha },
       "optional_approval_held_checks" => policy.fetch("optional_approval_held_checks")
     }
   rescue Errno::ENOENT, Errno::EACCES, Psych::Exception => e
     raise Error, "trusted-base ci_readiness policy is unavailable or malformed: #{e.message.lines.first.to_s.strip}"
+  end
+
+  def typed_v1_contract_supplies_legacy_ci_readiness?(root, base_sha)
+    return false if git_capture!(root, "ls-tree", base_sha, "--", POLICY_PATH).empty?
+
+    raw = git_capture!(root, "cat-file", "blob", "#{base_sha}:#{POLICY_PATH}")
+    config = YAML.safe_load(raw, permitted_classes: [], permitted_symbols: [], aliases: false)
+    config.is_a?(Hash) && config["version"].instance_of?(Integer) && config["version"] == 1 &&
+      config.key?("ci_readiness")
   end
 
   def validate_trusted_policy_binding!(base_ref:, base_sha:)
@@ -656,7 +686,9 @@ module PrCiReadiness
                                               With no usable required checks, requested runs replace
                                               the full advisory-list fallback gate.
           --trusted-repo-root DIR             Load ci_readiness policy from the live base SHA's
-                                              .agents/agent-workflow.yml Git blob in this repository.
+                                              operational sidecar when it declares that key,
+                                              otherwise from a legacy .agents/agent-workflow.yml
+                                              without integer top-level version: 1.
           --diff-base-sha SHA                 Bind evidence to the reviewed effective merge base.
                                               Defaults to the PR's current base SHA.
           --configured-review-exception FILE  JSON with exact comment_id and body_sha256 for a

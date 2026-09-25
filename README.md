@@ -19,8 +19,9 @@ scripts for PR batches, review triage, merge readiness, CI routing, changelog
 updates, and audit loops.
 
 The shared pack provides process. Each adopting repository keeps its concrete
-commands in `.agents/bin/`, non-command policy in `.agents/agent-workflow.yml`,
-and a short `AGENTS.md` pointer section named
+commands in `.agents/bin/`, typed workflow policy in `.agents/agent-workflow.yml`,
+and optional operational policy in `.agents/agent-workflow-operational.yml`.
+The repository also keeps a short `AGENTS.md` pointer section named
 `## Agent Workflow Configuration`.
 
 ## Why This Exists
@@ -41,8 +42,10 @@ The default model is:
 
 - install this shared workflow pack once in the user's or agent's normal skill
   home;
-- add repo-owned `.agents/bin/` wrappers, `.agents/agent-workflow.yml`, and
-  `.agents/trusted-github-actors.yml` when PR-batch trust is needed;
+- add repo-owned `.agents/bin/` wrappers and `.agents/agent-workflow.yml`, plus
+  `.agents/agent-workflow-operational.yml` when those compatibility policies
+  are used, and `.agents/trusted-github-actors.yml` when PR-batch trust is
+  needed;
 - validate that installed workflows can resolve the consumer repo's contract;
 - keep repo-specific skills and overrides in the consumer repo only when needed.
 

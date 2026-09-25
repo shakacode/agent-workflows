@@ -54,7 +54,11 @@ workflows, including nested composite actions:
 - every external `uses:` ref has a lowercase full 40-hex commit SHA plus a
   readable version comment; and
 - every external action identity appears in the closed repo-owned
-  `trusted_actions` allowlist in `.agents/agent-workflow.yml`.
+  `trusted_actions` allowlist in `.agents/agent-workflow-operational.yml`, or in
+  `.agents/agent-workflow.yml` only when that key is absent from the sidecar and
+  the file is a legacy map without integer top-level `version: 1`. A typed v1 contract
+  cannot supply the moved key; an absent sidecar allowlist trusts no external
+  action.
 
 A missing or malformed allowlist trusts nothing. Wildcards, refs, and subpaths
 are not entries, and allowlisting an action never weakens the SHA or comment

@@ -2,7 +2,7 @@
 
 ## Entries
 
-Each changelog entry MUST follow the repo's exact entry format (the PR-and-author link format defined by the repo's changelog policy in `.agents/agent-workflow.yml`). Match the existing entries in the changelog and follow these portable structural rules:
+Each changelog entry MUST follow the repo's exact entry format (the PR-and-author link format defined by the repo's changelog policy in `.agents/agent-workflow.yml` or the consumer's `AGENTS.md` when `.agents/agent-workflow.yml` has top-level `version: 1`). Match the existing entries in the changelog and follow these portable structural rules:
 
 - Start with a dash followed by a space
 - Use **bold** for the main description

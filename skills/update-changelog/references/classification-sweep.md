@@ -4,11 +4,11 @@ Use `classification-sweep` before every RC/release changelog edit, and whenever 
 
 ### Exact PR-Listing Command
 
-Set `BASE_REF` to the previous release tag or lower bound and `TARGET_REF` to the release tag, the configured base branch from `.agents/agent-workflow.yml`, or another upper bound being audited. Then run the committed `changelog-merged-prs` helper to list merged PRs in first-parent order. It extracts PR numbers from squash titles (the `(#NNNN)` suffix) and `Merge pull request #NNNN` subjects, falls back to GitHub's commit-to-PR API for commits that lack an inline PR number, dedups by PR number, and emits an explicit `UNKNOWN` row for any commit that still cannot be mapped.
+Set `BASE_REF` to the previous release tag or lower bound and `TARGET_REF` to the release tag, the configured base branch from `.agents/agent-workflow.yml`, or another upper bound being audited. If `base_branch` is absent or ambiguous, stop with `UNKNOWN` rather than inferring the repository default branch. Then run the committed `changelog-merged-prs` helper to list merged PRs in first-parent order. It extracts PR numbers from squash titles (the `(#NNNN)` suffix) and `Merge pull request #NNNN` subjects, falls back to GitHub's commit-to-PR API for commits that lack an inline PR number, dedups by PR number, and emits an explicit `UNKNOWN` row for any commit that still cannot be mapped.
 
 ```bash
 BASE_REF="${BASE_REF:?set BASE_REF, e.g. v17.0.0.rc.1}"
-BASE_BRANCH="${BASE_BRANCH:?set BASE_BRANCH from .agents/agent-workflow.yml base_branch}"
+BASE_BRANCH="${BASE_BRANCH:?set BASE_BRANCH from configured .agents/agent-workflow.yml base_branch}"
 TARGET_REF="${TARGET_REF:?set TARGET_REF, e.g. v17.0.0.rc.2 or origin/${BASE_BRANCH}}"
 PR_TARGET_BRANCH="${PR_TARGET_BRANCH:-${BASE_BRANCH}}"
 # Resolve UPDATE_CHANGELOG_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy before using this fallback.
@@ -48,7 +48,7 @@ Allowed `Result` values for mapped PRs are exactly:
 Use `UNKNOWN` only for unmapped commit rows emitted by the helper; resolve or report those rows before finishing.
 
 Allowed `Category` values are repo-specific: use exactly those defined in the repo's
-changelog classification taxonomy (see the `changelog` policy in `.agents/agent-workflow.yml` and the existing changelog). Copy them exactly as
+changelog classification taxonomy (see the `changelog` policy in `.agents/agent-workflow.yml` or the consumer's `AGENTS.md`, and the existing changelog). Copy them exactly as
 listed there, including spaces, hyphens, and casing.
 
 Each row needs a one-line reason specific enough for review. Avoid generic reasons like "not user-visible" unless the row also says why.

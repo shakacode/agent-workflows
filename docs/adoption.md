@@ -7,9 +7,11 @@ The default model is:
 
 - shared skills are installed in the user or agent environment
 - each repo owns command wrappers in `.agents/bin/`
-- each repo owns non-command policy in `.agents/agent-workflow.yml`
+- each repo owns typed workflow policy in `.agents/agent-workflow.yml`
+- each repo may own shared-reader compatibility policy in
+  `.agents/agent-workflow-operational.yml`
 - each repo owns durable PR-batch actor trust in `.agents/trusted-github-actors.yml`
-- `AGENTS.md` points agents to those two sources
+- `AGENTS.md` points agents to these sources
 - repo-pinned copies are optional and justified case by case
 
 See [seam-design.md](seam-design.md) for the design rationale. See
@@ -252,11 +254,19 @@ libraries provides no guarantee of token or cost savings, quality, or security.
    ```
 
    Repositories that use repository-based GitHub Actions and reusable workflows
-   must also add a closed, exact `trusted_actions` allowlist. Its entries are
-   case-insensitive `owner/repository` identities, with no refs, subpaths, or
-   wildcards:
+   must also add a closed, exact `trusted_actions` allowlist in
+   `.agents/agent-workflow-operational.yml`. Sidecar-aware shared readers use
+   this key when present. Per-key fallback to `.agents/agent-workflow.yml`
+   applies only when that file is a legacy map without integer top-level `version: 1`
+   and contains the key. Install those readers before moving an existing key.
+   The sidecar may also hold `hosted_ci_trigger`, `ci_change_detector`, and
+   `ci_parity_environment`; shared workflow guidance resolves those with the
+   same legacy-only per-key fallback.
+   Entries are case-insensitive `owner/repository` identities, with no refs,
+   subpaths, or wildcards:
 
    ```yaml
+   # .agents/agent-workflow-operational.yml
    trusted_actions:
      - actions/checkout
      - ruby/setup-ruby
@@ -315,7 +325,9 @@ libraries provides no guarantee of token or cost savings, quality, or security.
 
    Portable shared skills resolve this repo's commands and policy through:
    - **Commands** — run `.agents/bin/<name>` (`setup`, `validate`, `test`, ...); see `.agents/bin/README.md`. A missing script means that capability is n/a here.
-   - **Policy / config** — `.agents/agent-workflow.yml`.
+   - **Policy / config** — `.agents/agent-workflow.yml` for typed workflow
+     settings; `.agents/agent-workflow-operational.yml` for shared-reader
+     compatibility policy when used.
    ```
 
 7. **Keep repo-local skills local, but keep workflow references reachable.** Add
@@ -417,8 +429,8 @@ updates reviewed in that repo. If a repo chooses that route:
 - keep the pinned copy separate from repo-specific skills where possible
 - document the source and version of the pinned copy
 - do not customize shared files in place
-- keep repo-specific command/policy values in `.agents/bin/` and
-  `.agents/agent-workflow.yml`
+- keep repo-specific command/policy values in `.agents/bin/`,
+  `.agents/agent-workflow.yml`, and the operational sidecar when used
 - run the seam doctor with `--shared` after every sync or update
 
 ### Detecting Drift In Pinned Copies
@@ -530,7 +542,8 @@ malformed schema.
 ## Summary
 
 - add standard `.agents/bin/*` wrappers for portable shared agent skills
-- add non-command policy in `.agents/agent-workflow.yml`
+- add typed workflow policy in `.agents/agent-workflow.yml` and operational
+  compatibility policy when required
 - point `AGENTS.md` at the command and policy contract
 
 ## Validation

@@ -134,7 +134,8 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      release/shared-resource lease, or explicit durable-handoff requirement.
      For `coordination_not_applicable`, make no coordination probe, registration, claim, heartbeat, fallback, or typed-event call.
    - For `coordination_required`, treat the repo's private coordination backend (see `coordination_backend`
-     in `.agents/agent-workflow.yml`) as available when bounded
+     in `.agents/agent-workflow.yml`, or the consumer's `AGENTS.md` when
+     `.agents/agent-workflow.yml` has top-level `version: 1`) as available when bounded
      `agent-coord doctor --json` and targeted status probes exit 0. Resolve
      `PR_BATCH_SKILL_DIR` using the [entrypoint helper path chain](../SKILL.md#plan-pr-batch), then run
      `"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo <resolved-owner/repo> --target <issue-or-pr> --json`

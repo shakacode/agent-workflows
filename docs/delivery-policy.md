@@ -22,8 +22,12 @@ entry points.
 
 Record the project's type, collaborator impact, integration checks, complete
 promotion checks, and repair owner in the repository's policy documentation.
-Use the existing `ci_change_detector` policy notes and `AGENTS.md` seam to point
-to the routing contract. Do not infer behavior from a project label. The
+Use the existing `ci_change_detector` policy notes in
+`.agents/agent-workflow-operational.yml`, falling back to
+`.agents/agent-workflow.yml` only when the sidecar key is omitted and that file
+is a legacy map without integer top-level `version: 1`. A typed v1 contract cannot
+supply the moved key. Use the `AGENTS.md` seam to point to the routing contract.
+Do not infer behavior from a project label. The
 repository's command table must identify the exact invocation for the complete
 suite; flags such as `--all` exist only when that wrapper documents them.
 

@@ -25,6 +25,7 @@ class SecureGitHubActionsReviewLensTest < Minitest::Test
     SURFACES.each do |relative_path|
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
+      assert_includes text, ".agents/agent-workflow-operational.yml", relative_path
       assert_includes text, ".agents/agent-workflow.yml", relative_path
       assert_includes text, "trusted_actions", relative_path
       assert_includes text, "secure-github-actions-scan", relative_path

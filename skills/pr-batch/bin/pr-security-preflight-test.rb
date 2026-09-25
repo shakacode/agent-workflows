@@ -4670,6 +4670,9 @@ class PrSecurityPreflightTest < Minitest::Test
       ".AGENTS" => [".AGENTS", ".agents"],
       ".AGENTS/BIN" => [".AGENTS/BIN", ".agents/bin"],
       ".agents/BIN/validate" => [".agents/BIN", ".agents/bin"],
+      ".agents/action-policy-alias.yml" => [
+        ".agents/action-policy-alias.yml", ".agents/agent-workflow-operational.yml"
+      ],
       ".agentſ/bin/validate" => [".agentſ/bin", ".agents/bin"],
       "nested/agents.MD" => ["nested/agents.MD", "nested/AGENTS.md"],
       "nested/AGENTſ.md" => ["nested/AGENTſ.md", "nested/AGENTS.md"],

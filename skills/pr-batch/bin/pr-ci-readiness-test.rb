@@ -443,6 +443,239 @@ class PrCiReadinessTest < Minitest::Test
     end
   end
 
+  def test_trusted_ci_policy_prefers_exact_base_operational_sidecar
+    operational_path = ".agents/agent-workflow-operational.yml"
+    Dir.mktmpdir("pr-ci-readiness-operational-policy") do |root|
+      run_git!(root, "init", "-q")
+      run_git!(root, "config", "user.name", "Test")
+      run_git!(root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      operational_policy = optional_approval_held_policy(name: "operational")
+      File.write(File.join(root, operational_path), { "ci_readiness" => operational_policy }.to_yaml)
+      File.write(
+        File.join(root, PrCiReadiness::POLICY_PATH),
+        { "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+      )
+      run_git!(root, "add", ".agents")
+      run_git!(root, "commit", "-qm", "trusted operational policy")
+      base_sha = run_git!(root, "rev-parse", "HEAD").strip
+      File.write(File.join(root, operational_path), "ci_readiness: malformed\n")
+
+      policy = PrCiReadiness.trusted_ci_policy_at(
+        repo_root: root, base_ref: "main", base_sha:
+      )
+
+      assert_equal "operational", policy.dig("optional_approval_held_checks", 0, "name")
+      assert_match(
+        /\Agit:#{base_sha}:#{Regexp.escape(operational_path)}@/, policy.fetch("provenance")
+      )
+    end
+  end
+
+  def test_trusted_ci_policy_falls_back_to_legacy_when_sidecar_omits_ci_readiness
+    operational_path = ".agents/agent-workflow-operational.yml"
+    Dir.mktmpdir("pr-ci-readiness-operational-policy") do |root|
+      run_git!(root, "init", "-q")
+      run_git!(root, "config", "user.name", "Test")
+      run_git!(root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, operational_path), { "trusted_actions" => ["owner/action"] }.to_yaml)
+      File.write(
+        File.join(root, PrCiReadiness::POLICY_PATH),
+        { "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+      )
+      run_git!(root, "add", ".agents")
+      run_git!(root, "commit", "-qm", "trusted operational policy")
+      base_sha = run_git!(root, "rev-parse", "HEAD").strip
+
+      policy = PrCiReadiness.trusted_ci_policy_at(
+        repo_root: root, base_ref: "main", base_sha:
+      )
+
+      assert_equal "legacy", policy.dig("optional_approval_held_checks", 0, "name")
+      assert_match(
+        /\Agit:#{base_sha}:#{Regexp.escape(PrCiReadiness::POLICY_PATH)}@/,
+        policy.fetch("provenance")
+      )
+    end
+  end
+
+  def test_typed_v1_contract_cannot_supply_legacy_ci_readiness
+    operational_path = ".agents/agent-workflow-operational.yml"
+    Dir.mktmpdir("pr-ci-readiness-typed-contract") do |root|
+      run_git!(root, "init", "-q")
+      run_git!(root, "config", "user.name", "Test")
+      run_git!(root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, operational_path), { "trusted_actions" => ["owner/action"] }.to_yaml)
+      File.write(
+        File.join(root, PrCiReadiness::POLICY_PATH),
+        { "version" => 1, "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+      )
+      run_git!(root, "add", ".agents")
+      run_git!(root, "commit", "-qm", "invalid typed workflow policy")
+      base_sha = run_git!(root, "rev-parse", "HEAD").strip
+
+      error = assert_raises(PrCiReadiness::Error) do
+        PrCiReadiness.trusted_ci_policy_at(repo_root: root, base_ref: "main", base_sha:)
+      end
+
+      assert_equal "typed v1 contract cannot contain legacy ci_readiness", error.message
+    end
+  end
+
+  def test_typed_v1_legacy_ci_readiness_is_invalid_even_when_sidecar_declares_policy
+    operational_path = ".agents/agent-workflow-operational.yml"
+    Dir.mktmpdir("pr-ci-readiness-typed-contract-sidecar") do |root|
+      run_git!(root, "init", "-q")
+      run_git!(root, "config", "user.name", "Test")
+      run_git!(root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(
+        File.join(root, operational_path),
+        { "ci_readiness" => optional_approval_held_policy(name: "operational") }.to_yaml
+      )
+      File.write(
+        File.join(root, PrCiReadiness::POLICY_PATH),
+        { "version" => 1, "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+      )
+      run_git!(root, "add", ".agents")
+      run_git!(root, "commit", "-qm", "invalid typed workflow policy")
+      base_sha = run_git!(root, "rev-parse", "HEAD").strip
+
+      error = assert_raises(PrCiReadiness::Error) do
+        PrCiReadiness.trusted_ci_policy_at(repo_root: root, base_ref: "main", base_sha:)
+      end
+
+      assert_equal "typed v1 contract cannot contain legacy ci_readiness", error.message
+    end
+  end
+
+  def test_non_v1_contract_version_keeps_legacy_ci_readiness
+    [{ "version" => "1", "has_policy" => true },
+     { "version" => 1.0, "has_policy" => true },
+     { "version" => 2, "has_policy" => false }].each do |example|
+      Dir.mktmpdir("pr-ci-readiness-invalid-contract-version") do |root|
+        run_git!(root, "init", "-q")
+        run_git!(root, "config", "user.name", "Test")
+        run_git!(root, "config", "user.email", "test@example.com")
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        legacy_policy = { "version" => example.fetch("version") }
+        legacy_policy["ci_readiness"] = optional_approval_held_policy(name: "legacy") if example.fetch("has_policy")
+        File.write(
+          File.join(root, PrCiReadiness::POLICY_PATH),
+          legacy_policy.to_yaml
+        )
+        run_git!(root, "add", ".agents")
+        run_git!(root, "commit", "-qm", "invalid workflow contract version")
+        base_sha = run_git!(root, "rev-parse", "HEAD").strip
+
+        policy = PrCiReadiness.trusted_ci_policy_at(
+          repo_root: root, base_ref: "main", base_sha:
+        )
+
+        if example.fetch("has_policy")
+          assert_equal "legacy", policy.dig("optional_approval_held_checks", 0, "name")
+          assert_match(
+            /\Agit:#{base_sha}:#{Regexp.escape(PrCiReadiness::POLICY_PATH)}@/,
+            policy.fetch("provenance")
+          )
+        else
+          assert_nil policy
+        end
+      end
+    end
+  end
+
+  def test_false_operational_sidecar_fails_closed_instead_of_falling_back
+    Dir.mktmpdir("pr-ci-readiness-false-operational-policy") do |root|
+      run_git!(root, "init", "-q")
+      run_git!(root, "config", "user.name", "Test")
+      run_git!(root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents/agent-workflow-operational.yml"), "false\n")
+      File.write(
+        File.join(root, PrCiReadiness::POLICY_PATH),
+        { "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+      )
+      run_git!(root, "add", ".agents")
+      run_git!(root, "commit", "-qm", "false operational policy")
+      base_sha = run_git!(root, "rev-parse", "HEAD").strip
+
+      assert_raises(PrCiReadiness::Error) do
+        PrCiReadiness.trusted_ci_policy_at(repo_root: root, base_ref: "main", base_sha:)
+      end
+    end
+  end
+
+  def test_trusted_ci_policy_does_not_fall_back_when_sidecar_value_is_nil_or_not_applicable
+    operational_path = ".agents/agent-workflow-operational.yml"
+    overrides = {
+      "null value" => { "ci_readiness" => nil },
+      "not applicable" => { "ci_readiness" => "n/a" }
+    }
+
+    overrides.each do |label, operational_config|
+      Dir.mktmpdir("pr-ci-readiness-operational-policy") do |root|
+        run_git!(root, "init", "-q")
+        run_git!(root, "config", "user.name", "Test")
+        run_git!(root, "config", "user.email", "test@example.com")
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        File.write(File.join(root, operational_path), operational_config.to_yaml)
+        File.write(
+          File.join(root, PrCiReadiness::POLICY_PATH),
+          { "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+        )
+        run_git!(root, "add", ".agents")
+        run_git!(root, "commit", "-qm", "trusted operational policy")
+        base_sha = run_git!(root, "rev-parse", "HEAD").strip
+
+        policy = PrCiReadiness.trusted_ci_policy_at(
+          repo_root: root, base_ref: "main", base_sha:
+        )
+
+        assert_nil policy, label
+      end
+    end
+  end
+
+  def test_trusted_ci_policy_fails_closed_on_malformed_sidecar_with_valid_legacy_policy
+    operational_path = ".agents/agent-workflow-operational.yml"
+    malformed_sidecars = {
+      "invalid YAML" => "ci_readiness: [\n",
+      "invalid policy" => { "ci_readiness" => { "version" => 2, "optional_approval_held_checks" => [] } }.to_yaml,
+      "duplicate key" => <<~YAML
+        ci_readiness:
+          version: 1
+          version: 1
+          optional_approval_held_checks: []
+      YAML
+    }
+
+    malformed_sidecars.each do |label, raw_sidecar|
+      Dir.mktmpdir("pr-ci-readiness-operational-policy") do |root|
+        run_git!(root, "init", "-q")
+        run_git!(root, "config", "user.name", "Test")
+        run_git!(root, "config", "user.email", "test@example.com")
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        File.write(File.join(root, operational_path), raw_sidecar)
+        File.write(
+          File.join(root, PrCiReadiness::POLICY_PATH),
+          { "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+        )
+        run_git!(root, "add", ".agents")
+        run_git!(root, "commit", "-qm", "malformed operational policy")
+        base_sha = run_git!(root, "rev-parse", "HEAD").strip
+
+        assert_raises(PrCiReadiness::Error, label) do
+          PrCiReadiness.trusted_ci_policy_at(
+            repo_root: root, base_ref: "main", base_sha:
+          )
+        end
+      end
+    end
+  end
+
   def test_trusted_ci_policy_rejects_duplicate_yaml_keys_and_noncanonical_base
     Dir.mktmpdir("pr-ci-readiness-policy") do |root|
       run_git!(root, "init", "-q")

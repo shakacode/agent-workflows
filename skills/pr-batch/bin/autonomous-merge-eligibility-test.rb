@@ -803,6 +803,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       "workflows/pr-processing.md" => true,
       "skills/pr-batch/SKILL.md" => true,
       "docs/adr/0003-smarter-autonomous-merge-gates.md" => true,
+      ".agents/agent-workflow-operational.yml" => true,
       "AGENTS.md" => true,
       "spec/AGENTS.md" => false,
       "CHANGELOG.md" => false,

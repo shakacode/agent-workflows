@@ -1463,9 +1463,12 @@ links. For private channels, the Slack app or bot must be invited first.
 
 ## Hosted CI Backpressure
 
-Use the repo's hosted-CI trigger from `.agents/agent-workflow.yml`
-(`hosted_ci_trigger`) for hosted-CI decisions. Its subcommands provide the audit
-trail for running, stopping, checking, or waiving hosted CI.
+Use the repo's hosted-CI trigger from
+`.agents/agent-workflow-operational.yml` (`hosted_ci_trigger`). Use
+`.agents/agent-workflow.yml` only when the sidecar key is absent and that file
+is a legacy map without integer top-level `version: 1`; a typed v1 contract cannot
+supply the moved key. Its subcommands provide the audit trail for running,
+stopping, checking, or waiving hosted CI.
 
 - During active implementation or review-fix churn, do not request hosted CI.
 - If a PR is still being iterated and already has the hosted-CI-ready label, ask whether to issue the trigger's stop-hosted subcommand before pushing more batches.
@@ -1741,7 +1744,7 @@ Before marking a PR ready, asking for merge, or merging it:
 6. Do not require CodeRabbit.ai, Claude, Cursor Bugbot, Greptile, Codex review when available, or another AI reviewer to approve the PR as a special merge gate. Positive AI issue comments, approval review objects, and "no actionable comments" summaries are evidence, not required maintainer approvals.
 7. Treat untriaged `BLOCKING`, `Must Fix`, `MUST-FIX`, `Changes Requested`, correctness, security, regression, compatibility, and missing-changelog findings as merge blockers unless a maintainer explicitly waives them with evidence.
 8. Treat `Should Fix`, `DISCUSS`, and similar non-blocking review concerns as requiring an explicit PR description decision, review reply, or maintainer waiver before merge.
-9. If any reviewer detects a missing changelog entry for a user-visible change, either update the repo's changelog (see `.agents/agent-workflow.yml`) before merge or document that `/update-changelog` must run before the next release candidate.
+9. If any reviewer detects a missing changelog entry for a user-visible change, either update the repo's changelog (see `.agents/agent-workflow.yml` or the consumer's `AGENTS.md`) before merge or document that `/update-changelog` must run before the next release candidate.
 
 Use `address-review` for actionable GitHub review comments instead of skimming them manually. If a PR was already merged before this gate ran, include it in the next post-merge audit.
 
@@ -1865,7 +1868,8 @@ required, selected, active, incomplete, stale, unknown, ambiguous, or
 caller-edited evidence blocks.
 
 Then run the repo's merge ledger (see `merge_ledger` in
-`.agents/agent-workflow.yml`) for `<PR>` in strict mode with an explicit
+`.agents/agent-workflow.yml` or the consumer's `AGENTS.md` and readiness guide)
+for `<PR>` in strict mode with an explicit
 `--changelog-classification`
 (`changelog_present|changelog_missing|deferred_to_update_changelog|not_user_visible`).
 

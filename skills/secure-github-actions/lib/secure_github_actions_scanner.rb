@@ -60,6 +60,8 @@ module SecureGitHubActions
   end
 
   class Scanner
+    OPERATIONAL_POLICY_PATH = ".agents/agent-workflow-operational.yml"
+    LEGACY_POLICY_PATH = ".agents/agent-workflow.yml"
     EXPRESSION_PATTERN = /\$\{\{.*?\}\}/m
     ACTION_DESCRIPTORS = %w[action.yml action.yaml].freeze
     PATH_ENCODING = Encoding::UTF_8
@@ -744,13 +746,60 @@ module SecureGitHubActions
     end
 
     def load_trusted_actions
-      path = File.join(@root, ".agents/agent-workflow.yml")
-      return [[], []] unless File.exist?(path) || File.symlink?(path)
+      operational_path = File.join(@root, OPERATIONAL_POLICY_PATH)
+      if File.exist?(operational_path) || File.symlink?(operational_path)
+        operational_result = load_trusted_actions_at(operational_path)
+        unless operational_result == :absent
+          return operational_result unless operational_result.fetch(1).empty?
+
+          legacy_path = File.join(@root, LEGACY_POLICY_PATH)
+          if typed_v1_contract_supplies_legacy_trusted_actions?(legacy_path)
+            return invalid_trusted_actions(legacy_path)
+          end
+
+          return operational_result
+        end
+      end
+
+      legacy_path = File.join(@root, LEGACY_POLICY_PATH)
+      return [[], []] unless File.exist?(legacy_path) || File.symlink?(legacy_path)
+
+      result = load_trusted_actions_at(legacy_path)
+      result == :absent ? [[], []] : result
+    end
+
+    def typed_v1_contract_supplies_legacy_trusted_actions?(path)
+      return false unless File.exist?(path) || File.symlink?(path)
 
       stream = Psych.parse_stream(safely_read(path), filename: path)
+      return true unless stream.children.length == 1
+
+      root = stream.children.first&.children&.first
+      return false unless root.is_a?(Psych::Nodes::Mapping)
+
+      contract_version = workflow_contract_version(root)
+      return true if contract_version == :invalid
+      return false unless contract_version == :typed_v1
+
+      root.children.each_slice(2).any? do |key, _value|
+        key.is_a?(Psych::Nodes::Scalar) && key.value == "trusted_actions"
+      end
+    rescue Psych::Exception, EncodingError, SystemCallError, UnsafeFileError
+      true
+    end
+
+    def load_trusted_actions_at(path)
+      stream = Psych.parse_stream(safely_read(path), filename: path)
+      operational_path = File.join(@root, OPERATIONAL_POLICY_PATH)
+      return :absent if stream.children.empty? && path == operational_path
       return invalid_trusted_actions(path) unless stream.children.length == 1
 
       root = stream.children.first&.children&.first
+      if path == operational_path &&
+         (root.nil? || (root.is_a?(Psych::Nodes::Scalar) && root.tag.nil? && root.plain &&
+           ["", "~", "null"].include?(root.value.downcase)))
+        return :absent
+      end
       return invalid_trusted_actions(path) unless root.is_a?(Psych::Nodes::Mapping)
       return invalid_trusted_actions(path) if policy_indirection?(root)
       return invalid_trusted_actions(path) unless root.children.each_slice(2).all? do |key, _value|
@@ -760,7 +809,14 @@ module SecureGitHubActions
       values = root.children.each_slice(2).filter_map do |key, value|
         value if key.is_a?(Psych::Nodes::Scalar) && key.value == "trusted_actions"
       end
-      return [[], []] if values.empty?
+      legacy_path = File.join(@root, LEGACY_POLICY_PATH)
+      if path == legacy_path
+        contract_version = workflow_contract_version(root)
+        return invalid_trusted_actions(path) if contract_version == :invalid
+        return values.empty? ? :absent : invalid_trusted_actions(path) if contract_version == :typed_v1
+
+      end
+      return :absent if values.empty?
       return invalid_trusted_actions(path) unless values.length == 1 && values.first.is_a?(Psych::Nodes::Sequence)
 
       entries = values.first.children
@@ -786,6 +842,23 @@ module SecureGitHubActions
                      node.children.each_slice(2).any? { |key, _value| yaml_merge_key?(key) }
 
       node.respond_to?(:children) && node.children&.any? { |child| policy_indirection?(child) }
+    end
+
+    def workflow_contract_version(root)
+      versions = root.children.each_slice(2).filter_map do |key, value|
+        value if key.is_a?(Psych::Nodes::Scalar) && key.value == "version"
+      end
+      return :legacy if versions.empty?
+      return :invalid unless versions.one?
+
+      version = versions.first
+      return :legacy unless version.is_a?(Psych::Nodes::Scalar) && version.plain &&
+                            (version.tag.nil? || version.tag == "tag:yaml.org,2002:int")
+
+      parsed_version = Psych.safe_load(version.value, permitted_classes: [], permitted_symbols: [], aliases: false)
+      parsed_version.instance_of?(Integer) && parsed_version == 1 ? :typed_v1 : :legacy
+    rescue Psych::Exception
+      :legacy
     end
 
     def yaml_merge_key?(node)

@@ -7,8 +7,9 @@ every repository.
 ## Installation Model
 
 The shared pack belongs in the user or agent home. Each consumer repository
-keeps command wrappers in `.agents/bin/`, non-command policy in
-`.agents/agent-workflow.yml`, durable PR-batch actor trust in
+keeps command wrappers in `.agents/bin/`, typed workflow policy in
+`.agents/agent-workflow.yml`, optional operational policy in
+`.agents/agent-workflow-operational.yml`, durable PR-batch actor trust in
 `.agents/trusted-github-actors.yml` when needed, and a short pointer in
 `AGENTS.md` under `## Agent Workflow Configuration`. The shared skills read
 that contract at runtime, so the same installed pack can work across
@@ -676,6 +677,15 @@ ci_readiness:
       app_slug: circleci-checks
       name: storybook-review-app
 ```
+
+Store `ci_readiness` in `.agents/agent-workflow-operational.yml` when its
+sidecar-aware reader is installed. Until then, keep it in
+`.agents/agent-workflow.yml`. If both files exist, a sidecar key is
+authoritative. An omitted key falls back only when `.agents/agent-workflow.yml`
+is a legacy map without integer top-level `version: 1` and contains that key; a typed
+v1 contract cannot supply moved fields. Store `trusted_actions`,
+`hosted_ci_trigger`, `ci_change_detector`, and `ci_parity_environment` in that
+sidecar when the matching shared readers are installed.
 
 List only exact hosted workflow names whose approval hold is informational for
 that repository. The seam doctor rejects malformed, unknown, or ambiguous

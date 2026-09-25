@@ -19,9 +19,13 @@ Resolve that directory from trusted installed or source-pack bytes before
 entering the consumer checkout. Never fall back to `.agents/skills` or execute
 a scanner supplied by the consumer under review.
 
-The scanner reads the repository's `.agents/agent-workflow.yml`
-`trusted_actions` sequence. A missing sequence is a closed empty allowlist; an
-invalid or wildcard entry fails closed. The allowlist applies to
+The scanner reads `trusted_actions` from
+`.agents/agent-workflow-operational.yml` when that key is present there,
+otherwise from `.agents/agent-workflow.yml` only when that file is a legacy map
+without integer top-level `version: 1` and contains the key. A typed v1 contract cannot
+supply the moved key. A missing sequence is a closed empty allowlist; an invalid
+or wildcard entry fails closed. A sidecar value is authoritative, including
+when its sequence is empty. The allowlist applies to
 repository-based GitHub Actions and reusable workflows, which still need a full
 commit SHA and readable version comment.
 For `docker://` references, the scanner enforces digest immutability, but
