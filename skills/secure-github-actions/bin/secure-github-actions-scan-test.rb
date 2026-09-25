@@ -182,6 +182,27 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_empty_or_null_operational_document_falls_back_to_legacy_trusted_actions
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    ["", "---\n", "null\n"].each do |empty_policy|
+      with_repository(<<~YAML, trusted_actions: ["owner/action"]) do |root|
+        jobs:
+          build:
+            steps:
+              - uses: owner/action@#{sha} # v1.2.3
+      YAML
+        policy_path = File.join(root, ".agents/agent-workflow-operational.yml")
+        File.write(policy_path, empty_policy)
+
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+        assert_predicate status, :success?, empty_policy.inspect
+        assert_empty stderr, empty_policy.inspect
+        assert_empty rule_ids(JSON.parse(stdout)), empty_policy.inspect
+      end
+    end
+  end
+
   def test_cli_accepts_flow_style_pinned_uses_with_same_line_version_comments
     sha = "0123456789abcdef0123456789abcdef01234567"
     workflows = [

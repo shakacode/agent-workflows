@@ -761,9 +761,16 @@ module SecureGitHubActions
 
     def load_trusted_actions_at(path)
       stream = Psych.parse_stream(safely_read(path), filename: path)
+      operational_path = File.join(@root, OPERATIONAL_POLICY_PATH)
+      return :absent if stream.children.empty? && path == operational_path
       return invalid_trusted_actions(path) unless stream.children.length == 1
 
       root = stream.children.first&.children&.first
+      if path == operational_path &&
+         (root.nil? || (root.is_a?(Psych::Nodes::Scalar) && root.tag.nil? && root.plain &&
+           ["", "~", "null"].include?(root.value.downcase)))
+        return :absent
+      end
       return invalid_trusted_actions(path) unless root.is_a?(Psych::Nodes::Mapping)
       return invalid_trusted_actions(path) if policy_indirection?(root)
       return invalid_trusted_actions(path) unless root.children.each_slice(2).all? do |key, _value|

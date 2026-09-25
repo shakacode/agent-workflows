@@ -2,7 +2,8 @@
 
 Shared workflow skills do not require one specific coordination backend. Each
 consumer repo declares its backend in `.agents/agent-workflow.yml` under
-`coordination_backend`.
+`coordination_backend`, or in its `AGENTS.md` when a typed Shaka contract has
+retired that legacy key.
 
 A repository may also add an optional closed `coordination_backend_contract`
 mapping to constrain that value to identifiers it has reviewed:

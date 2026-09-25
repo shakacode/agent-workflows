@@ -14,6 +14,7 @@ is absent means that capability is n/a in this repository.
 | `ci-detect` | CI change detector | n/a |
 
 Workflow policy lives in [`../agent-workflow.yml`](../agent-workflow.yml).
-Operational policy lives in [`../agent-workflow-operational.yml`](../agent-workflow-operational.yml).
+Operational policy lives in `../agent-workflow-operational.yml` when the
+consumer uses shared-reader compatibility settings.
 See the [operational compatibility policy](../../AGENTS.md#operational-compatibility-policy)
 for how shared gates read the two files.

@@ -1070,8 +1070,9 @@ half a revert. Dashboards, audits, and the next batch all read those records.
 
 ### Changelog
 
-The repo's changelog is the `changelog` seam in `.agents/agent-workflow.yml`
-(`CHANGELOG.md` here). Two separate questions: **what** the correction is, and
+The repo's changelog is the `changelog` seam in `.agents/agent-workflow.yml` or
+the consumer's `AGENTS.md` for a typed Shaka contract (`CHANGELOG.md` here).
+Two separate questions: **what** the correction is, and
 **who is allowed to write it**. Answer them in that order — the second is repo
 policy and overrides any instinct to edit the file from the revert PR.
 

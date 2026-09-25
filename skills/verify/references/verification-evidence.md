@@ -6,8 +6,11 @@ Resolve integration versus promotion from the task and trusted repository
 policy. Read `AGENTS.md`, `.agents/bin/README.md`, and existing
 `.agents/agent-workflow.yml` notes: wrappers own required checks,
 `review_gate` owns review requirements, and `hosted_qa_gate` owns broader
-hosted QA. Use the documented complete invocation for promotion; there is no
-portable fast/full flag or effort preset. Omission preserves existing behavior.
+hosted QA. With a typed Shaka contract, resolve those human policy details from
+the consumer's `AGENTS.md` and readiness guide; use its typed review fields for
+current-head CI review checks. Use the documented complete invocation for
+promotion; there is no portable fast/full flag or effort preset. Omission
+preserves existing behavior.
 Preserve delivery-coverage fields when the wrapper reports them; do not invent
 full coverage or empty omissions for a legacy command that reports neither.
 

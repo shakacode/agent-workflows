@@ -37,7 +37,7 @@ Read before editing entries or stamping a version. The entrypoint owns target re
 2. Verify `POST_TAG_BASE` is an ancestor of `origin/${PR_TARGET_BRANCH}` before using the range. A divergent two-dot range is not post-tag history.
 3. Use the existing helper with `BASE_REF=POST_TAG_BASE` and `TARGET_REF=origin/${PR_TARGET_BRANCH}`, following [Classification Sweep](classification-sweep.md). Preserve every row, including `UNKNOWN`; do not replace helper enumeration with a PR-number grep.
 4. Revisit affected classifications when a revert lands before stamping.
-5. For each PR number, check if it's already in the changelog: `CHANGELOG_PATH="${CHANGELOG_PATH:?set CHANGELOG_PATH from .agents/agent-workflow.yml changelog}"; grep "PR ${PR_NUMBER:?set PR_NUMBER}" "${CHANGELOG_PATH}"`
+5. For each PR number, check if it's already in the changelog: `CHANGELOG_PATH="${CHANGELOG_PATH:?set CHANGELOG_PATH from .agents/agent-workflow.yml or AGENTS.md}"; grep "PR ${PR_NUMBER:?set PR_NUMBER}" "${CHANGELOG_PATH}"`
 6. For PRs not yet in the changelog:
    - Get PR details: `gh pr view NUMBER --json title,body,author` (add `--repo OWNER/REPO` when not in the repo)
    - **Never ask the user for PR details** - get them from git history or the GitHub API

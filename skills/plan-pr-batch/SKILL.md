@@ -41,7 +41,10 @@ If the user is asking whether existing PRs are ready to merge, what manual
 testing remains, or how to sequence open PR merges, use the target repo's
 `AGENTS.md` **Agent Workflow Configuration** pointer to resolve
 `.agents/agent-workflow.yml` when present, then read the policy keys the
-readiness workflow requires, including `review_gate` and `merge_ledger`. If the
+readiness workflow requires, including `review_gate` and `merge_ledger`. For a
+typed Shaka contract, also read the full consumer `AGENTS.md` and operational
+sidecar for policy moved out of the legacy file; a missing legacy key is not
+an `n/a` decision. If the
 repo documents workflow configuration inline, read the full `AGENTS.md`
 **Agent Workflow Configuration** section, including `Review gate` and the other
 policy values the readiness workflow asks for. Use the repo-local

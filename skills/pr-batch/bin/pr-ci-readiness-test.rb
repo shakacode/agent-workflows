@@ -500,6 +500,74 @@ class PrCiReadinessTest < Minitest::Test
     end
   end
 
+  def test_trusted_ci_policy_does_not_fall_back_when_sidecar_value_is_nil_or_not_applicable
+    operational_path = ".agents/agent-workflow-operational.yml"
+    overrides = {
+      "null value" => { "ci_readiness" => nil },
+      "not applicable" => { "ci_readiness" => "n/a" }
+    }
+
+    overrides.each do |label, operational_config|
+      Dir.mktmpdir("pr-ci-readiness-operational-policy") do |root|
+        run_git!(root, "init", "-q")
+        run_git!(root, "config", "user.name", "Test")
+        run_git!(root, "config", "user.email", "test@example.com")
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        File.write(File.join(root, operational_path), operational_config.to_yaml)
+        File.write(
+          File.join(root, PrCiReadiness::POLICY_PATH),
+          { "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+        )
+        run_git!(root, "add", ".agents")
+        run_git!(root, "commit", "-qm", "trusted operational policy")
+        base_sha = run_git!(root, "rev-parse", "HEAD").strip
+
+        policy = PrCiReadiness.trusted_ci_policy_at(
+          repo_root: root, base_ref: "main", base_sha:
+        )
+
+        assert_nil policy, label
+      end
+    end
+  end
+
+  def test_trusted_ci_policy_fails_closed_on_malformed_sidecar_with_valid_legacy_policy
+    operational_path = ".agents/agent-workflow-operational.yml"
+    malformed_sidecars = {
+      "invalid YAML" => "ci_readiness: [\n",
+      "invalid policy" => { "ci_readiness" => { "version" => 2, "optional_approval_held_checks" => [] } }.to_yaml,
+      "duplicate key" => <<~YAML
+        ci_readiness:
+          version: 1
+          version: 1
+          optional_approval_held_checks: []
+      YAML
+    }
+
+    malformed_sidecars.each do |label, raw_sidecar|
+      Dir.mktmpdir("pr-ci-readiness-operational-policy") do |root|
+        run_git!(root, "init", "-q")
+        run_git!(root, "config", "user.name", "Test")
+        run_git!(root, "config", "user.email", "test@example.com")
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        File.write(File.join(root, operational_path), raw_sidecar)
+        File.write(
+          File.join(root, PrCiReadiness::POLICY_PATH),
+          { "ci_readiness" => optional_approval_held_policy(name: "legacy") }.to_yaml
+        )
+        run_git!(root, "add", ".agents")
+        run_git!(root, "commit", "-qm", "malformed operational policy")
+        base_sha = run_git!(root, "rev-parse", "HEAD").strip
+
+        assert_raises(PrCiReadiness::Error, label) do
+          PrCiReadiness.trusted_ci_policy_at(
+            repo_root: root, base_ref: "main", base_sha:
+          )
+        end
+      end
+    end
+  end
+
   def test_trusted_ci_policy_rejects_duplicate_yaml_keys_and_noncanonical_base
     Dir.mktmpdir("pr-ci-readiness-policy") do |root|
       run_git!(root, "init", "-q")
