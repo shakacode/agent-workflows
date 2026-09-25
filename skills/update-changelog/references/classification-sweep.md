@@ -4,11 +4,11 @@ Use `classification-sweep` before every RC/release changelog edit, and whenever 
 
 ### Exact PR-Listing Command
 
-Set `BASE_REF` to the previous release tag or lower bound and `TARGET_REF` to the release tag, the configured base branch from `.agents/agent-workflow.yml`, the verified repository default branch, or another upper bound being audited. Then run the committed `changelog-merged-prs` helper to list merged PRs in first-parent order. It extracts PR numbers from squash titles (the `(#NNNN)` suffix) and `Merge pull request #NNNN` subjects, falls back to GitHub's commit-to-PR API for commits that lack an inline PR number, dedups by PR number, and emits an explicit `UNKNOWN` row for any commit that still cannot be mapped.
+Set `BASE_REF` to the previous release tag or lower bound and `TARGET_REF` to the release tag, the configured base branch from `.agents/agent-workflow.yml`, or another upper bound being audited. If `base_branch` is absent or ambiguous, stop with `UNKNOWN` rather than inferring the repository default branch. Then run the committed `changelog-merged-prs` helper to list merged PRs in first-parent order. It extracts PR numbers from squash titles (the `(#NNNN)` suffix) and `Merge pull request #NNNN` subjects, falls back to GitHub's commit-to-PR API for commits that lack an inline PR number, dedups by PR number, and emits an explicit `UNKNOWN` row for any commit that still cannot be mapped.
 
 ```bash
 BASE_REF="${BASE_REF:?set BASE_REF, e.g. v17.0.0.rc.1}"
-BASE_BRANCH="${BASE_BRANCH:?set BASE_BRANCH from configured .agents/agent-workflow.yml base_branch or verified repository default branch}"
+BASE_BRANCH="${BASE_BRANCH:?set BASE_BRANCH from configured .agents/agent-workflow.yml base_branch}"
 TARGET_REF="${TARGET_REF:?set TARGET_REF, e.g. v17.0.0.rc.2 or origin/${BASE_BRANCH}}"
 PR_TARGET_BRANCH="${PR_TARGET_BRANCH:-${BASE_BRANCH}}"
 # Resolve UPDATE_CHANGELOG_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy before using this fallback.

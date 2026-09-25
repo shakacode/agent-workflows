@@ -669,16 +669,6 @@ agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
 Consumers that intentionally leave named, non-required CircleCI workflows on
 their provider approval hold may opt into the closed trusted-base policy:
 
-Store `ci_readiness` in `.agents/agent-workflow-operational.yml` when its
-sidecar-aware reader is installed. Until then, keep it in
-`.agents/agent-workflow.yml`. If both files exist, a sidecar key is
-authoritative. An omitted key falls back only when `.agents/agent-workflow.yml`
-is a legacy map without top-level `version: 1` and contains that key; a typed
-v1 contract cannot supply moved fields.
-Store `trusted_actions`, `hosted_ci_trigger`, `ci_change_detector`, and
-`ci_parity_environment` in that sidecar when the matching shared readers are
-installed.
-
 ```yaml
 ci_readiness:
   version: 1
@@ -687,6 +677,15 @@ ci_readiness:
       app_slug: circleci-checks
       name: storybook-review-app
 ```
+
+Store `ci_readiness` in `.agents/agent-workflow-operational.yml` when its
+sidecar-aware reader is installed. Until then, keep it in
+`.agents/agent-workflow.yml`. If both files exist, a sidecar key is
+authoritative. An omitted key falls back only when `.agents/agent-workflow.yml`
+is a legacy map without top-level `version: 1` and contains that key; a typed
+v1 contract cannot supply moved fields. Store `trusted_actions`,
+`hosted_ci_trigger`, `ci_change_detector`, and `ci_parity_environment` in that
+sidecar when the matching shared readers are installed.
 
 List only exact hosted workflow names whose approval hold is informational for
 that repository. The seam doctor rejects malformed, unknown, or ambiguous

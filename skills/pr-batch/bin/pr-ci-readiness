@@ -519,7 +519,11 @@ module PrCiReadiness
       raise Error, "trusted-base policy is not a mapping" unless candidate_config.is_a?(Hash)
       next if candidate_path == OPERATIONAL_POLICY_PATH && !candidate_config.key?("ci_readiness")
 
-      if candidate_path == POLICY_PATH && candidate_config["version"] == 1
+      if candidate_path == POLICY_PATH && candidate_config.key?("version")
+        unless candidate_config["version"].instance_of?(Integer) && candidate_config["version"] == 1
+          raise Error, "trusted-base workflow contract version must be integer 1"
+        end
+
         raise Error, "typed v1 contract cannot contain legacy ci_readiness" if candidate_config.key?("ci_readiness")
 
         next
@@ -673,7 +677,8 @@ module PrCiReadiness
                                               the full advisory-list fallback gate.
           --trusted-repo-root DIR             Load ci_readiness policy from the live base SHA's
                                               operational sidecar when it declares that key,
-                                              otherwise from .agents/agent-workflow.yml.
+                                              otherwise from a legacy .agents/agent-workflow.yml
+                                              without top-level version: 1.
           --diff-base-sha SHA                 Bind evidence to the reviewed effective merge base.
                                               Defaults to the PR's current base SHA.
           --configured-review-exception FILE  JSON with exact comment_id and body_sha256 for a

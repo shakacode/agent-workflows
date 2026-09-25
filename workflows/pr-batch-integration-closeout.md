@@ -1464,9 +1464,11 @@ links. For private channels, the Slack app or bot must be invited first.
 ## Hosted CI Backpressure
 
 Use the repo's hosted-CI trigger from
-`.agents/agent-workflow-operational.yml` (`hosted_ci_trigger`), falling back to
-`.agents/agent-workflow.yml` when omitted, for hosted-CI decisions. Its subcommands provide the audit
-trail for running, stopping, checking, or waiving hosted CI.
+`.agents/agent-workflow-operational.yml` (`hosted_ci_trigger`). Use
+`.agents/agent-workflow.yml` only when the sidecar key is absent and that file
+is a legacy map without top-level `version: 1`; a typed v1 contract cannot
+supply the moved key. Its subcommands provide the audit trail for running,
+stopping, checking, or waiving hosted CI.
 
 - During active implementation or review-fix churn, do not request hosted CI.
 - If a PR is still being iterated and already has the hosted-CI-ready label, ask whether to issue the trigger's stop-hosted subcommand before pushing more batches.

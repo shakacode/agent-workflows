@@ -781,7 +781,9 @@ module SecureGitHubActions
         value if key.is_a?(Psych::Nodes::Scalar) && key.value == "trusted_actions"
       end
       legacy_path = File.join(@root, LEGACY_POLICY_PATH)
-      if path == legacy_path && typed_v1_contract?(root)
+      if path == legacy_path && top_level_version?(root)
+        return invalid_trusted_actions(path) unless typed_v1_contract?(root)
+
         return values.empty? ? :absent : invalid_trusted_actions(path)
       end
       return :absent if values.empty?
@@ -813,9 +815,24 @@ module SecureGitHubActions
     end
 
     def typed_v1_contract?(root)
-      root.children.each_slice(2).any? do |key, value|
-        key.is_a?(Psych::Nodes::Scalar) && key.value == "version" &&
-          value.is_a?(Psych::Nodes::Scalar) && value.value == "1"
+      versions = root.children.each_slice(2).filter_map do |key, value|
+        value if key.is_a?(Psych::Nodes::Scalar) && key.value == "version"
+      end
+      return false unless versions.one?
+
+      version = versions.first
+      return false unless version.is_a?(Psych::Nodes::Scalar) && version.plain &&
+                          (version.tag.nil? || version.tag == "tag:yaml.org,2002:int")
+
+      parsed_version = Psych.safe_load(version.value, permitted_classes: [], permitted_symbols: [], aliases: false)
+      parsed_version.instance_of?(Integer) && parsed_version == 1
+    rescue Psych::Exception
+      false
+    end
+
+    def top_level_version?(root)
+      root.children.each_slice(2).any? do |key, _value|
+        key.is_a?(Psych::Nodes::Scalar) && key.value == "version"
       end
     end
 

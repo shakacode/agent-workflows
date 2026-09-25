@@ -34,8 +34,9 @@ entry-format reference or unrelated release runbooks.
   `.agents/agent-workflow.yml`; when it has top-level `version: 1`, read moved
   changelog policy from the consumer's `AGENTS.md`. If policy says no changelog
   exists, stop as not applicable. Resolve `BASE_BRANCH` from the configured
-  `base_branch` in `.agents/agent-workflow.yml`, or the verified repository
-  default branch when unset. Follow the repo's release policy.
+  `base_branch` in `.agents/agent-workflow.yml`. If it is absent or ambiguous,
+  set the required target to `UNKNOWN` and stop. Follow the repo's release
+  policy.
 - Independently resolve `PR_TARGET_BRANCH` from release/branch policy and
   `COMPARE_BRANCH` from changelog policy. Default each to `BASE_BRANCH` only
   when its own policy has no override. An ambiguous required target is `UNKNOWN`.

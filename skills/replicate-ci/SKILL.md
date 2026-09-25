@@ -107,7 +107,9 @@ record the trigger-ref dimension as `UNKNOWN`.
    substitute command.
 5. Find the intended parity environment from `ci_parity_environment` in
    `.agents/agent-workflow-operational.yml` when present, falling back to the
-   same key in `.agents/agent-workflow.yml` when omitted. Use the documented
+   same key in `.agents/agent-workflow.yml` only when the sidecar key is absent
+   and that file is a legacy map without top-level `version: 1`. A typed v1
+   contract cannot supply the moved key. Use the documented
    parity command, runner image, or reproduction guide exactly as written. If
    the policy names a local runner tool, use the repo's
    documented workflow or provider target, job selector, image or environment

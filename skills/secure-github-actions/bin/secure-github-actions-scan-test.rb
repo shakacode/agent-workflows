@@ -209,6 +209,32 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_non_integer_contract_version_cannot_supply_legacy_trusted_actions
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    ["1", 1.0].each do |version|
+      with_repository(<<~YAML, trusted_actions: ["owner/action"]) do |root|
+        jobs:
+          build:
+            steps:
+              - uses: owner/action@#{sha} # v1.2.3
+      YAML
+        operational_path = File.join(root, ".agents/agent-workflow-operational.yml")
+        legacy_path = File.join(root, ".agents/agent-workflow.yml")
+        File.write(operational_path, YAML.dump("ci_readiness" => { "version" => 1 }))
+        File.write(legacy_path, YAML.dump("version" => version, "trusted_actions" => ["owner/action"]))
+
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+        assert_equal 1, status.exitstatus
+        assert_empty stderr
+        assert_equal [
+          "secure-github-actions/invalid-trusted-actions-policy",
+          "secure-github-actions/untrusted-external-use"
+        ], rule_ids(JSON.parse(stdout))
+      end
+    end
+  end
+
   def test_operational_policy_falls_back_to_legacy_when_trusted_actions_is_omitted
     sha = "0123456789abcdef0123456789abcdef01234567"
     with_repository(<<~YAML, trusted_actions: ["owner/action"]) do |root|

@@ -1375,9 +1375,11 @@ maintainer pings.
 Hosted-CI uncertainty at the final readiness gate after local validation and the
 final push is a non-blocking decision. If the branch needs remote confirmation,
 request optimized hosted CI via the repo's hosted-CI trigger (see
-`hosted_ci_trigger` in `.agents/agent-workflow-operational.yml`, falling back
-to `.agents/agent-workflow.yml` when omitted). If the remaining concern is that optimized
-suite selection may be insufficient, request force-full hosted CI and record why.
+`hosted_ci_trigger` in `.agents/agent-workflow-operational.yml`). Use
+`.agents/agent-workflow.yml` only when the sidecar key is absent and that file
+is a legacy map without top-level `version: 1`; a typed v1 contract cannot
+supply the moved key. If the remaining concern is that optimized suite
+selection may be insufficient, request force-full hosted CI and record why.
 Re-fetch and wait for the newly requested current-head checks, then continue the
 readiness flow instead of escalating it as an immediate maintainer question.
 
