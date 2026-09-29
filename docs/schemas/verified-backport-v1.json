@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shakacode.github.io/agent-workflows/schemas/verified-backport-v1.json",
+  "title": "Verified Backport Evidence v1",
+  "description": "Evidence for deciding whether a backport is mechanically patch-equivalent. Classification never satisfies consumer target-branch policy, branch protection, or current-head gates.",
+  "type": "object",
+  "required": [
+    "schema",
+    "source",
+    "source_evidence",
+    "target",
+    "patch",
+    "target_only_delta",
+    "reused_evidence",
+    "target_requirements",
+    "review_generated_changes",
+    "forward_port_dispositions"
+  ],
+  "properties": {
+    "schema": {"const": "verified-backport-v1"},
+    "source": {"$ref": "#/$defs/source"},
+    "source_evidence": {"$ref": "#/$defs/sourceEvidence"},
+    "target": {"$ref": "#/$defs/target"},
+    "patch": {"$ref": "#/$defs/patch"},
+    "target_only_delta": {"$ref": "#/$defs/targetOnlyDelta"},
+    "reused_evidence": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/reusedEvidence"}
+    },
+    "target_requirements": {"$ref": "#/$defs/targetRequirements"},
+    "review_generated_changes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/reviewGeneratedChange"}
+    },
+    "forward_port_dispositions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/forwardPortDisposition"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nonemptyString": {"type": "string", "minLength": 1},
+    "nonemptyStringOrUnknown": {
+      "anyOf": [
+        {"$ref": "#/$defs/nonemptyString"},
+        {"const": "UNKNOWN"}
+      ]
+    },
+    "durableUrlOrUnknown": {
+      "oneOf": [
+        {"type": "string", "pattern": "^https://[^\\s]+$"},
+        {"const": "UNKNOWN"}
+      ]
+    },
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "shaOrUnknown": {
+      "oneOf": [
+        {"$ref": "#/$defs/sha"},
+        {"const": "UNKNOWN"}
+      ]
+    },
+    "patchIdOrUnknown": {
+      "oneOf": [
+        {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        {"const": "UNKNOWN"}
+      ]
+    },
+    "stringListOrUnknown": {
+      "oneOf": [
+        {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonemptyString"}
+        },
+        {"const": "UNKNOWN"}
+      ]
+    },
+    "nonemptyStringListOrUnknown": {
+      "oneOf": [
+        {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonemptyString"}
+        },
+        {"const": "UNKNOWN"}
+      ]
+    },
+    "source": {
+      "type": "object",
+      "required": ["repository", "pull_request", "author", "head_sha", "merge_sha", "trusted_status"],
+      "properties": {
+        "repository": {
+          "oneOf": [
+            {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+            {"const": "UNKNOWN"}
+          ]
+        },
+        "pull_request": {
+          "oneOf": [
+            {"type": "integer", "minimum": 1},
+            {"const": "UNKNOWN"}
+          ]
+        },
+        "author": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "head_sha": {"$ref": "#/$defs/shaOrUnknown"},
+        "merge_sha": {"$ref": "#/$defs/shaOrUnknown"},
+        "trusted_status": {"enum": ["merged", "untrusted", "UNKNOWN"]}
+      },
+      "additionalProperties": false
+    },
+    "sourceEvidence": {
+      "type": "object",
+      "required": ["required_coverage", "reviews", "checks"],
+      "properties": {
+        "required_coverage": {"$ref": "#/$defs/requiredCoverage"},
+        "reviews": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/reviewEvidence"}
+        },
+        "checks": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/checkEvidence"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "requiredCoverage": {
+      "type": "object",
+      "required": ["policy_source", "review_ids", "check_ids"],
+      "properties": {
+        "policy_source": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "review_ids": {"$ref": "#/$defs/nonemptyStringListOrUnknown"},
+        "check_ids": {"$ref": "#/$defs/nonemptyStringListOrUnknown"}
+      },
+      "additionalProperties": false
+    },
+    "reviewEvidence": {
+      "type": "object",
+      "required": ["id", "actor", "head_sha", "status", "url"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "actor": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "head_sha": {"$ref": "#/$defs/shaOrUnknown"},
+        "status": {"enum": ["accepted", "rejected", "pending", "UNKNOWN"]},
+        "url": {"$ref": "#/$defs/durableUrlOrUnknown"}
+      },
+      "additionalProperties": false
+    },
+    "checkEvidence": {
+      "type": "object",
+      "required": ["id", "name", "head_sha", "status", "url"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "name": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "head_sha": {"$ref": "#/$defs/shaOrUnknown"},
+        "status": {"enum": ["passed", "failed", "pending", "UNKNOWN"]},
+        "url": {"$ref": "#/$defs/durableUrlOrUnknown"}
+      },
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "required": ["branch", "base_sha", "head_sha"],
+      "properties": {
+        "branch": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "base_sha": {"$ref": "#/$defs/shaOrUnknown"},
+        "head_sha": {"$ref": "#/$defs/shaOrUnknown"}
+      },
+      "additionalProperties": false
+    },
+    "patch": {
+      "type": "object",
+      "required": [
+        "relation",
+        "mechanism",
+        "source_patch_id",
+        "target_patch_id",
+        "source_head_sha",
+        "target_base_sha",
+        "target_head_sha"
+      ],
+      "properties": {
+        "relation": {"enum": ["exact", "semantic-adaptation", "conflicted", "UNKNOWN"]},
+        "mechanism": {"enum": ["git-patch-id-stable-v1", "UNKNOWN"]},
+        "source_patch_id": {"$ref": "#/$defs/patchIdOrUnknown"},
+        "target_patch_id": {"$ref": "#/$defs/patchIdOrUnknown"},
+        "source_head_sha": {"$ref": "#/$defs/shaOrUnknown"},
+        "target_base_sha": {"$ref": "#/$defs/shaOrUnknown"},
+        "target_head_sha": {"$ref": "#/$defs/shaOrUnknown"}
+      },
+      "additionalProperties": false
+    },
+    "targetOnlyDelta": {
+      "type": "object",
+      "required": ["files", "hunks", "behavior_change", "rationale"],
+      "properties": {
+        "files": {"$ref": "#/$defs/stringListOrUnknown"},
+        "hunks": {"$ref": "#/$defs/stringListOrUnknown"},
+        "behavior_change": {
+          "oneOf": [
+            {"type": "boolean"},
+            {"const": "UNKNOWN"}
+          ]
+        },
+        "rationale": {"$ref": "#/$defs/nonemptyStringOrUnknown"}
+      },
+      "additionalProperties": false
+    },
+    "reusedEvidence": {
+      "type": "object",
+      "required": ["kind", "source_id", "head_sha"],
+      "properties": {
+        "kind": {"enum": ["review", "check", "UNKNOWN"]},
+        "source_id": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "head_sha": {"$ref": "#/$defs/shaOrUnknown"}
+      },
+      "additionalProperties": false
+    },
+    "targetRequirements": {
+      "type": "object",
+      "required": [
+        "policy_source",
+        "branch_protection",
+        "current_head_ci",
+        "current_head_review",
+        "checks"
+      ],
+      "properties": {
+        "policy_source": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "branch_protection": {"enum": ["retain", "not-configured", "UNKNOWN"]},
+        "current_head_ci": {"enum": ["required", "not-required", "UNKNOWN"]},
+        "current_head_review": {"enum": ["required", "not-required", "UNKNOWN"]},
+        "checks": {"$ref": "#/$defs/stringListOrUnknown"}
+      },
+      "additionalProperties": false
+    },
+    "reviewGeneratedChange": {
+      "type": "object",
+      "required": ["id", "files", "hunks", "behavior_change", "rationale"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "files": {"$ref": "#/$defs/stringListOrUnknown"},
+        "hunks": {"$ref": "#/$defs/stringListOrUnknown"},
+        "behavior_change": {
+          "oneOf": [
+            {"type": "boolean"},
+            {"const": "UNKNOWN"}
+          ]
+        },
+        "rationale": {"$ref": "#/$defs/nonemptyStringOrUnknown"}
+      },
+      "additionalProperties": false
+    },
+    "forwardPortDisposition": {
+      "type": "object",
+      "required": ["change_id", "status", "rationale", "url"],
+      "properties": {
+        "change_id": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "status": {"enum": ["applied", "tracked", "not-applicable", "UNKNOWN"]},
+        "rationale": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "url": {"$ref": "#/$defs/durableUrlOrUnknown"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

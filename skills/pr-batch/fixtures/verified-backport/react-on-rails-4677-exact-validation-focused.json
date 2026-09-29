@@ -1,0 +1,118 @@
+{
+  "schema": "verified-backport-v1",
+  "source": {
+    "repository": "shakacode/react_on_rails",
+    "pull_request": 4656,
+    "author": "justin808",
+    "head_sha": "d5c4fcd0da526e924f54061d383627edc8c918d8",
+    "merge_sha": "b6a7fb65e66b95b6727a7c2b17fa3b3e35cab08a",
+    "trusted_status": "merged"
+  },
+  "source_evidence": {
+    "required_coverage": {
+      "policy_source": "source branch protection and review policy",
+      "review_ids": ["PRR_kwDOAnNnU88AAAABF5heJg"],
+      "check_ids": [
+        "actions-run-29305769038-job-87006566722",
+        "actions-run-29305769024-job-86998661042",
+        "actions-run-29305768987-job-86998660930",
+        "actions-run-29305769037-job-86998661027"
+      ]
+    },
+    "reviews": [
+      {
+        "id": "PRR_kwDOAnNnU88AAAABF5heJg",
+        "actor": "coderabbitai",
+        "head_sha": "d5c4fcd0da526e924f54061d383627edc8c918d8",
+        "status": "accepted",
+        "url": "https://github.com/shakacode/react_on_rails/pull/4656"
+      }
+    ],
+    "checks": [
+      {
+        "id": "actions-run-29305769038-job-87006566722",
+        "name": "ci-required / required-pr-gate",
+        "head_sha": "d5c4fcd0da526e924f54061d383627edc8c918d8",
+        "status": "passed",
+        "url": "https://github.com/shakacode/react_on_rails/actions/runs/29305769038/job/87006566722"
+      },
+      {
+        "id": "actions-run-29305769024-job-86998661042",
+        "name": "React on Rails Pro - Integration Tests / detect-changes",
+        "head_sha": "d5c4fcd0da526e924f54061d383627edc8c918d8",
+        "status": "passed",
+        "url": "https://github.com/shakacode/react_on_rails/actions/runs/29305769024/job/86998661042"
+      },
+      {
+        "id": "actions-run-29305768987-job-86998660930",
+        "name": "React on Rails Pro - Package Tests / detect-changes",
+        "head_sha": "d5c4fcd0da526e924f54061d383627edc8c918d8",
+        "status": "passed",
+        "url": "https://github.com/shakacode/react_on_rails/actions/runs/29305768987/job/86998660930"
+      },
+      {
+        "id": "actions-run-29305769037-job-86998661027",
+        "name": "Rspec test for gem / detect-changes",
+        "head_sha": "d5c4fcd0da526e924f54061d383627edc8c918d8",
+        "status": "passed",
+        "url": "https://github.com/shakacode/react_on_rails/actions/runs/29305769037/job/86998661027"
+      }
+    ]
+  },
+  "target": {
+    "branch": "release/17.0.0",
+    "base_sha": "ec81b6c2447674d3d08eb70aa4f8b0392b86d035",
+    "head_sha": "91cadc20ae382bfd3ca4576e5559ae540e0afcdc"
+  },
+  "patch": {
+    "relation": "exact",
+    "mechanism": "git-patch-id-stable-v1",
+    "source_patch_id": "a257742c24490dd1a244b9ce3bdc54fb4617bca9",
+    "target_patch_id": "a257742c24490dd1a244b9ce3bdc54fb4617bca9",
+    "source_head_sha": "d5c4fcd0da526e924f54061d383627edc8c918d8",
+    "target_base_sha": "ec81b6c2447674d3d08eb70aa4f8b0392b86d035",
+    "target_head_sha": "91cadc20ae382bfd3ca4576e5559ae540e0afcdc"
+  },
+  "target_only_delta": {
+    "files": [],
+    "hunks": [],
+    "behavior_change": false,
+    "rationale": "No target-only delta; stable git patch IDs are identical."
+  },
+  "reused_evidence": [
+    {
+      "kind": "review",
+      "source_id": "PRR_kwDOAnNnU88AAAABF5heJg",
+      "head_sha": "d5c4fcd0da526e924f54061d383627edc8c918d8"
+    },
+    {
+      "kind": "check",
+      "source_id": "actions-run-29305769038-job-87006566722",
+      "head_sha": "d5c4fcd0da526e924f54061d383627edc8c918d8"
+    },
+    {
+      "kind": "check",
+      "source_id": "actions-run-29305769024-job-86998661042",
+      "head_sha": "d5c4fcd0da526e924f54061d383627edc8c918d8"
+    },
+    {
+      "kind": "check",
+      "source_id": "actions-run-29305768987-job-86998660930",
+      "head_sha": "d5c4fcd0da526e924f54061d383627edc8c918d8"
+    },
+    {
+      "kind": "check",
+      "source_id": "actions-run-29305769037-job-86998661027",
+      "head_sha": "d5c4fcd0da526e924f54061d383627edc8c918d8"
+    }
+  ],
+  "target_requirements": {
+    "policy_source": "consumer AGENTS.md target-branch policy",
+    "branch_protection": "retain",
+    "current_head_ci": "required",
+    "current_head_review": "required",
+    "checks": ["ci-required", "Pro package tests"]
+  },
+  "review_generated_changes": [],
+  "forward_port_dispositions": []
+}
