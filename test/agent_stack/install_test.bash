@@ -14,6 +14,7 @@ test_sync_installs_commands_modules_and_links() {
   assert_executable "$install_dir/agent-stack"
   assert_executable "$install_dir/agent-stack-doctor"
   assert_executable "$install_dir/agent-coord"
+  assert_executable "$install_dir/agent-coordination-dashboard"
   assert_file "$install_dir/agent_stack/fixture.bash"
   assert_file "$install_dir/agent_doctor/fixture.rb"
   assert_file "$target/bin/agent-workflows-installed"
@@ -21,7 +22,7 @@ test_sync_installs_commands_modules_and_links() {
   for name in agent-workflows agent-coordination agent-coordination-dashboard; do
     [[ -L "$temporary/compat/$name" ]] || fail "missing compatibility link for $name"
   done
-  [[ -d "$temporary/runtime/state" && -f "$temporary/runtime/env" ]] || fail "missing runtime state"
+  [[ -d "$temporary/runtime/state" && ! -e "$temporary/runtime/env" ]] || fail "unexpected runtime layout"
 }
 
 test_colocated_sync_transitions_doctor_ownership_between_modes() {
@@ -163,7 +164,7 @@ BASH
   chmod +x "$fake_bin/install"
   with_origins "$temporary"
 
-  PATH="$fake_bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  PATH="$fake_bin:$(dirname "$(command -v node)"):/usr/bin:/bin:/usr/sbin:/sbin" \
   AGENT_STACK_TEST_FORBIDDEN_INSTALL_DEST="$install_dir/agent-stack" \
   AGENT_STACK_AGENT_WORKFLOWS_URL="$temporary/origins/agent-workflows.git" \
   AGENT_STACK_AGENT_COORDINATION_URL="$temporary/origins/agent-coordination.git" \

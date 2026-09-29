@@ -26,26 +26,24 @@ test_path_overlap_and_compatibility_guards() {
 }
 
 test_runtime_paths_are_private_and_not_symlinks() {
-  local kind temporary output status
-  for kind in env state; do
-    temporary="$(make_tmp_dir)"
-    with_origins "$temporary"
-    mkdir -p "$temporary/runtime" "$temporary/outside"
-    ln -s "$temporary/outside" "$temporary/runtime/$kind"
-    set +e
-    output="$(run_sync "$temporary" --no-install --no-fetch 2>&1)"
-    status=$?
-    set -e
-    [[ "$status" -ne 0 ]] || fail "runtime $kind symlink unexpectedly succeeded"
-    assert_contains "$output" "runtime"
-    assert_contains "$output" "symlink"
-  done
+  local temporary output status
+  temporary="$(make_tmp_dir)"
+  with_origins "$temporary"
+  mkdir -p "$temporary/runtime" "$temporary/outside"
+  ln -s "$temporary/outside" "$temporary/runtime/state"
+  set +e
+  output="$(run_sync "$temporary" --no-install --no-fetch 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "runtime state symlink unexpectedly succeeded"
+  assert_contains "$output" "runtime"
+  assert_contains "$output" "symlink"
 
   temporary="$(make_tmp_dir)"
   with_origins "$temporary"
   run_sync "$temporary" --no-install --no-fetch >/dev/null
   assert_mode "$temporary/runtime" 700
-  assert_mode "$temporary/runtime/env" 600
+  [[ ! -e "$temporary/runtime/env" ]] || fail "stack runtime recreated the retired parallel environment file"
 }
 
 test_no_install_and_help_contracts() {
