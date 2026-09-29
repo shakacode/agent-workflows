@@ -8,6 +8,7 @@ module AutonomousMergePolicy
   PORTABLE_THRESHOLDS = {
     "max_changed_files" => 29,
     "max_changed_lines" => 999,
+    "max_total_changed_lines" => 20_000,
     "max_commits" => 9,
     "max_reviewed_heads" => 3
   }.freeze
@@ -64,6 +65,7 @@ module AutonomousMergePolicy
       mapping["generated_paths"],
       "autonomous_merge.generated_paths"
     )
+    generated_paths = (portable_generated_paths + generated_paths).uniq
     safe_path_groups, safe_path_errors = parse_safe_path_groups(mapping["safe_path_groups"])
     errors.concat(human_path_errors)
     errors.concat(policy_path_errors)
@@ -88,7 +90,7 @@ module AutonomousMergePolicy
       human_review_paths: [],
       policy_paths: [],
       safe_path_groups: portable_safe_path_groups,
-      generated_paths: [],
+      generated_paths: portable_generated_paths,
       errors: errors.flatten.compact
     )
   end

@@ -31,7 +31,14 @@ module AutonomousMergeCloseout
   ).freeze
   TRUSTED_BASE_PROVENANCE_PATTERN = /\Atrusted-base:([0-9a-f]{40})\z/
   INSTALLED_PACK_PROVENANCE_PATTERN = /\Averified-installed-pack:[0-9a-f]{64}\z/
-  METRIC_KEYS = %w[changed_files changed_lines commits reviewed_heads].freeze
+  METRIC_KEYS = %w[
+    changed_files
+    changed_lines
+    reviewable_changed_files
+    reviewable_changed_lines
+    commits
+    reviewed_heads
+  ].freeze
   SAFE_CLASSES = %w[none documentation tests formatting-comments].freeze
   SHADOW_GATE_SHAPES = [[], ["reviewed-heads-limit"]].freeze
   SHADOW_EVIDENCE_SHAPES = [
@@ -57,6 +64,7 @@ module AutonomousMergeCloseout
     "persistent-data-storage" => "changes persistent data or storage behavior",
     "public-compatibility" => "changes a public compatibility contract",
     "reviewed-heads-limit" => "crosses the repository's reviewed-head limit for autonomous merge",
+    "total-changed-lines-limit" => "crosses the repository's raw changed-line backstop for autonomous merge",
     "security-auth-privacy" => "changes security, authentication, privacy, or a trust boundary"
   }.freeze
   GATE_EXPLANATIONS = {
@@ -67,7 +75,7 @@ module AutonomousMergeCloseout
     "changed-files-limit" =>
       "The PR changes more files than the trusted-base autonomous-merge policy permits.",
     "changed-lines-limit" =>
-      "The PR changes more lines than the trusted-base autonomous-merge policy permits.",
+      "The PR changes more reviewable lines than the trusted-base autonomous-merge policy permits.",
     "commit-count-limit" =>
       "The PR contains more commits than the trusted-base autonomous-merge policy permits.",
     "infrastructure-delivery" =>
@@ -80,6 +88,8 @@ module AutonomousMergeCloseout
       "The trusted semantic assessment says this PR changes a public compatibility contract.",
     "reviewed-heads-limit" =>
       "The PR has crossed the trusted-base limit for distinct submitted-review head revisions.",
+    "total-changed-lines-limit" =>
+      "The PR changes more raw lines than the trusted-base autonomous-merge backstop permits.",
     "security-auth-privacy" =>
       "The trusted semantic assessment says this PR changes security, authentication, privacy, or a trust boundary."
   }.freeze
