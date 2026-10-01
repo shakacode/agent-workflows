@@ -374,10 +374,17 @@ or verifier arguments.
 
 A satisfied receipt uses exactly one marker and exactly one passed row with
 nonempty evidence for each configured criterion, with no missing, duplicate,
-or extra IDs:
+or extra IDs. Post either receipt through `github-comment-envelope` with the
+actual `AGENT_COMMENT_RUNNER`; it supplies the visible runner prefix.
+
+````markdown
+Hosted QA is satisfied. No reader action is needed.
+
+<details>
+<summary>Hosted QA evidence</summary>
 
 ```text
-<!-- hosted-qa-evidence v1
+hosted-qa-evidence v1
 status: satisfied
 head_sha: <full current head SHA>
 deployed_head_sha: <same full current head SHA>
@@ -385,8 +392,9 @@ deployment_id: <immutable deployment ID>
 deployment_url: <immutable HTTPS deployment URL>
 target: <configured target ID>
 criterion: id=<configured-id> | status=passed | evidence=<nonempty evidence>
--->
 ```
+</details>
+````
 
 SHA fields accept either hexadecimal case but must contain exactly 40 digits.
 After full-SHA validation, replay canonicalizes both SHA fields to lowercase
@@ -404,26 +412,40 @@ separately by `closeout-evidence-replay`.
 
 A waiver receipt is a separate closed marker variant:
 
+````markdown
+Hosted QA is waived. Review the maintainer waiver before acting.
+
+<details>
+<summary>Hosted QA evidence</summary>
+
 ```text
-<!-- hosted-qa-evidence v1
+hosted-qa-evidence v1
 status: waived
 head_sha: <full current head SHA>
 target: <configured target ID>
 maintainer_waiver: <exact same-target #issuecomment-ID URL>
--->
 ```
+</details>
+````
 
 `waived` blocks when trusted-base `waiver_mode` is `forbidden`. With
 `maintainer`, the linked comment must contain this distinct closed marker:
 
+````markdown
+Hosted QA waiver is recorded. No reader action is needed.
+
+<details>
+<summary>Hosted QA waiver details</summary>
+
 ```text
-<!-- hosted-qa-maintainer-waiver v1
+hosted-qa-maintainer-waiver v1
 target: <exact pull request or issue URL>
 head_sha: <full current head SHA>
 hosted_target: <configured hosted QA target ID>
 decision: waived
--->
 ```
+</details>
+````
 
 The helper fetches the comment and author permission through authenticated
 `gh api`, binds the exact pull request or issue, current head, and configured
@@ -499,15 +521,17 @@ includes this evidence block:
 - Process-gap disposition: <script | schema | checklist+replay | park | not applicable>
 ```
 
-For replayable post-merge audit, keep the full QA Evidence block and hidden
-`qa-evidence v2` marker adjacent whenever QA is required or explicitly not
-required. When the evidence destination is a PR description, place both inside
-the canonical `Agent details` disclosure. In a handoff, issue comment, or saved
-evidence file, keep the marker adjacent to its QA Evidence block; a PR
-description is not required.
+Keep QA Evidence adjacent to a closed `QA evidence` disclosure whenever QA is
+declared. State the outcome and required reader action above it; PR bodies keep
+both in `Agent details`. Historical hidden markers are read-only; new comments
+and PR bodies use this disclosure.
 
-```markdown
-<!-- qa-evidence v2
+````markdown
+<details>
+<summary>QA evidence</summary>
+
+```text
+qa-evidence v2
 required: <yes | no>
 status: <satisfied | blocked | waived | in_progress | unknown | not_applicable>
 head_sha: <full 40-character current PR or repository head SHA>
@@ -529,80 +553,72 @@ performance_evidence: <repo_seam: source=<stable command/report/ref>; metric_nam
 findings: <none, fixed, waived, blocked, or follow-up link>
 release_blocking: <clear | blocked | waived | not_applicable>
 process_gap_disposition: <script | schema | checklist+replay | park | not applicable>
--->
 ```
+</details>
+````
 
-For `required: no`, record `status: not_applicable` and
-`release_blocking: not_applicable`. Replay treats any other terminal pair as an
-inconsistent omission record and returns `UNKNOWN`.
+For `required: no`, record both `status` and `release_blocking` as
+`not_applicable`; every other terminal pair replays as `UNKNOWN`.
 
-Use `visual_evidence_blocked_reason` only with `human_attachment_pending`; other
-uses replay as `UNKNOWN`. Before `uploader_absent`, check
-GitHub CLI 2.99.0+ `--attach` on GitHub.com/GHE Cloud and browser upload. Use
-`uploader_denied` for unsupported Actions/App tokens or access/host denial, and
+Use `visual_evidence_blocked_reason` only with `human_attachment_pending`.
+Before `uploader_absent`, check GitHub CLI 2.99.0+ `--attach` and browser
+upload; use `uploader_denied` for unsupported tokens/access and
 `upload_failed: reason` for media, size, or transient failures.
 
-Historical `qa-evidence v1` receipts remain replayable for backward
-compatibility. Do not emit v1 for new closeout evidence. The presence of any v2
-marker explicitly supersedes all v1 markers for that evidence input: a current
-valid v2 ignores legacy v1 history, while a stale or malformed v2 cannot be
-rescued by a current v1. When auditing a current user-visible UI change, run
+Historical `qa-evidence v1` receipts remain replayable but are never newly
+emitted. A v2 marker supersedes v1 for that input: stale or malformed v2 cannot
+fall back to v1. For current UI changes run
 `closeout-evidence-replay --expected-head-sha <full-final-head-SHA>
---require-visual-evidence-v2`; v1-only or stale evidence then fails closed
-rather than bypassing it. For GHEC or GHES evidence, add
-`--github-host <repository GitHub host>` from trusted context;
-completed-batch preflight supplies it.
+--require-visual-evidence-v2`; v1-only or stale evidence fails closed. Supply
+the trusted `--github-host` for GHEC/GHES; preflight provides it.
 
-For priority review findings that feed a strict merge ledger or final handoff,
-append a hidden disposition marker without inventing a separate review-finding
-schema. Reference the source finding URL or id; shared review-finding schema
-work remains the source of truth when the repo adopts one:
+For priority findings used by a strict ledger or handoff, append a closed
+`Priority finding dispositions` disclosure. State disposition and reader action
+above it and reference the source finding URL or id:
 
-```markdown
-<!-- priority-finding-dispositions v1
+````markdown
+<details>
+<summary>Priority finding dispositions</summary>
+
+```text
+priority-finding-dispositions v1
 head_sha: <full 40-character current PR head SHA>
 finding: url=<review/thread/check URL> | severity=<P0|P1|P2|P3|Must-Fix|BLOCKING> | disposition=<fixed|waived|false_positive|not_applicable|deferred_with_issue> | evidence=<PR comment, commit, test, or thread URL> | waiver=<maintainer waiver URL when waived>
--->
 ```
+</details>
+````
 
 For an explicit no-findings outcome, use the `not_applicable` variant and keep
 the current head SHA:
 
-```markdown
-<!-- priority-finding-dispositions v1
+````markdown
+<details>
+<summary>Priority finding dispositions</summary>
+
+```text
+priority-finding-dispositions v1
 status: not_applicable
 head_sha: <full 40-character current PR head SHA>
--->
 ```
+</details>
+````
 
-Resolve `POST_MERGE_AUDIT_SKILL_DIR` with the env-var / loaded-skill /
-repo-local chain, then run
-`"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay" <file-or->` to
-replay these markers and report `SATISFIED`, `WAIVED`, `NOT_APPLICABLE`,
-`BLOCKED`, or `UNKNOWN` for post-merge audits. Treat `SATISFIED`, `WAIVED`,
-and `NOT_APPLICABLE` as replayed terminal evidence; carry `BLOCKED` and
-`UNKNOWN` into the audit findings for operator action.
+Resolve `POST_MERGE_AUDIT_SKILL_DIR` through env-var / loaded-skill / repo-local
+resolution and run `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"
+<file-or->`. `SATISFIED`, `WAIVED`, and `NOT_APPLICABLE` are terminal; carry
+`BLOCKED` and `UNKNOWN` into audit findings.
 
 When a repository pins this helper under `.agents/skills/post-merge-audit`, use
 that repo-local copy for the pre-merge gate so the helper version stays aligned
 with the repository's schema and workflow text.
 
-For a pre-merge current-head gate, run the helper separately for each PR or
-target with `--expected-head-sha <full-final-head-SHA>`, feeding it only that
-PR's evidence block or a per-PR evidence file. Do not pass a combined multi-PR
-handoff to a single expected SHA. This is a
-`checklist+replay` control: the coordinator checklist below re-fetches the final
-head, and the replay helper returns `UNKNOWN` when QA evidence omits
-`head_sha`, records any other SHA there, or does not list the expected head as
-the final full SHA token in `tested_at` (the endpoint for an audited range). It
-also returns `UNKNOWN` when a priority-disposition marker records another head.
-Full hexadecimal SHA comparisons are case-normalized. Repeated scalar marker or
-per-finding keys also return `UNKNOWN` instead of overwriting earlier values.
-When append-only history contains both old and current-head markers, the gate
-replays only the current-head markers and aggregates all of them; when no
-current marker exists, stale markers remain `UNKNOWN`. Historical evidence
-remains replayable without this option,
-but it does not qualify as current-head readiness evidence.
+For a pre-merge current-head gate, replay each PR separately with
+`--expected-head-sha <full-final-head-SHA>`; never apply one expected SHA to a
+combined handoff. This `checklist+replay` control re-fetches the final head and
+returns `UNKNOWN` for missing, mismatched, repeated, or stale SHA evidence,
+including priority dispositions. SHA comparison is case-normalized. It
+aggregates current-head markers only; historical evidence remains replayable but
+never qualifies as current-head readiness.
 
 `Release-blocking status` is derived from `QA lane status`: `satisfied` ->
 `clear`, `blocked` -> `blocked`, `waived` -> `waived`, `not_applicable` ->
@@ -665,10 +681,9 @@ Use this structure; replace placeholders with concise, task-specific content:
 
 <Head/base SHAs and replay scope.>
 
-<Insert the complete canonical `### QA Evidence` block, including its heading
-and the `<!-- qa-evidence v2 ... -->` and
-`<!-- priority-finding-dispositions v1 ... -->` markers, unchanged inside this
-disclosure.>
+<Insert the complete canonical `### QA Evidence` block, with its visible outcome first
+and its `qa-evidence v2` and `priority-finding-dispositions v1` records in
+closed disclosures. Historical HTML markers are read-only.>
 
 ### Coordination and reviewer telemetry
 
@@ -2481,7 +2496,7 @@ Existing verified receipt only; missing means no line and an Unblock blocker:
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 
-The completed-batch marker has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Ordinary new complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight; the accepted-deferral path below uses exactly one `accepted_deferral_snapshot` instead. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. Ordinary new complete receipts also contain exactly one helper-managed `publication_snapshot`; accepted-deferral receipts contain exactly one `accepted_deferral_snapshot`, and either kind fails closed when its snapshot is unrefreshed or mismatched. A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
+The completed-batch marker has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Ordinary new complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight; the accepted-deferral path below uses exactly one `accepted_deferral_snapshot` instead. Replay exactly one current closed `Completed-batch audit receipt` disclosure containing a fenced `completed-batch-audit v1` record, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. Historical exact versioned `<!-- completed-batch-audit v1` wrappers through their single final `-->` are read-compatible only. Ordinary new complete receipts also contain exactly one helper-managed `publication_snapshot`; accepted-deferral receipts contain exactly one `accepted_deferral_snapshot`, and either kind fails closed when its snapshot is unrefreshed or mismatched. A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
 
 An old helper-managed `publication_snapshot` missing `coordination_applicability`
 or `applicability_proof_digest` stays non-ready even after replay refresh.

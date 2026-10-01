@@ -22,6 +22,209 @@ class FetchPrReviewDataTest < Minitest::Test
     ]]
   JSON
 
+  # Production break: a completed review pass said only "evidence follows"
+  # while its checkpoint was invisible. New visible checkpoints must still
+  # advance the trusted cutoff without emitting an HTML marker.
+  def test_visible_summary_checkpoint_advances_the_cutoff
+    comments = [
+      {
+        "body" => <<~MARKDOWN.chomp,
+          🤖 Codex address-review follow-up is complete. The next routine scan can start after this comment.
+
+          ## Review follow-up complete
+
+          Every review item in the selected scan has a recorded outcome.
+
+          <details>
+          <summary>Address-review checkpoint</summary>
+
+          **Runtime:** Codex · Astra
+
+          ```text
+          address-review-checkpoint:v1
+          kind: summary
+          ```
+          </details>
+        MARKDOWN
+        "created_at" => "2026-09-12T00:00:00Z"
+      }
+    ]
+
+    assert_equal "2026-09-12T00:00:00Z", FetchPrReviewData.compute_cutoff(comments)
+    refute_includes comments.first.fetch("body"), "<!--"
+  end
+
+  def test_template_payload_wrapped_by_the_envelope_advances_the_cutoff
+    payload = <<~MARKDOWN.chomp
+      Address-review follow-up is complete. The next routine scan can start after this comment.
+
+      ## Review follow-up complete
+
+      Every review item in the selected scan has a recorded outcome.
+
+      <details>
+      <summary>Address-review checkpoint</summary>
+
+      **Runtime:** Codex · Astra
+
+      ```text
+      address-review-checkpoint:v1
+      kind: summary
+      ```
+      </details>
+    MARKDOWN
+    body = GitHubCommentEnvelope.render(body: payload, runner: "codex", host: "M5", task_or_run: "task-8")
+    normalized = FetchPrReviewData.build_issue_comments(
+      [{ "body" => body, "user" => { "login" => "bot" }, "created_at" => "2026-09-13T00:00:00Z" }], trust
+    ).first.first
+
+    assert_equal "2026-09-13T00:00:00Z", FetchPrReviewData.compute_cutoff([normalized])
+    assert_equal payload, normalized.fetch("payload_body")
+  end
+
+  def test_visible_checkpoint_accepts_configured_runner_prefixes
+    payload = <<~MARKDOWN.chomp
+      Address-review follow-up is complete.
+
+      <details>
+      <summary>Address-review checkpoint</summary>
+
+      ```text
+      address-review-checkpoint:v1
+      kind: summary
+      ```
+      </details>
+    MARKDOWN
+
+    { "codex" => "Codex", "claude" => "Claude", "cursor" => "Cursor" }.each do |runner, display|
+      body = "🤖 #{display} #{payload}"
+
+      assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(body), runner
+    end
+  end
+
+  def test_visible_checkpoint_in_a_four_backtick_example_does_not_advance_the_cutoff
+    body = <<~MARKDOWN.chomp
+      🤖 Codex address-review follow-up example:
+
+      ````markdown
+      Address-review follow-up is complete. The next routine scan can start after this comment.
+
+      <details>
+      <summary>Address-review checkpoint</summary>
+
+      ```text
+      address-review-checkpoint:v1
+      kind: summary
+      ```
+      </details>
+      ````
+    MARKDOWN
+
+    assert_nil FetchPrReviewData.visible_checkpoint_kind(body)
+    assert_equal "", FetchPrReviewData.compute_cutoff([{ "body" => body, "created_at" => "2026-09-13T00:00:00Z" }])
+  end
+
+  def test_visible_checkpoint_requires_a_closed_disclosure_at_the_payload_boundary
+    body = <<~MARKDOWN.chomp
+      Address-review follow-up is complete. The next routine scan can start after this comment.
+
+      <details>
+      <summary>Address-review checkpoint</summary>
+
+      ```text
+      address-review-checkpoint:v1
+      kind: summary
+      ```
+    MARKDOWN
+
+    assert_nil FetchPrReviewData.visible_checkpoint_kind(body)
+    assert_equal "", FetchPrReviewData.compute_cutoff([{ "body" => body, "created_at" => "2026-09-13T00:00:00Z" }])
+
+    trailing_body = "#{body}\n</details>\nnot part of the checkpoint payload"
+    assert_nil FetchPrReviewData.visible_checkpoint_kind(trailing_body)
+    assert_equal "", FetchPrReviewData.compute_cutoff([{ "body" => trailing_body, "created_at" => "2026-09-13T00:00:00Z" }])
+  end
+
+  def test_visible_checkpoint_record_inside_html_comments_does_not_advance_the_cutoff
+    ["<!--\n", "<!--\n"].each_with_index do |comment_opener, index|
+      comment_closer = index.zero? ? "\n-->" : ""
+      body = <<~MARKDOWN.chomp
+        Address-review follow-up is complete. The next routine scan can start after this comment.
+
+        <details>
+        <summary>Address-review checkpoint</summary>
+
+        #{comment_opener}```text
+        address-review-checkpoint:v1
+        kind: summary
+        ```#{comment_closer}
+        </details>
+      MARKDOWN
+
+      assert_nil FetchPrReviewData.visible_checkpoint_kind(body), "comment variant #{index}"
+      assert_equal "", FetchPrReviewData.compute_cutoff([{ "body" => body, "created_at" => "2026-09-13T00:00:00Z" }])
+    end
+  end
+
+  def test_visible_checkpoint_only_strips_eligible_inline_code_marker_literals
+    checkpoint = lambda do |detail|
+      <<~MARKDOWN.chomp
+        Address-review follow-up is complete.
+
+        <details>
+        <summary>Address-review checkpoint</summary>
+
+        ```text
+        address-review-checkpoint:v1
+        kind: summary
+        ```
+
+        #{detail}
+        </details>
+      MARKDOWN
+    end
+
+    ineligible_details = {
+      "escaped opening delimiter" => "- Literal: \\`<!-- address-review-summary -->`.",
+      "four-space indented literal" => "    `<!-- address-review-summary -->`",
+      "tab-indented literal" => "\t`<!-- address-review-summary -->`",
+      "unequal delimiters" => "- Literal: ``<!-- address-review-summary -->`.",
+      "actual fenced code block" => "```text\n<!-- address-review-summary -->\n```"
+    }
+    (0..3).each do |spaces|
+      ineligible_details["#{spaces} spaces plus tab-indented literal"] =
+        "#{' ' * spaces}\t`<!-- address-review-summary -->`"
+    end
+    ineligible_details.each do |description, detail|
+      body = checkpoint.call(detail)
+
+      assert_nil FetchPrReviewData.visible_checkpoint_kind(body), description
+      assert_equal "", FetchPrReviewData.compute_cutoff([{ "body" => body, "created_at" => "2026-09-13T00:00:00Z" }]), description
+    end
+
+    (0..4).each do |backslashes|
+      detail = "- Literal: \\\\`<!-- address-review-summary -->#{'\\' * backslashes}`."
+
+      assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(checkpoint.call(detail)), backslashes
+    end
+    assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(
+      checkpoint.call(" ```<!-- address-review-summary -->```")
+    )
+    assert_equal "summary", FetchPrReviewData.visible_checkpoint_kind(
+      checkpoint.call("- Fixed \\<details> parsing in a visible finding.")
+    )
+    (0..6).each do |backslashes|
+      detail = "- Literal: #{'\\' * backslashes}<details>"
+      kind = FetchPrReviewData.visible_checkpoint_kind(checkpoint.call(detail))
+      if backslashes.odd?
+        assert_equal "summary", kind, backslashes
+      else
+        assert_nil kind, backslashes
+      end
+    end
+  end
+
   REVIEWS_RAW = <<~JSON
     [[
       {"id":10,"body":"fix the nil guard","state":"COMMENTED","user":{"login":"alice"},"submitted_at":"2026-01-04T00:00:00Z","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
@@ -79,6 +282,41 @@ class FetchPrReviewDataTest < Minitest::Test
     assert_equal "2026-01-05T00:00:00Z", FetchPrReviewData.compute_cutoff([normalized])
     assert_equal "<!-- address-review-summary -->\ncurrent", normalized.fetch("payload_body")
     assert_equal body, normalized.fetch("body")
+  end
+
+  def test_all_trusted_comment_collections_expose_the_unwrapped_payload_body
+    payload = "Visible review feedback."
+    body = GitHubCommentEnvelope.render(body: payload, runner: "codex", host: "M5", task_or_run: "task-7")
+    review = { "id" => 10, "body" => body, "state" => "COMMENTED", "user" => { "login" => "alice" } }
+    inline = { "id" => 20, "node_id" => "RC_20", "body" => body, "user" => { "login" => "alice" } }
+    issue = { "id" => 30, "node_id" => "IC_30", "body" => body, "user" => { "login" => "alice" } }
+
+    summary = FetchPrReviewData.build_review_summaries([review], trust).first.first
+    comment = FetchPrReviewData.build_inline_comments([inline], {}, trust).first.first
+    discussion = FetchPrReviewData.build_issue_comments([issue], trust).first.first
+
+    [summary, comment, discussion].each do |row|
+      assert_equal payload, row.fetch("payload_body")
+      assert_equal body, row.fetch("body")
+    end
+  end
+
+  def test_cutoff_rejects_a_legacy_html_envelope_with_a_suffixed_denial
+    body = <<~BODY
+      🤖 Codex No review checkpoint was recorded.
+      <!-- agent-comment-attribution:v1
+      runner: codex
+      host: M5
+      task_or_run: task-7
+      -->
+
+      <!-- address-review-summary -->
+    BODY
+    comments = [{ "body" => body, "user" => { "login" => "bot" }, "created_at" => "2026-01-05T00:00:00Z" }]
+    normalized = FetchPrReviewData.build_issue_comments(comments, trust).first.first
+
+    assert_empty FetchPrReviewData.compute_cutoff([normalized])
+    assert_equal body, normalized.fetch("payload_body")
   end
 
   def test_drops_empty_review_summaries
@@ -143,6 +381,13 @@ class FetchPrReviewDataTest < Minitest::Test
     assert_empty out.fetch("review_summaries")
     assert_empty out.fetch("inline_comments")
     assert_empty out.fetch("review_threads")
+  end
+
+  def test_issue_comments_only_option_is_parsed_and_documented
+    options = FetchPrReviewData::Runner.new.send(:parse_args, ["1234", "--issue-comments-only"])
+
+    assert options.fetch(:issue_comments_only)
+    assert_includes FetchPrReviewData::USAGE, "--issue-comments-only"
   end
 
   def test_self_check_passes

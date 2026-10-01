@@ -121,6 +121,13 @@ class HostedQaReadinessTest < Minitest::Test
     MARKDOWN
   end
 
+  def test_hosted_marker_reader_remains_available_to_the_readiness_helper
+    markers = CloseoutEvidenceReplay.marker_bodies(hosted_evidence(head_sha: "a" * 40), "hosted-qa-evidence v1")
+
+    assert_equal 1, markers.length
+    assert_includes markers.first, "status: satisfied"
+  end
+
   def authenticating_verifier
     <<~'RUBY'
       #!/usr/bin/env ruby

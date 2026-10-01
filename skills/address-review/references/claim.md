@@ -155,16 +155,23 @@ against the fresh data before mutating GitHub or the branch.
   comment using this marker shape only when a
   GitHub-mutating action is selected:
 
-  ```markdown
-  <!-- codex-claim v1
+  ````markdown
+  Claim is active. Do not start competing work.
+
+  <details>
+  <summary>Claim details</summary>
+
+  ```text
+  codex-claim v1
   batch: <BATCH_ID>
   machine: <MACHINE_ID>
   thread: <codex-thread-id>
   branch: <BRANCH_NAME>
   status: in_progress
   expires_at: <ISO8601_UTC>
-  -->
   ```
+  </details>
+  ````
 
   Post a new fallback claim through `github-comment-envelope post-issue` and
   extract the returned issue-comment ID from its JSON response:

@@ -31,9 +31,10 @@ visible, verified evidence conflicts with the default, or the default cannot be
 verified because the coordination backend is unavailable.
 
 Term: a structured public `codex-claim` comment is a GitHub issue/PR comment
-containing a `codex-claim` HTML comment (`<!-- codex-claim v1 ... -->`) with
-key/value fields in the "Public claim comment" format from
-`.agents/workflows/pr-processing.md`.
+whose visible payload has a closed `Claim details` disclosure containing a
+fenced `codex-claim v1` record with key/value fields in the "Public claim
+comment" format from `.agents/workflows/pr-processing.md`. Historical HTML
+forms are read-compatible only.
 
 When this repository includes the `post-merge-audit-scope` helper, run it first:
 

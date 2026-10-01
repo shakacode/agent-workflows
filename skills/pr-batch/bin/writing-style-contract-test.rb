@@ -51,10 +51,18 @@ class WritingStyleContractTest < Minitest::Test
     ["Why", "What changed", "How to review and verify"].each do |heading|
       assert_includes workflow, "## #{heading}"
     end
-    assert_includes workflow, "<!-- qa-evidence v2"
-    assert_includes workflow, "<!-- priority-finding-dispositions v1"
-    assert_includes address_templates, "<!-- address-review-summary -->"
-    assert_includes address_templates, "<!-- address-review-source-state:v1"
+    assert_includes workflow, "<summary>QA evidence</summary>"
+    assert_includes workflow, "```text\nqa-evidence v2"
+    assert_includes workflow, "<summary>Priority finding dispositions</summary>"
+    assert_includes workflow, "```text\npriority-finding-dispositions v1"
+    refute_includes workflow, "<!-- qa-evidence v2"
+    refute_includes workflow, "<!-- priority-finding-dispositions v1"
+    assert_includes workflow, "Historical hidden markers are read-only"
+    assert_includes address_templates, "<summary>Address-review checkpoint</summary>"
+    assert_includes address_templates, "printf '```text\\naddress-review-checkpoint:v1\\n'"
+    assert_includes address_templates, "printf '```text\\naddress-review-source-state:v1\\n'"
+    refute_includes address_templates, "printf '<!-- address-review-summary -->"
+    refute_includes address_templates, "printf '<!-- address-review-source-state:v1"
     assert_includes audit, "<!-- completed-batch-audit v1"
   end
 

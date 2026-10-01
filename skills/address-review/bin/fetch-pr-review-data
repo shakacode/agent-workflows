@@ -30,6 +30,10 @@ require_relative "../../pr-batch/lib/github_comment_envelope"
 # raw `gh --paginate --slurp` output strings so they can be unit-tested directly.
 module FetchPrReviewData
   SUMMARY_MARKER = "<!-- address-review-summary -->"
+  VISIBLE_CHECKPOINT_SUMMARY = "Address-review checkpoint"
+  INLINE_CODE_LITERAL = /(^|[^\\`])((?:\\\\)*)(`+)(?!`)[^\r\n]*?(?<!`)\3(?!`)/
+  ESCAPED_ANGLE_BRACKET = /(^|[^\\])((?:\\\\)*)\\</
+  INDENTED_OR_FENCED_CODE_LINE = /\A(?: {0,3}\t| {4}|[ \t]{0,3}`{3,}[^`\r\n]*(?:\r?\n)?\z)/
   GH_TIMEOUT_SECONDS = Integer(ENV.fetch("FETCH_PR_REVIEW_DATA_GH_TIMEOUT_SECONDS", "60"))
   TRUST_DIGEST_FORMAT = /\Asha256:[0-9a-f]{64}\z/
   TRUST_CONFIG_SCOPES = %w[global repository].freeze
@@ -289,17 +293,50 @@ module FetchPrReviewData
     [kept, excluded]
   end
 
-  # Most recent trusted issue comment whose payload starts with the summary
+  # Most recent trusted issue comment whose body starts with the summary
   # marker. Only trusted comments count: the cutoff decides which review
   # comments are treated as already addressed, so honouring a forged marker
   # would let an untrusted actor hide real review feedback.
   def compute_cutoff(trusted_issue_comments)
     trusted_issue_comments
-      .select { |comment| comment.fetch("payload_body", comment["body"].to_s).start_with?(SUMMARY_MARKER) }
+      .select { |comment| summary_checkpoint?(comment.fetch("payload_body", comment["body"])) }
       .filter_map { |comment| comment["created_at"] }
       .reject(&:empty?)
       .max
       .to_s
+  end
+
+  # Historical markers stay readable. New writers use a visible outcome plus a
+  # labelled closed disclosure, which keeps the cutoff type inspectable without
+  # requiring a reader to view HTML source.
+  def summary_checkpoint?(body)
+    return true if body.to_s.start_with?(SUMMARY_MARKER)
+
+    visible_checkpoint_kind(body) == "summary"
+  end
+
+  def visible_checkpoint_kind(body)
+    body = visible_checkpoint_body(body)
+    return if body.include?("<!--")
+
+    match = body.match(
+      %r{\A(?:🤖 (?:Codex|Claude|Cursor) )?(?:[Aa]ddress-review|[Oo]riginal review) [^\r\n]+\r?\n\r?\n(?:(?![ \t]{0,3}(?:`{3,}|~{3,}))[^\r\n<]*(?:\r?\n|\z))*?<details>\r?\n<summary>#{Regexp.escape(VISIBLE_CHECKPOINT_SUMMARY)}</summary>\r?\n\r?\n(?:(?![ \t]{0,3}(?:`{3,}|~{3,})|<)[\s\S])*?^```text\r?\naddress-review-checkpoint:v1\r?\nkind: (?<kind>summary|status)\r?\n```(?:(?!<)[\s\S])*?</details>\r?\n?\z}m
+    )
+    match && match[:kind]
+  end
+
+  # Outcome bullets can quote old markers as Markdown inline code. Remove only
+  # complete, same-line inline spans before validating the surrounding visible
+  # disclosure; real comments and fenced examples remain fail-closed.
+  def visible_checkpoint_body(body)
+    body.to_s.each_line.map do |line|
+      if line.match?(INDENTED_OR_FENCED_CODE_LINE)
+        line
+      else
+        line.gsub(INLINE_CODE_LITERAL, "\\1\\2inline-code")
+            .gsub(ESCAPED_ANGLE_BRACKET, "\\1\\2escaped-angle")
+      end
+    end.join
   end
 
   # Build the normalized result hash from the four raw slurped strings.

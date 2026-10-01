@@ -85,11 +85,12 @@ class PostMergeAuditPolicyTest < Minitest::Test
   ].freeze
   REQUIRED_INDEPENDENT_REPORT_HANDOFF_PROHIBITION = "Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line."
   REQUIRED_ADVISORY_VERDICT_PROHIBITION = "Advisory auditors must not issue the qualifying clean/ready verdict."
-  COMPLETED_BATCH_AUDIT_MARKER_HEADER = "<!-- completed-batch-audit v1"
-  REQUIRED_DURABLE_RECEIPT_HEADER = "Completed-batch audit: replay evidence follows."
-  REQUIRED_PR_DESCRIPTION_SUMMARY_RULE = "For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it inside `### Audit receipts` in the canonical `Agent details` disclosure through a separate freshly-read update, preserves all surrounding text, never duplicates the markers, and never reruns `publish` to retry description sync:"
-  REQUIRED_PR_DESCRIPTION_SUMMARY_START = "<!-- completed-batch-audit-summary:start -->"
-  REQUIRED_PR_DESCRIPTION_SUMMARY_END = "<!-- completed-batch-audit-summary:end -->"
+  COMPLETED_BATCH_AUDIT_MARKER_HEADER = "completed-batch-audit v1"
+  REQUIRED_DURABLE_RECEIPT_TERMS = ["Completed-batch audit receipt", "completed-batch-audit v1"].freeze
+  REQUIRED_PR_DESCRIPTION_AUDIT_RECEIPTS = "### Audit receipts"
+  REQUIRED_PR_DESCRIPTION_SUMMARY_HEADING = "#### Completed-batch audit"
+  REQUIRED_PR_DESCRIPTION_SUMMARY_START = "<summary>Audit receipt</summary>"
+  REQUIRED_PR_DESCRIPTION_SUMMARY_END = "</details>"
   REQUIRED_COMPACT_RECEIPT_FORMAT = "Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`."
   REQUIRED_RECEIPT_PUBLISH_ORDER = "Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync."
   REQUIRED_RECEIPT_REPLAY_RULE = "Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result."
@@ -102,7 +103,11 @@ class PostMergeAuditPolicyTest < Minitest::Test
   OBSOLETE_FINDINGS_FIELD = "findings: <none|concise refs|UNKNOWN>"
   REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD = "followups_dispositions: <none|one or more ` | `-separated records with ref, owner, current status, disposition, and evidence; unescaped `;` and `|` are rejected in every record-field value; escaping is not supported; terminal disposition is resolved|accepted-waiver|accepted-deferral|not-applicable; nonterminal action is investigate|fix|await-input|retry|replay|track>"
   OBSOLETE_FOLLOWUPS_DISPOSITIONS_FIELD = "followups_dispositions: <none|one or more ` | `-separated terminal disposition records"
-  REQUIRED_STRICT_MARKER_REPLAY_RULE = "Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails."
+  REQUIRED_VISIBLE_RECEIPT_REPLAY_TERMS = [
+    "Completed-batch audit receipt",
+    "completed-batch-audit v1",
+    "read-compatible only"
+  ].freeze
   REQUIRED_PUBLICATION_PREFLIGHT = "completed-batch-publication-preflight"
   REQUIRED_PUBLICATION_SNAPSHOT = "helper-managed `publication_snapshot`"
   REQUIRED_TERMINAL_PUBLICATION_STATES = "`SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED`"
@@ -425,32 +430,29 @@ class PostMergeAuditPolicyTest < Minitest::Test
     body = guarded_block[:body]
     assert_match(/\]\([^)]*#audit-applicability\)/, body)
     [
-      REQUIRED_DURABLE_RECEIPT_HEADER,
       COMPLETED_BATCH_AUDIT_MARKER_HEADER,
       REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD
     ].each do |rule|
       assert_includes body, rule, "completed-batch-only guard must contain #{rule.inspect}"
     end
-    nested_marker_rule = "  - Give the local marker body below to the receipt helper. It publishes one concise header, one blank line, and exactly one canonical v1 wrapper after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; fill every operator-authored field explicitly and use `none` rather than omitting a field:\n\n"
-    indented_marker_block = [
-      "    ```text\n",
-      "    #{REQUIRED_DURABLE_RECEIPT_HEADER}\n",
-      "\n",
-      "    #{COMPLETED_BATCH_AUDIT_MARKER_HEADER}\n",
-      "    #{REQUIRED_BATCH_IDENTITY_FIELD}\n",
-      "    audit_status: <complete|blocked|UNKNOWN>\n",
-      "    verdict: <clean|follow-ups-remain|UNKNOWN>\n",
-      "    scope_evidence: <concise refs|UNKNOWN>\n",
-      "    checker_evidence: <identity/route/independence refs|UNKNOWN>\n",
-      "    #{REQUIRED_FINDINGS_FIELD}\n",
-      "    #{REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD}\n",
-      "    -->\n",
-      "    ```\n"
-    ].join
-
-    assert_includes body, nested_marker_rule + indented_marker_block,
-                    "completed-batch-only guard must keep the marker rule, fence, wrapper, and every marker line four-space indented"
-    assert_includes body, REQUIRED_PR_DESCRIPTION_SUMMARY_RULE
+    indented_marker_block = body.match(/^    ````text\n(?<contents>.*?)^    ````\n/m)
+    refute_nil indented_marker_block,
+               "completed-batch-only guard must present the receipt as a four-space-indented Markdown example"
+    marker_contents = indented_marker_block[:contents]
+    refute_match(/^    🤖 /, marker_contents)
+    assert_match(%r{^    [^\r\n]+\n\n    <details>\n    <summary>Completed-batch audit receipt</summary>\n}m, marker_contents)
+    receipt_record = marker_contents.match(%r{^    ```text\n(?<contents>.*?)^    ```\n    </details>\n}m)
+    refute_nil receipt_record,
+               "receipt example must contain a closed inner text fence before its disclosure closes"
+    record_contents = receipt_record[:contents]
+    [COMPLETED_BATCH_AUDIT_MARKER_HEADER, "batch_id:", "audit_status:", "verdict:", "scope_evidence:",
+     "checker_evidence:", "findings:", "followups_dispositions:"].each do |field|
+      assert_includes record_contents, "    #{field}", "receipt record must retain #{field.inspect}"
+    end
+    assert_includes marker_contents, "    </details>"
+    assert_includes body, "publication_snapshot"
+    assert_includes body, REQUIRED_PR_DESCRIPTION_AUDIT_RECEIPTS
+    assert_includes body, REQUIRED_PR_DESCRIPTION_SUMMARY_HEADING
     assert_includes body, REQUIRED_PR_DESCRIPTION_SUMMARY_START
     assert_includes body, REQUIRED_PR_DESCRIPTION_SUMMARY_END
     refute_includes body, REQUIRED_DEFAULT,
@@ -533,8 +535,10 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
       assert_includes text, COMPLETED_BATCH_AUDIT_MARKER_HEADER,
                       "#{relative_path} should require the completed-batch audit marker header"
-      assert_includes text, REQUIRED_DURABLE_RECEIPT_HEADER,
-                      "#{relative_path} should require the fixed durable comment header"
+      REQUIRED_DURABLE_RECEIPT_TERMS.each do |term|
+        assert_includes text, term,
+                        "#{relative_path} should require a visible durable receipt"
+      end
       assert_includes text, REQUIRED_BATCH_IDENTITY_FIELD,
                       "#{relative_path} should require the expanded completed-batch audit identity contract"
       assert_includes text, REQUIRED_STRUCTURED_NON_BACKEND_SCOPE_EVIDENCE,
@@ -555,8 +559,10 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should require the completed-batch audit follow-up disposition contract"
       refute_includes text, OBSOLETE_FOLLOWUPS_DISPOSITIONS_FIELD,
                       "#{relative_path} must not require terminal-only follow-up statuses"
-      assert_includes text, REQUIRED_STRICT_MARKER_REPLAY_RULE,
-                      "#{relative_path} should make exact marker replay fail closed"
+      REQUIRED_VISIBLE_RECEIPT_REPLAY_TERMS.each do |term|
+        assert_includes text, term,
+                        "#{relative_path} should describe visible current receipt replay and legacy read compatibility"
+      end
       assert_includes text, REQUIRED_RECORD_DELIMITER_RULE,
                       "#{relative_path} should explicitly reserve record delimiters"
       assert_includes text, REQUIRED_STRUCTURAL_VS_READINESS_RULE,
@@ -613,6 +619,25 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should block an unmerged coordinated target"
       assert_includes normalized_text, "in_progress",
                       "#{relative_path} should block in-progress QA"
+    end
+  end
+
+  def test_advisory_public_claim_recovery_uses_visible_records_and_legacy_reads_only
+    {
+      "skills/post-merge-audit/references/scope.md" => File.read(
+        File.join(ROOT, "skills/post-merge-audit/references/scope.md"), encoding: "UTF-8"
+      ),
+      "workflows/post-merge-audit.md" => File.read(
+        File.join(ROOT, "workflows/post-merge-audit.md"), encoding: "UTF-8"
+      )
+    }.each do |relative_path, text|
+      normalized_text = text.gsub(/\s+/, " ")
+      assert_includes text, "Claim details", "#{relative_path} should name the visible claim disclosure"
+      assert_includes text, "codex-claim v1", "#{relative_path} should name the visible claim record"
+      assert_includes normalized_text.downcase, "historical html forms are read-compatible only",
+                      "#{relative_path} should retain legacy claim reads without prescribing hidden writes"
+      refute_match(/containing a\s+`codex-claim` HTML comment/i, text,
+                   "#{relative_path} should not prescribe an HTML-only public claim")
     end
   end
 

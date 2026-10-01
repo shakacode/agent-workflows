@@ -171,7 +171,7 @@ For `a`, do not post a GitHub PR summary comment automatically; return the local
 For replacement carryover, build a distinct source checkpoint in addition to
 the normal primary checkpoint. A source checkpoint is cutoff-safe only when every source item has a terminal handled, deferred, declined, or other explicitly safe-to-skip outcome; any pending, `ask user`, or user-pending source item requires a non-cutoff status and remains eligible for the next source scan.
 Use `SOURCE_CUTOFF_SAFE`, not the primary `CUTOFF_SAFE`, for that decision.
-Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` under `<!-- address-review-source-state:v1`; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`.
+Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` in the visible fenced `address-review-source-state:v1` record inside the closed `Address-review checkpoint` disclosure; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`. Historical HTML records are read-compatible only.
 Validate the source PR and item ID as positive decimals, the thread ID as a GitHub node ID or `-`, the activity timestamp as RFC3339, the enum fields, stable-identity uniqueness, and snapshot completeness before consuming or posting state.
 Missing, duplicate, malformed, identity-mismatched, or incomplete source state suppresses no item and makes source readiness `UNKNOWN` until corrected; a status checkpoint never acts as a global cutoff.
 Every new source checkpoint carries forward unchanged valid rows and records every source candidate since `SOURCE_REVIEW_CUTOFF_AT`, including pending rows, so the latest checkpoint is a complete restart snapshot rather than a delta.
@@ -194,22 +194,19 @@ tell the next run to use `check all reviews`; do not advance the cutoff.
 Rules for the summary comment:
 
 - Always post it as a general PR issue comment, never as a review-thread reply.
-- Include the exact marker `<!-- address-review-summary -->` as the first line
-  only for cutoff-safe summaries. If older optional items remain
-  pending/unselected without a thread-level outcome, use
-  `<!-- address-review-status -->` as the first line, call the comment a
-  non-cutoff status, and tell the next run to use `check all reviews`.
-- Let `github-comment-envelope` provide the sole visible agent header. Record
-  the posting runtime's real client and model family (for example,
-  `Codex · Astra` or `Claude · Opus 5`) inside `Agent details`. Use `UNKNOWN`
-  for any runtime field the host does not expose; never guess either value or
-  block the workflow only because it is unavailable.
+- The posting envelope uses `AGENT_COMMENT_RUNNER` to begin the public comment
+  with `🤖 <configured runner>` plus its outcome and reader action. Put
+  `address-review-checkpoint:v1` with `kind: summary` or `kind: status` in
+  the visible closed checkpoint disclosure. Historical HTML markers are
+  read-compatible only.
+- Put the posting runtime's real client and model family inside that disclosure;
+  use `UNKNOWN` for an unavailable field and never guess or block on it.
 - Keep the visible checkpoint human-ready: state the useful result in simple,
   concise language and say plainly when another pass is needed. Put scan
   metadata, itemized outcomes, tracking receipts, and rescan instructions in
-  one closed GitHub `<details>` block whose summary is exactly `Agent details`;
-  do not add the `open` attribute. Hidden workflow markers may remain outside
-  the disclosure where their parsers require it.
+  one closed GitHub `<details>` block whose summary is exactly `Address-review checkpoint`;
+  do not add the `open` attribute. Historical hidden markers are read-only;
+  new records remain inside the visible disclosure.
 - Summarize `MUST-FIX` and `DISCUSS` items under `Findings that mattered`, including whether each item was addressed, deferred, or left pending by user choice.
 - Summarize `OPTIONAL` items under `Optional suggestions` when any optional item
   has a recorded outcome or is intentionally left pending/unselected by the
@@ -245,6 +242,16 @@ trap _cleanup_addr_review EXIT
 if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
   source_summary_body_file="$(mktemp)"
 fi
+if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
+  if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
+    PR_BATCH_SKILL_DIR="$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch"
+  elif [ -d ".agents/skills/pr-batch" ]; then
+    PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
+  else
+    echo "Refusing to post: set PR_BATCH_SKILL_DIR or install/pin the pr-batch skill." >&2
+    exit 1
+  fi
+fi
 # Set SCAN_SCOPE before this block, e.g.:
 #   SCAN_SCOPE="since previous summary at ${REVIEW_CUTOFF_AT}"  # cutoff active
 #   SCAN_SCOPE="full history via check all reviews"              # CHECK_ALL_REVIEWS set
@@ -265,29 +272,33 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
 # Leave empty only when there were no optional items in scope.
 {
   if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
-    printf '<!-- address-review-summary -->\n'
-  else
-    printf '<!-- address-review-status -->\n'
-  fi
-  if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
+    printf 'Address-review follow-up is complete. The next routine scan can start after this comment.\n\n'
     printf '## Review follow-up complete\n\n'
     printf 'Every review item in the selected scan has a recorded outcome, so the next routine check can start after this comment.\n\n'
   else
+    printf 'Address-review follow-up needs another pass. Use `check all reviews` before acting.\n\n'
     printf '## Review follow-up needs another pass\n\n'
     printf 'Some feedback in the selected scan still needs an explicit outcome, so this comment does not set a new review checkpoint.\n\n'
   fi
   printf '<details>\n'
-  printf '<summary>Agent details</summary>\n\n'
-  printf '**Posting runtime:** %s · %s\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
+  printf '<summary>Address-review checkpoint</summary>\n\n'
+  printf '**Runtime:** %s · %s\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
+  printf '```text\naddress-review-checkpoint:v1\n'
+  if [ "${CUTOFF_SAFE:-0}" = "1" ]; then
+    printf 'kind: summary\n'
+  else
+    printf 'kind: status\n'
+  fi
+  printf '```\n\n'
   printf '**Scan scope:** %s\n\n' "${SCAN_SCOPE}"
   printf '### Findings that mattered\n'
-  printf '%s\n\n' "<bullets for must-fix/discuss outcomes, or - None.>"
+  printf '%s\n\n' "Bullets for must-fix/discuss outcomes, or - None."
   if [ -n "${OPTIONAL_OUTCOMES:-}" ]; then
     printf '### Optional suggestions\n'
     printf '%s\n\n' "${OPTIONAL_OUTCOMES}"
   fi
   printf '### Skipped items\n'
-  printf '%s\n\n' "<bullets for skipped items, or - None.>"
+  printf '%s\n\n' "Bullets for skipped items, or - None."
   if [ -n "${TRACKING_OUTCOME:-}" ]; then
     printf '**Deferred-work tracking:** %s\n\n' "${TRACKING_OUTCOME}"
   fi
@@ -360,20 +371,24 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
   fi
   {
     if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
-      printf '<!-- address-review-summary -->\n'
-    else
-      printf '<!-- address-review-status -->\n'
-    fi
-    if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
+      printf 'Original review follow-up is complete. The next routine scan can start after this comment.\n\n'
       printf '## Original review follow-up complete\n\n'
       printf 'Every carried-over review item has a recorded outcome. Future checks of the original PR can start after this comment.\n\n'
     else
+      printf 'Original review follow-up needs another pass. Use `check all reviews` before acting.\n\n'
       printf '## Original review follow-up needs another pass\n\n'
       printf 'Some carried-over review items still need an explicit outcome, so this comment does not set a new checkpoint.\n\n'
     fi
     printf '<details>\n'
-    printf '<summary>Agent details</summary>\n\n'
-    printf '**Posting runtime:** %s · %s\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
+    printf '<summary>Address-review checkpoint</summary>\n\n'
+    printf '**Runtime:** %s · %s\n\n' "${POSTING_CLIENT}" "${POSTING_MODEL_FAMILY}"
+    printf '```text\naddress-review-checkpoint:v1\n'
+    if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
+      printf 'kind: summary\n'
+    else
+      printf 'kind: status\n'
+    fi
+    printf '```\n\n'
     printf '**Replacement PR:** %s\n\n' "${REPLACEMENT_PR_URL}"
     printf '### Carried-over review outcomes\n'
     printf '%s\n\n' "${SOURCE_OUTCOMES}"
@@ -382,16 +397,14 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
     else
       printf '**Next scan:** Pending items remain eligible; use `check all reviews` to rescan the full original PR.\n\n'
     fi
-    printf '</details>\n\n'
-    printf '<!-- address-review-source-state:v1\n'
+    printf '```text\naddress-review-source-state:v1\n'
     if [ -n "${SOURCE_STATE_ROWS}" ]; then
       printf '%s\n' "${SOURCE_STATE_ROWS}"
     fi
-    printf '%s\n' '-->'
+    printf '```\n\n</details>\n'
   } > "${source_summary_body_file}"
 fi
 
-# Post each generated body through github-comment-envelope post-issue.
 "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
   --repo "${REPO}" --number "${PR_NUMBER}" \
   --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \

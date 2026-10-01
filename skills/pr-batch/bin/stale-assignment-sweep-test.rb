@@ -31,7 +31,8 @@ class StaleAssignmentSweepTest < Minitest::Test
   NOW = Time.utc(2026, 7, 22)
   NOW_ISO = NOW.iso8601
   IDENTITY = "sweeper-bot"
-  NUDGE_MARKER = "<!-- stale-assignment-sweep:nudge -->"
+  LEGACY_NUDGE_MARKER = "<!-- stale-assignment-sweep:nudge -->"
+  VISIBLE_NUDGE_MARKER = "stale-assignment-sweep:nudge:v1"
 
   # --- dry-run -----------------------------------------------------------
 
@@ -80,7 +81,10 @@ class StaleAssignmentSweepTest < Minitest::Test
 
     assert_includes log, "repos/owner/repo/issues/1/comments"
     assert_includes log, "Heads up @alice"
-    assert_includes log, NUDGE_MARKER
+    assert_includes log, "🤖 Codex"
+    assert_includes log, "Assignment follow-up:"
+    assert_includes log, VISIBLE_NUDGE_MARKER
+    refute_includes log, LEGACY_NUDGE_MARKER
     # A stale-but-unnudged item is nudged, never released.
     refute_includes log, "issues/1/assignees"
   end
@@ -94,6 +98,25 @@ class StaleAssignmentSweepTest < Minitest::Test
       body = line.split("body=", 2).last
       refute body.start_with?("@"), "comment body must not begin with '@': #{body.inspect}"
     end
+  end
+
+  def test_nudge_reader_recognizes_the_actual_enveloped_writer_output
+    payload = "Assignment follow-up: Heads up @alice.\n\n<details>\n<summary>Assignment sweep details</summary>\n\n```text\n#{VISIBLE_NUDGE_MARKER}\n```\n</details>"
+    rendered = GitHubCommentEnvelope.render(
+      body: payload, runner: "codex", host: "M5", task_or_run: "stale-assignment-sweep"
+    )
+
+    assert StaleAssignmentSweep::Runner.new.send(:nudge_comment?, rendered)
+    assert StaleAssignmentSweep::Runner.new.send(:nudge_comment?, "#{LEGACY_NUDGE_MARKER}\nlegacy")
+    refute StaleAssignmentSweep::Runner.new.send(:nudge_comment?, "Assignment follow-up: example\n\n<!--\n#{payload}\n-->")
+    refute StaleAssignmentSweep::Runner.new.send(:nudge_comment?, "```text\n#{payload}\n```")
+  end
+
+  def test_enveloped_nudge_uses_the_configured_runner_once
+    _result, log = run_cli(apply: true, agent_comment_env: { "AGENT_COMMENT_RUNNER" => "cursor" })
+
+    assert_includes log, "🤖 Cursor"
+    refute_includes log, "🤖 Codex assignment"
   end
 
   # --- apply: release ----------------------------------------------------
@@ -980,7 +1003,7 @@ class StaleAssignmentSweepTest < Minitest::Test
       "created_at" => days_ago(days),
       "actor" => { "login" => author },
       "user" => { "login" => author },
-      "body" => "Heads up — no activity.\n\n#{NUDGE_MARKER}"
+      "body" => "Heads up — no activity.\n\n#{LEGACY_NUDGE_MARKER}"
     }
   end
 end

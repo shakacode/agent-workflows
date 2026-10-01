@@ -121,9 +121,29 @@ exactly one `qa-maintainer-waiver v1` marker with `target: <exact target URL>`,
 replay independently re-fetch and compare the bound waiver; a self-consistent
 preflight digest is not authentication.
 
+New maintainer waivers are human-authored visible comments in this closed form:
+
+````markdown
+Maintainer exact-head QA waiver is recorded. No reader action is needed.
+
+<details>
+<summary>QA waiver details</summary>
+
+```text
+qa-maintainer-waiver v1
+target: <exact target URL>
+head_sha: <full exact head SHA>
+decision: waived
+```
+</details>
+````
+
+Historical `<!-- qa-maintainer-waiver v1 ... -->` forms are read-compatible
+only.
+
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
-A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Ordinary new complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight; the accepted-deferral path below uses exactly one `accepted_deferral_snapshot` instead. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. Ordinary new complete receipts also have exactly one helper-managed `publication_snapshot`; accepted-deferral receipts have exactly one `accepted_deferral_snapshot`, and either kind fails closed when its snapshot is unrefreshed or mismatched. A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
+A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Ordinary new complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight; the accepted-deferral path below uses exactly one `accepted_deferral_snapshot` instead. Replay exactly one current closed `Completed-batch audit receipt` disclosure containing a fenced `completed-batch-audit v1` record, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. Historical exact versioned `<!-- completed-batch-audit v1` wrappers through their single final `-->` are read-compatible only. Ordinary new complete receipts also have exactly one helper-managed `publication_snapshot`; accepted-deferral receipts have exactly one `accepted_deferral_snapshot`, and either kind fails closed when its snapshot is unrefreshed or mismatched. A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
 
 An old helper-managed `publication_snapshot` missing `coordination_applicability`
 or `applicability_proof_digest` stays non-ready even after replay refresh.
@@ -153,15 +173,21 @@ In final chat, this compact receipt line opens the closing lines: it is followed
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 ```
 
-Give this local receipt to the helper. It publishes one concise header, one
-blank line, and exactly one canonical v1 wrapper; the helper injects the
-integrity-bound `publication_snapshot` after `scope_evidence`. Fill every
-operator-authored field explicitly and use `none` rather than omitting a field:
+Give this local receipt to the helper. It publishes a visible outcome with its
+reader action, then exactly one closed `Completed-batch audit receipt`
+disclosure. The helper injects the integrity-bound `publication_snapshot` after
+`scope_evidence`. Historical HTML wrappers remain read-compatible only. Fill
+every operator-authored field explicitly and use `none` rather than omitting a
+field:
+
+````text
+Completed-batch audit is clean. No reader action is needed.
+
+<details>
+<summary>Completed-batch audit receipt</summary>
 
 ```text
-Completed-batch audit: replay evidence follows.
-
-<!-- completed-batch-audit v1
+completed-batch-audit v1
 batch_id: <opaque coordination batch id (may contain : or ;)|non-backend: identity; rationale: why no backend applies|not-applicable: rationale|UNKNOWN>
 audit_status: <complete|blocked|UNKNOWN>
 verdict: <clean|follow-ups-remain|UNKNOWN>
@@ -169,21 +195,26 @@ scope_evidence: <concise refs|UNKNOWN>
 checker_evidence: <identity/route/independence refs|UNKNOWN>
 findings: <none|OUTSTANDING concise refs|UNKNOWN>
 followups_dispositions: <none|one or more ` | `-separated records with ref, owner, current status, disposition, and evidence; unescaped `;` and `|` are rejected in every record-field value; escaping is not supported; terminal disposition is resolved|accepted-waiver|accepted-deferral|not-applicable; nonterminal action is investigate|fix|await-input|retry|replay|track>
--->
 ```
+</details>
+````
 
 For a PR anchor, `publish` and `replay` emit this small managed section after
 comment readback; neither mutates the PR description. The coordinator applies it
 inside `### Audit receipts` in the canonical `Agent details` disclosure through
 a separate freshly-read update, preserves all surrounding text, never duplicates
-the markers, and never reruns `publish` to retry description sync:
+the receipt section, and never reruns `publish` to retry description sync:
 
 ```markdown
-<!-- completed-batch-audit-summary:start -->
 #### Completed-batch audit
 
-**Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.> [Durable receipt](<exact-comment-url>).
-<!-- completed-batch-audit-summary:end -->
+**Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.>
+
+<details>
+<summary>Audit receipt</summary>
+
+[Durable receipt](<exact-comment-url>)
+</details>
 ```
 
 For `non-backend` and `not-applicable`, the structured `scope_evidence` grammar is `targets=<exact refs>; source=<durable ref>`: name the exact verified target set and durable evidence source. `batch_id: UNKNOWN` is allowed only for genuinely unresolved batch identity, never for release/archive readiness.

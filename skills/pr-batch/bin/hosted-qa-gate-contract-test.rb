@@ -9,6 +9,7 @@ require "rbconfig"
 require "tmpdir"
 require "yaml"
 require_relative "../lib/hosted_qa_runtime_trust"
+require_relative "../lib/github_comment_envelope"
 
 ROOT = File.expand_path("../../..", __dir__)
 DELEGATION = "Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA contract " \
@@ -42,6 +43,24 @@ class HostedQaGateContractTest < Minitest::Test
     assert_includes workflow, "The closed v1 interpreter families are Ruby and POSIX `sh`"
     assert_includes workflow, "Arbitrary executable identities such as `/usr/bin/false` block"
     assert_includes workflow, "After full-SHA validation, replay canonicalizes both SHA fields to lowercase"
+  end
+
+  def test_hosted_receipts_delegate_visible_runner_attribution_to_the_envelope
+    workflow = read("workflows/pr-batch-integration-closeout.md")
+    receipts = workflow.scan(/````markdown\n(.*?)\n````/m).flatten
+    payloads = receipts.grep(/\AHosted QA is (?:satisfied|waived)\./)
+
+    assert_equal 2, payloads.length
+    assert_includes workflow, "AGENT_COMMENT_RUNNER"
+    payloads.each do |payload|
+      refute_match(/\A🤖/, payload)
+      { "claude" => "Claude", "cursor" => "Cursor" }.each do |runner, display|
+        rendered = GitHubCommentEnvelope.render(body: payload, runner:, host: "test-host", task_or_run: "hosted-qa")
+
+        assert rendered.start_with?("🤖 #{display} Hosted QA is"), runner
+        assert_equal payload, GitHubCommentEnvelope.payload(rendered), runner
+      end
+    end
   end
 
   def test_canonical_workflow_requires_pre_execution_runtime_trust_and_criteria_authentication
