@@ -200,6 +200,20 @@ class TargetMembershipGuardTest < Minitest::Test
     assert_equal "input contains invalid Unicode scalar data", result.fetch("reason")
   end
 
+  def test_malformed_ascii_json_that_mentions_surrogate_keeps_the_json_diagnostic
+    ["surrogate", "{surrogate:1}", '{"x":surrogate}'].each do |input|
+      result, stderr, status = invoke_raw(input)
+
+      assert_equal 2, status.exitstatus, stderr
+      assert_equal "UNKNOWN", result.fetch("status")
+      assert_equal false, result.fetch("control_allowed")
+      assert_equal false, result.fetch("evidence_delivery_allowed")
+      assert_equal "input is not valid JSON", result.fetch("reason")
+      assert_equal "provide one target-membership-request v1 object and replay the guard",
+                   result.fetch("next_action")
+    end
+  end
+
   def test_blocks_control_for_a_foreign_target_as_evidence_only
     result, stderr, status = invoke("target" => "shakacode/hichee#9992")
 

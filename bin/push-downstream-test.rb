@@ -72,6 +72,7 @@ class PushDownstreamAuditWorkflowTest < Minitest::Test
       "bin/agent-workflow-writing-style",
       "bin/agent-workflow-seam-doctor-test.rb",
       "bin/agent_doctor/**",
+      "skills/pr-batch/lib/github_actor_trust.rb",
       "skills/secure-github-actions/lib/**",
       "downstream.yml",
       "seam-presets.yml"
@@ -242,8 +243,7 @@ class PushDownstreamConfigTest < Minitest::Test
         - repo: bad
           overrides:
             trust:
-              trusted_bots: [github-actions]
-              trusted_metadata_bots: [github-actions]
+              trusted_metadata_bots: [github-actions, 42]
     YAML
 
     with_config(yaml) do |path|
@@ -255,7 +255,7 @@ class PushDownstreamConfigTest < Minitest::Test
       assert_equal 1, @registry_status
       assert_includes out, "shakacode/good"
       refute_includes out, "shakacode/bad"
-      assert_includes err, "FAIL shakacode/bad: invalid trust config"
+      assert_includes err, "FAIL shakacode/bad: trusted_metadata_bots must be a nonempty string or an array of nonempty strings"
     end
   end
 
@@ -270,8 +270,7 @@ class PushDownstreamConfigTest < Minitest::Test
         - repo: bad
           overrides:
             trust:
-              trusted_bots: [github-actions]
-              trusted_metadata_bots: [github-actions]
+              trusted_metadata_bots: [github-actions, 42]
     YAML
 
     with_config(yaml) do |path|
@@ -289,7 +288,7 @@ class PushDownstreamConfigTest < Minitest::Test
 
         assert_equal 1, @registry_status
         assert_equal ["shakacode/good"], calls
-        assert_includes err, "FAIL shakacode/bad: invalid trust config"
+        assert_includes err, "FAIL shakacode/bad: trusted_metadata_bots must be a nonempty string or an array of nonempty strings"
       end
     end
   end
@@ -966,6 +965,27 @@ class PushDownstreamAdapterTest < Minitest::Test
     end
 
     assert_match(/bot\(s\) listed in both trusted_bots and trusted_metadata_bots: github-actions/, error.message)
+  end
+
+  def test_resolve_contract_rejects_malformed_bot_role_values
+    presets = {
+      "defaults" => {
+        "trust" => {
+          "trusted_bots" => ["dependabot"],
+          "trusted_metadata_bots" => ["github-actions", 42]
+        }
+      }
+    }
+    repo = {
+      repo: "rsc", base_branch: "main", preset: nil,
+      overrides: { "trust" => {} }
+    }
+
+    error = assert_raises(RuntimeError) do
+      PushDownstream.resolve_contract(repo, presets)
+    end
+
+    assert_match(/trusted_metadata_bots must be a nonempty string or an array of nonempty strings/, error.message)
   end
 
   def test_resolve_contract_unknown_preset_raises
@@ -3972,6 +3992,14 @@ class PushDownstreamCliTest < Minitest::Test
 
     refute status.success?, out
     assert_includes out, "--trusted-* flags require --root"
+  end
+
+  def test_empty_trusted_bot_flag_fails_without_a_backtrace
+    out, status = run_cli("--trusted-bot", "")
+
+    refute status.success?, out
+    assert_includes out, "FAIL: trusted_bots must be a nonempty string or an array of nonempty strings"
+    refute_match(/(?:RuntimeError|Traceback|from .*push-downstream)/, out)
   end
 
   def test_local_apply_reports_invalid_trust_config_without_backtrace

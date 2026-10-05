@@ -68,6 +68,27 @@ class GithubActorTrustTest < Minitest::Test
     assert_match(/listed in both/, error.message)
   end
 
+  def test_bot_roles_reject_malformed_values_before_normalization
+    {
+      "trusted_bots: { deploy: true }\n" => "trusted_bots",
+      "trusted_bots: 42\n" => "trusted_bots",
+      "trusted_metadata_bots: [github-actions, 42]\n" => "trusted_metadata_bots",
+      "trusted_metadata_bots: ['']\n" => "trusted_metadata_bots",
+      "trusted_bots: ['   ']\n" => "trusted_bots"
+    }.each do |yaml, role|
+      error = assert_raises(GithubActorTrust::Error) { config(yaml) }
+
+      assert_equal "#{role} must be a nonempty string or an array of nonempty strings", error.message
+    end
+  end
+
+  def test_bot_roles_preserve_legacy_scalar_string_compatibility
+    loaded = config("trusted_bots: deploy\ntrusted_metadata_bots: github-actions\n")
+
+    assert_equal Set["deploy"], loaded.fetch(:trusted_bots)
+    assert_equal Set["github-actions"], loaded.fetch(:trusted_metadata_bots)
+  end
+
   # A stray blank list item parses to nil; that must not crash out of the
   # Error contract both callers rescue on.
   def test_blank_team_entry_is_ignored_rather_than_crashing
