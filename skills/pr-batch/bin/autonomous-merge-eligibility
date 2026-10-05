@@ -323,7 +323,7 @@ rescue CurrentIntegrationEvidence::Error, KeyError => e
     policy_provenance:
   )
 end
-unless %w[base-unchanged reuse-exact-head].include?(current_integration.dig("reuse", "decision"))
+unless %w[base-unchanged reuse-exact-head current-head-integrated].include?(current_integration.dig("reuse", "decision"))
   emit_unknown(
     "current integration requires fresh evidence: #{current_integration.dig('reuse', 'reasons').join(', ')}",
     head_sha: reported_head_sha,
