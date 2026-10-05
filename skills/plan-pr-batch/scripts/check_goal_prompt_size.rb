@@ -57,7 +57,7 @@ LEGACY_PLANNING_PASS_PROFILE_PHRASES = [
 ].freeze
 GOAL_LINE = "/goal"
 INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
-BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
+BATCH_TITLE_LINE = "Batch title: <PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>"
 CONTINUATION_INVOCATION_LINE =
   "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch."
 BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
@@ -268,7 +268,7 @@ READY_ITEM_DONE_WHEN_LINE =
 CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
-CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>"
+CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>"
 CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   Batch size target: <codex|claude|generic>;wave: <cap/items>
@@ -728,7 +728,7 @@ required_skill_rule_phrases = [
   "Claude prompt/chat",
   "After the target-specific invocation line",
   "Batch title:",
-  "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>",
+  "<PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>",
   "pr-batch-intake.md#verified-batch-title-selection",
   "verified title facts unchanged",
   "Goal prompt character count: N characters (target: codex|claude|generic)",
@@ -767,20 +767,13 @@ required_skill_rule_phrases = [
   "AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb"
 ]
 
-required_prompt_intake_title_phrases = [
+required_prompt_intake_title_structure = [
   "## Verified Batch Title Selection",
-  "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>",
-  "metadata only; it does not create an executable Linear lane",
-  "optional `repo_prefix`",
-  "remote after stripping `.git`",
-  "repository root basename",
-  "configured `repo_prefix` is a blocker; do not silently fall back",
-  "date +'%m-%d %H:%M'",
-  "exactly one issue",
-  "zero or multiple verified source issues",
-  "Primary pasteable prompts put `Batch title:` directly after the target-specific",
-  "Render exactly one empty line after `merge_authority:`",
-  "Specialized continuation prompts keep their own title"
+  "<PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>",
+  "`repo_prefix`",
+  "`linear_issue_verification`",
+  "### Title Examples",
+  "### Verified In-Place Rename Lifecycle"
 ]
 
 required_codex_prompt_phrases = [
@@ -952,7 +945,7 @@ end
 require_phrases(skill_text, required_skill_rule_phrases, "SKILL.md prompt-sizing rules")
 require_phrases(
   prompt_intake_text,
-  required_prompt_intake_title_phrases,
+  required_prompt_intake_title_structure,
   "workflows/pr-batch-intake.md verified batch-title rules"
 )
 

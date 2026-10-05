@@ -172,9 +172,11 @@ This execution skill adds only batch-shaping details that intake does not own:
 1. **Batch title**: consume canonical
    [Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection)
    unchanged and keep the exact
-   `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` placeholder in pasteable
+   `<PREFIX> [i<ISSUE>] [pr<PR>] -- <DESCRIPTION>` placeholder in pasteable
    prompts. This entrypoint is a compatibility route and does not mirror the
    selection or trust contract.
+   Apply its [Verified In-Place Rename Lifecycle](../../workflows/pr-batch-intake.md#verified-in-place-rename-lifecycle)
+   at creation/adoption, verified PR creation or supersession, and resume.
 2. **Routing preferences and observations**: record coordinator, worker, and
    checker model/effort preferences before target interpretation. These are
    advisory. Host-observed host/model/effort fields are optional and remain
