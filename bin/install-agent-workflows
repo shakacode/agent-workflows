@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+shopt -u dotglob
 
 usage() {
   cat <<'USAGE'
@@ -1931,6 +1932,8 @@ prepare_metadata() {
     end
     skill_fingerprints = if mode == "copy" && delivery_mode == "flat"
                            Dir.children(File.join(source, "skills")).sort.each_with_object({}) do |name, fingerprints|
+                             next if name.start_with?(".")
+
                              root = File.join(source, "skills", name)
                              next unless File.directory?(root) && !File.symlink?(root)
 
