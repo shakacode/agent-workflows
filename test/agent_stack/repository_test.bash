@@ -29,6 +29,7 @@ fixture_clone_writer_start() {
   until [[ -f "$ready" ]]; do
     if (( SECONDS >= deadline )); then
       wait "$AGENT_STACK_FIXTURE_RACE_WRITER_PID" || true
+      unset AGENT_STACK_FIXTURE_RACE_WRITER_PID
       fail "temporary-pack writer did not start"
     fi
     sleep 0.01
