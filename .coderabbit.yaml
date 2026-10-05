@@ -10,6 +10,7 @@ reviews:
   # available, while skipped/rate-limit prose and GitHub progress checks do not
   # occupy the PR timeline.
   profile: chill
+  high_level_summary: false
   review_status: false
   review_progress: false
   in_progress_fortune: false
