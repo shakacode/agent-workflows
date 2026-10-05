@@ -201,6 +201,13 @@ requested release, RC, beta, or version heading.
 
 ## Manage a work session
 
+### [`$maintain-external-skills`](../skills/maintain-external-skills/SKILL.md)
+
+Use `$maintain-external-skills` to inspect the freshness of a separately
+managed skill provider or apply its already-authorized, pinned update across
+selected hosts. It verifies file ownership and discovery without taking over
+the provider's installer or lock records.
+
 ### [`$continue`](../skills/continue/SKILL.md)
 
 Use `$continue` after an interruption or handoff. It reconstructs what is done,
