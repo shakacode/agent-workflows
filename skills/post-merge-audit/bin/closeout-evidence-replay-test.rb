@@ -1515,6 +1515,22 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_https_prose_label_preserves_nil_and_empty_label_contracts
+    # Callers distinguish a non-label (`nil`) from a label that directly introduces the next URL
+    # (`["", offset]`): only the latter suppresses URL validation for the uppercase `HTTPS:` token.
+    direct_url = "durable: HTTPS: https://github.com/e/r/pull/1#v"
+    direct_match = CloseoutEvidenceReplay.https_token_matches(direct_url).first
+    assert_equal ["", direct_match.end(0)], CloseoutEvidenceReplay.https_prose_label(direct_url, direct_match)
+
+    malformed = "durable: HTTPS: example.test https://github.com/e/r/pull/1#v"
+    malformed_match = CloseoutEvidenceReplay.https_token_matches(malformed).first
+    assert_nil CloseoutEvidenceReplay.https_prose_label(malformed, malformed_match)
+
+    lowercase = "durable: https: enabled https://github.com/e/r/pull/1#v"
+    lowercase_match = CloseoutEvidenceReplay.https_token_matches(lowercase).first
+    assert_nil CloseoutEvidenceReplay.https_prose_label(lowercase, lowercase_match)
+  end
+
   def test_hosted_v1_accepts_wrapped_connectors_before_a_direct_url
     ["HTTPS: **artifact** https://evidence.example.test/sign-in-abc123",
      "HTTPS: `artifact` https://evidence.example.test/sign-in-abc123",
